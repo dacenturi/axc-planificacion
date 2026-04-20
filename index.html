@@ -6,6 +6,7 @@
 <title>AXC Constructora — Planificación</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=Mulish:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#0d1117;--bg2:#161b22;--bg3:#1c2128;--border:#30363d;--border2:#21262d;--accent:#f0a500;--acc2:#e07a00;--acc3:#ffd166;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--text:#e6edf3;--text2:#8b949e;--text3:#484f58;--r:10px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -111,10 +112,54 @@ tbody tr{min-height:48px}
 ::-webkit-scrollbar-track{background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 @media(max-width:800px){.obra-grid{grid-template-columns:1fr 1fr}.kpi-grid{grid-template-columns:1fr 1fr}}
+
+/* ── AUTH ── */
+.auth-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+.auth-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:38px 32px;width:100%;max-width:400px}
+.auth-ttl{font-family:'Syne',sans-serif;font-weight:800;font-size:22px;color:var(--accent);margin-bottom:4px}
+.auth-sub{font-size:13px;color:var(--text2);margin-bottom:26px}
+.auth-f{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.auth-f label{font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.6px}
+.auth-f input{background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Mulish',sans-serif;font-size:13px;padding:10px 12px;outline:none;width:100%;transition:border-color .15s}
+.auth-f input:focus{border-color:var(--accent)}
+.auth-btn{background:var(--accent);color:#000;font-family:'Mulish',sans-serif;font-weight:700;font-size:14px;border:none;border-radius:8px;padding:12px;width:100%;cursor:pointer;margin-top:6px;transition:background .15s}
+.auth-btn:hover{background:var(--acc2)}
+.auth-btn:disabled{opacity:.6;cursor:not-allowed}
+.auth-err{color:var(--red);font-size:12px;padding:8px 12px;background:rgba(248,81,73,.1);border-radius:6px;border:1px solid rgba(248,81,73,.2);display:none;margin-bottom:12px}
+.auth-err.show{display:block}
+/* chip usuario topbar */
+.user-chip{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 6px;background:var(--bg3);border-radius:20px;border:1px solid var(--border)}
+.user-av{width:28px;height:28px;border-radius:50%;background:rgba(240,165,0,.2);color:var(--accent);font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.user-nm{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap}
+.user-rol{font-size:10px;color:var(--text2)}
+.logout-btn{background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:2px 6px;transition:color .15s;margin-left:2px}
+.logout-btn:hover{color:var(--red)}
 </style>
 </head>
 <body>
 
+<!-- LOGIN -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-ttl">AXC Constructora</div>
+    <div class="auth-sub">Sistema de Planificación — ingresá con tu cuenta</div>
+    <div id="auth-err" class="auth-err"></div>
+    <div class="auth-f">
+      <label>Email</label>
+      <input type="email" id="auth-email" placeholder="residente@axc.com" autocomplete="email"
+        onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <div class="auth-f">
+      <label>Contraseña</label>
+      <input type="password" id="auth-pass" placeholder="••••••••" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="auth-btn" id="auth-btn" onclick="doLogin()">Ingresar</button>
+    <p style="text-align:center;margin-top:16px;font-size:11px;color:var(--text3)">¿Problemas para ingresar? Contactá al administrador AXC</p>
+  </div>
+</div>
+<!-- APP -->
+<div id="app-screen" style="display:none">
 <div class="topbar">
   <div class="brand">
     <img src="data:image/png;base64,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" alt="AXC Constructora" style="height:36px;object-fit:contain;display:block">
@@ -123,7 +168,15 @@ tbody tr{min-height:48px}
     <button class="tab-btn active" onclick="showPage('carga')" id="tab-carga">📋 Carga</button>
     <button class="tab-btn" onclick="showPage('reporte')" id="tab-reporte">📊 Reporte</button>
     <button class="tab-btn" onclick="showPage('gantt')" id="tab-gantt">📅 Gantt</button>
+    <div class="user-chip" id="user-chip" style="display:none">
+    <div class="user-av" id="user-av">?</div>
+    <div>
+      <div class="user-nm" id="user-nm">—</div>
+      <div class="user-rol" id="user-rol">Residente</div>
+    </div>
+    <button class="logout-btn" onclick="doLogout()" title="Cerrar sesión">✕ Salir</button>
   </div>
+</div>
 </div>
 
 <div class="main">
@@ -255,8 +308,8 @@ const RAZONES=['Falta de Planos','Falta de Material','Tareas Predecesoras','Moti
 // DL generado dinámicamente según cantidad de días
 function getDL(n){const base=['L','M','X','J','V','S'];const out=[];let wi=0,si=0;while(out.length<n){if(wi%7!==0||wi===0){}; const day=si%6;out.push(base[day]);si++;wi++;}return out;}
 
-let acts=JSON.parse(localStorage.getItem('axc_acts')||'[]');
-let obra=JSON.parse(localStorage.getItem('axc_obra')||'{}');
+let acts=[];
+let obra={};
 
 function getStart(){const v=document.getElementById('inp-fecha').value;return v?new Date(v+'T00:00:00'):new Date();}
 function wDates(s,e){
@@ -318,7 +371,7 @@ function buildDateHeaders(){
   });
 }
 
-function save(){localStorage.setItem('axc_acts',JSON.stringify(acts));}
+function save(){if(window._axcUid)localStorage.setItem('axc_acts_'+window._axcUid,JSON.stringify(acts));}
 
 // Count working days between two dates (inclusive, skip Sunday)
 function countWorkDays(start,fin){
@@ -373,7 +426,7 @@ function onObraChange(){
     obra:document.getElementById('inp-obra').value,
     contratista:document.getElementById('inp-contratista').value,
     residente:document.getElementById('inp-residente').value};
-  localStorage.setItem('axc_obra',JSON.stringify(obra));
+  if(window._axcUid)localStorage.setItem('axc_obra_'+window._axcUid,JSON.stringify(obra));
 
   const nd=getNumDays();
   const sub=document.getElementById('sec-sub');
@@ -1106,6 +1159,89 @@ function exportXLSX(){
   XLSX.writeFile(WB,`AXC_${obraFile}_${fechaFile}.xlsx`);
 }
 
+
+// ══════════════════════════════════════════════════════════
+// SUPABASE + AUTH
+// ══════════════════════════════════════════════════════════
+const _SB = supabase.createClient(
+  'https://zvucnezwhgfgupasgqnd.supabase.co',
+  'sb_publishable_YP_aVXFRw_g7pFSGyU5UkQ_tCxVO-cW'
+);
+
+async function doLogin(){
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  const errEl = document.getElementById('auth-err');
+  const btn   = document.getElementById('auth-btn');
+  errEl.classList.remove('show');
+  if(!email||!pass){ errEl.textContent='Completá email y contraseña'; errEl.classList.add('show'); return; }
+  btn.textContent='Ingresando…'; btn.disabled=true;
+  const {data,error} = await _SB.auth.signInWithPassword({email,password:pass});
+  if(error){
+    errEl.textContent = error.message==='Invalid login credentials'
+      ? 'Email o contraseña incorrectos' : error.message;
+    errEl.classList.add('show');
+    btn.textContent='Ingresar'; btn.disabled=false;
+    return;
+  }
+  await _bootApp(data.user);
+}
+
+async function doLogout(){
+  await _SB.auth.signOut();
+  window._axcUid = null;
+  acts=[]; obra={};
+  document.getElementById('auth-screen').style.display='flex';
+  document.getElementById('app-screen').style.display='none';
+  document.getElementById('user-chip').style.display='none';
+  document.getElementById('auth-email').value='';
+  document.getElementById('auth-pass').value='';
+  const btn=document.getElementById('auth-btn');
+  btn.textContent='Ingresar'; btn.disabled=false;
+}
+
+async function _bootApp(user){
+  window._axcUid = user.id;
+
+  // Cargar perfil desde Supabase
+  const {data:perfil} = await _SB.from('perfiles').select('*').eq('id',user.id).single();
+
+  // Chip de usuario
+  const nombre = perfil?.nombre || user.email.split('@')[0];
+  const rol    = perfil?.rol==='admin'?'Administrador':'Residente';
+  document.getElementById('user-av').textContent  = nombre.slice(0,2).toUpperCase();
+  document.getElementById('user-nm').textContent  = nombre;
+  document.getElementById('user-rol').textContent = rol;
+  document.getElementById('user-chip').style.display = 'flex';
+
+  // Pre-seleccionar residente en el formulario
+  const resEl = document.getElementById('inp-residente');
+  if(resEl && nombre){
+    const match = Array.from(resEl.options).find(o=>o.value===nombre||o.text===nombre);
+    if(match){ resEl.value = match.value; }
+    else {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = nombre;
+      resEl.appendChild(opt);
+      resEl.value = nombre;
+    }
+    obra.residente = nombre;
+  }
+
+  // Cargar datos guardados de localStorage por usuario
+  const savedActs = localStorage.getItem('axc_acts_'+user.id);
+  const savedObra = localStorage.getItem('axc_obra_'+user.id);
+  if(savedActs) try{ acts=JSON.parse(savedActs); }catch(e){}
+  if(savedObra) try{ obra=JSON.parse(savedObra); }catch(e){}
+
+  // Mostrar app
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('app-screen').style.display='block';
+
+  // Inicializar tabla
+  onObraChange();
+}
+
 // INIT
 (function(){
   if(obra.fecha) document.getElementById('inp-fecha').value=obra.fecha;
@@ -1115,9 +1251,16 @@ function exportXLSX(){
   if(obra.residente) document.getElementById('inp-residente').value=obra.residente;
   if(!document.getElementById('inp-fecha').value)
     document.getElementById('inp-fecha').value=new Date().toISOString().slice(0,10);
-  // onObraChange handles min/max, badge, headers, table
-  onObraChange();
+  // Verificar sesión existente al cargar
+  _SB.auth.getSession().then(({data:{session}})=>{
+    if(session?.user) _bootApp(session.user);
+  });
+  _SB.auth.onAuthStateChange(async(ev,s)=>{
+    if(ev==='SIGNED_IN'&&s) await _bootApp(s.user);
+    if(ev==='SIGNED_OUT') doLogout();
+  });
 })();
 </script>
+</div><!-- /app-screen -->
 </body>
 </html>
