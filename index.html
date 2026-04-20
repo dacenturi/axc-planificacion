@@ -5,15 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AXC Constructora — Planificación</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=Mulish:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx-js-style.min.js"></script>
-<script>
-// Fallback: if xlsx-js-style failed, try loading regular xlsx
-if(typeof XLSX === 'undefined'){
-  var s=document.createElement('script');
-  s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-  document.head.appendChild(s);
-}
-</script>
+
 <style>
 :root{--bg:#0d1117;--bg2:#161b22;--bg3:#1c2128;--border:#30363d;--border2:#21262d;--accent:#f0a500;--acc2:#e07a00;--acc3:#ffd166;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--text:#e6edf3;--text2:#8b949e;--text3:#484f58;--r:10px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -851,507 +843,61 @@ function renderGantt(){
 
 
 function exportXLSX(){
-  if(!window.XLSX){
-    // Try loading dynamically
-    var s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx-js-style.min.js';
-    s.onload=()=>setTimeout(exportXLSX,500);
-    document.head.appendChild(s);
-    return;
-  }
-  const dates=wDates(getStart(),getFin());
-  const n=dates.length;
-  const DL=getDL(n);
-  const total=acts.length;
-  const fail=acts.filter(a=>a.cumple==='No Cumple').length;
-  const ok=total-fail;
-  const pct=total?Math.round(ok/total*100):0;
-  const WB=XLSX.utils.book_new();
-  WB.Props={Title:'AXC Planificación',Author:'AXC Constructora'};
-  WB.SSF={};
+  const SERVER = 'https://axc-excel-server.onrender.com/export';
+  const btn = document.querySelector('.btn-secondary[onclick="exportXLSX()"]');
 
-  // ── Paleta AXC ─────────────────────────────────────────────────
-  const P={
-    navy:'102040', navyM:'1A3A5C', navyL:'2C5F8A',
-    gold:'B8760A', goldM:'F0A500', goldL:'FFF0B3', goldXL:'FFFBF0',
-    white:'FFFFFF', offW:'F7F9FC', gray1:'EDF0F4', gray2:'CDD3DA',
-    gray3:'8D96A3', gray4:'3D4A5C',
-    // Semáforo verde
-    greenD:'0A3D1F', greenM:'1A7A3C', greenL:'C6EFCE', greenXL:'EEF8F1',
-    // Semáforo rojo
-    redD:'5C0A12', redM:'C0392B', redL:'FDBCC0', redXL:'FFF0F1',
-    // Semáforo naranja
-    orange:'7A3D00', orangeM:'E07A00', orangeL:'FFE5B4', orangeXL:'FFF8EE',
-    // Día activo
-    dayOn:'855C00', dayOnBg:'FAC828',
-    dayOnFail:'8B0000', dayOnFailBg:'FF6B6B',
-    // Sábado
-    satBg:'D0E8FF', satT:'1A4D8C',
+  // Preparar datos
+  const payload = {
+    obra: {
+      obra:        document.getElementById('inp-obra')?.value || '',
+      contratista: document.getElementById('inp-contratista')?.value || '',
+      residente:   document.getElementById('inp-residente')?.value || '',
+      fecha:       document.getElementById('inp-fecha')?.value || '',
+      fechafin:    document.getElementById('inp-fecha-fin')?.value || '',
+    },
+    acts: acts.map(a => ({
+      sector:         a.sector || '',
+      descripcion:    a.descripcion || a.item || '',
+      cumple:         a.cumple || '',
+      razon:          a.razon || a.razon_no_cumple || '',
+      days:           a.days || []
+    }))
   };
 
-  // ── Utilidades de estilo ────────────────────────────────────────
-  const b=(s,c)=>({style:s||'thin',color:{rgb:c||P.gray2}});
-  const cell=(t,b_,l,r,bo)=>({top:b(t,b_),bottom:b(l,r),left:b(bo,b_),right:b(t,b_)});
-  const bAll=(s,c)=>({top:b(s,c),bottom:b(s,c),left:b(s,c),right:b(s,c)});
-  const bThin=bAll('thin',P.gray2);
-  const bMedNavy=bAll('medium',P.navyM);
-  const bMedGold=bAll('medium',P.goldM);
+  if(!payload.acts.length){ alert('No hay actividades para exportar.'); return; }
 
-  const S=(fnt,bg,al,brd)=>({
-    font:{name:'Calibri',sz:10,...fnt},
-    fill:{patternType:'solid',fgColor:{rgb:bg||P.white}},
-    alignment:{vertical:'center',wrapText:false,shrinkToFit:false,...(al||{})},
-    border:brd||{},
+  // Mostrar estado de carga
+  if(btn){ btn.textContent = '⏳ Generando...'; btn.disabled = true; }
+
+  fetch(SERVER, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  .then(res => {
+    if(!res.ok) throw new Error('Error del servidor: ' + res.status);
+    return res.blob();
+  })
+  .then(blob => {
+    const obraName = (payload.obra.obra || 'AXC').replace(/\s+/g,'_').slice(0,20);
+    const fecha = new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}).replace(/\//g,'-');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `AXC_${obraName}_${fecha}.xlsx`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    if(btn){ btn.textContent = '📥 Exportar Excel'; btn.disabled = false; }
+  })
+  .catch(err => {
+    console.error(err);
+    // Si el servidor tarda (free tier se duerme), reintenta
+    if(btn){ btn.textContent = '⏳ Despertando servidor...'; }
+    setTimeout(() => {
+      if(btn){ btn.textContent = '📥 Exportar Excel'; btn.disabled = false; }
+      alert('El servidor tardó en responder. Hacé clic en Exportar Excel nuevamente — ya está listo.');
+    }, 3000);
   });
-
-  // Semáforo de criticidad basado en % cumplimiento de la fila
-  const critColor=(isFail,isAlt)=>{
-    if(!isFail) return isAlt?P.offW:P.white;
-    return isAlt?P.redXL:P.redL;
-  };
-
-  const rc=(row,col)=>XLSX.utils.encode_cell({r:row,c:col});
-  const put=(ws,row,col,v,style)=>{ws[rc(row,col)]={v,s:style,t:typeof v==='number'?'n':'s'};};
-  const mg=(arr,r1,c1,r2,c2)=>arr.push({s:{r:r1,c:c1},e:{r:r2,c:c2}});
-  const fmtD=d=>d?d.toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}):'—';
-  const fmtS=d=>d?d.toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit'}):'—';
-  const today=new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'});
-
-  // ══════════════════════════════════════════════════════════════
-  // HOJA 1 — PORTADA EJECUTIVA
-  // ══════════════════════════════════════════════════════════════
-  {
-  const ws=XLSX.utils.aoa_to_sheet([]);const mg1=[];
-  const COLS=10;
-
-  // Banda dorada top
-  for(let c=0;c<COLS;c++) put(ws,0,c,'',S({},{patternType:'solid',fgColor:{rgb:P.goldM}}));
-  mg1.push({s:{r:0,c:0},e:{r:0,c:COLS-1}});
-
-  // Bloque azul marino — título
-  const titleSt=S({sz:26,bold:true,color:{rgb:P.white}},P.navy,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}});
-  put(ws,1,0,'AXC CONSTRUCTORA',titleSt); mg1.push({s:{r:1,c:0},e:{r:1,c:COLS-1}});
-  put(ws,2,0,'PLANIFICACIÓN Y SEGUIMIENTO DE OBRAS',
-    S({sz:13,bold:false,color:{rgb:'8FADC8'}},P.navy,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}}));
-  mg1.push({s:{r:2,c:0},e:{r:2,c:COLS-1}});
-  put(ws,3,0,'',S({},P.navy)); mg1.push({s:{r:3,c:0},e:{r:3,c:COLS-1}});
-  // Línea gold separator
-  for(let c=0;c<COLS;c++) put(ws,4,c,'',S({},{patternType:'solid',fgColor:{rgb:P.goldM}}));
-  mg1.push({s:{r:4,c:0},e:{r:4,c:COLS-1}});
-
-  // ── Bloque info obra (2 columnas lado a lado) ──────────────────
-  // Columna izq: datos generales | Columna der: KPIs grandes
-  const infoL=[
-    ['OBRA',obra.obra||'—'],
-    ['CONTRATISTA',obra.contratista||'—'],
-    ['RESIDENTE',obra.residente||'—'],
-    ['FECHA DE INICIO',obra.fecha||'—'],
-    ['FECHA DE FIN',obra.fechafin||'—'],
-    ['DÍAS HÁBILES',n+' días hábiles'],
-    ['REPORTE GENERADO',today],
-  ];
-
-  const stLbl=S({sz:9,bold:true,color:{rgb:P.navyM}},P.gray1,{horizontal:'left'},bThin);
-  const stVal=S({sz:11,bold:false,color:{rgb:P.gray4}},P.white,{horizontal:'left'},bThin);
-
-  infoL.forEach(([lbl,val],i)=>{
-    put(ws,6+i,0,lbl,stLbl); mg1.push({s:{r:6+i,c:0},e:{r:6+i,c:1}});
-    put(ws,6+i,2,val,stVal); mg1.push({s:{r:6+i,c:2},e:{r:6+i,c:4}});
-  });
-
-  // ── KPIs grandes (columna derecha, filas 6-13) ─────────────────
-  const kpiDefs=[
-    {lbl:'TOTAL\nACTIVIDADES', val:total,  sub:'planificadas',        bg:P.navyM, fg:P.white,   bgS:P.gray1,  fgS:P.navyM},
-    {lbl:'CUMPLIDAS',          val:ok,     sub:'actividades OK',       bg:pct>=80?P.greenM:pct>=50?P.orangeM:P.redM,
-                                                                        fg:P.white, bgS:pct>=80?P.greenXL:pct>=50?P.orangeXL:P.redXL,
-                                                                        fgS:pct>=80?P.greenM:pct>=50?P.orangeM:P.redM},
-    {lbl:'NO CUMPLIDAS',       val:fail,   sub:'requieren atención',   bg:fail===0?P.greenM:P.redM, fg:P.white,
-                                                                        bgS:fail===0?P.greenXL:P.redXL, fgS:fail===0?P.greenM:P.redM},
-    {lbl:'% CUMPLIMIENTO',     val:pct+'%',sub:pct>=80?'🟢 Excelente':pct>=50?'🟡 Regular':'🔴 Crítico',
-                                           bg:pct>=80?P.greenM:pct>=50?P.goldM:P.redM, fg:P.white,
-                                           bgS:pct>=80?P.greenL:pct>=50?P.goldL:P.redL,
-                                           fgS:pct>=80?P.greenD:pct>=50?P.gold:P.redD},
-  ];
-
-  kpiDefs.forEach(({lbl,val,sub,bg,fg,bgS,fgS},i)=>{
-    const col=5+i;
-    put(ws,6,col, lbl, S({sz:9,bold:true,color:{rgb:fg}},bg,{horizontal:'center',wrapText:true},bMedNavy));
-    put(ws,7,col, val, S({sz:30,bold:true,color:{rgb:fg}},bg,{horizontal:'center'},bMedNavy));
-    put(ws,8,col, sub, S({sz:8,bold:false,color:{rgb:fgS}},bgS,{horizontal:'center'},bMedNavy));
-    mg1.push({s:{r:9,c:col},e:{r:12,c:col}});
-    // fill rows 9-12
-    for(let rr=9;rr<=12;rr++) put(ws,rr,col,'',S({},bgS,{},bMedNavy));
-  });
-  mg1.push({s:{r:5,c:5},e:{r:5,c:9}});
-
-  // ── Barra de progreso visual ────────────────────────────────────
-  const barRow=14;
-  put(ws,barRow,0,'INDICADOR DE CUMPLIMIENTO',S({sz:11,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}}));
-  mg1.push({s:{r:barRow,c:0},e:{r:barRow,c:COLS-1}});
-
-  const BAR_COLS=COLS;
-  const filled=total>0?Math.round((ok/total)*BAR_COLS):0;
-  const barColor=pct>=80?P.greenM:pct>=50?P.goldM:P.redM;
-  const barEmpty=pct>=80?P.greenXL:pct>=50?P.goldXL:P.redXL;
-  for(let c=0;c<BAR_COLS;c++){
-    const isFilled=c<filled;
-    const isLast=isFilled&&c===filled-1;
-    put(ws,barRow+1,c, isLast?(pct+'%'):'', S({sz:9,bold:true,color:{rgb:isFilled?P.white:P.gray3}},
-      isFilled?barColor:barEmpty, {horizontal:'center'},
-      {top:b('thin',barColor),bottom:b('thin',barColor),
-       left:c===0?b('medium',P.navyM):b('thin',isFilled?barColor:P.gray2),
-       right:c===BAR_COLS-1?b('medium',P.navyM):b('thin',isFilled?barColor:P.gray2)}));
-  }
-
-  // ── Tabla de razones ────────────────────────────────────────────
-  const razRow=17;
-  put(ws,razRow,0,'RAZONES DE INCUMPLIMIENTO',S({sz:11,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}}));
-  mg1.push({s:{r:razRow,c:0},e:{r:razRow,c:COLS-1}});
-
-  // Encabezados tabla razones
-  ['#','RAZÓN','','','','ACTIVIDADES AFECTADAS','','% DEL TOTAL','CRITICIDAD'].forEach((h,i)=>{
-    put(ws,razRow+1,i,h,S({sz:9,bold:true,color:{rgb:P.white}},P.navyL,{horizontal:i===0?'center':'left'},bThin));
-  });
-  mg1.push({s:{r:razRow+1,c:1},e:{r:razRow+1,c:4}});
-  mg1.push({s:{r:razRow+1,c:5},e:{r:razRow+1,c:6}});
-
-  const razonMap={};
-  acts.filter(a=>a.cumple==='No Cumple').forEach(a=>{const k=a.razon||'Sin especificar';razonMap[k]=(razonMap[k]||0)+1;});
-  const razonList=Object.entries(razonMap).sort((a,b_)=>b_[1]-a[1]);
-
-  if(razonList.length===0){
-    put(ws,razRow+2,0,'✓  Sin incumplimientos registrados — todas las actividades cumplen',
-      S({sz:11,bold:true,color:{rgb:P.greenD}},P.greenXL,{horizontal:'left'},bThin));
-    mg1.push({s:{r:razRow+2,c:0},e:{r:razRow+2,c:COLS-1}});
-  } else {
-    razonList.forEach(([k,v],i)=>{
-      const rr=razRow+2+i;
-      const pctR=total>0?Math.round((v/total)*100):0;
-      const crit=pctR>=50?'🔴 CRÍTICO':pctR>=25?'🟡 MODERADO':'🟢 BAJO';
-      const critBg=pctR>=50?P.redL:pctR>=25?P.orangeL:P.greenL;
-      const critFg=pctR>=50?P.redD:pctR>=25?P.orange:P.greenD;
-      const isAlt=i%2===1;
-      const rowBg=isAlt?P.gray1:P.white;
-
-      put(ws,rr,0,i+1,S({sz:9,bold:true,color:{rgb:P.gray3}},rowBg,{horizontal:'center'},bThin));
-      put(ws,rr,1,k,S({sz:10,bold:false,color:{rgb:P.redM}},rowBg,{horizontal:'left'},bThin));
-      mg1.push({s:{r:rr,c:1},e:{r:rr,c:4}});
-      put(ws,rr,5,v,S({sz:11,bold:true,color:{rgb:P.redD}},P.redL,{horizontal:'center'},bThin));
-      mg1.push({s:{r:rr,c:5},e:{r:rr,c:6}});
-      put(ws,rr,7,pctR+'%',S({sz:10,bold:true,color:{rgb:P.redD}},P.redL,{horizontal:'center'},bThin));
-      put(ws,rr,8,'',S({},rowBg,{},bThin));
-      put(ws,rr,9,crit,S({sz:9,bold:true,color:{rgb:critFg}},critBg,{horizontal:'center'},bThin));
-    });
-  }
-
-  // Footer gold line
-  const footR=razRow+2+Math.max(razonList.length,1)+1;
-  for(let c=0;c<COLS;c++) put(ws,footR,c,'',S({},{patternType:'solid',fgColor:{rgb:P.goldM}}));
-  mg1.push({s:{r:footR,c:0},e:{r:footR,c:COLS-1}});
-  put(ws,footR+1,0,`AXC Constructora  ·  Sistema de Planificación de Obras  ·  Generado: ${today}`,
-    S({sz:8,bold:false,color:{rgb:'8FADC8'}},P.navy,{horizontal:'center'}));
-  mg1.push({s:{r:footR+1,c:0},e:{r:footR+1,c:COLS-1}});
-
-  ws['!merges']=mg1;
-  ws['!cols']=Array(COLS).fill({wch:14});
-  ws['!cols'][0]={wch:18};
-  ws['!rows']=[
-    {hpt:5},  // 0 gold band
-    {hpt:44}, // 1 title
-    {hpt:20}, // 2 subtitle
-    {hpt:8},  // 3 space
-    {hpt:5},  // 4 gold line
-    {hpt:10}, // 5 spacer
-    {hpt:20},...Array(6).fill({hpt:18}), // 6-12 info + kpi
-    {hpt:8},  // 13 spacer
-    {hpt:24}, // 14 bar title
-    {hpt:22}, // 15 bar
-    {hpt:8},  // 16
-    {hpt:24}, // 17 raz title
-    {hpt:20}, // 18 raz hdr
-    ...Array(Math.max(razonList.length,1)+2).fill({hpt:20}),
-  ];
-  ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:footR+2,c:COLS-1}});
-  XLSX.utils.book_append_sheet(WB,ws,'Resumen Ejecutivo');
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // HOJA 2 — PLANIFICACIÓN (grilla de días individuales)
-  // ══════════════════════════════════════════════════════════════
-  {
-  const ws=XLSX.utils.aoa_to_sheet([]);const mg2=[];
-  const FC=3+n+4; // total columns fixed + days + trailing
-
-  // Título
-  put(ws,0,0,'PLANIFICACIÓN DE ACTIVIDADES',S({sz:14,bold:true,color:{rgb:P.white}},P.navy,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}}));
-  mg2.push({s:{r:0,c:0},e:{r:0,c:FC-1}});
-  const sub=`${obra.obra||''}  ·  ${obra.contratista||''}  ·  ${obra.residente||''}  ·  Período: ${obra.fecha||''} → ${obra.fechafin||''}  ·  ${n} días hábiles`;
-  put(ws,1,0,sub,S({sz:9,bold:false,color:{rgb:'8FADC8'}},P.navy,{horizontal:'left'}));
-  mg2.push({s:{r:1,c:0},e:{r:1,c:FC-1}});
-  // Gold line
-  for(let c=0;c<FC;c++) put(ws,2,c,'',S({},{patternType:'solid',fgColor:{rgb:P.goldM}}));
-  mg2.push({s:{r:2,c:0},e:{r:2,c:FC-1}});
-
-  // Fila 3: cabeceras fijas + grupos semana
-  put(ws,3,0,'#',    S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,3,1,'Rubro / Sector',S({sz:10,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,3,2,'Actividad',     S({sz:10,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-
-  // Grupos de semana dinámicos
-  let wi=0,wkN=1;
-  while(wi<n){
-    const wkStart=wi;let wkEnd=wi;
-    while(wkEnd<n-1&&dates[wkEnd].getDay()!==6) wkEnd++;
-    const wkLabel=`${wkN}ª SEMANA`;
-    put(ws,3,3+wkStart,wkLabel,S({sz:9,bold:true,color:{rgb:P.gold}},P.goldXL,{horizontal:'center'},bMedGold));
-    if(wkEnd>wkStart) mg2.push({s:{r:3,c:3+wkStart},e:{r:3,c:3+wkEnd}});
-    wi=wkEnd+1; wkN++;
-  }
-  put(ws,3,3+n,  'Inicio', S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,3,3+n+1,'Fin',    S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,3,3+n+2,'Días',   S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,3,3+n+3,'Estado', S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-
-  // Fila 4: fechas de cada día
-  put(ws,4,0,'',S({sz:8},P.gray1,{},bThin));
-  put(ws,4,1,'',S({sz:8},P.gray1,{},bThin));
-  put(ws,4,2,'',S({sz:8},P.gray1,{},bThin));
-  dates.forEach((d,i)=>{
-    const isSat=d.getDay()===6;
-    const isWkStart=i>0&&dates[i-1].getDay()===6;
-    const bg=isSat?P.satBg:P.goldM;
-    const fg=isSat?P.satT:P.navy;
-    const brd={
-      top:b('thin',P.gray2),bottom:b('thin',P.gray2),
-      left:isWkStart||i===0?b('medium',P.goldM):b('thin',P.gray2),
-      right:b('thin',P.gray2),
-    };
-    put(ws,4,3+i,`${DL[i]}\n${fmtS(d)}`,S({sz:8,bold:true,color:{rgb:fg}},bg,{horizontal:'center',wrapText:true},brd));
-  });
-  put(ws,4,3+n,'',S({sz:8},P.gray1,{},bThin));
-  put(ws,4,3+n+1,'',S({sz:8},P.gray1,{},bThin));
-  put(ws,4,3+n+2,'',S({sz:8},P.gray1,{},bThin));
-  put(ws,4,3+n+3,'',S({sz:8},P.gray1,{},bThin));
-
-  // Ordenar actividades por fecha de inicio antes de exportar
-  const actsSorted = acts.slice().sort((a,b)=>{
-    const mA=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const mB=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const sdA=mA.length?dates[mA[0]]:null;
-    const sdB=mB.length?dates[mB[0]]:null;
-    if(!sdA&&!sdB) return 0;
-    if(!sdA) return 1;
-    if(!sdB) return -1;
-    return sdA-sdB;
-  });
-
-  // Filas de actividades
-  actsSorted.forEach((a,idx)=>{
-    const row=5+idx;
-    const isAlt=idx%2===1;
-    const isFail=a.cumple==='No Cumple';
-    const isCumple=a.cumple==='Cumple'||a.cumple==='';
-    const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const sd=marked.length?dates[marked[0]]:null;
-    const ed=marked.length?dates[marked[marked.length-1]]:null;
-    const dur=marked.length;
-
-    // Semáforo de fila: rojo intenso para No Cumple, verde suave para Cumple
-    const rowBg=isFail?(isAlt?'FFCDD2':'FFEBEE'):(isAlt?'F1F8E9':'FFFFFF');
-    const rowFg=isFail?'B71C1C':P.gray4;
-    const sectorFg=isFail?'C62828':P.navyM;
-
-    put(ws,row,0,idx+1,S({sz:9,bold:true,color:{rgb:P.gray3}},rowBg,{horizontal:'center'},bThin));
-    put(ws,row,1,a.sector||'',S({sz:9,bold:true,color:{rgb:sectorFg}},rowBg,{horizontal:'left',wrapText:true},bThin));
-    put(ws,row,2,a.item||a.descripcion||'',S({sz:10,bold:isFail,color:{rgb:isFail?'B71C1C':P.navyM}},rowBg,{horizontal:'left',wrapText:true},bThin));
-
-    // Celdas de días con semáforo más marcado
-    dates.forEach((d,di)=>{
-      const isOn=!!a.days[di];
-      const isSat=d.getDay()===6;
-      const isWkStart=di>0&&dates[di-1].getDay()===6;
-      const brdL=isWkStart||di===0?b('medium',P.goldM):b('thin',P.gray2);
-      let bg,fg,txt;
-      if(isOn){
-        if(isFail){ bg='C62828'; fg='FFFFFF'; txt='●'; }
-        else if(isSat){ bg='1565C0'; fg='FFFFFF'; txt='●'; }
-        else { bg='2E7D32'; fg='FFFFFF'; txt='●'; }
-      } else {
-        bg=isFail?(isAlt?'FFCDD2':'FFEBEE'):isSat?(isAlt?'E3F2FD':'BBDEFB'):(isAlt?'F1F8E9':'FFFFFF');
-        fg=isFail?(isAlt?'EF9A9A':'EF9A9A'):'BDBDBD'; txt='·';
-      }
-      put(ws,row,3+di,txt,S({sz:isOn?14:8,bold:isOn,color:{rgb:fg}},bg,{horizontal:'center',vertical:'center'},{top:b('thin',P.gray2),bottom:b('thin',P.gray2),left:brdL,right:b('thin',P.gray2)}));
-    });
-    // Fechas inicio/fin con semáforo
-    const fBg=isFail?'FFEBEE':isAlt?'E8F0FF':'F0F5FF';
-    const fFg=isFail?'C62828':P.navyL;
-    put(ws,row,3+n,  sd?fmtS(sd):'—', S({sz:9,bold:false,color:{rgb:fFg}},fBg,{horizontal:'center'},bThin));
-    put(ws,row,3+n+1,ed?fmtS(ed):'—', S({sz:9,bold:false,color:{rgb:fFg}},fBg,{horizontal:'center'},bThin));
-    put(ws,row,3+n+2,dur,              S({sz:10,bold:true,color:{rgb:isFail?'C62828':P.navyM}},isFail?'FFCDD2':'DCEEFB',{horizontal:'center'},bThin));
-    // Estado con fondo de color fuerte
-    const estBg=isFail?'EF5350':'43A047';
-    const estFg='FFFFFF';
-    put(ws,row,3+n+3,isFail?'✗ No cumple':'✓ Cumple',
-      S({sz:9,bold:true,color:{rgb:estFg}},estBg,{horizontal:'center'},
-        isFail?bAll('medium','C62828'):bAll('medium','2E7D32')));
-  });
-
-  // Fila totales
-  const totR=5+actsSorted.length;
-  put(ws,totR,0,'TOTALES',S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,totR,1,'',S({sz:9},P.navyM,{},bThin));
-  put(ws,totR,2,`${ok} / ${total} actividades cumplen (${pct}%)`,
-    S({sz:9,bold:true,color:{rgb:pct>=80?'2E7D32':pct>=50?P.goldM:'C62828'}},P.navyM,{horizontal:'left'},bThin));
-  dates.forEach((d,di)=>{
-    const cnt=actsSorted.filter(a=>a.days[di]).length;
-    const bg=cnt===0?P.navyM:cnt>=3?'43A047':cnt>=2?P.goldL:P.offW;
-    const fg=cnt===0?P.gray3:cnt>=3?'FFFFFF':cnt>=2?P.gold:P.gray4;
-    const isWkStart=di>0&&dates[di-1].getDay()===6;
-    put(ws,totR,3+di,cnt||'',S({sz:9,bold:true,color:{rgb:fg}},bg,{horizontal:'center'},
-      {top:b('medium',P.navyM),bottom:b('medium',P.navyM),
-       left:isWkStart||di===0?b('medium',P.goldM):b('thin',P.gray2),
-       right:b('thin',P.gray2)}));
-  });
-  const totalDias=actsSorted.reduce((s,a)=>s+a.days.filter(Boolean).length,0);
-  put(ws,totR,3+n,'',S({},P.navyM,{},bThin));
-  put(ws,totR,3+n+1,'',S({},P.navyM,{},bThin));
-  put(ws,totR,3+n+2,totalDias,S({sz:10,bold:true,color:{rgb:P.goldM}},P.navyM,{horizontal:'center'},bThin));
-  put(ws,totR,3+n+3,`${ok}/${total}`,S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-
-  ws['!merges']=mg2;
-  ws['!cols']=[{wch:4},{wch:22},{wch:40},...Array(n).fill({wch:5}),{wch:9},{wch:9},{wch:7},{wch:14}];
-  ws['!rows']=[{hpt:34},{hpt:16},{hpt:5},{hpt:28},{hpt:30},...Array(actsSorted.length+1).fill({hpt:22})];
-  ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:totR+1,c:FC-1}});
-  XLSX.utils.book_append_sheet(WB,ws,'Planificación');
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // HOJA 3 — REPORTE DETALLADO
-  // ══════════════════════════════════════════════════════════════
-  {
-  const ws=XLSX.utils.aoa_to_sheet([]);const mg3=[];
-  const COLS3=9;
-
-  put(ws,0,0,'REPORTE DETALLADO DE ACTIVIDADES',S({sz:14,bold:true,color:{rgb:P.white}},P.navy,{horizontal:'left'},{left:{style:'thick',color:{rgb:P.goldM}}}));
-  mg3.push({s:{r:0,c:0},e:{r:0,c:COLS3-1}});
-  put(ws,1,0,`${obra.obra||''}  ·  ${obra.contratista||''}  ·  Período: ${obra.fecha||''} → ${obra.fechafin||''}`,
-    S({sz:9,bold:false,color:{rgb:'8FADC8'}},P.navy,{horizontal:'left'}));
-  mg3.push({s:{r:1,c:0},e:{r:1,c:COLS3-1}});
-  for(let c=0;c<COLS3;c++) put(ws,2,c,'',S({},{patternType:'solid',fgColor:{rgb:P.goldM}}));
-  mg3.push({s:{r:2,c:0},e:{r:2,c:COLS3-1}});
-
-  // Encabezados con colores diferenciados por tipo de columna
-  const hdrs3=[
-    {h:'#',                          bg:'1A3A5C', fg:P.white},
-    {h:'Rubro / Sector',             bg:'1A3A5C', fg:P.white},
-    {h:'Actividad',                  bg:'1A3A5C', fg:P.white},
-    {h:'Fecha Inicio',               bg:'1565C0', fg:P.white},
-    {h:'Fecha Fin',                  bg:'1565C0', fg:P.white},
-    {h:'Días Activos',               bg:'1565C0', fg:P.white},
-    {h:'Estado',                     bg:'1A3A5C', fg:P.white},
-    {h:'Razón de no Cumplimiento',   bg:'B71C1C', fg:P.white},
-    {h:'Criticidad',                 bg:'1A3A5C', fg:P.white},
-  ];
-  hdrs3.forEach(({h,bg,fg},i)=>put(ws,3,i,h,S({sz:10,bold:true,color:{rgb:fg}},bg,{horizontal:'center',wrapText:true},bThin)));
-
-  // Ordenar por fecha de inicio
-  const actsSorted3=acts.slice().sort((a,b)=>{
-    const mA=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const mB=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const sdA=mA.length?dates[mA[0]]:null,sdB=mB.length?dates[mB[0]]:null;
-    if(!sdA&&!sdB)return 0;if(!sdA)return 1;if(!sdB)return -1;return sdA-sdB;
-  });
-
-  actsSorted3.forEach((a,idx)=>{
-    const row=4+idx;
-    const isAlt=idx%2===1;
-    const isFail=a.cumple==='No Cumple';
-    const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const sd=marked.length?dates[marked[0]]:null;
-    const ed=marked.length?dates[marked[marked.length-1]]:null;
-    const dur=marked.length;
-    const pctAct=n>0?Math.round((dur/n)*100):0;
-
-    let crit,critBg,critFg,critBrd;
-    if(isFail){
-      crit='🔴 CRÍTICO';    critBg='C62828'; critFg='FFFFFF'; critBrd=bAll('medium','B71C1C');
-    } else if(dur===0){
-      crit='⚪ SIN ASIGNAR'; critBg='E0E0E0'; critFg='616161'; critBrd=bThin;
-    } else if(pctAct>=70){
-      crit='✅ ÓPTIMO';      critBg='2E7D32'; critFg='FFFFFF'; critBrd=bAll('medium','1B5E20');
-    } else if(pctAct>=40){
-      crit='🟡 MODERADO';   critBg='F57F17'; critFg='FFFFFF'; critBrd=bAll('medium','E65100');
-    } else {
-      crit='🟠 BAJO';       critBg='E65100'; critFg='FFFFFF'; critBrd=bAll('medium','BF360C');
-    }
-
-    // Fondo de fila alternado con semáforo claro
-    const rowBg=isFail?(isAlt?'FFCDD2':'FFEBEE'):(isAlt?'E8F5E9':'FFFFFF');
-    const rowBgStrong=isFail?(isAlt?'EF9A9A':'EF9A9A'):'';
-
-    put(ws,row,0,idx+1,S({sz:10,bold:true,color:{rgb:'9E9E9E'}},rowBg,{horizontal:'center'},bThin));
-    put(ws,row,1,a.sector||'—',S({sz:10,bold:true,color:{rgb:isFail?'B71C1C':'1A3A5C'}},rowBg,{horizontal:'left',wrapText:true},bThin));
-    put(ws,row,2,a.item||a.descripcion||'—',S({sz:11,bold:isFail,color:{rgb:isFail?'C62828':'102040'}},rowBg,{horizontal:'left',wrapText:true},bThin));
-
-    const fBg=isFail?'FFEBEE':isAlt?'E3F2FD':'F3F8FF';
-    const fFg=isFail?'C62828':'1565C0';
-    put(ws,row,3,sd?fmtD(sd):'—',S({sz:10,bold:false,color:{rgb:fFg}},fBg,{horizontal:'center'},bThin));
-    put(ws,row,4,ed?fmtD(ed):'—',S({sz:10,bold:false,color:{rgb:fFg}},fBg,{horizontal:'center'},bThin));
-
-    // Días activos con barra de color proporcional
-    const durBg=dur===0?'E0E0E0':isFail?'EF9A9A':dur>=10?'A5D6A7':dur>=5?'FFF59D':'FFFFFF';
-    const durFg=dur===0?'757575':isFail?'B71C1C':dur>=10?'1B5E20':dur>=5?'F57F17':'455A64';
-    put(ws,row,5,dur,S({sz:13,bold:true,color:{rgb:durFg}},durBg,{horizontal:'center'},bThin));
-
-    // Estado — rojo/verde sólido con texto blanco
-    const estBg=isFail?'C62828':'2E7D32';
-    put(ws,row,6,isFail?'✗ No cumple':'✓ Cumple',
-      S({sz:10,bold:true,color:{rgb:'FFFFFF'}},estBg,{horizontal:'center'},
-        isFail?bAll('medium','B71C1C'):bAll('medium','1B5E20')));
-
-    // Razón — destacada en rojo si aplica
-    put(ws,row,7,a.razon||a.razon_no_cumple||'—',
-      isFail?S({sz:10,bold:true,color:{rgb:'B71C1C'}},'FFF3F3',{horizontal:'left',wrapText:true},bAll('medium','EF5350'))
-            :S({sz:10,bold:false,color:{rgb:'9E9E9E'}},rowBg,{horizontal:'left'},bThin));
-
-    put(ws,row,8,crit,S({sz:10,bold:true,color:{rgb:critFg}},critBg,{horizontal:'center'},critBrd));
-  });
-
-  // Separador
-  const sepR=4+actsSorted3.length;
-  for(let c=0;c<COLS3;c++) put(ws,sepR,c,'',S({},P.gray2,{},{top:b('medium',P.navyM)}));
-  mg3.push({s:{r:sepR,c:0},e:{r:sepR,c:COLS3-1}});
-
-  // Totales con semáforo fuerte
-  const totR3=sepR+1;
-  const totBg=pct>=80?'C8E6C9':pct>=50?'FFF9C4':'FFCDD2';
-  const totFg=pct>=80?'1B5E20':pct>=50?'F57F17':'B71C1C';
-  put(ws,totR3,0,'TOTALES',S({sz:9,bold:true,color:{rgb:P.white}},P.navyM,{horizontal:'center'},bThin));
-  mg3.push({s:{r:totR3,c:0},e:{r:totR3,c:1}});
-  put(ws,totR3,2,`${ok} de ${total} actividades cumplen`,S({sz:10,bold:true,color:{rgb:totFg}},totBg,{horizontal:'left'},bThin));
-  mg3.push({s:{r:totR3,c:2},e:{r:totR3,c:3}});
-  put(ws,totR3,4,'',S({},totBg,{},bThin));
-  put(ws,totR3,5,actsSorted3.reduce((s,a)=>s+a.days.filter(Boolean).length,0),S({sz:11,bold:true,color:{rgb:totFg}},totBg,{horizontal:'center'},bThin));
-  const estTotBg=pct>=80?'43A047':pct>=50?P.goldM:'EF5350';
-  put(ws,totR3,6,pct+'%',S({sz:11,bold:true,color:{rgb:'FFFFFF'}},estTotBg,{horizontal:'center'},bThin));
-  put(ws,totR3,7,`${fail} con incumplimiento`,S({sz:9,bold:true,color:{rgb:fail>0?'C62828':'1B5E20'}},
-    fail>0?'FFCDD2':'C8E6C9',{horizontal:'left'},bThin));
-  put(ws,totR3,8,pct>=80?'🟢 EXCELENTE':pct>=50?'🟡 REGULAR':'🔴 CRÍTICO',
-    S({sz:9,bold:true,color:{rgb:totFg}},totBg,{horizontal:'center'},bThin));
-
-  ws['!merges']=mg3;
-  ws['!cols']=[{wch:4},{wch:22},{wch:42},{wch:14},{wch:14},{wch:10},{wch:14},{wch:30},{wch:16}];
-  ws['!rows']=[{hpt:34},{hpt:16},{hpt:5},{hpt:30},...Array(actsSorted3.length).fill({hpt:22}),{hpt:5},{hpt:24}];
-  ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:totR3+1,c:COLS3-1}});
-  XLSX.utils.book_append_sheet(WB,ws,'Reporte Detallado');
-  }
-
-  // ── Nombre y descarga ──────────────────────────────────────────
-  const fechaFile=new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}).replace(/\//g,'-');
-  const obraFile=(obra.obra||'AXC').replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_]/g,'').slice(0,20);
-  XLSX.writeFile(WB,`AXC_${obraFile}_${fechaFile}.xlsx`);
 }
-
 
 
 // INIT
