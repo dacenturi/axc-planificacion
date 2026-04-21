@@ -738,6 +738,25 @@ function refreshDateCells(tr,a,dates){
 }
 
 function addRow(){
+  // Validar campos obligatorios
+  const obra_val  = document.getElementById('inp-obra')?.value?.trim();
+  const cont_val  = document.getElementById('inp-contratista')?.value?.trim();
+  const res_val   = document.getElementById('inp-residente')?.value?.trim();
+
+  const faltantes = [];
+  if(!obra_val)  faltantes.push('Obra');
+  if(!cont_val)  faltantes.push('Contratista');
+  if(!res_val)   faltantes.push('Residente');
+
+  if(faltantes.length){
+    // Resaltar campos vacíos
+    if(!obra_val)  highlightRequired('inp-obra');
+    if(!cont_val)  highlightRequired('inp-contratista');
+    if(!res_val)   highlightRequired('inp-residente');
+    showToast(`⚠️ Campos obligatorios: ${faltantes.join(', ')}`, 'warn');
+    return;
+  }
+
   const nd=getNumDays();acts.push({sector:'',item:'',days:new Array(nd).fill(false),cumple:'',razon:'',criticidad:''});
   save();renderTable();
   const rows=document.getElementById('tbody').rows;
@@ -746,6 +765,33 @@ function addRow(){
     const inp=rows[rows.length-1].querySelector('input');
     if(inp) setTimeout(()=>inp.focus(),100);
   }
+}
+
+function highlightRequired(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.style.borderColor='var(--red)';
+  el.style.boxShadow='0 0 0 2px rgba(248,81,73,.3)';
+  setTimeout(()=>{el.style.borderColor='';el.style.boxShadow='';},2500);
+}
+
+function showToast(msg, type='info'){
+  let t=document.getElementById('axc-toast');
+  if(!t){
+    t=document.createElement('div');t.id='axc-toast';
+    t.style.cssText='position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);z-index:9999;padding:10px 20px;border-radius:10px;font-family:Mulish,sans-serif;font-size:13px;font-weight:600;opacity:0;transition:all .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';
+    document.body.appendChild(t);
+  }
+  const styles={
+    warn:  'background:#f85149;color:#fff;box-shadow:0 4px 16px rgba(248,81,73,.4)',
+    ok:    'background:#3fb950;color:#000;box-shadow:0 4px 16px rgba(63,185,80,.4)',
+    info:  'background:#1c2128;color:#e6edf3;border:1px solid #30363d;box-shadow:0 4px 16px rgba(0,0,0,.4)'
+  };
+  t.style.cssText += ';' + (styles[type]||styles.info);
+  t.textContent=msg;
+  t.style.opacity='1';t.style.transform='translateX(-50%) translateY(0)';
+  clearTimeout(t._tid);
+  t._tid=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';},3000);
 }
 
 function renderAll(){renderTable();renderReport();renderGantt();}
@@ -805,6 +851,16 @@ function renderGantt(){
     return;
   }
 
+  // Ordenar por fecha de inicio (primer día marcado)
+  const actsGantt=acts.slice().sort((a,b)=>{
+    const ma=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+    const mb=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+    const da=ma.length?dates[ma[0]]:null;
+    const db=mb.length?dates[mb[0]]:null;
+    if(!da&&!db)return 0;if(!da)return 1;if(!db)return -1;
+    return da-db;
+  });
+
   // ── Header ──────────────────────────────────────────────────────
   let html=`<div class="g-hdr"><div class="g-lhdr">Actividad</div><div class="g-dhdr-wrap">`;
   dates.forEach((d,i)=>{
@@ -815,8 +871,8 @@ function renderGantt(){
   });
   html+=`</div></div>`;
 
-  // ── Rows ─────────────────────────────────────────────────────────
-  acts.forEach(a=>{
+  // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
+  actsGantt.forEach(a=>{
     const markedIdx=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
     const isFail=a.cumple==='No Cumple';
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
@@ -894,6 +950,22 @@ function renderGantt(){
 function exportXLSX(){
   const SERVER = 'https://axc-excel-server.onrender.com/export';
   const btn = document.querySelector('.btn-secondary[onclick="exportXLSX()"]');
+
+  // Validar campos obligatorios
+  const obra_val = document.getElementById('inp-obra')?.value?.trim();
+  const cont_val = document.getElementById('inp-contratista')?.value?.trim();
+  const res_val  = document.getElementById('inp-residente')?.value?.trim();
+  const faltantes=[];
+  if(!obra_val)  faltantes.push('Obra');
+  if(!cont_val)  faltantes.push('Contratista');
+  if(!res_val)   faltantes.push('Residente');
+  if(faltantes.length){
+    if(!obra_val) highlightRequired('inp-obra');
+    if(!cont_val) highlightRequired('inp-contratista');
+    if(!res_val)  highlightRequired('inp-residente');
+    showToast(`⚠️ Campos obligatorios: ${faltantes.join(', ')}`, 'warn');
+    return;
+  }
 
   // Preparar datos
   const payload = {
