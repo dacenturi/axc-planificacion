@@ -439,6 +439,8 @@ function getCurrentObra(){
   return document.getElementById('inp-obra')?.value || '';
 }
 
+function getList(key){ return getABMList(key); }
+
 function getABMList(key){ 
   if(key === 'sectores'){
     const obra = getCurrentObra();
@@ -782,7 +784,9 @@ function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
   const DL=getDL(n);
-  const isMulti=window._modo==='multi';
+  // Leer modo de todas las fuentes posibles
+  const _pill2 = document.getElementById('modo-locked-pill');
+  const isMulti = window._modo==='multi' || localStorage.getItem('axc_modo')==='multi' || (_pill2&&_pill2.textContent.includes('Multi-obra'));
   // Columnas fijas: #, [Obra], [Contratista], Sector, Actividad = 3 visibles siempre + 2 ocultas fijas
   // En el DOM siempre hay 5 th fijos al inicio (# + th-obra-col + th-cont-col + Sector + Actividad)
   // y 6 th fijos al final (Inicio, Fin, Estado, Razón, Criticidad, botón)
@@ -892,7 +896,9 @@ function onObraChange(){
 function renderTable(){
   const tbody=document.getElementById('tbody');
   const dates=wDates(getStart(),getFin());const n=dates.length;const DL=getDL(n);
-  const isMulti=window._modo==='multi';
+  // Leer modo de todas las fuentes posibles
+  const _pill2 = document.getElementById('modo-locked-pill');
+  const isMulti = window._modo==='multi' || localStorage.getItem('axc_modo')==='multi' || (_pill2&&_pill2.textContent.includes('Multi-obra'));
   const extraCols=isMulti?2:0;
   tbody.innerHTML='';
   if(!acts.length){
@@ -919,19 +925,28 @@ function renderTable(){
       sOb.innerHTML=`<option value="">— Obra —</option>`+_obras.map(o=>`<option${(a.obra_act===o)?' selected':''}>${o}</option>`).join('');
       sOb.onchange=()=>{
         acts[idx].obra_act=sOb.value;
-        acts[idx].sector=''; // resetear sector al cambiar obra
+        acts[idx].sector='';
         save();
-        // Actualizar sectores de esta fila sin re-renderizar todo
+        // Resaltar borde si vacío
+        sOb.style.borderColor = sOb.value ? '' : 'var(--red)';
+        // Actualizar sectores de esta fila
         const newSects=sOb.value?getSectoresDeObra(sOb.value):[];
         ss.innerHTML=`<option value="">— Sector —</option>`+newSects.map(s=>`<option>${s}</option>`).join('');
       };
+      // Resaltar desde el inicio si vacío
+      if(!a.obra_act) sOb.style.borderColor='var(--red)';
       tOb.appendChild(sOb);tr.appendChild(tOb);
 
       const tCo=document.createElement('td');tCo.className='cpl';
       const sCo=document.createElement('select');sCo.className='inp';
       const _conts=getList('contratistas');
       sCo.innerHTML=`<option value="">— Contratista —</option>`+_conts.map(c=>`<option${(a.contratista_act===c)?' selected':''}>${c}</option>`).join('');
-      sCo.onchange=()=>{acts[idx].contratista_act=sCo.value;save();};
+      sCo.onchange=()=>{
+        acts[idx].contratista_act=sCo.value;
+        save();
+        sCo.style.borderColor = sCo.value ? '' : 'var(--red)';
+      };
+      if(!a.contratista_act) sCo.style.borderColor='var(--red)';
       tCo.appendChild(sCo);tr.appendChild(tCo);
     }
 
@@ -1091,9 +1106,7 @@ function setModo(modo){
       if(!lbl) return;
       const txt = lbl.textContent.trim();
       if(txt === 'Obra' || txt === 'Contratista'){
-        g.style.opacity = isMulti ? '0.35' : '1';
-        g.style.pointerEvents = isMulti ? 'none' : '';
-        g.title = isMulti ? 'En modo multi-obra, estos campos se configuran por actividad' : '';
+        g.style.display = isMulti ? 'none' : '';
       }
     });
   }
@@ -1141,57 +1154,54 @@ function limpiarPantalla(){
 }
 
 function addRow(){
-  const isMulti = window._modo === 'multi';
-  const faltantes = [];
+  // Leer modo de todas las fuentes posibles
+  const btnM   = document.getElementById('btn-modo-multi');
+  const pill   = document.getElementById('modo-locked-pill');
+  const pillText = pill ? pill.textContent : '';
+  const isMulti = (btnM && btnM.classList.contains('active'))
+    || pillText.includes('Multi-obra')
+    || window._modo === 'multi'
+    || localStorage.getItem('axc_modo') === 'multi';
 
-  if(isMulti){
-    // En modo multi-obra: solo validar Residente y fechas del encabezado
-    // Obra y Contratista se completan en cada fila después de agregar
-    const res_val = document.getElementById('inp-residente')?.value?.trim();
-    const fecha_val = document.getElementById('inp-fecha')?.value?.trim();
-    if(!fecha_val) faltantes.push('Fecha inicio');
-    if(!res_val){ faltantes.push('Residente'); highlightRequired('inp-residente'); }
-    if(faltantes.length){
-      showToast(`⚠️ Campos obligatorios: ${faltantes.join(', ')}`, 'warn');
-      return;
-    }
+  if(!isMulti){
+    // Obra única: validar Obra, Contratista y Residente del encabezado
+    const ov = document.getElementById('inp-obra')?.value?.trim();
+    const cv = document.getElementById('inp-contratista')?.value?.trim();
+    const rv = document.getElementById('inp-residente')?.value?.trim();
+    const f = [];
+    if(!ov){ f.push('Obra');        highlightRequired('inp-obra'); }
+    if(!cv){ f.push('Contratista'); highlightRequired('inp-contratista'); }
+    if(!rv){ f.push('Residente');   highlightRequired('inp-residente'); }
+    if(f.length){ showToast('⚠️ Campos obligatorios: ' + f.join(', '), 'warn'); return; }
   } else {
-    // En modo obra única: validar Obra, Contratista y Residente del encabezado
-    const obra_val = document.getElementById('inp-obra')?.value?.trim();
-    const cont_val = document.getElementById('inp-contratista')?.value?.trim();
-    const res_val  = document.getElementById('inp-residente')?.value?.trim();
-    if(!obra_val){ faltantes.push('Obra');        highlightRequired('inp-obra'); }
-    if(!cont_val){ faltantes.push('Contratista'); highlightRequired('inp-contratista'); }
-    if(!res_val){  faltantes.push('Residente');   highlightRequired('inp-residente'); }
-    if(faltantes.length){
-      showToast(`⚠️ Campos obligatorios: ${faltantes.join(', ')}`, 'warn');
-      return;
-    }
+    // Multi-obra: validar fecha inicio
+    const fv = document.getElementById('inp-fecha')?.value?.trim();
+    if(!fv){ showToast('⚠️ Completá la Fecha inicio', 'warn'); return; }
   }
 
-  const nd=getNumDays();
-  acts.push({sector:'',item:'',days:new Array(nd).fill(false),cumple:'',razon:'',criticidad:'',obra_act:'',contratista_act:''});
-  save();renderTable();
+  // Agregar actividad
+  const nd = getNumDays();
+  acts.push({
+    sector:'', item:'', descripcion:'',
+    days: new Array(nd).fill(false),
+    cumple:'', razon:'', criticidad:'',
+    obra_act:'', contratista_act:''
+  });
+  save();
+  renderTable();
   lockModoSiNecesario();
-  const rows=document.getElementById('tbody').rows;
+
+  // Scroll y foco en nueva fila
+  const rows = document.getElementById('tbody').rows;
   if(rows.length){
-    rows[rows.length-1].scrollIntoView({behavior:'smooth',block:'center'});
-    // En multi-obra: enfocar el select de Obra de la nueva fila
     const newRow = rows[rows.length-1];
+    newRow.scrollIntoView({behavior:'smooth', block:'center'});
     const firstSel = newRow.querySelector('select');
-    if(firstSel) setTimeout(()=>firstSel.focus(),100);
-    else {
-      const inp = newRow.querySelector('input');
-      if(inp) setTimeout(()=>inp.focus(),100);
-    }
+    const firstInp = newRow.querySelector('input');
+    setTimeout(()=>{ if(firstSel) firstSel.focus(); else if(firstInp) firstInp.focus(); }, 150);
   }
-
-  // En modo multi-obra: mostrar toast guía
-  if(isMulti){
-    showToast('✓ Fila agregada — seleccioná Obra, Contratista y completá la Actividad', 'info');
-  }
+  if(isMulti) showToast('✓ Fila agregada — seleccioná Obra, Contratista y Actividad', 'info');
 }
-
 function highlightRequired(id){
   const el=document.getElementById(id);
   if(!el) return;
@@ -1376,24 +1386,40 @@ function exportXLSX(){
   const SERVER = 'https://axc-excel-server.onrender.com/export';
   const btn = document.querySelector('.btn-secondary[onclick="exportXLSX()"]');
 
-  // Validar campos obligatorios
-  const obra_val = document.getElementById('inp-obra')?.value?.trim();
-  const cont_val = document.getElementById('inp-contratista')?.value?.trim();
+  // Detectar modo actual
+  const pill = document.getElementById('modo-locked-pill');
+  const isMulti = window._modo === 'multi'
+    || localStorage.getItem('axc_modo') === 'multi'
+    || (pill && pill.textContent.includes('Multi-obra'));
+
+  // Validar según modo
   const res_val  = document.getElementById('inp-residente')?.value?.trim();
-  const faltantes=[];
-  if(!obra_val)  faltantes.push('Obra');
-  if(!cont_val)  faltantes.push('Contratista');
-  if(!res_val)   faltantes.push('Residente');
+  const faltantes = [];
+
+  if(!isMulti){
+    // Obra única: validar Obra, Contratista y Residente del encabezado
+    const obra_val = document.getElementById('inp-obra')?.value?.trim();
+    const cont_val = document.getElementById('inp-contratista')?.value?.trim();
+    if(!obra_val){ faltantes.push('Obra');        highlightRequired('inp-obra'); }
+    if(!cont_val){ faltantes.push('Contratista'); highlightRequired('inp-contratista'); }
+    if(!res_val){  faltantes.push('Residente');   highlightRequired('inp-residente'); }
+  } else {
+    // Multi-obra: solo validar que haya actividades con Obra y Contratista
+    if(!acts.length){ showToast('⚠️ No hay actividades para exportar', 'warn'); return; }
+    const sinObra = acts.filter(a => !a.obra_act).length;
+    const sinCont = acts.filter(a => !a.contratista_act).length;
+    if(sinObra > 0) faltantes.push(`${sinObra} actividad(es) sin Obra`);
+    if(sinCont > 0) faltantes.push(`${sinCont} actividad(es) sin Contratista`);
+  }
+
   if(faltantes.length){
-    if(!obra_val) highlightRequired('inp-obra');
-    if(!cont_val) highlightRequired('inp-contratista');
-    if(!res_val)  highlightRequired('inp-residente');
-    showToast(`⚠️ Campos obligatorios: ${faltantes.join(', ')}`, 'warn');
+    showToast('⚠️ ' + faltantes.join(', '), 'warn');
     return;
   }
 
   // Preparar datos
   const payload = {
+    modo: isMulti ? 'multi' : 'unica',
     obra: {
       obra:        document.getElementById('inp-obra')?.value || '',
       contratista: document.getElementById('inp-contratista')?.value || '',
@@ -1402,15 +1428,14 @@ function exportXLSX(){
       fechafin:    document.getElementById('inp-fecha-fin')?.value || '',
     },
     acts: acts.map(a => ({
-      sector:         a.sector || '',
-      descripcion:    a.descripcion || a.item || '',
-      cumple:         a.cumple || '',
-      razon:          a.razon || a.razon_no_cumple || '',
-      criticidad:     a.criticidad || '',
-      obra_act:       a.obra_act || '',
+      sector:          a.sector || '',
+      descripcion:     a.descripcion || a.item || '',
+      cumple:          a.cumple || '',
+      razon:           a.razon || a.razon_no_cumple || '',
+      criticidad:      a.criticidad || '',
+      obra_act:        a.obra_act || '',
       contratista_act: a.contratista_act || '',
-      modo:           window._modo || 'unica',
-      days:           a.days || []
+      days:            a.days || []
     }))
   };
 
