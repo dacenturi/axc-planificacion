@@ -482,6 +482,15 @@ let _sectoresCache = {};    // { 'Obra Nissei': [...], ... }
 let _cacheLoaded = false;
 
 // ── Cargar TODAS las listas desde Supabase al iniciar ─────────
+// getCurrentObra — devuelve la obra actualmente seleccionada
+// En modo Obra única: valor del select inp-obra
+// En modo Multi-obra: vacío (cada fila tiene su propia obra)
+function getCurrentObra(){
+  if(window._modo === 'multi') return '';
+  const el = document.getElementById('inp-obra');
+  return el ? (el.value || '').trim() : '';
+}
+
 async function cargarListasDesdeSupabase(){
   try {
     const { data, error } = await _SB.from('listas').select('*').order('valor');
@@ -1747,18 +1756,30 @@ function save(){
       return;
     }
 
+    let session = null;
     try {
-      const session = await tryGetSession(3, 400);
-      if(session && session.user){
-        await _bootApp(session.user);
-      } else {
-        console.log('[AXC] Sin sesión tras 3 intentos — volviendo al portal');
-        window.location.href = 'index.html';
-      }
+      session = await tryGetSession(3, 400);
     } catch(err){
       console.error('[AXC] Fallo total getSession:', err);
       mostrarErrorVisible('Fallo verificación sesión: ' + (err.message || err));
       setTimeout(()=>{ window.location.href = 'index.html'; }, 4000);
+      return;
+    }
+
+    if(!session || !session.user){
+      console.log('[AXC] Sin sesión tras 3 intentos — volviendo al portal');
+      window.location.href = 'index.html';
+      return;
+    }
+
+    // Tenemos sesión válida — arrancar la app.
+    // Si _bootApp falla, mostramos el error pero NO redirigimos al portal
+    // (el usuario está logueado, simplemente hay un bug de código).
+    try {
+      await _bootApp(session.user);
+    } catch(err){
+      console.error('[AXC] Error al iniciar app (_bootApp):', err);
+      mostrarErrorVisible('Error al iniciar la app: ' + (err.message || err));
     }
   }
 
