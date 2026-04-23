@@ -1544,6 +1544,24 @@ async function _syncActsToSupabase(){
       a._orden = i;
     });
 
+    // Mappers para cumplir con los CHECK constraints de la tabla:
+    //   cumple:     '' | 'Sí' | 'No'
+    //   criticidad: '' | 'Alta' | 'Media' | 'Baja'
+    const mapCumple = v => {
+      if(!v) return '';
+      if(v === 'No Cumple' || v === 'No' || v === 'no') return 'No';
+      if(v === 'Cumple' || v === 'Sí' || v === 'Si' || v === 'si') return 'Sí';
+      return '';
+    };
+    const mapCriticidad = v => {
+      if(!v) return '';
+      const s = String(v).toLowerCase();
+      if(s === 'alto' || s === 'alta')   return 'Alta';
+      if(s === 'medio' || s === 'media') return 'Media';
+      if(s === 'bajo' || s === 'baja')   return 'Baja';
+      return '';
+    };
+
     // En Residente NO hay modo multi; siempre es "unica" desde la perspectiva
     // de la planilla (residente global + obra por fila)
     const rows = acts.map((a, i) => ({
@@ -1559,9 +1577,9 @@ async function _syncActsToSupabase(){
       sector:        a.sector || '',
       descripcion:   a.descripcion || a.item || '',
       days:          a.days || [],
-      cumple:        a.cumple || '',
+      cumple:        mapCumple(a.cumple),
       razon:         a.razon || '',
-      criticidad:    a.criticidad || '',
+      criticidad:    mapCriticidad(a.criticidad),
       orden:         i
     }));
 
@@ -1602,6 +1620,18 @@ function save(){
 
 async function _loadActsFromSupabase(){
   if(!window._axcUid) return [];
+  // Traductores inversos: DB → formato esperado por la UI
+  const fromDBCumple = v => {
+    if(v === 'No') return 'No Cumple';
+    if(v === 'Sí') return '';    // la UI usa '' para "Cumple"
+    return '';
+  };
+  const fromDBCriticidad = v => {
+    if(v === 'Alta')  return 'alto';
+    if(v === 'Media') return 'medio';
+    if(v === 'Baja')  return 'bajo';
+    return '';
+  };
   try{
     const { data, error } = await _SB.from('actividades')
       .select('*')
@@ -1617,9 +1647,9 @@ async function _loadActsFromSupabase(){
       obra_row:    r.obra || '',
       sector:      r.sector || '',
       days:        Array.isArray(r.days) ? r.days : [],
-      cumple:      r.cumple || '',
+      cumple:      fromDBCumple(r.cumple),
       razon:       r.razon || '',
-      criticidad:  r.criticidad || ''
+      criticidad:  fromDBCriticidad(r.criticidad)
     }));
   } catch(e){
     console.error('Load Supabase error:', e);
