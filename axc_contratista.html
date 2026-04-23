@@ -780,7 +780,9 @@ async function _bootApp(user){
   window._axcEmail = user.email||'';
   // Cargar datos del usuario
   acts=[]; obra={};
-  try{ const s=localStorage.getItem('axc_acts_'+user.id); if(s) acts=JSON.parse(s); }catch(e){}
+  // NOTA: las actividades ahora viven en Supabase (tabla `actividades`).
+  // El localStorage.axc_acts_* ya no se usa — se carga más abajo con
+  // _loadActsFromSupabase() después de tener listas Supabase listas.
   // Leer obra: onObraChange() guarda en 'axc_obra' (sin user.id). También
   // intentamos 'axc_obra_<user.id>' por si acaso existiera de una versión
   // previa con scoping por usuario.
@@ -817,6 +819,8 @@ async function _bootApp(user){
   if(obraSnapshot.residente)   document.getElementById('inp-residente').value   = obraSnapshot.residente;
   // Re-sincronizar el global `obra` y localStorage con los valores restaurados.
   onObraChange();
+  // Cargar actividades del usuario desde Supabase (antes vivían en localStorage)
+  acts = await _loadActsFromSupabase();
   // Modo
   const modoGuardado = localStorage.getItem('axc_modo')||'unica';
   if(acts.length>0){
@@ -948,7 +952,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   }
 });
 
-let acts=JSON.parse(localStorage.getItem('axc_acts')||'[]');
+// acts se inicializa vacío; _bootApp() lo puebla desde Supabase al loguear
+let acts=[];
 let obra=JSON.parse(localStorage.getItem('axc_obra')||'{}');
 
 function getStart(){const v=document.getElementById('inp-fecha').value;return v?new Date(v+'T00:00:00'):new Date();}
@@ -1703,10 +1708,146 @@ function exportXLSX(){
 }
 
 
+// ════════════════════════════════════════════════════════════
+// SINCRONIZACIÓN DE ACTIVIDADES CON SUPABASE
+// ════════════════════════════════════════════════════════════
+// Diseño:
+// - Cada actividad tiene un `_syncId` (uuid) que la identifica en la
+//   tabla `actividades` de Supabase.
+// - save() encola una sincronización con debounce de 500ms.
+// - _syncActsToSupabase() hace upsert del array completo y borra las
+//   filas de Supabase que ya no están en el array local.
+// - Si la sincronización falla, se muestra un banner rojo persistente.
+
+let _syncTimer = null;
+let _syncInFlight = false;
+const APP_NAME = 'contratista';
+
+function _genSyncId(){
+  if(typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  // Fallback simple (no ideal pero funcional)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
+    const r = Math.random()*16|0, v = c==='x' ? r : (r&0x3|0x8);
+    return v.toString(16);
+  });
+}
+
+function _showSyncError(msg){
+  let el = document.getElementById('sync-error-banner');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'sync-error-banner';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#c43a3a;color:#fff;padding:10px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:600;z-index:99998;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    document.body.appendChild(el);
+  }
+  el.textContent = '⚠️ ' + msg + ' — Los cambios no se están guardando en la nube.';
+  el.style.display = 'block';
+}
+
+function _hideSyncError(){
+  const el = document.getElementById('sync-error-banner');
+  if(el) el.style.display = 'none';
+}
+
+async function _syncActsToSupabase(){
+  if(!window._axcUid) return;
+  if(_syncInFlight) return; // ya hay una sync corriendo
+  _syncInFlight = true;
+  try{
+    // Asegurar que cada actividad tenga un _syncId y orden
+    acts.forEach((a, i) => {
+      if(!a._syncId) a._syncId = _genSyncId();
+      a._orden = i;
+    });
+
+    // Detectar modo actual
+    const isMulti = window._modo === 'multi' || localStorage.getItem('axc_modo') === 'multi';
+
+    // Armar filas para upsert
+    const rows = acts.map((a, i) => ({
+      id:            a._syncId,
+      user_id:       window._axcUid,
+      app:           APP_NAME,
+      modo:          isMulti ? 'multi' : 'unica',
+      fecha_inicio:  document.getElementById('inp-fecha')?.value || null,
+      fecha_fin:     document.getElementById('inp-fecha-fin')?.value || null,
+      obra:          isMulti ? (a.obra_act||'') : (document.getElementById('inp-obra')?.value||''),
+      contratista:   isMulti ? (a.contratista_act||'') : (document.getElementById('inp-contratista')?.value||''),
+      residente:     document.getElementById('inp-residente')?.value || '',
+      sector:        a.sector || '',
+      descripcion:   a.descripcion || a.item || '',
+      days:          a.days || [],
+      cumple:        a.cumple || '',
+      razon:         a.razon || '',
+      criticidad:    a.criticidad || '',
+      orden:         i
+    }));
+
+    // 1. Upsert de las filas actuales
+    if(rows.length){
+      const { error: upErr } = await _SB.from('actividades').upsert(rows, { onConflict: 'id' });
+      if(upErr) throw upErr;
+    }
+
+    // 2. Borrar de Supabase las filas que ya no existen localmente
+    //    (solo las del usuario actual y app actual)
+    const idsActuales = acts.map(a => a._syncId).filter(Boolean);
+    let delQuery = _SB.from('actividades').delete()
+      .eq('user_id', window._axcUid)
+      .eq('app', APP_NAME);
+    if(idsActuales.length){
+      delQuery = delQuery.not('id', 'in', '(' + idsActuales.map(id => '"' + id + '"').join(',') + ')');
+    }
+    const { error: delErr } = await delQuery;
+    if(delErr) throw delErr;
+
+    _hideSyncError();
+  } catch(e){
+    console.error('Sync Supabase error:', e);
+    _showSyncError('Error guardando en la nube');
+  } finally {
+    _syncInFlight = false;
+  }
+}
+
+// Reemplaza el save() que antes escribía a localStorage.
+// Ahora escribe a Supabase con debounce de 500ms.
 function save(){
   if(!window._axcUid) return;
-  localStorage.setItem('axc_acts_'+window._axcUid, JSON.stringify(acts));
+  clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(_syncActsToSupabase, 500);
 }
+
+// Carga inicial desde Supabase (reemplaza la lectura de localStorage)
+async function _loadActsFromSupabase(){
+  if(!window._axcUid) return [];
+  try{
+    const { data, error } = await _SB.from('actividades')
+      .select('*')
+      .eq('user_id', window._axcUid)
+      .eq('app', APP_NAME)
+      .order('orden', { ascending: true });
+    if(error) throw error;
+    _hideSyncError();
+    return (data||[]).map(r => ({
+      _syncId:          r.id,
+      sector:           r.sector || '',
+      item:             r.descripcion || '',
+      descripcion:      r.descripcion || '',
+      days:             Array.isArray(r.days) ? r.days : [],
+      cumple:           r.cumple || '',
+      razon:            r.razon || '',
+      criticidad:       r.criticidad || '',
+      obra_act:         r.modo === 'multi' ? (r.obra || '') : '',
+      contratista_act:  r.modo === 'multi' ? (r.contratista || '') : ''
+    }));
+  } catch(e){
+    console.error('Load Supabase error:', e);
+    _showSyncError('Error cargando desde la nube');
+    return [];
+  }
+}
+
 
 // INIT
 
