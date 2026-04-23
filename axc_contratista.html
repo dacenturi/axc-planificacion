@@ -1763,7 +1763,7 @@ async function _syncActsToSupabase(){
     // Detectar modo actual
     const isMulti = window._modo === 'multi' || localStorage.getItem('axc_modo') === 'multi';
 
-    // Armar filas para upsert
+    // Armar filas para insert
     const rows = acts.map((a, i) => ({
       id:            a._syncId,
       user_id:       window._axcUid,
@@ -1783,23 +1783,18 @@ async function _syncActsToSupabase(){
       orden:         i
     }));
 
-    // 1. Upsert de las filas actuales
-    if(rows.length){
-      const { error: upErr } = await _SB.from('actividades').upsert(rows, { onConflict: 'id' });
-      if(upErr) throw upErr;
-    }
-
-    // 2. Borrar de Supabase las filas que ya no existen localmente
-    //    (solo las del usuario actual y app actual)
-    const idsActuales = acts.map(a => a._syncId).filter(Boolean);
-    let delQuery = _SB.from('actividades').delete()
+    // Estrategia: borrar todo lo del usuario+app y re-insertar lo actual.
+    // Más simple y robusto que upsert+delete con filtros complejos.
+    const { error: delErr } = await _SB.from('actividades')
+      .delete()
       .eq('user_id', window._axcUid)
       .eq('app', APP_NAME);
-    if(idsActuales.length){
-      delQuery = delQuery.not('id', 'in', '(' + idsActuales.map(id => '"' + id + '"').join(',') + ')');
-    }
-    const { error: delErr } = await delQuery;
     if(delErr) throw delErr;
+
+    if(rows.length){
+      const { error: insErr } = await _SB.from('actividades').insert(rows);
+      if(insErr) throw insErr;
+    }
 
     _hideSyncError();
   } catch(e){
