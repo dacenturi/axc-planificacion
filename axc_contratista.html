@@ -1084,7 +1084,9 @@ function addWorkDays(start,n){
 }
 
 // ── Cambio de residente en el dropdown ─────────────────────
-// Para admin: carga las actividades del residente seleccionado.
+// Para admin: carga las actividades del residente seleccionado + el header
+// (Obra, Contratista, fechas) y bloquea Obra/Contratista porque son datos
+// que pertenecen al residente, no al admin.
 // Para residente: el dropdown está disabled, así que no llega acá normalmente.
 async function onResidenteChange(){
   // Si el usuario NO es admin, forzar el residente asignado
@@ -1097,9 +1099,19 @@ async function onResidenteChange(){
     return;
   }
 
-  // Si es admin y cambió el residente, cargar las actividades de ese residente
+  // Si es admin y cambió el residente, cargar las actividades + header
   if(window._axcEsAdmin){
-    const selResid = document.getElementById('inp-residente').value;
+    const selResid       = document.getElementById('inp-residente').value;
+    const obraEl         = document.getElementById('inp-obra');
+    const contratistaEl  = document.getElementById('inp-contratista');
+    const fechaIniEl     = document.getElementById('inp-fecha');
+    const fechaFinEl     = document.getElementById('inp-fecha-fin');
+
+    // Determinar si admin está editando datos ajenos (no los suyos).
+    // Si admin tiene residente asignado y coincide con el seleccionado,
+    // entonces está editando lo propio y NO aplica el bloqueo.
+    const esAjeno = selResid && window._axcResidente !== selResid;
+
     if(selResid && selResid !== window._ultimoResidenteCargado){
       window._ultimoResidenteCargado = selResid;
       try{
@@ -1129,6 +1141,37 @@ async function onResidenteChange(){
           obra_act:         r.modo === 'multi' ? (r.obra || '') : '',
           contratista_act:  r.modo === 'multi' ? (r.contratista || '') : ''
         }));
+
+        // ── Cargar HEADER desde la primera actividad ──
+        if(data && data.length > 0){
+          const primera = data[0];
+          // Fechas
+          if(primera.fecha_inicio) fechaIniEl.value = primera.fecha_inicio;
+          if(primera.fecha_fin)    fechaFinEl.value = primera.fecha_fin;
+
+          // Detectar modo a partir de la primera actividad
+          if(primera.modo === 'multi'){
+            // Modo multi-obra: obra y contratista van por fila, header vacío
+            obraEl.value = '';
+            contratistaEl.value = '';
+            setModo('multi');
+            window._modoLocked = true;
+          } else {
+            // Modo obra única: setear obra y contratista del header
+            obraEl.value        = primera.obra || '';
+            contratistaEl.value = primera.contratista || '';
+            setModo('unica');
+            window._modoLocked = true;
+          }
+        } else {
+          // Residente seleccionado sin actividades — limpiar header
+          obraEl.value        = '';
+          contratistaEl.value = '';
+        }
+
+        // Aplicar bloqueo a Obra y Contratista según corresponda
+        _aplicarBloqueoHeader(esAjeno);
+
         _hideSyncError();
       } catch(e){
         console.error('Error cargando actividades del residente:', e);
@@ -1140,6 +1183,34 @@ async function onResidenteChange(){
 
   onObraChange();
   renderAll();
+}
+
+// Bloquea/libera los dropdowns de Obra y Contratista del header.
+// Se bloquean cuando un admin está viendo/editando datos de otro residente.
+function _aplicarBloqueoHeader(bloquear){
+  const obraEl        = document.getElementById('inp-obra');
+  const contratistaEl = document.getElementById('inp-contratista');
+  [obraEl, contratistaEl].forEach(el => {
+    if(!el) return;
+    if(bloquear){
+      el.disabled = true;
+      el.style.opacity = '0.75';
+      el.style.cursor = 'not-allowed';
+      el.title = 'Datos del residente seleccionado — no se pueden modificar';
+    } else {
+      el.disabled = false;
+      el.style.opacity = '';
+      el.style.cursor = '';
+      el.title = '';
+    }
+  });
+  // También bloquear los botones "+" de ABM al lado de cada dropdown
+  const btnObraAdd        = obraEl?.parentElement?.querySelector('.dd-add-btn');
+  const btnContratistaAdd = contratistaEl?.parentElement?.querySelector('.dd-add-btn');
+  [btnObraAdd, btnContratistaAdd].forEach(btn => {
+    if(!btn) return;
+    btn.style.display = bloquear ? 'none' : '';
+  });
 }
 
 function onObraChange(){
@@ -1500,6 +1571,12 @@ function limpiarPantalla(){
     if(window._axcUid){
       localStorage.removeItem('axc_obra_'+window._axcUid);
       localStorage.removeItem('axc_obra_contratista_'+window._axcUid);
+    }
+    // Si era admin y tenía bloqueadas obra/contratista (por estar viendo
+    // ajenos), liberarlas después del Limpiar para que pueda empezar de cero.
+    if(window._axcEsAdmin){
+      _aplicarBloqueoHeader(false);
+      window._ultimoResidenteCargado = null;
     }
     overlay.remove();
     showToast('✓ Pantalla limpiada — lista para nueva carga', 'ok');
