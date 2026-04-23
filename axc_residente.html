@@ -1565,20 +1565,25 @@ async function _syncActsToSupabase(){
       orden:         i
     }));
 
-    if(rows.length){
-      const { error: upErr } = await _SB.from('actividades').upsert(rows, { onConflict: 'id' });
-      if(upErr) throw upErr;
-    }
+    if(rows.length === 0){
+      // Si no hay actividades, solo borramos todo lo del usuario
+      const { error: delErr } = await _SB.from('actividades')
+        .delete()
+        .eq('user_id', window._axcUid)
+        .eq('app', APP_NAME);
+      if(delErr) throw delErr;
+    } else {
+      // Estrategia: borrar todo lo del usuario+app y re-insertar lo actual.
+      // Más simple y robusto que upsert+delete con filtros complejos.
+      const { error: delErr } = await _SB.from('actividades')
+        .delete()
+        .eq('user_id', window._axcUid)
+        .eq('app', APP_NAME);
+      if(delErr) throw delErr;
 
-    const idsActuales = acts.map(a => a._syncId).filter(Boolean);
-    let delQuery = _SB.from('actividades').delete()
-      .eq('user_id', window._axcUid)
-      .eq('app', APP_NAME);
-    if(idsActuales.length){
-      delQuery = delQuery.not('id', 'in', '(' + idsActuales.map(id => '"' + id + '"').join(',') + ')');
+      const { error: insErr } = await _SB.from('actividades').insert(rows);
+      if(insErr) throw insErr;
     }
-    const { error: delErr } = await delQuery;
-    if(delErr) throw delErr;
 
     _hideSyncError();
   } catch(e){
