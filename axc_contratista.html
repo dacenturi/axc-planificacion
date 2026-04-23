@@ -360,7 +360,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
       </div>
       <div class="fg dd-wrap"><label>Residente</label>
         <div class="dd-row">
-          <select id="inp-residente" onchange="onObraChange()"></select>
+          <select id="inp-residente" onchange="onResidenteChange()"></select>
           <button class="dd-add-btn" onclick="openABM('residentes')" title="Agregar/quitar residentes">＋</button>
         </div>
       </div>
@@ -775,6 +775,21 @@ async function doLogout_ORIG_UNUSED(){
   document.getElementById('auth-error').textContent='';
 }
 
+// ── Cargar perfil del usuario actual desde Supabase ──────────
+async function _loadUserPerfil(userId){
+  try{
+    const { data, error } = await _SB.from('perfiles')
+      .select('rol, residente, nombre')
+      .eq('id', userId)
+      .maybeSingle();
+    if(error) throw error;
+    return data || null;
+  } catch(e){
+    console.warn('No se pudo cargar el perfil del usuario:', e);
+    return null;
+  }
+}
+
 async function _bootApp(user){
   window._axcUid   = user.id;
   window._axcEmail = user.email||'';
@@ -790,6 +805,13 @@ async function _bootApp(user){
     const s = localStorage.getItem('axc_obra_'+user.id) || localStorage.getItem('axc_obra');
     if(s) obra=JSON.parse(s);
   }catch(e){}
+
+  // Cargar perfil para determinar rol y residente asignado
+  const perfil = await _loadUserPerfil(user.id);
+  window._axcPerfil    = perfil;
+  window._axcEsAdmin   = !!(perfil && perfil.rol === 'admin');
+  window._axcResidente = perfil ? (perfil.residente || '') : '';
+
   // Mostrar app
   document.getElementById('auth-overlay').style.display='none';
   document.getElementById('app-wrap').style.display='block';
@@ -816,7 +838,25 @@ async function _bootApp(user){
   // Usamos obraSnapshot porque el global `obra` fue sobrescrito por onObraChange().
   if(obraSnapshot.obra)        document.getElementById('inp-obra').value        = obraSnapshot.obra;
   if(obraSnapshot.contratista) document.getElementById('inp-contratista').value = obraSnapshot.contratista;
-  if(obraSnapshot.residente)   document.getElementById('inp-residente').value   = obraSnapshot.residente;
+
+  // Configurar dropdown "Residente" según rol
+  const selResidente = document.getElementById('inp-residente');
+  if(!window._axcEsAdmin && window._axcResidente){
+    // Residente: precargar su nombre y deshabilitar el dropdown
+    selResidente.value = window._axcResidente;
+    selResidente.disabled = true;
+    selResidente.style.opacity = '0.75';
+    selResidente.style.cursor = 'not-allowed';
+    selResidente.title = 'Asignación fija: ' + window._axcResidente;
+  } else {
+    // Admin: dropdown libre
+    if(obraSnapshot.residente) selResidente.value = obraSnapshot.residente;
+    selResidente.disabled = false;
+    selResidente.style.opacity = '';
+    selResidente.style.cursor = '';
+    selResidente.title = '';
+  }
+
   // Re-sincronizar el global `obra` y localStorage con los valores restaurados.
   onObraChange();
   // Cargar actividades del usuario desde Supabase (antes vivían en localStorage)
@@ -1039,6 +1079,65 @@ function addWorkDays(start,n){
   let count=0;let d=new Date(start);d.setHours(0,0,0,0);
   while(count<n){d.setDate(d.getDate()+1);if(d.getDay()!==0)count++;}
   return d;
+}
+
+// ── Cambio de residente en el dropdown ─────────────────────
+// Para admin: carga las actividades del residente seleccionado.
+// Para residente: el dropdown está disabled, así que no llega acá normalmente.
+async function onResidenteChange(){
+  // Si el usuario NO es admin, forzar el residente asignado
+  if(!window._axcEsAdmin && window._axcResidente){
+    const sel = document.getElementById('inp-residente');
+    if(sel.value !== window._axcResidente){
+      sel.value = window._axcResidente;
+    }
+    onObraChange();
+    return;
+  }
+
+  // Si es admin y cambió el residente, cargar las actividades de ese residente
+  if(window._axcEsAdmin){
+    const selResid = document.getElementById('inp-residente').value;
+    if(selResid && selResid !== window._ultimoResidenteCargado){
+      window._ultimoResidenteCargado = selResid;
+      try{
+        const { data, error } = await _SB.from('actividades')
+          .select('*')
+          .eq('app', APP_NAME)
+          .eq('residente', selResid)
+          .order('orden', { ascending: true });
+        if(error) throw error;
+        const fromDBCumple = v => (v === 'No' ? 'No Cumple' : '');
+        const fromDBCriticidad = v => {
+          if(v === 'Alta')  return 'alto';
+          if(v === 'Media') return 'medio';
+          if(v === 'Baja')  return 'bajo';
+          return '';
+        };
+        acts = (data||[]).map(r => ({
+          _syncId:          r.id,
+          _ownerUid:        r.user_id,
+          sector:           r.sector || '',
+          item:             r.descripcion || '',
+          descripcion:      r.descripcion || '',
+          days:             Array.isArray(r.days) ? r.days : [],
+          cumple:           fromDBCumple(r.cumple),
+          razon:            r.razon || '',
+          criticidad:       fromDBCriticidad(r.criticidad),
+          obra_act:         r.modo === 'multi' ? (r.obra || '') : '',
+          contratista_act:  r.modo === 'multi' ? (r.contratista || '') : ''
+        }));
+        _hideSyncError();
+      } catch(e){
+        console.error('Error cargando actividades del residente:', e);
+        _showSyncError('Error cargando actividades del residente');
+        acts = [];
+      }
+    }
+  }
+
+  onObraChange();
+  renderAll();
 }
 
 function onObraChange(){
@@ -1462,7 +1561,7 @@ function showToast(msg, type='info'){
   t._tid=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';},3000);
 }
 
-function renderAll(){renderTable();renderReport();renderGantt();}
+function renderAll(){renderTable();renderReport();renderGantt();try{_updateValidationUI();}catch(e){}}
 
 function showPage(name){
   ['carga','reporte','gantt'].forEach(p=>{
@@ -1749,6 +1848,144 @@ function _hideSyncError(){
   if(el) el.style.display = 'none';
 }
 
+// ── VALIDACIÓN DE OBLIGATORIEDAD ─────────────────────────────
+// Una fila se clasifica como:
+//   'empty'      → completamente vacía (se ignora silenciosamente)
+//   'incomplete' → le faltan datos obligatorios (NO se sube, se marca en rojo)
+//   'complete'   → tiene todo lo requerido (se sube a Supabase)
+function _classifyRow(a, isMulti, hdr){
+  const hasDesc  = !!(a.descripcion || a.item || '').trim();
+  const hasDays  = Array.isArray(a.days) && a.days.some(d => !!d);
+  const hasObra  = isMulti ? !!(a.obra_act||'').trim()        : !!(hdr.hdrObra||'').trim();
+  const hasContr = isMulti ? !!(a.contratista_act||'').trim() : !!(hdr.hdrContratista||'').trim();
+  const hasResid = !!(hdr.hdrResidente||'').trim();
+  const hasFecha = !!hdr.hdrFechaIni;
+
+  // Completamente vacía = nada cargado, no molesta al usuario
+  const isEmpty = !hasDesc && !hasDays &&
+                  (isMulti ? (!(a.obra_act||'').trim() && !(a.contratista_act||'').trim()) : true) &&
+                  !(a.sector||'').trim() && !(a.cumple||'') && !(a.criticidad||'');
+  if(isEmpty) return 'empty';
+
+  // Completa = tiene todos los requeridos
+  if(hasDesc && hasDays && hasObra && hasContr && hasResid && hasFecha){
+    // Si marcó "No Cumple", tiene que tener razón
+    const noCumple = a.cumple === 'No' || a.cumple === 'No Cumple';
+    if(noCumple && !(a.razon||'').trim()) return 'incomplete';
+    return 'complete';
+  }
+  return 'incomplete';
+}
+
+// Aplica bordes rojos a campos obligatorios vacíos y muestra el banner amarillo
+function _updateValidationUI(){
+  const isMulti = window._modo === 'multi' || localStorage.getItem('axc_modo') === 'multi';
+  const hdr = {
+    hdrObra:        document.getElementById('inp-obra')?.value || '',
+    hdrContratista: document.getElementById('inp-contratista')?.value || '',
+    hdrResidente:   document.getElementById('inp-residente')?.value || '',
+    hdrFechaIni:    document.getElementById('inp-fecha')?.value || '',
+    hdrFechaFin:    document.getElementById('inp-fecha-fin')?.value || ''
+  };
+
+  // Contar filas incompletas
+  let incompleteCount = 0;
+  const incompleteIndices = [];
+  acts.forEach((a, i) => {
+    const status = _classifyRow(a, isMulti, hdr);
+    if(status === 'incomplete'){
+      incompleteCount++;
+      incompleteIndices.push(i);
+    }
+  });
+
+  // Limpiar bordes rojos previos
+  document.querySelectorAll('.val-missing').forEach(el => {
+    el.classList.remove('val-missing');
+    el.style.outline = '';
+    el.style.boxShadow = '';
+  });
+
+  // Banner amarillo arriba
+  let banner = document.getElementById('validation-banner');
+  if(incompleteCount > 0){
+    if(!banner){
+      banner = document.createElement('div');
+      banner.id = 'validation-banner';
+      banner.style.cssText = 'background:#f0a500;color:#0b1020;padding:8px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:1px solid rgba(0,0,0,.2)';
+      const appWrap = document.getElementById('app-wrap');
+      if(appWrap && appWrap.firstChild) appWrap.insertBefore(banner, appWrap.firstChild);
+    }
+    banner.textContent = '⚠️ ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
+      ' incompleta' + (incompleteCount===1?'':'s') + ' — no se están guardando en la nube. Completá los campos marcados en rojo.';
+    banner.style.display = 'block';
+  } else if(banner){
+    banner.style.display = 'none';
+  }
+
+  // Resaltar header si faltan datos globales (solo si hay al menos 1 fila)
+  if(acts.length > 0){
+    const needsResid = !hdr.hdrResidente.trim();
+    const needsFecha = !hdr.hdrFechaIni;
+    const needsObra  = !isMulti && !hdr.hdrObra.trim();
+    const needsCtr   = !isMulti && !hdr.hdrContratista.trim();
+    if(needsResid) _highlightMissing('inp-residente');
+    if(needsFecha) _highlightMissing('inp-fecha');
+    if(needsObra)  _highlightMissing('inp-obra');
+    if(needsCtr)   _highlightMissing('inp-contratista');
+  }
+
+  // Resaltar campos vacíos de filas incompletas
+  const tbody = document.getElementById('tbody');
+  if(!tbody) return;
+  incompleteIndices.forEach(idx => {
+    const tr = tbody.rows[idx];
+    if(!tr) return;
+    const a = acts[idx];
+    // Descripción
+    const inputs = tr.querySelectorAll('input[type="text"]');
+    inputs.forEach(inp => {
+      if(!inp.value.trim()) _highlightEl(inp);
+    });
+    // Días (si no hay ninguno marcado)
+    const hasDays = Array.isArray(a.days) && a.days.some(d => !!d);
+    if(!hasDays){
+      tr.querySelectorAll('td .chk, td button.chk, td input[type="checkbox"]').forEach(el => _highlightEl(el));
+    }
+    // En multi-obra, obra/contratista de la fila
+    if(isMulti){
+      const selects = tr.querySelectorAll('select');
+      selects.forEach(sel => {
+        // Detectamos los selects de obra/contratista por sus clases conocidas o por tener ="— Obra —"/"— Contratista —"
+        const firstOpt = sel.options[0]?.text || '';
+        if((firstOpt.includes('Obra') && !(a.obra_act||'').trim()) ||
+           (firstOpt.includes('Contratista') && !(a.contratista_act||'').trim())){
+          _highlightEl(sel);
+        }
+      });
+    }
+    // Si cumple='No' y razón vacía
+    if((a.cumple==='No' || a.cumple==='No Cumple') && !(a.razon||'').trim()){
+      tr.querySelectorAll('select').forEach(sel => {
+        const firstOpt = sel.options[0]?.text || '';
+        if(firstOpt.includes('Razón')) _highlightEl(sel);
+      });
+    }
+  });
+}
+
+function _highlightMissing(id){
+  const el = document.getElementById(id);
+  if(el) _highlightEl(el);
+}
+
+function _highlightEl(el){
+  if(!el) return;
+  el.classList.add('val-missing');
+  el.style.outline = '2px solid #f85149';
+  el.style.boxShadow = '0 0 0 2px rgba(248,81,73,.35)';
+}
+
 async function _syncActsToSupabase(){
   if(!window._axcUid) return;
   if(_syncInFlight) return; // ya hay una sync corriendo
@@ -1762,6 +1999,13 @@ async function _syncActsToSupabase(){
 
     // Detectar modo actual
     const isMulti = window._modo === 'multi' || localStorage.getItem('axc_modo') === 'multi';
+
+    // Header values
+    const hdrObra        = document.getElementById('inp-obra')?.value || '';
+    const hdrContratista = document.getElementById('inp-contratista')?.value || '';
+    const hdrResidente   = document.getElementById('inp-residente')?.value || '';
+    const hdrFechaIni    = document.getElementById('inp-fecha')?.value || null;
+    const hdrFechaFin    = document.getElementById('inp-fecha-fin')?.value || null;
 
     // Mappers para cumplir con los CHECK constraints de la tabla:
     //   cumple:     '' | 'Sí' | 'No'
@@ -1781,37 +2025,75 @@ async function _syncActsToSupabase(){
       return '';
     };
 
-    // Armar filas para insert
-    const rows = acts.map((a, i) => ({
-      id:            a._syncId,
-      user_id:       window._axcUid,
-      app:           APP_NAME,
-      modo:          isMulti ? 'multi' : 'unica',
-      fecha_inicio:  document.getElementById('inp-fecha')?.value || null,
-      fecha_fin:     document.getElementById('inp-fecha-fin')?.value || null,
-      obra:          isMulti ? (a.obra_act||'') : (document.getElementById('inp-obra')?.value||''),
-      contratista:   isMulti ? (a.contratista_act||'') : (document.getElementById('inp-contratista')?.value||''),
-      residente:     document.getElementById('inp-residente')?.value || '',
-      sector:        a.sector || '',
-      descripcion:   a.descripcion || a.item || '',
-      days:          a.days || [],
-      cumple:        mapCumple(a.cumple),
-      razon:         a.razon || '',
-      criticidad:    mapCriticidad(a.criticidad),
-      orden:         i
-    }));
+    // Determinar si el admin está editando la planilla de OTRO residente.
+    const esAdminEditandoAjeno = window._axcEsAdmin &&
+      hdrResidente && window._axcResidente !== hdrResidente;
 
-    // Estrategia: borrar todo lo del usuario+app y re-insertar lo actual.
-    // Más simple y robusto que upsert+delete con filtros complejos.
-    const { error: delErr } = await _SB.from('actividades')
-      .delete()
-      .eq('user_id', window._axcUid)
-      .eq('app', APP_NAME);
-    if(delErr) throw delErr;
+    // Solo guardar filas COMPLETAS. Las incompletas o vacías quedan en la
+    // UI pero no se suben a Supabase.
+    const rowsToSave = [];
+    acts.forEach((a, i) => {
+      const status = _classifyRow(a, isMulti, {hdrObra, hdrContratista, hdrResidente, hdrFechaIni, hdrFechaFin});
+      if(status !== 'complete') return;
+      rowsToSave.push({
+        id:            a._syncId,
+        // Preservar owner original si es admin editando ajenos
+        user_id:       a._ownerUid || window._axcUid,
+        app:           APP_NAME,
+        modo:          isMulti ? 'multi' : 'unica',
+        fecha_inicio:  hdrFechaIni,
+        fecha_fin:     hdrFechaFin,
+        obra:          isMulti ? (a.obra_act||'') : hdrObra,
+        contratista:   isMulti ? (a.contratista_act||'') : hdrContratista,
+        residente:     hdrResidente,
+        sector:        a.sector || '',
+        descripcion:   a.descripcion || a.item || '',
+        days:          a.days || [],
+        cumple:        mapCumple(a.cumple),
+        razon:         a.razon || '',
+        criticidad:    mapCriticidad(a.criticidad),
+        orden:         i
+      });
+    });
 
-    if(rows.length){
-      const { error: insErr } = await _SB.from('actividades').insert(rows);
-      if(insErr) throw insErr;
+    if(esAdminEditandoAjeno){
+      // Admin editando planilla ajena: upsert fila por fila, NO borrar todo.
+      const idsActuales = rowsToSave.map(r => r.id);
+
+      if(rowsToSave.length){
+        const { error: upErr } = await _SB.from('actividades')
+          .upsert(rowsToSave, { onConflict: 'id' });
+        if(upErr) throw upErr;
+      }
+
+      // Borrar actividades del residente seleccionado que ya no están en la UI
+      if(idsActuales.length > 0){
+        const idsCSV = idsActuales.map(id => '"'+id+'"').join(',');
+        const { error: delErr } = await _SB.from('actividades')
+          .delete()
+          .eq('app', APP_NAME)
+          .eq('residente', hdrResidente)
+          .not('id', 'in', '(' + idsCSV + ')');
+        if(delErr) throw delErr;
+      } else {
+        const { error: delErr } = await _SB.from('actividades')
+          .delete()
+          .eq('app', APP_NAME)
+          .eq('residente', hdrResidente);
+        if(delErr) throw delErr;
+      }
+    } else {
+      // Caso normal: delete-all + insert para el usuario propio
+      const { error: delErr } = await _SB.from('actividades')
+        .delete()
+        .eq('user_id', window._axcUid)
+        .eq('app', APP_NAME);
+      if(delErr) throw delErr;
+
+      if(rowsToSave.length){
+        const { error: insErr } = await _SB.from('actividades').insert(rowsToSave);
+        if(insErr) throw insErr;
+      }
     }
 
     _hideSyncError();
@@ -1856,6 +2138,7 @@ async function _loadActsFromSupabase(){
     _hideSyncError();
     return (data||[]).map(r => ({
       _syncId:          r.id,
+      _ownerUid:        r.user_id,
       sector:           r.sector || '',
       item:             r.descripcion || '',
       descripcion:      r.descripcion || '',
