@@ -325,7 +325,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <div class="sec-title">Planificación de Actividades para Contratista <small id="sec-sub">Planificación de actividades</small></div>
     <div class="flex-row">
       <button class="btn btn-secondary" onclick="exportXLSX()">📥 Exportar Excel</button>
-      <button class="btn btn-primary" onclick="addRow()">＋ Nueva actividad</button>
+      <button id="btn-nueva-actividad" class="btn btn-primary" onclick="addRow()">＋ Nueva actividad</button>
     </div>
   </div>
 
@@ -1142,9 +1142,14 @@ async function onResidenteChange(){
           contratista_act:  r.modo === 'multi' ? (r.contratista || '') : ''
         }));
 
-        // ── Cargar HEADER desde la primera actividad ──
+        // ── Cargar HEADER desde la primera actividad VÁLIDA ──
+        // Buscamos la primera fila que tenga obra y contratista (filas
+        // con esos campos vacíos pueden ser residuos de pruebas viejas).
+        // Si no encontramos ninguna válida, usamos data[0] como fallback.
         if(data && data.length > 0){
-          const primera = data[0];
+          const primera = data.find(r => (r.obra||'').trim() && (r.contratista||'').trim())
+                       || data.find(r => (r.fecha_inicio || r.fecha_fin))
+                       || data[0];
           // Fechas
           if(primera.fecha_inicio) fechaIniEl.value = primera.fecha_inicio;
           if(primera.fecha_fin)    fechaFinEl.value = primera.fecha_fin;
@@ -2006,21 +2011,70 @@ function _updateValidationUI(){
     el.style.boxShadow = '';
   });
 
-  // Banner amarillo arriba
+  // ── Determinar si el HEADER está incompleto (para bloquear botón) ──
+  const isMulti2 = isMulti;
+  const headerCompleto =
+    hdr.hdrResidente.trim() &&
+    hdr.hdrFechaIni &&
+    (isMulti2 ? true : (hdr.hdrObra.trim() && hdr.hdrContratista.trim()));
+
+  // ── Banner de alerta (rojo si hay filas incompletas) ──
   let banner = document.getElementById('validation-banner');
   if(incompleteCount > 0){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'validation-banner';
-      banner.style.cssText = 'background:#f0a500;color:#0b1020;padding:8px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:1px solid rgba(0,0,0,.2)';
       const appWrap = document.getElementById('app-wrap');
       if(appWrap && appWrap.firstChild) appWrap.insertBefore(banner, appWrap.firstChild);
     }
-    banner.textContent = '⚠️ ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
-      ' incompleta' + (incompleteCount===1?'':'s') + ' — no se están guardando en la nube. Completá los campos marcados en rojo.';
+    // Color rojo intenso para dejar bien claro que hay un problema.
+    banner.style.cssText = 'background:linear-gradient(90deg,#dc2626,#ef4444);color:#fff;padding:12px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:14px;font-weight:800;border-bottom:2px solid rgba(0,0,0,.3);box-shadow:0 2px 8px rgba(220,38,38,.4);letter-spacing:.3px';
+    banner.innerHTML = '🚫 ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
+      ' incompleta' + (incompleteCount===1?'':'s') +
+      ' — NO se están guardando en la nube. Completá los campos marcados en rojo.';
     banner.style.display = 'block';
   } else if(banner){
     banner.style.display = 'none';
+  }
+
+  // ── Banner adicional si el HEADER está incompleto pero no hay filas ──
+  // (ej: admin recién entró, aún no agregó actividades)
+  let headerBanner = document.getElementById('header-validation-banner');
+  if(!headerCompleto && acts.length === 0){
+    if(!headerBanner){
+      headerBanner = document.createElement('div');
+      headerBanner.id = 'header-validation-banner';
+      const appWrap = document.getElementById('app-wrap');
+      if(appWrap && appWrap.firstChild) appWrap.insertBefore(headerBanner, appWrap.firstChild);
+    }
+    headerBanner.style.cssText = 'background:#f0a500;color:#0b1020;padding:10px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:1px solid rgba(0,0,0,.2)';
+    const falta = [];
+    if(!hdr.hdrResidente.trim()) falta.push('Residente');
+    if(!hdr.hdrFechaIni)         falta.push('Fecha inicio');
+    if(!isMulti2 && !hdr.hdrObra.trim())        falta.push('Obra');
+    if(!isMulti2 && !hdr.hdrContratista.trim()) falta.push('Contratista');
+    headerBanner.textContent = '⚠️ Completá los campos del encabezado antes de agregar actividades: ' + falta.join(', ');
+    headerBanner.style.display = 'block';
+  } else if(headerBanner){
+    headerBanner.style.display = 'none';
+  }
+
+  // ── Bloquear/habilitar botón "Nueva actividad" según header ──
+  const btnNueva = document.getElementById('btn-nueva-actividad');
+  if(btnNueva){
+    if(headerCompleto){
+      btnNueva.disabled = false;
+      btnNueva.style.opacity = '';
+      btnNueva.style.cursor = '';
+      btnNueva.style.pointerEvents = '';
+      btnNueva.title = '';
+    } else {
+      btnNueva.disabled = true;
+      btnNueva.style.opacity = '0.45';
+      btnNueva.style.cursor = 'not-allowed';
+      btnNueva.style.pointerEvents = 'none';
+      btnNueva.title = 'Completá Obra, Contratista, Residente y Fecha antes de agregar actividades';
+    }
   }
 
   // Resaltar header si faltan datos globales (solo si hay al menos 1 fila)
