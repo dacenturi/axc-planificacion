@@ -1045,11 +1045,10 @@ function buildDateHeaders(){
   // Leer modo de todas las fuentes posibles
   const _pill2 = document.getElementById('modo-locked-pill');
   const isMulti = window._modo==='multi' || localStorage.getItem('axc_modo')==='multi' || (_pill2&&_pill2.textContent.includes('Multi-obra'));
-  // Columnas fijas: #, [Obra], [Contratista], Sector, Actividad = 3 visibles siempre + 2 ocultas fijas
-  // En el DOM siempre hay 5 th fijos al inicio (# + th-obra-col + th-cont-col + Sector + Actividad)
-  // y 6 th fijos al final (Inicio, Fin, Estado, Razón, Criticidad, botón)
-  const FIXED_START = 5; // # + obra(hidden) + cont(hidden) + sector + actividad
-  const FIXED_END = 6;   // inicio + fin + estado + razón + criticidad + botón
+  // Columnas fijas al inicio: # + obra(hidden multi) + cont(hidden multi) + cont-unica + sector + actividad = 6
+  // Al final: Inicio + Fin + Estado + Razón + Criticidad + botón acciones = 6
+  const FIXED_START = 6;
+  const FIXED_END = 6;
   const grpRow=document.getElementById('tr-groups');
   // Eliminar grupos de semana dinámicos anteriores
   while(grpRow.children.length > FIXED_START + FIXED_END)
@@ -1069,9 +1068,8 @@ function buildDateHeaders(){
     th.textContent=w+'ª '+(c>=5?'SEMANA':'SEM.');
     grpRow.insertBefore(th,grpRef);
   });
-  // Fila de fechas
-  // tr-dates siempre tiene 5 th fijos al inicio (aunque 2 sean de columnas ocultas)
-  const DATES_FIXED_START = 5;
+  // Fila de fechas: mismos 6 fijos al inicio, 5 al final (sin la cabecera "Criticidad" visual)
+  const DATES_FIXED_START = 6;
   const tr=document.getElementById('tr-dates');
   while(tr.children.length>DATES_FIXED_START+5) tr.children[DATES_FIXED_START].remove();
   const refNode=tr.children[DATES_FIXED_START];
@@ -1335,30 +1333,33 @@ function _refreshContratistaFilter(){
   const counter = document.getElementById('filter-count');
   if(!list) return;
 
-  // Contratistas presentes en las actividades actuales (con datos cargados)
-  const presentes = Array.from(new Set(
+  // Solo mostrar contratistas YA USADOS en las actividades actuales.
+  // Si no hay ninguno todavía, no mostrar nada (la barra de filtro queda con el label "sin contratistas aún").
+  const todos = Array.from(new Set(
     acts.map(a => a.contratista_act || '').filter(x => x)
   )).sort();
-
-  // Además, mostrar los de la lista general para permitir filtrar a futuro
-  const _conts = getList('contratistas');
-  const todos = Array.from(new Set([...presentes, ..._conts])).sort();
 
   const seleccionados = window._filtroContratistas instanceof Set
     ? window._filtroContratistas
     : new Set(todos); // null = todos seleccionados
 
-  list.innerHTML = todos.map(c => {
-    const checked = seleccionados.has(c) ? 'checked' : '';
-    const tint = _getContratistaTint(c);
-    return `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;cursor:pointer;background:${tint};font-family:Mulish,sans-serif;font-size:12px;color:var(--text);margin-bottom:2px">
-      <input type="checkbox" value="${c.replace(/"/g,'&quot;')}" ${checked} onchange="_onContratistaCheckboxChange(this)">
-      <span>${c}</span>
-    </label>`;
-  }).join('');
+  if(todos.length === 0){
+    list.innerHTML = '<div style="font-family:Mulish,sans-serif;font-size:12px;color:var(--text2);padding:6px 4px;text-align:center">Aún no hay contratistas en las actividades</div>';
+  } else {
+    list.innerHTML = todos.map(c => {
+      const checked = seleccionados.has(c) ? 'checked' : '';
+      const tint = _getContratistaTint(c);
+      return `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;cursor:pointer;background:${tint};font-family:Mulish,sans-serif;font-size:12px;color:var(--text);margin-bottom:2px">
+        <input type="checkbox" value="${c.replace(/"/g,'&quot;')}" ${checked} onchange="_onContratistaCheckboxChange(this)">
+        <span>${c}</span>
+      </label>`;
+    }).join('');
+  }
 
   // Actualizar label del botón
-  if(window._filtroContratistas instanceof Set){
+  if(todos.length === 0){
+    label.textContent = 'Sin contratistas aún';
+  } else if(window._filtroContratistas instanceof Set){
     const n = window._filtroContratistas.size;
     if(n === 0){
       label.textContent = 'Ninguno seleccionado';
@@ -1385,13 +1386,13 @@ function _refreshContratistaFilter(){
 
 function _onContratistaCheckboxChange(cb){
   const name = cb.value;
+  // Lista base = contratistas realmente usados en acts
+  const todos = new Set(acts.map(a => a.contratista_act || '').filter(x=>x));
   if(!(window._filtroContratistas instanceof Set)){
     // Pasaba de "todos" a selección parcial: empezar con todos menos este si se destildó
-    const _conts = getList('contratistas');
-    const presentes = Array.from(new Set(acts.map(a => a.contratista_act || '').filter(x=>x)));
-    const todos = new Set([...presentes, ..._conts]);
-    if(!cb.checked) todos.delete(name);
-    window._filtroContratistas = todos;
+    const actual = new Set(todos);
+    if(!cb.checked) actual.delete(name);
+    window._filtroContratistas = actual;
   } else {
     if(cb.checked) window._filtroContratistas.add(name);
     else window._filtroContratistas.delete(name);
