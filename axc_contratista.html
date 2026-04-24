@@ -405,7 +405,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
           <tr class="tr-dates" id="tr-dates" style="height:34px">
             <th></th><th id="td-obra-col"></th><th id="td-cont-col"></th><th></th><th></th>
             <!-- días generados por JS -->
-            <th></th><th></th><th></th><th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th><th></th><th></th><th></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -505,24 +505,68 @@ async function cargarListasDesdeSupabase(){
   try {
     const { data, error } = await _SB.from('listas').select('*').order('valor');
     if(error){ console.warn('Error cargando listas:', error); _usarFallbackLocal(); return; }
-    // Organizar por tipo
+    // Organizar por tipo, deduplicando vía Set (puede haber duplicados en Supabase
+    // por escrituras concurrentes anteriores o migraciones)
     _listasCache = {};
     _sectoresCache = {};
+    const tmpListas   = {};   // { tipo: Set<valor> }
+    const tmpSectores = {};   // { obraRef: Set<valor> }
     data.forEach(row => {
       if(row.tipo === 'sectores'){
         const obraRef = row.obra_ref || '';
-        if(!_sectoresCache[obraRef]) _sectoresCache[obraRef] = [];
-        _sectoresCache[obraRef].push(row.valor);
+        if(!tmpSectores[obraRef]) tmpSectores[obraRef] = new Set();
+        tmpSectores[obraRef].add(row.valor);
       } else {
-        if(!_listasCache[row.tipo]) _listasCache[row.tipo] = [];
-        _listasCache[row.tipo].push(row.valor);
+        if(!tmpListas[row.tipo]) tmpListas[row.tipo] = new Set();
+        tmpListas[row.tipo].add(row.valor);
       }
     });
+    Object.keys(tmpListas).forEach(k => _listasCache[k] = [...tmpListas[k]]);
+    Object.keys(tmpSectores).forEach(o => _sectoresCache[o] = [...tmpSectores[o]]);
+
+    // Si había duplicados en la DB, limpiarlos de forma persistente
+    const totalDedup = Object.values(_listasCache).reduce((s,a)=>s+a.length,0) +
+                       Object.values(_sectoresCache).reduce((s,a)=>s+a.length,0);
+    if(totalDedup < data.length){
+      console.log(`[AXC] Detectados ${data.length - totalDedup} duplicados en tabla listas — limpiando Supabase...`);
+      _limpiarDuplicadosSupabase().catch(e => console.warn('Cleanup falló:', e));
+    }
+
     _cacheLoaded = true;
     // Actualizar los selects del encabezado
     initSelects();
     onObraChange();
   } catch(e){ console.warn('Supabase no disponible, usando localStorage:', e); _usarFallbackLocal(); }
+}
+
+// ── Limpieza one-shot: re-escribe listas deduplicadas en Supabase ─────
+async function _limpiarDuplicadosSupabase(){
+  try {
+    // Listas globales (obras, contratistas, residentes, razones)
+    for(const tipo of Object.keys(_listasCache)){
+      await _SB.from('listas').delete().eq('tipo', tipo).eq('obra_ref', '');
+      const arr = _listasCache[tipo];
+      if(arr.length){
+        await _SB.from('listas').insert(
+          arr.map(v => ({ tipo, valor:v, obra_ref:'' }))
+        );
+      }
+    }
+    // Sectores (scopados por obra)
+    for(const obraRef of Object.keys(_sectoresCache)){
+      await _SB.from('listas').delete()
+        .eq('tipo', 'sectores').eq('obra_ref', obraRef);
+      const arr = _sectoresCache[obraRef];
+      if(arr.length){
+        await _SB.from('listas').insert(
+          arr.map(v => ({ tipo:'sectores', valor:v, obra_ref:obraRef }))
+        );
+      }
+    }
+    console.log('[AXC] ✓ Duplicados de listas eliminados permanentemente');
+  } catch(e){
+    console.warn('[AXC] Error limpiando duplicados:', e);
+  }
 }
 
 // ── Fallback a localStorage si Supabase falla ─────────────────
@@ -555,6 +599,8 @@ function getABMList(key){
 
 // ── saveABMList — guarda en Supabase Y actualiza caché ────────
 async function saveABMList(key, arr){
+  // Deduplicar siempre (por si la fuente pasa duplicados)
+  arr = [...new Set(arr || [])];
   if(_cacheLoaded){
     const obraRef = (key === 'sectores') ? ((window._abmObraOverride) || getCurrentObra()) : '';
     try {
@@ -571,7 +617,8 @@ async function saveABMList(key, arr){
         // Actualizar caché
         _sectoresCache[obraRef] = [...arr];
       } else {
-        await _SB.from('listas').delete().eq('tipo', key);
+        // Borrar solo los de obra_ref vacío (globales), no tocar sectores
+        await _SB.from('listas').delete().eq('tipo', key).eq('obra_ref', '');
         if(arr.length){
           await _SB.from('listas').insert(
             arr.map(v => ({ tipo:key, valor:v, obra_ref:'' }))
@@ -954,9 +1001,9 @@ function buildDateHeaders(){
   const n=dates.length;
   const DL=getDL(n);
   // Columnas fijas al inicio: # + obra + cont + sector + actividad = 5
-  // Al final: Inicio + Fin + Estado + Razón + Criticidad + botón acciones = 6
+  // Al final: Inicio + Fin + Estado + Razón + Días atraso + Criticidad + botón acciones = 7
   const FIXED_START = 5;
-  const FIXED_END = 6;
+  const FIXED_END = 7;
   const grpRow=document.getElementById('tr-groups');
   // Eliminar grupos de semana dinámicos anteriores
   while(grpRow.children.length > FIXED_START + FIXED_END)
@@ -976,10 +1023,11 @@ function buildDateHeaders(){
     th.textContent=w+'ª '+(c>=5?'SEMANA':'SEM.');
     grpRow.insertBefore(th,grpRef);
   });
-  // Fila de fechas: mismos 6 fijos al inicio, 5 al final (sin la cabecera "Criticidad" visual)
-  const DATES_FIXED_START = 6;
+  // Fila de fechas (tr-dates): mismos 5 fijos al inicio, 7 al final
+  const DATES_FIXED_START = 5;
+  const DATES_FIXED_END = 7;
   const tr=document.getElementById('tr-dates');
-  while(tr.children.length>DATES_FIXED_START+5) tr.children[DATES_FIXED_START].remove();
+  while(tr.children.length>DATES_FIXED_START+DATES_FIXED_END) tr.children[DATES_FIXED_START].remove();
   const refNode=tr.children[DATES_FIXED_START];
   dates.forEach((d,i)=>{
     const th=document.createElement('th');
