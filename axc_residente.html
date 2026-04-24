@@ -2042,12 +2042,6 @@ async function _syncActsToSupabase(){
     const hdrFechaIni  = document.getElementById('inp-fecha')?.value || null;
     const hdrFechaFin  = document.getElementById('inp-fecha-fin')?.value || null;
 
-    // Determinar si el admin está editando la planilla de OTRO residente.
-    // En ese caso, NO hacemos delete-all + insert (eso destruiría actividades
-    // de otros). En su lugar, hacemos upsert fila por fila preservando user_id.
-    const esAdminEditandoAjeno = window._axcEsAdmin &&
-      hdrResidente && window._axcResidente !== hdrResidente;
-
     // Mappers para cumplir con los CHECK constraints de la tabla:
     //   cumple:     '' | 'Sí' | 'No'
     //   criticidad: '' | 'Alta' | 'Media' | 'Baja'
@@ -2074,9 +2068,7 @@ async function _syncActsToSupabase(){
       if(status !== 'complete') return;
       rowsToSave.push({
         id:            a._syncId,
-        // Si hay _ownerUid (actividad preexistente de otro), preservarlo.
-        // Si no, usar el uid del usuario actual (caso normal: el residente
-        // graba sus propias actividades).
+        // Preservar owner original si existe; si no, el uid del usuario actual.
         user_id:       a._ownerUid || window._axcUid,
         app:           APP_NAME,
         modo:          'unica',
@@ -2095,22 +2087,22 @@ async function _syncActsToSupabase(){
       });
     });
 
-    if(esAdminEditandoAjeno){
-      // Admin editando planilla ajena: upsert fila por fila, NO borrar.
-      // Primero detectar qué filas preexistían (_ownerUid presente) y cuáles son nuevas.
-      // Luego hacer upsert de todas + borrar las que el admin quitó.
-      const idsActuales = rowsToSave.map(r => r.id);
-
-      // Upsert (insert o actualizar si existe)
+    // Estrategia unificada (para evitar duplicados): upsert por id + borrar
+    // filas del residente actual que ya no están en la UI.
+    //
+    // Funciona para cualquier escenario:
+    //  - Admin creando filas para su propio residente asignado.
+    //  - Admin editando filas de otro residente.
+    //  - Residente ajustando filas que creó originalmente un admin.
+    //  - Residente creando filas desde cero.
+    if(hdrResidente){
       if(rowsToSave.length){
         const { error: upErr } = await _SB.from('actividades')
           .upsert(rowsToSave, { onConflict: 'id' });
         if(upErr) throw upErr;
       }
 
-      // Borrar actividades del residente seleccionado que ya no están en la UI
-      // (usuario las borró con la X). No borramos por user_id, borramos por
-      // residente + filtro de IDs que ya no están.
+      const idsActuales = rowsToSave.map(r => r.id);
       if(idsActuales.length > 0){
         const idsCSV = idsActuales.map(id => '"'+id+'"').join(',');
         const { error: delErr } = await _SB.from('actividades')
@@ -2120,24 +2112,11 @@ async function _syncActsToSupabase(){
           .not('id', 'in', '(' + idsCSV + ')');
         if(delErr) throw delErr;
       } else {
-        // No quedan filas: borrar todo del residente
         const { error: delErr } = await _SB.from('actividades')
           .delete()
           .eq('app', APP_NAME)
           .eq('residente', hdrResidente);
         if(delErr) throw delErr;
-      }
-    } else {
-      // Caso normal (residente con sus propias planillas): delete-all + insert
-      const { error: delErr } = await _SB.from('actividades')
-        .delete()
-        .eq('user_id', window._axcUid)
-        .eq('app', APP_NAME);
-      if(delErr) throw delErr;
-
-      if(rowsToSave.length){
-        const { error: insErr } = await _SB.from('actividades').insert(rowsToSave);
-        if(insErr) throw insErr;
       }
     }
 
