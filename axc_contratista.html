@@ -248,6 +248,12 @@ select[title]:hover, input[title]:hover { cursor:help; }
 .row-add-btn{flex-shrink:0;width:18px;height:22px;background:rgba(240,165,0,.12);border:1px solid rgba(240,165,0,.25);border-radius:4px;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;line-height:1;padding:0}
 .row-add-btn:hover{background:rgba(240,165,0,.28);border-color:var(--accent)}
 
+/* Animación pulse para resaltar filas con campos faltantes */
+@keyframes pulseRed {
+  0%, 100% { box-shadow: inset 0 0 0 0 rgba(248,81,73,0); }
+  50%      { box-shadow: inset 0 0 0 2px rgba(248,81,73,.6); }
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -1418,10 +1424,8 @@ function renderTable(){
   // En Obra Única sumamos 1 columna (Contratista por fila). En Multi, 2 (Obra + Contratista).
   const extraCols = isMulti ? 2 : 1;
 
-  // Refrescar el chrome del filtro de contratistas en Obra Única
-  if(!isMulti){
-    try{ _refreshContratistaFilter(); }catch(e){}
-  }
+  // Refrescar el chrome del filtro de contratistas (Obra Única y Multi-obra)
+  try{ _refreshContratistaFilter(); }catch(e){}
 
   tbody.innerHTML='';
   if(!acts.length){
@@ -1429,9 +1433,9 @@ function renderTable(){
     return;
   }
 
-  // Determinar qué filas mostrar según el filtro de contratistas (Obra Única).
+  // Determinar qué filas mostrar según el filtro de contratistas.
   // _filtroContratistas es null = mostrar todas; un Set = mostrar solo las que estén en el set.
-  const filtroContr = (!isMulti && window._filtroContratistas instanceof Set) ? window._filtroContratistas : null;
+  const filtroContr = (window._filtroContratistas instanceof Set) ? window._filtroContratistas : null;
 
   acts.forEach((a,idx)=>{
     // Filtro por contratista (solo Obra Única)
@@ -1447,8 +1451,8 @@ function renderTable(){
     const isFail=a.cumple==='No Cumple';
     const tr=document.createElement('tr');
 
-    // Color de fondo sutil por contratista (solo Obra Única)
-    if(!isMulti && a.contratista_act){
+    // Color de fondo sutil por contratista (Obra Única y Multi-obra)
+    if(a.contratista_act){
       const tint = _getContratistaTint(a.contratista_act);
       if(tint) tr.style.backgroundColor = tint;
     }
@@ -1633,32 +1637,30 @@ function renderTable(){
     // Delete btn + Duplicate btn
     const td=document.createElement('td');td.style.cssText='padding:4px;text-align:center;display:flex;gap:3px;justify-content:center;align-items:center';
 
-    // Duplicar (solo Obra Única, donde tiene más sentido para repetir contratistas)
-    if(!isMulti){
-      const bDup=document.createElement('button');
-      bDup.style.cssText='width:24px;height:24px;padding:0;border-radius:6px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.12);color:var(--blue);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center';
-      bDup.textContent='⎘';
-      bDup.title='Duplicar esta fila (copia contratista, sector, actividad y días)';
-      bDup.onclick=()=>{
-        const copia = {
-          sector:           a.sector || '',
-          item:             a.item || '',
-          descripcion:      a.descripcion || '',
-          days:             Array.isArray(a.days) ? a.days.slice() : [],
-          cumple:           a.cumple || '',
-          razon:            a.razon || '',
-          criticidad:       a.criticidad || '',
-          obra_act:         a.obra_act || '',
-          contratista_act:  a.contratista_act || ''
-          // _syncId y _ownerUid NO se copian: la copia es una fila nueva
-        };
-        acts.splice(idx+1, 0, copia);
-        save();
-        renderAll();
-        showToast('✓ Fila duplicada', 'ok');
+    // Duplicar (disponible en ambos modos)
+    const bDup=document.createElement('button');
+    bDup.style.cssText='width:24px;height:24px;padding:0;border-radius:6px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.12);color:var(--blue);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center';
+    bDup.textContent='⎘';
+    bDup.title='Duplicar esta fila (copia obra, contratista, sector, actividad y días)';
+    bDup.onclick=()=>{
+      const copia = {
+        sector:           a.sector || '',
+        item:             a.item || '',
+        descripcion:      a.descripcion || '',
+        days:             Array.isArray(a.days) ? a.days.slice() : [],
+        cumple:           a.cumple || '',
+        razon:            a.razon || '',
+        criticidad:       a.criticidad || '',
+        obra_act:         a.obra_act || '',
+        contratista_act:  a.contratista_act || ''
+        // _syncId y _ownerUid NO se copian: la copia es una fila nueva
       };
-      td.appendChild(bDup);
-    }
+      acts.splice(idx+1, 0, copia);
+      save();
+      renderAll();
+      showToast('✓ Fila duplicada', 'ok');
+    };
+    td.appendChild(bDup);
 
     const bd=document.createElement('button');bd.className='btn btn-danger btn-sm';
     bd.style.cssText='width:28px;height:28px;padding:0;justify-content:center;font-size:13px';
@@ -1729,9 +1731,9 @@ function setModo(modo){
   if(thContUnica) thContUnica.style.display = isMulti ? 'none' : '';
   if(tdContUnica) tdContUnica.style.display = isMulti ? 'none' : '';
 
-  // Barra de filtro (solo Obra Única)
+  // Barra de filtro (visible en Obra Única y Multi-obra)
   const filterBar = document.getElementById('filter-bar');
-  if(filterBar) filterBar.style.display = isMulti ? 'none' : 'flex';
+  if(filterBar) filterBar.style.display = 'flex';
 
   // Campos del encabezado: ocultar Obra/Contratista en multi (van en cada fila).
   // Contratista del header: SIEMPRE oculto en Obra Única (ahora va por fila).
@@ -1842,6 +1844,22 @@ function addRow(){
     if(!fv){ showToast('⚠️ Completá la Fecha inicio', 'warn'); return; }
   }
 
+  // Bloquear agregar si hay filas previas sin Actividad (obligatorio)
+  const sinActividad = acts.findIndex(a => !(a.descripcion || a.item || '').trim());
+  if(sinActividad !== -1){
+    showToast(`⚠️ Completá la Actividad de la fila ${sinActividad+1} antes de agregar una nueva`, 'warn');
+    // Resaltar la fila incompleta visualmente
+    const tbody = document.getElementById('tbody');
+    if(tbody && tbody.rows[sinActividad]){
+      const tr = tbody.rows[sinActividad];
+      tr.style.animation = 'none';
+      setTimeout(()=>{ tr.style.animation = 'pulseRed 0.8s ease 2'; tr.scrollIntoView({behavior:'smooth', block:'center'}); }, 10);
+      const inp = tr.querySelector('input[type="text"]');
+      if(inp) setTimeout(()=>inp.focus(), 400);
+    }
+    return;
+  }
+
   // Agregar actividad
   const nd = getNumDays();
   acts.push({
@@ -1907,9 +1925,8 @@ function showPage(name){
 
 function renderReport(){
   const dates=wDates(getStart(),getFin());const DL=getDL(dates.length);
-  // Aplicar filtro de contratistas (solo Obra Única)
-  const isMultiR = window._modo==='multi' || localStorage.getItem('axc_modo')==='multi';
-  const actsVis = (!isMultiR && window._filtroContratistas instanceof Set)
+  // Aplicar filtro de contratistas (ambos modos)
+  const actsVis = (window._filtroContratistas instanceof Set)
     ? acts.filter(a => !(a.contratista_act||'').trim() || window._filtroContratistas.has(a.contratista_act))
     : acts;
   const total=actsVis.length,fail=actsVis.filter(a=>a.cumple==='No Cumple').length,ok=total-fail;
@@ -1954,9 +1971,8 @@ function renderGantt(){
     return;
   }
 
-  // Aplicar filtro de contratistas (solo Obra Única)
-  const isMultiG = window._modo==='multi' || localStorage.getItem('axc_modo')==='multi';
-  const actsFiltrado = (!isMultiG && window._filtroContratistas instanceof Set)
+  // Aplicar filtro de contratistas (ambos modos)
+  const actsFiltrado = (window._filtroContratistas instanceof Set)
     ? acts.filter(a => !(a.contratista_act||'').trim() || window._filtroContratistas.has(a.contratista_act))
     : acts;
 
@@ -2094,10 +2110,10 @@ function exportXLSX(){
     return;
   }
 
-  // ── Aplicar filtro multi-select de contratistas (solo Obra Única) ──
+  // ── Aplicar filtro multi-select de contratistas (ambos modos) ──
   let actsExport = acts.slice();
   let filtroAplicado = false;
-  if(!isMulti && window._filtroContratistas instanceof Set){
+  if(window._filtroContratistas instanceof Set){
     const set = window._filtroContratistas;
     actsExport = acts.filter(a => {
       if(!(a.contratista_act||'').trim()) return true; // sin asignar → incluir
