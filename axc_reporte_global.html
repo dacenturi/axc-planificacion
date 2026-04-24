@@ -116,9 +116,18 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .g-lbl small{color:var(--text3);font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .g-bars-wrap{position:relative;flex:1;height:30px}
 .g-tick{position:absolute;top:0;bottom:0;width:1px;background:var(--border2)}
-.g-blk{position:absolute;top:5px;height:20px;border-radius:4px;background:var(--accent);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.g-blk{position:absolute;top:5px;height:20px;border-radius:4px;background:rgba(139,148,158,.65);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:filter .15s}
+.g-blk:hover{filter:brightness(1.15)}
 .g-blk.ok{background:var(--green)}
 .g-blk.bad{background:var(--red)}
+
+/* Leyenda del Gantt */
+.gantt-legend{display:flex;gap:18px;margin-bottom:14px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;flex-wrap:wrap;font-size:11px}
+.gl-item{display:flex;align-items:center;gap:6px;color:var(--text2);font-weight:600}
+.gl-box{width:14px;height:14px;border-radius:3px;display:inline-block;background:rgba(139,148,158,.65)}
+.gl-box.ok{background:var(--green)}
+.gl-box.bad{background:var(--red)}
+.gl-box.pend{background:rgba(139,148,158,.65)}
 
 /* Loader */
 .loader{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;color:var(--text2)}
@@ -170,6 +179,22 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .gauge-leg-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text2);font-weight:600}
 .gauge-leg-item .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 
+/* Vencidas card - layout especial */
+.vencidas-card{min-height:auto}
+.vencidas-layout{display:grid;grid-template-columns:220px 1fr;gap:20px;align-items:stretch}
+.vencidas-stat{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);border-radius:10px;padding:20px;text-align:center;display:flex;flex-direction:column;justify-content:center;align-items:center}
+.vencidas-big{font-family:'Syne',sans-serif;font-size:48px;font-weight:800;color:var(--red);line-height:1;margin-bottom:6px}
+.vencidas-lbl{font-size:11px;color:var(--text2);font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px}
+.vencidas-sub{font-size:11px;color:var(--text3);font-style:italic}
+.vencidas-table-wrap{overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:8px}
+.vencidas-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.vencidas-tbl thead th{background:var(--bg3);color:var(--acc3);padding:7px 10px;text-align:left;font-weight:700;letter-spacing:.4px;font-size:10.5px;position:sticky;top:0;z-index:2;border-bottom:2px solid var(--border)}
+.vencidas-tbl tbody td{padding:6px 10px;border-bottom:1px solid var(--border2);vertical-align:middle}
+.vencidas-tbl tbody tr:hover{background:rgba(248,81,73,.06)}
+.vencidas-tbl .dias-atraso{display:inline-block;padding:2px 7px;border-radius:10px;background:rgba(248,81,73,.2);color:var(--red);font-weight:700;font-size:10.5px}
+@media (max-width:720px){
+  .vencidas-layout{grid-template-columns:1fr}
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -437,6 +462,11 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
     <!-- GANTT -->
     <div id="view-gantt" style="display:none">
       <div class="gantt-card">
+        <div class="gantt-legend">
+          <span class="gl-item"><span class="gl-box ok"></span>Cumple</span>
+          <span class="gl-item"><span class="gl-box bad"></span>No Cumple</span>
+          <span class="gl-item"><span class="gl-box pend"></span>Sin asignar / Pendiente</span>
+        </div>
         <div id="gantt-content"></div>
       </div>
     </div>
@@ -490,6 +520,56 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
           <div id="empty-tiempo" class="chart-empty" style="display:none">Sin datos con fechas</div>
         </div>
 
+        <!-- 5. Cumplimiento por Contratista -->
+        <div class="dash-card" id="card-contratista">
+          <div class="dash-card-title">🏗 Cumplimiento por Contratista</div>
+          <div class="chart-wrap" id="wrap-contratista"><canvas id="chartContratista"></canvas></div>
+          <div id="empty-contratista" class="chart-empty" style="display:none">Sin datos para mostrar</div>
+        </div>
+
+        <!-- 6. Razones de No Cumplimiento -->
+        <div class="dash-card">
+          <div class="dash-card-title">⚠️ Razones de No Cumplimiento</div>
+          <div class="chart-wrap" id="wrap-razones"><canvas id="chartRazones"></canvas></div>
+          <div id="empty-razones" class="chart-empty" style="display:none">Sin actividades con razón registrada</div>
+        </div>
+
+        <!-- 7. Criticidad vs Cumplimiento -->
+        <div class="dash-card">
+          <div class="dash-card-title">🔥 Criticidad vs Cumplimiento</div>
+          <div class="chart-wrap" id="wrap-criticidad"><canvas id="chartCriticidad"></canvas></div>
+          <div id="empty-criticidad" class="chart-empty" style="display:none">Sin actividades con criticidad asignada</div>
+        </div>
+
+        <!-- 8. Volumen por Sector (solo Residente) -->
+        <div class="dash-card" id="card-sector" style="display:none">
+          <div class="dash-card-title">📊 Volumen por Sector</div>
+          <div class="chart-wrap" id="wrap-sector"><canvas id="chartSector"></canvas></div>
+          <div id="empty-sector" class="chart-empty" style="display:none">Sin datos de sector</div>
+        </div>
+
+        <!-- 9. Actividades Vencidas -->
+        <div class="dash-card dash-card-wide vencidas-card">
+          <div class="dash-card-title">📅 Actividades Vencidas <small style="font-weight:400;color:var(--text3);margin-left:6px">Fecha Fin &lt; hoy y sin cumplir</small></div>
+          <div class="vencidas-layout">
+            <div class="vencidas-stat">
+              <div class="vencidas-big" id="vencidas-count">0</div>
+              <div class="vencidas-lbl">actividades vencidas</div>
+              <div class="vencidas-sub" id="vencidas-sub">—</div>
+            </div>
+            <div class="vencidas-table-wrap">
+              <table class="vencidas-tbl" id="vencidas-tbl">
+                <thead>
+                  <tr><th>Residente</th><th>Obra</th><th>Actividad</th><th>Fecha Fin</th><th>Días atraso</th><th>Criticidad</th></tr>
+                </thead>
+                <tbody id="vencidas-tbody">
+                  <tr><td colspan="6" class="empty" style="padding:30px">Sin actividades vencidas 🎉</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -535,6 +615,25 @@ window._filters = {
   fechaHasta:   null
 };
 
+// ─── Normalización robusta (evita bugs por mayúsculas/tildes/variantes) ──
+// Devuelve siempre uno de: 'cumple' | 'no' | ''
+function _normalizeCumple(v){
+  if(!v) return '';
+  // toLowerCase + quitar tildes y espacios extra para comparar
+  const s = String(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if(s === 'si' || s === 'cumple' || s === 'yes' || s === 'true') return 'cumple';
+  if(s === 'no' || s === 'no cumple' || s === 'false')            return 'no';
+  return '';
+}
+function _normalizeCriticidad(v){
+  if(!v) return '';
+  const s = String(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if(s === 'alta' || s === 'alto')  return 'Alta';
+  if(s === 'media' || s === 'medio') return 'Media';
+  if(s === 'baja' || s === 'bajo')   return 'Baja';
+  return '';
+}
+
 // ════════════════════════════════════════════════════════════
 // AUTH
 // ════════════════════════════════════════════════════════════
@@ -562,7 +661,7 @@ async function doLogin(){
 
 async function doLogout(){
   await _SB.auth.signOut();
-  location.reload();
+  location.href = 'index.html';  // volver al portal, no recargar este mismo archivo
 }
 
 async function _loadUserPerfil(userId){
@@ -622,9 +721,9 @@ async function loadData(){
       sector:       r.sector || '',
       descripcion:  r.descripcion || '',
       days:         Array.isArray(r.days) ? r.days : [],
-      cumple:       r.cumple || '',
+      cumple:       _normalizeCumple(r.cumple),
       razon:        r.razon || '',
-      criticidad:   r.criticidad || '',
+      criticidad:   _normalizeCriticidad(r.criticidad),
       orden:        r.orden || 0
     }));
     _updateAppTabsCounts();
@@ -825,8 +924,8 @@ function _getFechaActividad(a){
 }
 
 function _estadoLabel(a){
-  if(a.cumple === 'Sí' || a.cumple === 'Si') return 'Cumple';
-  if(a.cumple === 'No') return 'No Cumple';
+  if(a.cumple === 'cumple') return 'Cumple';
+  if(a.cumple === 'no') return 'No Cumple';
   return 'Sin asignar';
 }
 
@@ -916,8 +1015,8 @@ function _updateSortArrows(){
 function renderKPIs(){
   const acts = window._filteredActs;
   const total = acts.length;
-  const ok    = acts.filter(a => a.cumple === 'Sí' || a.cumple === 'Si').length;
-  const fail  = acts.filter(a => a.cumple === 'No').length;
+  const ok    = acts.filter(a => a.cumple === 'cumple').length;
+  const fail  = acts.filter(a => a.cumple === 'no').length;
   const asignadas = ok + fail;
   const pct = asignadas > 0 ? Math.round((ok / asignadas) * 100) : null;
 
@@ -1054,8 +1153,8 @@ function renderGantt(){
   sorted.forEach(a => {
     const ini = _getFechaActividad(a);
     const fin = _getFechaFin(a);
-    const isFail = a.cumple === 'No';
-    const isOk   = a.cumple === 'Sí' || a.cumple === 'Si';
+    const isFail = a.cumple === 'no';
+    const isOk   = a.cumple === 'cumple';
     const iniIdx = ini ? dates.findIndex(d => d.toISOString().slice(0,10) === ini) : -1;
     const finIdx = fin ? dates.findIndex(d => d.toISOString().slice(0,10) === fin) : iniIdx;
     if(iniIdx < 0) return;
@@ -1196,7 +1295,7 @@ async function exportXLSX(){
 // DASHBOARD (gráficos analíticos)
 // ════════════════════════════════════════════════════════════
 // Referencias a instancias de Chart.js para poder destruirlas antes de recrear
-window._charts = { gauge: null, obra: null, residente: null, tiempo: null };
+window._charts = { gauge: null, obra: null, residente: null, tiempo: null, contratista: null, razones: null, criticidad: null, sector: null };
 
 // Colores base
 const DASH_COLORS = {
@@ -1237,8 +1336,8 @@ function _pctByField(acts, field){
     const k = (a[field] || '—').trim() || '—';
     if(!map.has(k)) map.set(k, { ok:0, fail:0 });
     const e = map.get(k);
-    if(a.cumple === 'Sí' || a.cumple === 'Si') e.ok++;
-    else if(a.cumple === 'No') e.fail++;
+    if(a.cumple === 'cumple') e.ok++;
+    else if(a.cumple === 'no') e.fail++;
   }
   const out = [];
   for(const [key, v] of map.entries()){
@@ -1258,34 +1357,54 @@ function _pctByField(acts, field){
 
 // Renderizar el dashboard completo
 function renderDashboard(){
-  // Solo para app Contratista
   const wrap = document.getElementById('view-dashboard');
   if(!wrap) return;
-  if(window._currentApp !== 'contratista'){
-    wrap.style.display = 'none';
-    return;
-  }
+  // Dashboard disponible en ambas apps (adaptado)
   wrap.style.display = 'block';
 
   const acts = window._filteredActs;
+  const isCont = window._currentApp === 'contratista';
 
-  // 1. Gauge / % general
+  // Toggle cards según app
+  const cardContratista = document.getElementById('card-contratista');
+  const cardSector      = document.getElementById('card-sector');
+  if(cardContratista) cardContratista.style.display = isCont ? '' : 'none';
+  if(cardSector)      cardSector.style.display      = isCont ? 'none' : '';
+
+  // 1. Gauge
   renderGauge(acts);
-
   // 2. Cumplimiento por Obra
   renderChartObra(acts);
-
   // 3. Desempeño por Residente
   renderChartResidente(acts);
-
   // 4. Cumplimiento en el tiempo
   renderChartTiempo(acts);
+  // 5. Cumplimiento por Contratista (solo en Contratista)
+  if(isCont) renderChartContratista(acts);
+  else _destroyChart('contratista');
+  // 6. Razones de No Cumplimiento
+  renderChartRazones(acts);
+  // 7. Criticidad vs Cumplimiento
+  renderChartCriticidad(acts);
+  // 8. Volumen por Sector (solo en Residente)
+  if(!isCont) renderChartSector(acts);
+  else _destroyChart('sector');
+  // 9. Actividades Vencidas
+  renderVencidas(acts);
+}
+
+// Helper: destruye una instancia de chart si existe
+function _destroyChart(key){
+  if(window._charts[key]){
+    window._charts[key].destroy();
+    window._charts[key] = null;
+  }
 }
 
 // ─── 1. Gauge ─────────────────────────────────────
 function renderGauge(acts){
-  const ok   = acts.filter(a => a.cumple === 'Sí' || a.cumple === 'Si').length;
-  const fail = acts.filter(a => a.cumple === 'No').length;
+  const ok   = acts.filter(a => a.cumple === 'cumple').length;
+  const fail = acts.filter(a => a.cumple === 'no').length;
   const asignadas = ok + fail;
   const pct = asignadas > 0 ? Math.round((ok / asignadas) * 100) : null;
 
@@ -1478,8 +1597,8 @@ function renderChartTiempo(acts){
     if(!wk) continue;
     if(!map.has(wk)) map.set(wk, { ok:0, fail:0 });
     const e = map.get(wk);
-    if(a.cumple === 'Sí' || a.cumple === 'Si') e.ok++;
-    else if(a.cumple === 'No') e.fail++;
+    if(a.cumple === 'cumple') e.ok++;
+    else if(a.cumple === 'no') e.fail++;
   }
 
   const canvas = document.getElementById('chartTiempo');
@@ -1553,6 +1672,351 @@ function renderChartTiempo(acts){
       }
     }
   });
+}
+
+// ─── 5. Cumplimiento por Contratista ──────────────
+function renderChartContratista(acts){
+  const data = _pctByField(acts, 'contratista').filter(d => d.pct !== null);
+  const canvas = document.getElementById('chartContratista');
+  const empty  = document.getElementById('empty-contratista');
+  const wrap   = document.getElementById('wrap-contratista');
+
+  _destroyChart('contratista');
+
+  if(!data.length){
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  wrap.style.display = 'block';
+  empty.style.display = 'none';
+
+  // Ordenar menor a mayor pct (peor arriba)
+  const labels = data.map(d => d.key.length > 22 ? d.key.slice(0,21)+'…' : d.key);
+  const values = data.map(d => d.pct);
+  const colors = values.map(_colorByPct);
+
+  window._charts.contratista = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: '% Cumplimiento',
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 4,
+        maxBarThickness: 30
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const d = data[ctx.dataIndex];
+              return ` ${d.pct}% · ${d.ok} cumple / ${d.total} total`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          min: 0, max: 100,
+          ticks: { color: DASH_COLORS.text2, callback: v => v + '%' },
+          grid: { color: DASH_COLORS.border }
+        },
+        y: {
+          ticks: { color: DASH_COLORS.text, font: { size: 11 } },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+}
+
+// ─── 6. Razones de No Cumplimiento ────────────────
+function renderChartRazones(acts){
+  // Contar cada razón solo para actividades 'No Cumple'
+  const map = new Map();
+  for(const a of acts){
+    if(a.cumple !== 'no') continue;
+    const r = (a.razon || '').trim() || '— Sin razón —';
+    map.set(r, (map.get(r) || 0) + 1);
+  }
+
+  const entries = Array.from(map.entries()).sort((a, b) => b[1] - a[1]); // Descendente
+
+  const canvas = document.getElementById('chartRazones');
+  const empty  = document.getElementById('empty-razones');
+  const wrap   = document.getElementById('wrap-razones');
+
+  _destroyChart('razones');
+
+  if(!entries.length){
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  wrap.style.display = 'block';
+  empty.style.display = 'none';
+
+  const labels = entries.map(([r]) => r.length > 30 ? r.slice(0,29)+'…' : r);
+  const values = entries.map(([, v]) => v);
+
+  window._charts.razones = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Cantidad',
+        data: values,
+        backgroundColor: DASH_COLORS.red,
+        borderRadius: 4,
+        maxBarThickness: 28
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${ctx.parsed.x} actividad${ctx.parsed.x===1?'':'es'}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { color: DASH_COLORS.text2, stepSize: 1, precision: 0 },
+          grid: { color: DASH_COLORS.border }
+        },
+        y: {
+          ticks: { color: DASH_COLORS.text, font: { size: 11 } },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+}
+
+// ─── 7. Criticidad vs Cumplimiento (barras apiladas) ──
+function renderChartCriticidad(acts){
+  // Agrupar por criticidad, contar Cumple/No Cumple/Sin asignar
+  const niveles = ['Alta', 'Media', 'Baja'];
+  const buckets = { Alta: {ok:0, fail:0, na:0}, Media: {ok:0, fail:0, na:0}, Baja: {ok:0, fail:0, na:0} };
+
+  for(const a of acts){
+    const c = a.criticidad || '';
+    if(!niveles.includes(c)) continue; // ignoramos Sin asignar en este gráfico
+    if(a.cumple === 'cumple') buckets[c].ok++;
+    else if(a.cumple === 'no') buckets[c].fail++;
+    else buckets[c].na++;
+  }
+
+  const total = Object.values(buckets).reduce((sum, b) => sum + b.ok + b.fail + b.na, 0);
+
+  const canvas = document.getElementById('chartCriticidad');
+  const empty  = document.getElementById('empty-criticidad');
+  const wrap   = document.getElementById('wrap-criticidad');
+
+  _destroyChart('criticidad');
+
+  if(total === 0){
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  wrap.style.display = 'block';
+  empty.style.display = 'none';
+
+  window._charts.criticidad = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: ['🔴 Alta', '🟡 Media', '🟢 Baja'],
+      datasets: [
+        {
+          label: '✓ Cumple',
+          data: niveles.map(n => buckets[n].ok),
+          backgroundColor: DASH_COLORS.green,
+          borderRadius: 4
+        },
+        {
+          label: '✗ No Cumple',
+          data: niveles.map(n => buckets[n].fail),
+          backgroundColor: DASH_COLORS.red,
+          borderRadius: 4
+        },
+        {
+          label: '— Sin asignar',
+          data: niveles.map(n => buckets[n].na),
+          backgroundColor: 'rgba(139,148,158,0.4)',
+          borderRadius: 4
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: { color: DASH_COLORS.text2, font: { size: 11 }, boxWidth: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y} actividad${ctx.parsed.y===1?'':'es'}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { color: DASH_COLORS.text, font: { size: 12, weight: '700' } },
+          grid: { display: false }
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: { color: DASH_COLORS.text2, stepSize: 1, precision: 0 },
+          grid: { color: DASH_COLORS.border }
+        }
+      }
+    }
+  });
+}
+
+// ─── 8. Volumen por Sector (solo Residente) ────────
+function renderChartSector(acts){
+  const map = new Map();
+  for(const a of acts){
+    const s = (a.sector || '').trim() || '— Sin sector —';
+    map.set(s, (map.get(s) || 0) + 1);
+  }
+  const entries = Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+
+  const canvas = document.getElementById('chartSector');
+  const empty  = document.getElementById('empty-sector');
+  const wrap   = document.getElementById('wrap-sector');
+
+  _destroyChart('sector');
+
+  if(!entries.length){
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  wrap.style.display = 'block';
+  empty.style.display = 'none';
+
+  const labels = entries.map(([s]) => s.length > 24 ? s.slice(0,23)+'…' : s);
+  const values = entries.map(([, v]) => v);
+
+  window._charts.sector = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Cantidad',
+        data: values,
+        backgroundColor: DASH_COLORS.blue,
+        borderRadius: 4,
+        maxBarThickness: 28
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${ctx.parsed.x} actividad${ctx.parsed.x===1?'':'es'}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { color: DASH_COLORS.text2, stepSize: 1, precision: 0 },
+          grid: { color: DASH_COLORS.border }
+        },
+        y: {
+          ticks: { color: DASH_COLORS.text, font: { size: 11 } },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+}
+
+// ─── 9. Actividades Vencidas ──────────────────────
+// Vencida = fecha fin efectiva < hoy AND cumple !== 'cumple' (incluye 'no' y sin asignar)
+function renderVencidas(acts){
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().slice(0, 10);
+
+  const vencidas = [];
+  for(const a of acts){
+    if(a.cumple === 'cumple') continue; // ya cumplida, no se considera vencida
+    const fin = _getFechaFin(a);
+    if(!fin) continue; // sin fecha de fin no la contamos
+    if(fin < todayStr){
+      const finDate = new Date(fin + 'T00:00:00');
+      const diasAtraso = Math.floor((today - finDate) / (1000 * 60 * 60 * 24));
+      vencidas.push({ ...a, fechaFin: fin, diasAtraso });
+    }
+  }
+
+  // Ordenar por días de atraso (mayor primero)
+  vencidas.sort((a, b) => b.diasAtraso - a.diasAtraso);
+
+  const count = vencidas.length;
+  document.getElementById('vencidas-count').textContent = count;
+
+  const sub = document.getElementById('vencidas-sub');
+  if(count === 0){
+    sub.textContent = '¡Todo al día!';
+    sub.style.color = 'var(--green)';
+  } else {
+    const totalAtraso = vencidas.reduce((sum, v) => sum + v.diasAtraso, 0);
+    const prom = Math.round(totalAtraso / count);
+    sub.textContent = `Promedio ${prom} día${prom===1?'':'s'} de atraso`;
+    sub.style.color = 'var(--text3)';
+  }
+
+  const tbody = document.getElementById('vencidas-tbody');
+  if(count === 0){
+    tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:30px;text-align:center;color:var(--text3);font-style:italic">Sin actividades vencidas 🎉</td></tr>';
+    return;
+  }
+
+  // Limitar a 50 filas para no saturar
+  const topN = vencidas.slice(0, 50);
+  const rows = topN.map(v => {
+    const crit = v.criticidad || '';
+    const critChip = crit ? `<span class="chip crit-${crit.toLowerCase()}" style="font-size:10px">${crit}</span>` : '<span style="color:var(--text3)">—</span>';
+    const desc = v.descripcion || '(sin descripción)';
+    const shortDesc = desc.length > 40 ? desc.slice(0,39)+'…' : desc;
+    return `<tr>
+      <td><strong>${_esc(v.residente)||'—'}</strong></td>
+      <td>${_esc(v.obra)||'—'}</td>
+      <td style="font-size:11px">${_esc(shortDesc)}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--text2)">${_fmtDate(v.fechaFin)}</td>
+      <td><span class="dias-atraso">${v.diasAtraso}d</span></td>
+      <td>${critChip}</td>
+    </tr>`;
+  });
+  tbody.innerHTML = rows.join('');
 }
 
 // ════════════════════════════════════════════════════════════
