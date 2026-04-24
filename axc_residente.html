@@ -1021,7 +1021,11 @@ async function onResidenteChange(){
           .order('orden', { ascending: true });
         if(error) throw error;
         // Traductores inversos: DB → formato esperado por la UI
-        const fromDBCumple = v => (v === 'No' ? 'No Cumple' : '');
+        const fromDBCumple = v => {
+          if(v === 'No') return 'No Cumple';
+          if(v === 'Sí' || v === 'Si') return 'Cumple';
+          return '';
+        };
         const fromDBCriticidad = v => {
           if(v === 'Alta')  return 'alto';
           if(v === 'Media') return 'medio';
@@ -1405,8 +1409,12 @@ function renderTable(){
     te.style.cssText='padding:2px 3px;width:82px';
     const se=document.createElement('select');
     se.className='sel-e';
-    se.innerHTML=`<option value="">✓ Cumple</option><option value="No Cumple"${isFail?' selected':''}>✗ No Cumple</option>`;
-    se.onchange=()=>{acts[idx].cumple=se.value;if(!se.value)acts[idx].razon='';save();renderTable();};
+    const _curCumple = a.cumple || '';
+    const isCumple = _curCumple === 'Cumple';
+    se.innerHTML=`<option value=""${!_curCumple?' selected':''}>— Sin asignar —</option>`
+              +`<option value="Cumple"${isCumple?' selected':''}>✓ Cumple</option>`
+              +`<option value="No Cumple"${isFail?' selected':''}>✗ No Cumple</option>`;
+    se.onchange=()=>{acts[idx].cumple=se.value;if(se.value!=='No Cumple')acts[idx].razon='';save();renderTable();};
     te.appendChild(se);
     tr.appendChild(te);
 
@@ -1669,8 +1677,11 @@ function renderReport(){
   const actsVis = (window._filtroObras instanceof Set)
     ? acts.filter(a => !(a.obra_row||'').trim() || window._filtroObras.has(a.obra_row))
     : acts;
-  const total=actsVis.length,fail=actsVis.filter(a=>a.cumple==='No Cumple').length,ok=total-fail;
-  const pct=total?Math.round(ok/total*100):null;
+  const total=actsVis.length;
+  const ok=actsVis.filter(a=>a.cumple==='Cumple').length;
+  const fail=actsVis.filter(a=>a.cumple==='No Cumple').length;
+  const asignadas=ok+fail;
+  const pct=asignadas>0?Math.round(ok/asignadas*100):null;
   document.getElementById('kv-t').textContent=total;
   document.getElementById('kv-ok').textContent=ok;
   document.getElementById('kv-fail').textContent=fail;
@@ -1683,6 +1694,9 @@ function renderReport(){
     const m=a.days.map((v,j)=>v?j:-1).filter(j=>j>=0);
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
     const isFail=a.cumple==='No Cumple';
+    const isOk=a.cumple==='Cumple';
+    const badgeClass = isFail ? 'br' : (isOk ? 'bg' : '');
+    const badgeText  = isFail ? '✗ No cumple' : (isOk ? '✓ Cumple' : '— Sin asignar');
     const tr=document.createElement('tr');
     tr.innerHTML=`<td style="text-align:center;font-family:'DM Mono',monospace;font-size:11px">${i+1}</td>
       <td><span class="stag">${a.obra_row||obra.obra||'—'}</span></td>
@@ -1690,7 +1704,7 @@ function renderReport(){
       <td style="text-align:center"><span class="chip">${sd?fmts(sd):'—'}</span></td>
       <td style="text-align:center"><span class="chip">${ed?fmts(ed):'—'}</span></td>
       <td style="text-align:center"><span class="dur">${dur}d</span></td>
-      <td style="text-align:center"><span class="badge ${isFail?'br':'bg'}">${isFail?'✗ No cumple':'✓ Cumple'}</span></td>
+      <td style="text-align:center"><span class="badge ${badgeClass}">${badgeText}</span></td>
       <td>${a.razon?`<span class="rtag">${a.razon}</span>`:'<span style="color:var(--text3)">—</span>'}</td>`;
     tbody.appendChild(tr);
   });
