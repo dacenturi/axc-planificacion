@@ -250,6 +250,12 @@ select[title]:hover, input[title]:hover { cursor:help; }
 .row-add-btn{flex-shrink:0;width:18px;height:22px;background:rgba(240,165,0,.12);border:1px solid rgba(240,165,0,.25);border-radius:4px;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;line-height:1;padding:0}
 .row-add-btn:hover{background:rgba(240,165,0,.28);border-color:var(--accent)}
 
+/* Animación pulse para resaltar filas con campos faltantes */
+@keyframes pulseRed {
+  0%, 100% { box-shadow: inset 0 0 0 0 rgba(248,81,73,0); }
+  50%      { box-shadow: inset 0 0 0 2px rgba(248,81,73,.6); }
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -318,7 +324,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <div class="sec-title">Planificación de Actividades para Residente <small id="sec-sub">Período de actividades</small></div>
     <div class="flex-row">
       <button class="btn btn-secondary" onclick="exportXLSX()">📥 Exportar Excel</button>
-      <button class="btn btn-primary" onclick="addRow()">＋ Nueva actividad</button>
+      <button id="btn-nueva-actividad" class="btn btn-primary" onclick="addRow()">＋ Nueva actividad</button>
     </div>
   </div>
 
@@ -348,6 +354,25 @@ select[title]:hover, input[title]:hover { cursor:help; }
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Barra de filtro por Obra -->
+  <div id="filter-bar" style="margin:12px 20px 0;padding:10px 14px;background:rgba(240,165,0,.08);border:1px solid rgba(240,165,0,.25);border-radius:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span style="font-family:Mulish,sans-serif;font-size:12px;font-weight:700;color:var(--acc3);letter-spacing:.5px">🔎 FILTRAR OBRAS:</span>
+    <div style="position:relative">
+      <button id="filter-btn" onclick="toggleFilterDropdown()" style="background:var(--bg2);color:var(--text);border:1px solid rgba(240,165,0,.3);border-radius:8px;padding:7px 14px;font-family:Mulish,sans-serif;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;min-width:220px;justify-content:space-between">
+        <span id="filter-btn-label">Todas las obras</span>
+        <span style="font-size:10px">▼</span>
+      </button>
+      <div id="filter-dropdown" style="display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg2);border:1px solid rgba(240,165,0,.3);border-radius:10px;padding:10px;min-width:260px;max-height:320px;overflow-y:auto;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+        <div style="display:flex;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(240,165,0,.15)">
+          <button onclick="selectAllObras(true)" style="flex:1;background:rgba(240,165,0,.15);color:var(--accent);border:1px solid rgba(240,165,0,.3);border-radius:6px;padding:5px;font-family:Mulish,sans-serif;font-size:11px;font-weight:700;cursor:pointer">✓ Todas</button>
+          <button onclick="selectAllObras(false)" style="flex:1;background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3);border-radius:6px;padding:5px;font-family:Mulish,sans-serif;font-size:11px;font-weight:700;cursor:pointer">✕ Ninguna</button>
+        </div>
+        <div id="filter-list"></div>
+      </div>
+    </div>
+    <span id="filter-count" style="font-family:Mulish,sans-serif;font-size:12px;color:var(--muted)"></span>
   </div>
 
   <div class="table-card">
@@ -1087,11 +1112,117 @@ function onObraChange(){
   buildDateHeaders();renderTable();
 }
 
+// ─── Filtro multi-select y coloreado por obra (residente) ────────────────
+// _filtroObras: null = todas; Set de strings = solo esas.
+window._filtroObras = null;
+
+function _hashStr(s){
+  let h = 0;
+  for(let i=0;i<s.length;i++){ h = ((h<<5)-h) + s.charCodeAt(i); h|=0; }
+  return Math.abs(h);
+}
+function _getObraTint(name){
+  if(!name) return '';
+  const h = _hashStr(name);
+  const hue = h % 360;
+  return `hsla(${hue}, 60%, 45%, 0.08)`;
+}
+
+function toggleFilterDropdown(){
+  const dd = document.getElementById('filter-dropdown');
+  if(!dd) return;
+  dd.style.display = (dd.style.display === 'block') ? 'none' : 'block';
+  if(dd.style.display === 'block') _refreshObraFilter();
+}
+
+// Cierra el dropdown si se hace click fuera
+document.addEventListener('click', (ev) => {
+  const dd = document.getElementById('filter-dropdown');
+  const btn = document.getElementById('filter-btn');
+  if(!dd || !btn) return;
+  if(dd.style.display !== 'block') return;
+  if(dd.contains(ev.target) || btn.contains(ev.target)) return;
+  dd.style.display = 'none';
+});
+
+function _refreshObraFilter(){
+  const list = document.getElementById('filter-list');
+  const label = document.getElementById('filter-btn-label');
+  const counter = document.getElementById('filter-count');
+  if(!list) return;
+
+  // Solo obras YA USADAS en las actividades actuales
+  const todos = Array.from(new Set(
+    acts.map(a => a.obra_row || '').filter(x => x)
+  )).sort();
+
+  const seleccionados = window._filtroObras instanceof Set
+    ? window._filtroObras
+    : new Set(todos);
+
+  if(todos.length === 0){
+    list.innerHTML = '<div style="font-family:Mulish,sans-serif;font-size:12px;color:var(--text2);padding:6px 4px;text-align:center">Aún no hay obras en las actividades</div>';
+  } else {
+    list.innerHTML = todos.map(c => {
+      const checked = seleccionados.has(c) ? 'checked' : '';
+      const tint = _getObraTint(c);
+      return `<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;cursor:pointer;background:${tint};font-family:Mulish,sans-serif;font-size:12px;color:var(--text);margin-bottom:2px">
+        <input type="checkbox" value="${c.replace(/"/g,'&quot;')}" ${checked} onchange="_onObraCheckboxChange(this)">
+        <span>${c}</span>
+      </label>`;
+    }).join('');
+  }
+
+  if(todos.length === 0){
+    label.textContent = 'Sin obras aún';
+  } else if(window._filtroObras instanceof Set){
+    const n = window._filtroObras.size;
+    if(n === 0) label.textContent = 'Ninguna seleccionada';
+    else if(n === todos.length) label.textContent = 'Todas las obras';
+    else if(n === 1){
+      const nombre = Array.from(window._filtroObras)[0] || '';
+      label.textContent = '1: ' + (nombre.length>22 ? nombre.slice(0,22)+'…' : nombre);
+    } else label.textContent = n + ' obras';
+  } else {
+    label.textContent = 'Todas las obras';
+  }
+
+  if(counter){
+    const visibles = _filtroObras instanceof Set
+      ? acts.filter(a => !(a.obra_row||'') || _filtroObras.has(a.obra_row)).length
+      : acts.length;
+    counter.textContent = `(mostrando ${visibles} de ${acts.length} actividades)`;
+  }
+}
+
+function _onObraCheckboxChange(cb){
+  const name = cb.value;
+  const todos = new Set(acts.map(a => a.obra_row || '').filter(x=>x));
+  if(!(window._filtroObras instanceof Set)){
+    const actual = new Set(todos);
+    if(!cb.checked) actual.delete(name);
+    window._filtroObras = actual;
+  } else {
+    if(cb.checked) window._filtroObras.add(name);
+    else window._filtroObras.delete(name);
+  }
+  renderAll();
+}
+
+function selectAllObras(all){
+  window._filtroObras = all ? null : new Set();
+  renderAll();
+}
+
 function renderTable(){
   const tbody=document.getElementById('tbody');
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
   const DL=getDL(n);
+
+  // Refrescar el chrome del filtro de obras
+  try{ _refreshObraFilter(); }catch(e){}
+
   tbody.innerHTML='';
 
   if(!acts.length){
@@ -1103,12 +1234,26 @@ function renderTable(){
     return;
   }
 
+  // Filtro de obras: null = mostrar todas
+  const filtroObra = (window._filtroObras instanceof Set) ? window._filtroObras : null;
+
   acts.forEach((a,idx)=>{
+    // Filtro por obra: si la fila tiene obra asignada y no está en el filtro, ocultar
+    if(filtroObra){
+      if((a.obra_row||'') && !filtroObra.has(a.obra_row)) return;
+    }
+
     const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
     const sd=marked.length?dates[marked[0]]:null;
     const ed=marked.length?dates[marked[marked.length-1]]:null;
     const isFail=a.cumple==='No Cumple';
     const tr=document.createElement('tr');
+
+    // Color de fondo sutil por obra
+    if(a.obra_row){
+      const tint = _getObraTint(a.obra_row);
+      if(tint) tr.style.backgroundColor = tint;
+    }
 
     // ── #  ───────────────────────────────────────────────────
     const t0=document.createElement('td');
@@ -1238,7 +1383,31 @@ function renderTable(){
 
     // ── DELETE  ───────────────────────────────────────────────
     const tdel=document.createElement('td');
-    tdel.style.cssText='padding:2px 3px;text-align:center;width:28px';
+    tdel.style.cssText='padding:2px 3px;text-align:center;width:56px;display:flex;gap:3px;justify-content:center;align-items:center';
+
+    // Duplicar
+    const bDup=document.createElement('button');
+    bDup.style.cssText='width:24px;height:24px;padding:0;border-radius:6px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.12);color:var(--blue);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center';
+    bDup.textContent='⎘';
+    bDup.title='Duplicar esta fila (copia obra, sector, actividad y días)';
+    bDup.onclick=()=>{
+      const copia = {
+        sector:      a.sector || '',
+        item:        a.item || '',
+        descripcion: a.descripcion || '',
+        obra_row:    a.obra_row || '',
+        days:        Array.isArray(a.days) ? a.days.slice() : [],
+        cumple:      a.cumple || '',
+        razon:       a.razon || '',
+        criticidad:  a.criticidad || ''
+      };
+      acts.splice(idx+1, 0, copia);
+      save();
+      renderAll();
+      showToast('✓ Fila duplicada', 'ok');
+    };
+    tdel.appendChild(bDup);
+
     const bd=document.createElement('button');
     bd.className='btn btn-danger btn-sm';
     bd.style.cssText='width:26px;height:26px;padding:0;justify-content:center;font-size:12px';
@@ -1355,6 +1524,21 @@ function addRow(){
     if(f.length){ showToast('⚠️ Campos obligatorios: ' + f.join(', '), 'warn'); return; }
   }
 
+  // Bloquear agregar si hay filas previas sin Actividad (obligatorio)
+  const sinActividad = acts.findIndex(a => !(a.descripcion || a.item || '').trim());
+  if(sinActividad !== -1){
+    showToast(`⚠️ Completá la Actividad de la fila ${sinActividad+1} antes de agregar una nueva`, 'warn');
+    const tbody = document.getElementById('tbody');
+    if(tbody && tbody.rows[sinActividad]){
+      const tr = tbody.rows[sinActividad];
+      tr.style.animation = 'none';
+      setTimeout(()=>{ tr.style.animation = 'pulseRed 0.8s ease 2'; tr.scrollIntoView({behavior:'smooth', block:'center'}); }, 10);
+      const inp = tr.querySelector('input[type="text"]');
+      if(inp) setTimeout(()=>inp.focus(), 400);
+    }
+    return;
+  }
+
   // Agregar actividad
   const nd = getNumDays();
   acts.push({
@@ -1419,7 +1603,11 @@ function showPage(name){
 
 function renderReport(){
   const dates=wDates(getStart(),getFin());const DL=getDL(dates.length);
-  const total=acts.length,fail=acts.filter(a=>a.cumple==='No Cumple').length,ok=total-fail;
+  // Aplicar filtro de obras
+  const actsVis = (window._filtroObras instanceof Set)
+    ? acts.filter(a => !(a.obra_row||'').trim() || window._filtroObras.has(a.obra_row))
+    : acts;
+  const total=actsVis.length,fail=actsVis.filter(a=>a.cumple==='No Cumple').length,ok=total-fail;
   const pct=total?Math.round(ok/total*100):null;
   document.getElementById('kv-t').textContent=total;
   document.getElementById('kv-ok').textContent=ok;
@@ -1429,7 +1617,7 @@ function renderReport(){
   const tbody=document.getElementById('rpt-tbody');
   if(!total){tbody.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text2)">Cargá actividades en <strong>Carga</strong> para ver el reporte.</td></tr>`;return;}
   tbody.innerHTML='';
-  acts.forEach((a,i)=>{
+  actsVis.forEach((a,i)=>{
     const m=a.days.map((v,j)=>v?j:-1).filter(j=>j>=0);
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
     const isFail=a.cumple==='No Cumple';
@@ -1461,8 +1649,13 @@ function renderGantt(){
     return;
   }
 
+  // Aplicar filtro de obras
+  const actsFiltrado = (window._filtroObras instanceof Set)
+    ? acts.filter(a => !(a.obra_row||'').trim() || window._filtroObras.has(a.obra_row))
+    : acts;
+
   // Ordenar por fecha de inicio (primer día marcado)
-  const actsGantt=acts.slice().sort((a,b)=>{
+  const actsGantt=actsFiltrado.slice().sort((a,b)=>{
     const ma=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
     const mb=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
     const da=ma.length?dates[ma[0]]:null;
@@ -1575,6 +1768,19 @@ function exportXLSX(){
     return;
   }
 
+  // Aplicar filtro de obras
+  let actsExport = acts.slice();
+  if(window._filtroObras instanceof Set){
+    const set = window._filtroObras;
+    actsExport = acts.filter(a => {
+      if(!(a.obra_row||'').trim()) return true;
+      return set.has(a.obra_row);
+    });
+    if(actsExport.length !== acts.length){
+      showToast(`📥 Exportando ${actsExport.length} de ${acts.length} filas (filtro aplicado)`, 'ok');
+    }
+  }
+
   // Preparar datos
   const payload = {
     modo: 'unica',
@@ -1583,7 +1789,7 @@ function exportXLSX(){
       fecha:     document.getElementById('inp-fecha')?.value || '',
       fechafin:  document.getElementById('inp-fecha-fin')?.value || '',
     },
-    acts: acts.map(a => ({
+    acts: actsExport.map(a => ({
       obra_row:    a.obra_row || obra.obra || '',
       descripcion: a.descripcion || a.item || '',
       cumple:      a.cumple || '',
@@ -1717,20 +1923,63 @@ function _updateValidationUI(){
     el.style.boxShadow = '';
   });
 
+  // ── Determinar si el HEADER está incompleto (para bloquear botón) ──
+  // En Residente: el header requiere Residente + Fecha inicio
+  const headerCompleto = hdr.hdrResidente.trim() && hdr.hdrFechaIni;
+
+  // ── Banner de alerta (rojo si hay filas incompletas) ──
   let banner = document.getElementById('validation-banner');
   if(incompleteCount > 0){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'validation-banner';
-      banner.style.cssText = 'background:#f0a500;color:#0b1020;padding:8px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:1px solid rgba(0,0,0,.2)';
       const appWrap = document.getElementById('app-wrap');
       if(appWrap && appWrap.firstChild) appWrap.insertBefore(banner, appWrap.firstChild);
     }
-    banner.textContent = '⚠️ ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
-      ' incompleta' + (incompleteCount===1?'':'s') + ' — no se están guardando en la nube. Completá los campos marcados en rojo.';
+    banner.style.cssText = 'background:linear-gradient(90deg,#dc2626,#ef4444);color:#fff;padding:12px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:14px;font-weight:800;border-bottom:2px solid rgba(0,0,0,.3);box-shadow:0 2px 8px rgba(220,38,38,.4);letter-spacing:.3px';
+    banner.innerHTML = '🚫 ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
+      ' incompleta' + (incompleteCount===1?'':'s') +
+      ' — NO se están guardando en la nube. Completá los campos marcados en rojo.';
     banner.style.display = 'block';
   } else if(banner){
     banner.style.display = 'none';
+  }
+
+  // ── Banner adicional si el HEADER está incompleto y no hay filas ──
+  let headerBanner = document.getElementById('header-validation-banner');
+  if(!headerCompleto && acts.length === 0){
+    if(!headerBanner){
+      headerBanner = document.createElement('div');
+      headerBanner.id = 'header-validation-banner';
+      const appWrap = document.getElementById('app-wrap');
+      if(appWrap && appWrap.firstChild) appWrap.insertBefore(headerBanner, appWrap.firstChild);
+    }
+    headerBanner.style.cssText = 'background:#f0a500;color:#0b1020;padding:10px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:1px solid rgba(0,0,0,.2)';
+    const falta = [];
+    if(!hdr.hdrResidente.trim()) falta.push('Residente');
+    if(!hdr.hdrFechaIni)         falta.push('Fecha inicio');
+    headerBanner.textContent = '⚠️ Completá los campos del encabezado antes de agregar actividades: ' + falta.join(', ');
+    headerBanner.style.display = 'block';
+  } else if(headerBanner){
+    headerBanner.style.display = 'none';
+  }
+
+  // ── Bloquear/habilitar botón "Nueva actividad" según header ──
+  const btnNueva = document.getElementById('btn-nueva-actividad');
+  if(btnNueva){
+    if(headerCompleto){
+      btnNueva.disabled = false;
+      btnNueva.style.opacity = '';
+      btnNueva.style.cursor = '';
+      btnNueva.style.pointerEvents = '';
+      btnNueva.title = '';
+    } else {
+      btnNueva.disabled = true;
+      btnNueva.style.opacity = '0.45';
+      btnNueva.style.cursor = 'not-allowed';
+      btnNueva.style.pointerEvents = 'none';
+      btnNueva.title = 'Completá Residente y Fecha antes de agregar actividades';
+    }
   }
 
   if(acts.length > 0){
