@@ -2451,10 +2451,6 @@ async function _syncActsToSupabase(){
       return '';
     };
 
-    // Determinar si el admin está editando la planilla de OTRO residente.
-    const esAdminEditandoAjeno = window._axcEsAdmin &&
-      hdrResidente && window._axcResidente !== hdrResidente;
-
     // Solo guardar filas COMPLETAS. Las incompletas o vacías quedan en la
     // UI pero no se suben a Supabase.
     const rowsToSave = [];
@@ -2463,7 +2459,9 @@ async function _syncActsToSupabase(){
       if(status !== 'complete') return;
       rowsToSave.push({
         id:            a._syncId,
-        // Preservar owner original si es admin editando ajenos
+        // Preservar owner original si existe (caso típico: admin creó filas
+        // para este residente, después el residente ajusta → no cambiamos
+        // el owner). Si es fila nueva, usamos el uid del usuario actual.
         user_id:       a._ownerUid || window._axcUid,
         app:           APP_NAME,
         modo:          isMulti ? 'multi' : 'unica',
@@ -2483,17 +2481,28 @@ async function _syncActsToSupabase(){
       });
     });
 
-    if(esAdminEditandoAjeno){
-      // Admin editando planilla ajena: upsert fila por fila, NO borrar todo.
-      const idsActuales = rowsToSave.map(r => r.id);
+    // Estrategia unificada (para evitar duplicados): upsert por id + borrar
+    // filas del residente actual que ya no están en la UI.
+    //
+    // Esto funciona para cualquier escenario:
+    //  - Admin creando filas para su propio residente asignado.
+    //  - Admin editando filas de otro residente.
+    //  - Residente ajustando filas que creó originalmente un admin.
+    //  - Residente creando filas desde cero.
+    //
+    // El criterio de "filas a mantener" es "las que tengan un id en rowsToSave".
+    // El criterio de "alcance de borrado" es "app + residente del header".
 
+    if(hdrResidente){
+      // 1. Upsert de las filas completas (se crean o actualizan según exista id)
       if(rowsToSave.length){
         const { error: upErr } = await _SB.from('actividades')
           .upsert(rowsToSave, { onConflict: 'id' });
         if(upErr) throw upErr;
       }
 
-      // Borrar actividades del residente seleccionado que ya no están en la UI
+      // 2. Borrar del residente del header las filas que ya no están en la UI
+      const idsActuales = rowsToSave.map(r => r.id);
       if(idsActuales.length > 0){
         const idsCSV = idsActuales.map(id => '"'+id+'"').join(',');
         const { error: delErr } = await _SB.from('actividades')
@@ -2503,23 +2512,12 @@ async function _syncActsToSupabase(){
           .not('id', 'in', '(' + idsCSV + ')');
         if(delErr) throw delErr;
       } else {
+        // No quedan filas: borrar todas las del residente
         const { error: delErr } = await _SB.from('actividades')
           .delete()
           .eq('app', APP_NAME)
           .eq('residente', hdrResidente);
         if(delErr) throw delErr;
-      }
-    } else {
-      // Caso normal: delete-all + insert para el usuario propio
-      const { error: delErr } = await _SB.from('actividades')
-        .delete()
-        .eq('user_id', window._axcUid)
-        .eq('app', APP_NAME);
-      if(delErr) throw delErr;
-
-      if(rowsToSave.length){
-        const { error: insErr } = await _SB.from('actividades').insert(rowsToSave);
-        if(insErr) throw insErr;
       }
     }
 
