@@ -442,14 +442,15 @@ select[title]:hover, input[title]:hover { cursor:help; }
             </th>
             <th style="width:52px">Fin</th>
             <th style="width:72px">Estado</th>
-            <th style="width:90px" class="thl">Razón</th>
+            <th style="width:110px" class="thl">Razones del estado</th>
+            <th style="width:62px" id="th-dias-atraso">Días atraso</th>
             <th style="width:78px">Criticidad</th>
             <th style="width:28px"></th>
           </tr>
           <tr class="tr-dates" id="tr-dates" style="height:34px">
             <th></th><th id="td-obra-col" style="display:none"></th><th id="td-cont-col" style="display:none"></th><th id="td-cont-unica" style="display:none"></th><th></th><th></th>
             <!-- días generados por JS -->
-            <th></th><th></th><th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th><th></th><th></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -1166,8 +1167,13 @@ async function onResidenteChange(){
           .order('orden', { ascending: true });
         if(error) throw error;
         const fromDBCumple = v => {
-          if(v === 'No') return 'No Cumple';
-          if(v === 'Sí' || v === 'Si') return 'Cumple';
+          if(!v) return '';
+          // Valores nuevos (pasan tal cual)
+          const nuevos = ['En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+          if(nuevos.includes(v)) return v;
+          // Legacy → mapear a nuevos por defecto
+          if(v === 'Sí' || v === 'Si') return 'Terminado';
+          if(v === 'No') return 'Retrasado';
           return '';
         };
         const fromDBCriticidad = v => {
@@ -1186,6 +1192,7 @@ async function onResidenteChange(){
           cumple:           fromDBCumple(r.cumple),
           razon:            r.razon || '',
           criticidad:       fromDBCriticidad(r.criticidad),
+          dias_atraso:      Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
           obra_act:         r.modo === 'multi' ? (r.obra || '') : '',
           contratista_act:  r.contratista || ''
         }));
@@ -1608,10 +1615,14 @@ function renderTable(){
     const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
     const sd=marked.length?dates[marked[0]]:null;
     const ed=marked.length?dates[marked[marked.length-1]]:null;
-    const isFail=a.cumple==='No Cumple';
+    const isFail = ['No Cumple','No','Retrasado','Cancelado','En espera','Cumplido con atraso'].includes(a.cumple||'');
     const tr=document.createElement('tr');
 
     // Color de fondo sutil por contratista (Obra Única y Multi-obra)
+    if(a.contratista_act){
+      const tint = _getContratistaTint(a.contratista_act);
+      if(tint) tr.style.backgroundColor = tint;
+    }
     if(a.contratista_act){
       const tint = _getContratistaTint(a.contratista_act);
       if(tint) tr.style.backgroundColor = tint;
@@ -1747,20 +1758,52 @@ function renderTable(){
     const ted=document.createElement('td');ted.className='dc';ted.dataset.e='1';
     ted.textContent=ed?fmts(ed):'—';tr.appendChild(ted);
 
-    // Estado select (3 opciones reales: Sin asignar, Cumple, No Cumple)
+    // Estado select (6 opciones + Sin asignar)
+    // Clasificación: 'Cumple' y 'No Cumple' legacy se re-interpretan como Terminado/Retrasado
     const te=document.createElement('td');te.style.padding='4px 5px';
     const se=document.createElement('select');se.className='sel-e';
-    const _curCumple = a.cumple || '';
-    const isCumple = _curCumple === 'Cumple';
-    se.innerHTML=`<option value=""${!_curCumple?' selected':''}>— Sin asignar —</option>`
-              +`<option value="Cumple"${isCumple?' selected':''}>✓ Cumple</option>`
-              +`<option value="No Cumple"${isFail?' selected':''}>✗ No Cumple</option>`;
-    se.onchange=()=>{acts[idx].cumple=se.value;if(se.value!=='No Cumple')acts[idx].razon='';save();renderTable();};
+    // Mapear valor legacy a nuevo valor por defecto para que el dropdown quede consistente
+    let _curEstado = a.cumple || '';
+    if(_curEstado === 'Cumple') _curEstado = 'Terminado';
+    else if(_curEstado === 'No Cumple') _curEstado = 'Retrasado';
+    // La razón es obligatoria para estos 3 estados
+    const _estadosConRazon = ['En espera', 'Retrasado', 'Cancelado'];
+    // Estados que muestran el input Días atraso
+    const _estadosConDias  = ['Cumplido con atraso', 'Retrasado'];
+    const _estadosCumple   = ['En proceso', 'Terminado'];
+    const _estadosNoCumple = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
+
+    se.innerHTML = `<option value=""${!_curEstado?' selected':''}>— Sin asignar —</option>`
+      + `<option value="En proceso"${_curEstado==='En proceso'?' selected':''}>⏳ En proceso</option>`
+      + `<option value="Terminado"${_curEstado==='Terminado'?' selected':''}>✓ Terminado</option>`
+      + `<option value="Cumplido con atraso"${_curEstado==='Cumplido con atraso'?' selected':''}>⚠ Cumplido con atraso</option>`
+      + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
+      + `<option value="Retrasado"${_curEstado==='Retrasado'?' selected':''}>⚠ Retrasado</option>`
+      + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
+    // Colorear según estado
+    const _colorSel = (v) => {
+      se.style.borderColor = '';
+      se.style.color = '';
+      if(_estadosCumple.includes(v)){ se.style.borderColor='rgba(63,185,80,.4)'; se.style.color='var(--green)'; }
+      else if(v === 'Cumplido con atraso'){ se.style.borderColor='rgba(240,165,0,.4)'; se.style.color='var(--accent)'; }
+      else if(_estadosNoCumple.includes(v)){ se.style.borderColor='rgba(248,81,73,.4)'; se.style.color='var(--red)'; }
+    };
+    _colorSel(_curEstado);
+    se.onchange=()=>{
+      acts[idx].cumple = se.value;
+      // Si el estado no requiere razón, limpiarla
+      if(!_estadosConRazon.includes(se.value)) acts[idx].razon = '';
+      // Si el estado no muestra días, limpiar
+      if(!_estadosConDias.includes(se.value)) acts[idx].dias_atraso = 0;
+      save();
+      renderTable();
+    };
     te.appendChild(se);tr.appendChild(te);
 
-    // Razón
+    // Razones del estado
     const tr2=document.createElement('td');tr2.style.padding='4px 5px';
-    if(isFail){
+    const _requiereRazon = _estadosConRazon.includes(_curEstado);
+    if(_requiereRazon){
       const wRaz=document.createElement('div');wRaz.style.cssText='display:flex;align-items:center;gap:3px';
       const sr=document.createElement('select');sr.className='sel-r';sr.style.flex='1';
       const _razones=getABMList('razones');
@@ -1768,8 +1811,6 @@ function renderTable(){
       sr.onchange=()=>{
         acts[idx].razon=sr.value;
         save();
-        // Refrescar el banner rojo: si la razón estaba faltando, la fila pasa de
-        // incompleta a completa y el banner debe desaparecer sin recargar.
         try{ _updateValidationUI(); }catch(e){}
       };
       wRaz.appendChild(sr);
@@ -1785,6 +1826,29 @@ function renderTable(){
       tr2.innerHTML='<span style="color:var(--text3);font-size:11px;padding:0 8px">—</span>';
     }
     tr.appendChild(tr2);
+
+    // Días atraso — visible solo para Cumplido con atraso o Retrasado
+    const tda = document.createElement('td');
+    tda.style.padding = '4px 5px';
+    if(_estadosConDias.includes(_curEstado)){
+      const inpDias = document.createElement('input');
+      inpDias.type = 'number';
+      inpDias.min = '0';
+      inpDias.max = '9999';
+      inpDias.step = '1';
+      inpDias.value = (a.dias_atraso || 0) === 0 ? '' : String(a.dias_atraso);
+      inpDias.placeholder = '0';
+      inpDias.style.cssText = 'width:100%;background:var(--bg3);border:1px solid rgba(240,165,0,.3);border-radius:5px;color:var(--accent);font-family:\"DM Mono\",monospace;font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box';
+      inpDias.onchange = () => {
+        const v = parseInt(inpDias.value, 10);
+        acts[idx].dias_atraso = (Number.isFinite(v) && v >= 0) ? v : 0;
+        save();
+      };
+      tda.appendChild(inpDias);
+    } else {
+      tda.innerHTML = '<span style="color:var(--text3);font-size:11px;padding:0 8px">—</span>';
+    }
+    tr.appendChild(tda);
 
     // Criticidad — dropdown con colores
     const tc=document.createElement('td');tc.style.padding='4px 5px';
@@ -1821,6 +1885,7 @@ function renderTable(){
         cumple:           a.cumple || '',
         razon:            a.razon || '',
         criticidad:       a.criticidad || '',
+        dias_atraso:      a.dias_atraso || 0,
         obra_act:         a.obra_act || '',
         contratista_act:  a.contratista_act || ''
         // _syncId y _ownerUid NO se copian: la copia es una fila nueva
@@ -2050,7 +2115,7 @@ function addRow(){
   acts.push({
     sector:'', item:'', descripcion:'',
     days: new Array(nd).fill(false),
-    cumple:'', razon:'', criticidad:'',
+    cumple:'', razon:'', criticidad:'', dias_atraso:0,
     obra_act:'', contratista_act:''
   });
   save();
@@ -2113,8 +2178,10 @@ function renderReport(){
   // Aplicar los 3 filtros (Obra/Contratista/Sector)
   const actsVis = acts.filter(_passAllFilters);
   const total=actsVis.length;
-  const ok=actsVis.filter(a=>a.cumple==='Cumple').length;
-  const fail=actsVis.filter(a=>a.cumple==='No Cumple').length;
+  const _okStates   = ['Cumple','Sí','En proceso','Terminado'];
+  const _failStates = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+  const ok=actsVis.filter(a=>_okStates.includes(a.cumple||'')).length;
+  const fail=actsVis.filter(a=>_failStates.includes(a.cumple||'')).length;
   const asignadas=ok+fail;
   const pct=asignadas>0?Math.round(ok/asignadas*100):null;
   document.getElementById('kv-t').textContent=total;
@@ -2128,10 +2195,16 @@ function renderReport(){
   actsVis.forEach((a,i)=>{
     const m=a.days.map((v,j)=>v?j:-1).filter(j=>j>=0);
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
-    const isFail=a.cumple==='No Cumple';
-    const isOk=a.cumple==='Cumple';
+    const _estadosCumpleRPT  = ['Cumple','Sí','En proceso','Terminado'];
+    const _estadosNoCumpleRPT = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+    const isFail = _estadosNoCumpleRPT.includes(a.cumple||'');
+    const isOk   = _estadosCumpleRPT.includes(a.cumple||'');
     const badgeClass = isFail ? 'br' : (isOk ? 'bg' : '');
-    const badgeText  = isFail ? '✗ No cumple' : (isOk ? '✓ Cumple' : '— Sin asignar');
+    // Texto: usar el estado real si está en la nueva lista, si no mostrar Cumple/No cumple
+    const _labelsEstado = { 'Cumple':'✓ Cumple','No Cumple':'✗ No cumple','Sí':'✓ Cumple','No':'✗ No cumple',
+      'En proceso':'⏳ En proceso','Terminado':'✓ Terminado','Cumplido con atraso':'⚠ Con atraso',
+      'En espera':'⏸ En espera','Retrasado':'⚠ Retrasado','Cancelado':'✗ Cancelado' };
+    const badgeText = _labelsEstado[a.cumple||''] || '— Sin asignar';
     const tr=document.createElement('tr');
     tr.innerHTML=`<td style="text-align:center;font-family:'DM Mono',monospace;font-size:11px">${i+1}</td>
       <td><span class="stag">${a.sector||'—'}</span></td>
@@ -2186,7 +2259,7 @@ function renderGantt(){
   // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
   actsGantt.forEach(a=>{
     const markedIdx=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
-    const isFail=a.cumple==='No Cumple';
+    const isFail = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'].includes(a.cumple||'');
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
     // tick lines (column dividers)
@@ -2435,9 +2508,12 @@ function _classifyRow(a, isMulti, hdr){
 
   // Completa = tiene todos los requeridos
   if(hasDesc && hasDays && hasObra && hasContr && hasResid && hasFecha){
-    // Si marcó "No Cumple", tiene que tener razón
-    const noCumple = a.cumple === 'No' || a.cumple === 'No Cumple';
-    if(noCumple && !(a.razon||'').trim()) return 'incomplete';
+    // Estados que requieren razón obligatoriamente
+    const estado = a.cumple || '';
+    const requiereRazon = (estado === 'No' || estado === 'No Cumple' ||
+                           estado === 'En espera' || estado === 'Retrasado' ||
+                           estado === 'Cancelado');
+    if(requiereRazon && !(a.razon||'').trim()) return 'incomplete';
     return 'complete';
   }
   return 'incomplete';
@@ -2620,12 +2696,17 @@ async function _syncActsToSupabase(){
     const hdrFechaFin    = document.getElementById('inp-fecha-fin')?.value || null;
 
     // Mappers para cumplir con los CHECK constraints de la tabla:
-    //   cumple:     '' | 'Sí' | 'No'
+    //   cumple:     '' | 'Sí' | 'No' | 'En proceso' | 'Terminado' |
+    //               'Cumplido con atraso' | 'En espera' | 'Retrasado' | 'Cancelado'
     //   criticidad: '' | 'Alta' | 'Media' | 'Baja'
     const mapCumple = v => {
       if(!v) return '';
-      if(v === 'No Cumple' || v === 'No' || v === 'no') return 'No';
-      if(v === 'Cumple' || v === 'Sí' || v === 'Si' || v === 'si') return 'Sí';
+      // Valores UI legacy → legacy DB
+      if(v === 'No Cumple') return 'No';
+      if(v === 'Cumple')    return 'Sí';
+      // Valores nuevos → se guardan tal cual
+      const validos = ['Sí','Si','No','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+      if(validos.includes(v)) return (v === 'Si' ? 'Sí' : v);
       return '';
     };
     const mapCriticidad = v => {
@@ -2663,6 +2744,7 @@ async function _syncActsToSupabase(){
         cumple:        mapCumple(a.cumple),
         razon:         a.razon || '',
         criticidad:    mapCriticidad(a.criticidad),
+        dias_atraso:   Number.isFinite(a.dias_atraso) ? a.dias_atraso : 0,
         orden:         i
       });
     });
@@ -2731,11 +2813,15 @@ function save(){
 async function _loadActsFromSupabase(){
   if(!window._axcUid) return [];
   // Traductores inversos: DB → formato esperado por la UI
-  // La UI maneja 3 valores: '' (sin asignar), 'Cumple', 'No Cumple'
+  // La UI maneja: '' (sin asignar) + 6 estados nuevos + legacy 'Sí'/'No' (retrocompat)
   const fromDBCumple = v => {
-    if(v === 'No') return 'No Cumple';
-    if(v === 'Sí' || v === 'Si') return 'Cumple';
-    return '';   // sin asignar
+    if(!v) return '';
+    const nuevos = ['En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+    if(nuevos.includes(v)) return v;
+    // Legacy: los mapeamos a los nuevos estados por defecto
+    if(v === 'Sí' || v === 'Si') return 'Terminado';
+    if(v === 'No') return 'Retrasado';
+    return '';
   };
   const fromDBCriticidad = v => {
     if(v === 'Alta')  return 'alto';
@@ -2761,6 +2847,7 @@ async function _loadActsFromSupabase(){
       cumple:           fromDBCumple(r.cumple),
       razon:            r.razon || '',
       criticidad:       fromDBCriticidad(r.criticidad),
+      dias_atraso:      Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
       obra_act:         r.modo === 'multi' ? (r.obra || '') : '',
       // Contratista: en Multi va por fila (obra_act + contratista_act).
       // En Obra Única ahora TAMBIÉN va por fila — antes estaba en el header
