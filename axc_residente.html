@@ -861,13 +861,16 @@ async function _bootApp(user){
 
   // Re-sincronizar el global `obra` y localStorage con el valor restaurado.
   onObraChange();
-  // Cargar actividades del usuario desde Supabase (antes vivían en localStorage)
-  acts = await _loadActsFromSupabase();
+  // Cargar actividades del residente seleccionado/asignado desde Supabase.
+  // Esto funciona tanto para admin (usa el dropdown) como para residente
+  // (usa su asignación fija). El filtro es por residente=, no por user_id,
+  // así un residente ve sus actividades aunque las haya creado el admin.
+  window._ultimoResidenteCargado = null; // forzar carga inicial
+  await onResidenteChange();             // pobla `acts` y hace render
   // Modo (siempre obra única para Residentes)
   window._modoLocked=false;
   setModo('unica');
   if(!acts.length) setTimeout(mostrarBienvenida,300);
-  renderAll();
 
 }
 
@@ -1007,19 +1010,25 @@ function addWorkDays(start,n){
 // Para residente: no debería llegar acá porque el dropdown está disabled,
 // pero por las dudas lo fuerza a su valor asignado.
 async function onResidenteChange(){
-  // Si el usuario NO es admin, bloquear cambios al dropdown
+  // Para residentes (no admin): forzar el valor del dropdown a su asignación fija.
   if(!window._axcEsAdmin && window._axcResidente){
     const sel = document.getElementById('inp-residente');
     if(sel.value !== window._axcResidente){
       sel.value = window._axcResidente;
     }
-    onObraChange();
-    return;
+    // (Antes retornaba acá sin cargar actividades. Ahora seguimos
+    // a la carga unificada por filtro residente= así el residente
+    // ve sus actividades aunque hayan sido creadas por el admin.)
   }
 
-  // Si es admin y cambió el residente, cargar las actividades de ese residente
-  if(window._axcEsAdmin){
-    const selResid = document.getElementById('inp-residente').value;
+  // Carga unificada: SIEMPRE filtrar por residente (no por user_id),
+  // así el query funciona para admin y residente. Las RLS ya permiten
+  // que cada residente vea solo lo que le corresponde.
+  {
+    // Para residente (no admin) usamos su nombre fijo; para admin usamos lo elegido.
+    const selResid = (!window._axcEsAdmin && window._axcResidente)
+      ? window._axcResidente
+      : document.getElementById('inp-residente').value;
     if(selResid && selResid !== window._ultimoResidenteCargado){
       window._ultimoResidenteCargado = selResid;
       try{
