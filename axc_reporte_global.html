@@ -168,8 +168,8 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 
 /* ── KPI strip: tira de números clave arriba del dashboard ── */
 .kpi-strip{display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:12px;margin-bottom:14px}
-.kpi-num{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;position:relative;overflow:hidden;display:flex;flex-direction:column;gap:4px}
-.kpi-num::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.kpi-num{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;position:relative;display:flex;flex-direction:column;gap:4px}
+.kpi-num::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent);border-top-left-radius:var(--r);border-bottom-left-radius:var(--r)}
 .kpi-num.k-ok::before{background:var(--green)}
 .kpi-num.k-fail::before{background:var(--red)}
 .kpi-num.k-warn::before{background:var(--accent)}
@@ -179,13 +179,18 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .kpi-num-sub{font-size:10px;color:var(--text3);font-style:italic;margin-top:auto}
 .kpi-num .info-icon{width:14px;height:14px;font-size:9px;margin-left:auto}
 
-/* ── Info tooltip icon for charts ── */
-.info-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(88,166,255,.15);border:1px solid rgba(88,166,255,.35);color:#58a6ff;font-size:10px;font-weight:700;cursor:help;font-family:'Mulish',sans-serif;flex-shrink:0;transition:all .15s;position:relative;margin-left:auto}
+/* ── Info tooltip icon (popover global vía JS) ── */
+.info-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(88,166,255,.15);border:1px solid rgba(88,166,255,.35);color:#58a6ff;font-size:10px;font-weight:700;cursor:help;font-family:'Mulish',sans-serif;flex-shrink:0;transition:all .15s;margin-left:auto;padding:0}
 .info-icon:hover,.info-icon:focus{background:rgba(88,166,255,.3);border-color:#58a6ff;outline:none}
-.info-icon::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);right:-4px;background:#0d1117;border:1px solid rgba(88,166,255,.4);border-radius:8px;padding:10px 14px;font-family:'Mulish',sans-serif;font-size:11px;font-weight:400;line-height:1.55;color:#c9d1d9;width:280px;max-width:calc(100vw - 40px);text-align:left;white-space:pre-line;letter-spacing:0;opacity:0;pointer-events:none;transform:translateY(-4px);transition:opacity .15s,transform .15s;z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.6)}
-.info-icon::before{content:'';position:absolute;top:calc(100% + 2px);right:4px;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:6px solid rgba(88,166,255,.4);opacity:0;pointer-events:none;transition:opacity .15s;z-index:1001}
-.info-icon:hover::after,.info-icon:focus::after,.info-icon.active::after{opacity:1;transform:translateY(0);pointer-events:auto}
-.info-icon:hover::before,.info-icon:focus::before,.info-icon.active::before{opacity:1}
+
+/* Popover único, posicionado por JS */
+#info-popover{position:fixed;z-index:9999;background:#0d1117;border:1px solid rgba(88,166,255,.4);border-radius:8px;padding:12px 16px;font-family:'Mulish',sans-serif;font-size:12px;font-weight:400;line-height:1.6;color:#c9d1d9;width:320px;max-width:calc(100vw - 24px);text-align:left;white-space:pre-line;box-shadow:0 12px 32px rgba(0,0,0,.7);opacity:0;transform:translateY(-4px);transition:opacity .12s,transform .12s;pointer-events:none}
+#info-popover.show{opacity:1;transform:translateY(0);pointer-events:auto}
+#info-popover .info-pop-arrow{position:absolute;width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent}
+#info-popover.below .info-pop-arrow{top:-7px;border-bottom:7px solid rgba(88,166,255,.5)}
+#info-popover.above .info-pop-arrow{bottom:-7px;border-top:7px solid rgba(88,166,255,.5)}
+#info-popover .info-pop-close{position:absolute;top:6px;right:8px;background:none;border:none;color:var(--text3);font-size:14px;cursor:pointer;padding:0;width:18px;height:18px;line-height:1;display:none}
+#info-popover.touch .info-pop-close{display:block}
 .chart-wrap{position:relative;flex:1;min-height:220px}
 .chart-wrap.tall{min-height:280px}
 .chart-empty{text-align:center;padding:50px 20px;color:var(--text3);font-size:12px;font-style:italic}
@@ -2350,26 +2355,130 @@ document.getElementById('auth-pass').addEventListener('keyup', e => {
   if(e.key === 'Enter') doLogin();
 });
 
-// ── Soporte de tap en móvil para los tooltips ⓘ de cada gráfico ──
-// En desktop funciona con hover/focus (CSS). En móvil/táctil, un tap
-// alterna la clase .active y cualquier otro tap afuera la cierra.
-document.addEventListener('click', e => {
-  const icon = e.target.closest('.info-icon');
-  // Cerrar todos los abiertos que no sean el clickeado
-  document.querySelectorAll('.info-icon.active').forEach(el => {
-    if(el !== icon) el.classList.remove('active');
+// ── Sistema de tooltips ⓘ con popover único posicionado dinámicamente ──
+// Resuelve el problema de tooltips cortados por overflow:hidden o por estar
+// cerca del borde inferior. Un solo elemento DOM se reposiciona JIT.
+//
+// Comportamiento:
+// • Desktop: hover/focus muestra el popover. Sale del card si hace falta (es fixed).
+// • Móvil/táctil: tap alterna; otro tap afuera o tecla Escape cierra.
+// • Si no entra abajo, se posiciona arriba automáticamente.
+// • Se ajusta horizontalmente para no salir de la ventana.
+
+(function(){
+  // Crear el popover único una sola vez
+  const pop = document.createElement('div');
+  pop.id = 'info-popover';
+  pop.innerHTML = '<div class="info-pop-arrow"></div>'
+                + '<button class="info-pop-close" aria-label="Cerrar">✕</button>'
+                + '<div class="info-pop-text"></div>';
+  document.body.appendChild(pop);
+  const popText  = pop.querySelector('.info-pop-text');
+  const popArrow = pop.querySelector('.info-pop-arrow');
+  const popClose = pop.querySelector('.info-pop-close');
+
+  let currentIcon = null;
+  let isTouchMode = false;
+
+  function showFor(icon, touch){
+    currentIcon = icon;
+    isTouchMode = !!touch;
+    pop.classList.toggle('touch', isTouchMode);
+    popText.textContent = icon.getAttribute('data-tip') || '';
+
+    // Medir primero, luego posicionar
+    pop.classList.add('show');
+    pop.style.left = '0px';
+    pop.style.top  = '0px';
+
+    requestAnimationFrame(() => {
+      const r = icon.getBoundingClientRect();
+      const pw = pop.offsetWidth;
+      const ph = pop.offsetHeight;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const margin = 12;
+      const gap = 10;
+
+      // Decidir abajo o arriba según espacio disponible
+      const spaceBelow = vh - r.bottom;
+      const spaceAbove = r.top;
+      const placeBelow = spaceBelow >= ph + gap || spaceBelow >= spaceAbove;
+      let top  = placeBelow ? (r.bottom + gap) : (r.top - ph - gap);
+
+      // Centrar horizontalmente sobre el ícono, pero ajustar para no salir
+      let left = r.left + r.width/2 - pw/2;
+      if(left < margin) left = margin;
+      if(left + pw > vw - margin) left = vw - margin - pw;
+
+      pop.style.left = left + 'px';
+      pop.style.top  = top  + 'px';
+      pop.classList.toggle('below', placeBelow);
+      pop.classList.toggle('above', !placeBelow);
+
+      // Posición de la flecha (apunta al centro del ícono)
+      const iconCenterX = r.left + r.width/2;
+      let arrowLeft = iconCenterX - left - 7;
+      arrowLeft = Math.max(10, Math.min(pw - 24, arrowLeft));
+      popArrow.style.left = arrowLeft + 'px';
+    });
+  }
+  function hide(){
+    pop.classList.remove('show');
+    currentIcon = null;
+    isTouchMode = false;
+  }
+
+  // Hover/focus en desktop
+  document.addEventListener('mouseover', e => {
+    const icon = e.target.closest('.info-icon');
+    if(icon && icon !== currentIcon && !isTouchMode) showFor(icon, false);
   });
-  if(icon){
-    e.stopPropagation();
-    icon.classList.toggle('active');
-  }
-});
-// Cerrar con Escape
-document.addEventListener('keydown', e => {
-  if(e.key === 'Escape'){
-    document.querySelectorAll('.info-icon.active').forEach(el => el.classList.remove('active'));
-  }
-});
+  document.addEventListener('mouseout', e => {
+    const icon = e.target.closest('.info-icon');
+    if(!icon || isTouchMode) return;
+    // Solo cerrar si no estamos pasando al popover (para mouse leaks)
+    const to = e.relatedTarget;
+    if(to && (to === pop || pop.contains(to))) return;
+    hide();
+  });
+  document.addEventListener('focusin', e => {
+    const icon = e.target.closest('.info-icon');
+    if(icon) showFor(icon, false);
+  });
+  document.addEventListener('focusout', e => {
+    if(!isTouchMode) hide();
+  });
+
+  // Tap (móvil)
+  document.addEventListener('click', e => {
+    const icon = e.target.closest('.info-icon');
+    if(icon){
+      e.stopPropagation();
+      if(currentIcon === icon && pop.classList.contains('show') && isTouchMode){
+        hide();
+      } else {
+        showFor(icon, true);
+      }
+      return;
+    }
+    // Click fuera del popover lo cierra
+    if(!e.target.closest('#info-popover')) hide();
+  });
+  popClose.addEventListener('click', e => { e.stopPropagation(); hide(); });
+
+  // Escape cierra
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape') hide();
+  });
+
+  // Reposicionar al hacer scroll/resize si está visible
+  ['scroll','resize'].forEach(ev => {
+    window.addEventListener(ev, () => {
+      if(currentIcon && pop.classList.contains('show')) showFor(currentIcon, isTouchMode);
+    }, true);
+  });
+})();
 </script>
 </body>
 </html>
