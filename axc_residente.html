@@ -1548,6 +1548,277 @@ AXC_BL.cerrarTodosLosToasts = function() {
 // FIN MODULO 5 DE 8
 // ============================================================
 
+// ============================================================
+// AXC v2.5 - MODULO 6 DE 8: Mecanica de clicks acumulativos
+// ============================================================
+// Implementa rotacion de estados sobre celdas de dia segun
+// iconografia oficial. Decision 9: clicks rotan estados con
+// opcion deshacer durante 5 segundos.
+// ============================================================
+
+// Define la secuencia de rotacion de estados para dias planificados
+// Ciclo: PLAN -> CUMPLIO -> NO_CUMPLIO -> NO_APLICA -> PLAN
+AXC_BL.SECUENCIA_ROTACION_PLAN = [
+  'plan',
+  'cumplio',
+  'no_cumplio',
+  'no_aplica',
+  'plan'
+];
+
+// Define la secuencia de rotacion de estados para dias no planificados
+// Ciclo: SIN_MARCAR -> EXTRA_CUMPLIO -> EXTRA_NO_CUMPLIO -> SIN_MARCAR
+AXC_BL.SECUENCIA_ROTACION_EXTRA = [
+  'sin_marcar',
+  'extra_cumplio',
+  'extra_no_cumplio',
+  'sin_marcar'
+];
+
+// Calcula el siguiente estado en la secuencia de rotacion correspondiente
+// Recibe estado actual y devuelve el siguiente estado del ciclo
+AXC_BL.calcularSiguienteEstadoRotacion = function(estadoActual, esPlanificado) {
+  const secuencia = esPlanificado ? AXC_BL.SECUENCIA_ROTACION_PLAN : AXC_BL.SECUENCIA_ROTACION_EXTRA;
+  const indiceActual = secuencia.indexOf(estadoActual);
+  if (indiceActual === -1 || indiceActual === secuencia.length - 1) {
+    return secuencia[0];
+  }
+  return secuencia[indiceActual + 1];
+};
+
+// Ejecuta el click sobre una celda de dia con rotacion de estado
+// Aplica validaciones del modelo y registra los cambios en BD
+// Devuelve objeto con success, estado_anterior, estado_nuevo
+AXC_BL.rotarEstadoCelda = async function(actividadId, indiceDia) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacionMarcable = AXC_BL.diaEsMarcable(actividad, indiceDia);
+    if (!validacionMarcable.marcable) {
+      return { success: false, error: validacionMarcable.motivo };
+    }
+    const daysNormalizado = AXC_BL.convertirAFormatoNuevo(actividad.days);
+    if (indiceDia >= daysNormalizado.length) {
+      return { success: false, error: 'Indice de dia fuera de rango' };
+    }
+    const dia = daysNormalizado[indiceDia];
+    const estadoAnterior = dia.cumple;
+    const estadoNuevo = AXC_BL.calcularSiguienteEstadoRotacion(estadoAnterior, dia.plan);
+    const resultado = await AXC_BL.actualizarDiaActividad(actividadId, indiceDia, estadoNuevo);
+    if (!resultado.success) {
+      return { success: false, error: resultado.error };
+    }
+    return {
+      success: true,
+      estado_anterior: estadoAnterior,
+      estado_nuevo: estadoNuevo,
+      data: resultado.data
+    };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Genera la accion deshacer para una rotacion ejecutada
+// Permite al usuario revertir el cambio durante la ventana de 5 segundos
+AXC_BL.generarAccionDeshacerRotacion = function(actividadId, indiceDia, estadoAnterior) {
+  return async function() {
+    return await AXC_BL.actualizarDiaActividad(actividadId, indiceDia, estadoAnterior);
+  };
+};
+
+// Ejecuta la rotacion completa con notificacion toast y opcion deshacer
+// Funcion conveniente que combina la rotacion con el feedback visual
+AXC_BL.clickearCelda = async function(actividadId, indiceDia) {
+  const resultado = await AXC_BL.rotarEstadoCelda(actividadId, indiceDia);
+  if (!resultado.success) {
+    AXC_BL.toastError(resultado.error);
+    return resultado;
+  }
+  const accionDeshacer = AXC_BL.generarAccionDeshacerRotacion(
+    actividadId,
+    indiceDia,
+    resultado.estado_anterior
+  );
+  AXC_BL.toastExito('Dia actualizado', {
+    accionDeshacer: accionDeshacer,
+    etiquetaDeshacer: 'Deshacer'
+  });
+  return resultado;
+};
+
+// ============================================================
+// FIN MODULO 6 DE 8
+// ============================================================
+
+
+// ============================================================
+// AXC v2.5 - MODULO 7 DE 8: Funciones administrativas
+// ============================================================
+// Implementa operaciones reservadas para usuarios con rol admin.
+// Decision 4: cambios administrativos requieren motivo >= 20 chars
+// y registran auditoria automatica en baseline_audit_log.
+// ============================================================
+
+// Longitud minima del motivo para operaciones administrativas
+AXC_BL.MOTIVO_LONGITUD_MINIMA = 20;
+
+// Valida que un motivo administrativo cumple la longitud minima
+AXC_BL.validarMotivoAdmin = function(motivo) {
+  if (!motivo || typeof motivo !== 'string') {
+    return { valido: false, error: 'El motivo es obligatorio' };
+  }
+  const trimmed = motivo.trim();
+  if (trimmed.length < AXC_BL.MOTIVO_LONGITUD_MINIMA) {
+    return {
+      valido: false,
+      error: 'El motivo debe tener al menos ' + AXC_BL.MOTIVO_LONGITUD_MINIMA + ' caracteres'
+    };
+  }
+  return { valido: true, motivo: trimmed };
+};
+
+// Registra una entrada en la tabla de auditoria
+// Utilizado por las funciones administrativas para trazabilidad
+AXC_BL._registrarAuditoria = async function(actividadId, accion, motivo, contextoPrevio) {
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const entrada = {
+      actividad_id: actividadId,
+      accion: accion,
+      admin_id: usuario.id,
+      motivo: motivo,
+      contexto_previo: contextoPrevio
+    };
+    const resultado = await _SB.from('baseline_audit_log').insert(entrada).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error registrando auditoria: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Confirma retroactivamente la baseline de una actividad
+// Operacion administrativa que ignora la regla del dia de inicio
+// Requiere motivo >= 20 caracteres y registra entrada en auditoria
+AXC_BL.confirmarRetroactivo = async function(actividadId, motivo) {
+  const validacionMotivo = AXC_BL.validarMotivoAdmin(motivo);
+  if (!validacionMotivo.valido) {
+    return { success: false, error: validacionMotivo.error };
+  }
+  const esAdmin = await AXC_BL.esUsuarioAdmin();
+  if (!esAdmin) {
+    return { success: false, error: 'Operacion reservada para administradores' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    if (actividad.baseline_confirmada === true) {
+      return { success: false, error: 'La actividad ya esta confirmada' };
+    }
+    const contextoPrevio = {
+      baseline_confirmada: actividad.baseline_confirmada,
+      fecha_inicio: actividad.fecha_inicio,
+      days: actividad.days
+    };
+    const ahora = new Date().toISOString();
+    const update = {
+      baseline_confirmada: true,
+      baseline_confirmada_at: ahora,
+      baseline_confirmada_por: usuario.id,
+      fecha_fin_plan: actividad.fecha_fin,
+      days: AXC_BL.convertirAFormatoNuevo(actividad.days)
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error confirmando: ' + resultado.error.message };
+    }
+    await AXC_BL._registrarAuditoria(actividadId, 'confirmacion_retroactiva', validacionMotivo.motivo, contextoPrevio);
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Revierte una baseline confirmada al estado de borrador
+// Operacion administrativa que limpia los campos de confirmacion
+// Requiere motivo >= 20 caracteres y registra entrada en auditoria
+AXC_BL.revertirABorrador = async function(actividadId, motivo) {
+  const validacionMotivo = AXC_BL.validarMotivoAdmin(motivo);
+  if (!validacionMotivo.valido) {
+    return { success: false, error: validacionMotivo.error };
+  }
+  const esAdmin = await AXC_BL.esUsuarioAdmin();
+  if (!esAdmin) {
+    return { success: false, error: 'Operacion reservada para administradores' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    if (actividad.baseline_confirmada !== true) {
+      return { success: false, error: 'La actividad no esta confirmada' };
+    }
+    const contextoPrevio = {
+      baseline_confirmada: actividad.baseline_confirmada,
+      baseline_confirmada_at: actividad.baseline_confirmada_at,
+      baseline_confirmada_por: actividad.baseline_confirmada_por,
+      fecha_fin_plan: actividad.fecha_fin_plan,
+      days: actividad.days
+    };
+    const update = {
+      baseline_confirmada: false,
+      baseline_confirmada_at: null,
+      baseline_confirmada_por: null,
+      fecha_fin_plan: null
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error revirtiendo: ' + resultado.error.message };
+    }
+    await AXC_BL._registrarAuditoria(actividadId, 'reversion_a_borrador', validacionMotivo.motivo, contextoPrevio);
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Consulta el historial de auditoria de una actividad
+// Devuelve array de entradas ordenadas cronologicamente
+AXC_BL.consultarHistorialAuditoria = async function(actividadId) {
+  try {
+    const resultado = await _SB.from('baseline_audit_log').select('*').eq('actividad_id', actividadId).order('created_at', { ascending: false });
+    if (resultado.error) {
+      return { success: false, error: 'Error consultando historial: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// ============================================================
+// FIN MODULO 7 DE 8
+// ============================================================
+
+
 
 // ============================================================
 // AXC v2.5 - MODULO 4 DE 8: Persistencia contra Supabase
