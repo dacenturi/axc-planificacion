@@ -819,6 +819,1244 @@ const _SB_KEY = _ES_LOCAL
 
 const _SB = supabase.createClient(_SB_URL, _SB_KEY);
 
+// ============================================================
+// AXC v2.5 - MODULO 1 DE 8: Normalizacion de array days
+// ============================================================
+// Convierte entre formato viejo (array de booleanos) y formato
+// nuevo (array de objetos con plan/cumple/marcado_por/marcado_at).
+// Las funciones son IDEMPOTENTES: aplicar dos veces produce el
+// mismo resultado que aplicar una vez.
+// ============================================================
+
+const AXC_BL = window.AXC_BL || {};
+window.AXC_BL = AXC_BL;
+
+// Estados validos para la propiedad cumple en el formato nuevo
+AXC_BL.ESTADOS_CUMPLE = {
+  PLAN: 'plan',
+  CUMPLIO: 'cumplio',
+  NO_CUMPLIO: 'no_cumplio',
+  NO_APLICA: 'no_aplica',
+  SIN_MARCAR: 'sin_marcar',
+  EXTRA_CUMPLIO: 'extra_cumplio',
+  EXTRA_NO_CUMPLIO: 'extra_no_cumplio'
+};
+
+// Detecta si un array de days esta en formato viejo o nuevo
+AXC_BL.detectarFormato = function(daysArray) {
+  if (!Array.isArray(daysArray) || daysArray.length === 0) {
+    return 'vacio';
+  }
+  const primero = daysArray[0];
+  if (typeof primero === 'boolean') {
+    return 'viejo';
+  }
+  if (typeof primero === 'object' && primero !== null && 'plan' in primero) {
+    return 'nuevo';
+  }
+  return 'desconocido';
+};
+
+// Convierte un array de days al formato nuevo (objetos con plan/cumple/marcado_por/marcado_at)
+// Funcion idempotente: si ya esta en formato nuevo, lo devuelve sin cambios
+AXC_BL.convertirAFormatoNuevo = function(daysArray) {
+  if (!Array.isArray(daysArray)) {
+    return [];
+  }
+  const formato = AXC_BL.detectarFormato(daysArray);
+  if (formato === 'nuevo') {
+    return daysArray;
+  }
+  if (formato === 'vacio') {
+    return [];
+  }
+  // Formato viejo: convertir cada booleano a un objeto
+  return daysArray.map(function(valor) {
+    const planificado = (valor === true);
+    return {
+      plan: planificado,
+      cumple: planificado ? AXC_BL.ESTADOS_CUMPLE.PLAN : AXC_BL.ESTADOS_CUMPLE.SIN_MARCAR,
+      marcado_por: null,
+      marcado_at: null
+    };
+  });
+};
+
+// Convierte un array de days al formato viejo (array de booleanos representando plan)
+// Util para retrocompatibilidad puntual con codigo legacy
+AXC_BL.convertirAFormatoViejo = function(daysArray) {
+  if (!Array.isArray(daysArray)) {
+    return [];
+  }
+  const formato = AXC_BL.detectarFormato(daysArray);
+  if (formato === 'viejo') {
+    return daysArray;
+  }
+  if (formato === 'vacio') {
+    return [];
+  }
+  return daysArray.map(function(item) {
+    return (item && item.plan === true);
+  });
+};
+
+// Crea un array de days vacio del tamaño solicitado en formato nuevo
+AXC_BL.crearArrayVacio = function(cantidad) {
+  const cant = Math.max(0, parseInt(cantidad, 10) || 0);
+  const resultado = [];
+  for (let i = 0; i < cant; i++) {
+    resultado.push({
+      plan: false,
+      cumple: AXC_BL.ESTADOS_CUMPLE.SIN_MARCAR,
+      marcado_por: null,
+      marcado_at: null
+    });
+  }
+  return resultado;
+};
+
+// Cuenta dias planificados (plan === true) en un array
+AXC_BL.contarDiasPlanificados = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  return arr.filter(function(d) { return d.plan === true; }).length;
+};
+
+// Cuenta dias por estado especifico en un array
+AXC_BL.contarDiasPorEstado = function(daysArray, estado) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  return arr.filter(function(d) { return d.cumple === estado; }).length;
+};
+
+// ============================================================
+// FIN MODULO 1 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 2 DE 8: Calculos automaticos
+// ============================================================
+// Implementa formula oficial de porcentaje de cumplimiento y
+// tabla de 7 situaciones para estado calculado automaticamente.
+// Documentado en propuesta presentada a gerencia.
+// ============================================================
+
+// Estados calculados de la actividad (tabla de 7 situaciones)
+AXC_BL.ESTADOS_ACTIVIDAD = {
+  VACIO: '',
+  SIN_EMPEZAR: 'sin_empezar',
+  EN_PROCESO: 'en_proceso',
+  TERMINADO: 'terminado',
+  CUMPLIDO_CON_ATRASO: 'cumplido_con_atraso',
+  RETRASADO: 'retrasado',
+  CANCELADO: 'cancelado'
+};
+
+// Etiquetas legibles para los estados (uso en interfaz)
+AXC_BL.ETIQUETAS_ESTADO = {
+  '': '(vacio)',
+  'sin_empezar': '(sin empezar)',
+  'en_proceso': 'En proceso',
+  'terminado': 'Terminado',
+  'cumplido_con_atraso': 'Cumplido con atraso',
+  'retrasado': 'Retrasado',
+  'cancelado': 'Cancelado'
+};
+
+// Calcula porcentaje de cumplimiento segun formula oficial
+// Formula: cumplidos / (cumplidos + no_cumplidos) * 100
+// Excluye dias no_aplica del calculo
+// Devuelve null si no hay dias evaluados para mostrar como guion en UI
+AXC_BL.calcularPorcentajeCumplimiento = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  if (arr.length === 0) {
+    return null;
+  }
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const total_evaluados = cumplidos + no_cumplidos;
+  if (total_evaluados === 0) {
+    return null;
+  }
+  const porcentaje = (cumplidos / total_evaluados) * 100;
+  return Math.round(porcentaje * 10) / 10;
+};
+
+// Calcula estado automatico segun tabla de 7 situaciones
+// Evalua condiciones en orden de especificidad
+// Documentado en propuesta presentada a gerencia
+AXC_BL.calcularEstadoAutomatico = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  if (arr.length === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.VACIO;
+  }
+
+  const planificados = AXC_BL.contarDiasPlanificados(arr);
+  const con_plan = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.PLAN);
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const no_aplica = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_APLICA);
+  const extra_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_CUMPLIO);
+  const extra_no_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_NO_CUMPLIO);
+  const dias_extra = extra_cumplio + extra_no_cumplio;
+
+  // Caso 1: sin dias planificados ni dias extra
+  if (planificados === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.VACIO;
+  }
+
+  // Caso 2: todos los planificados son PLAN (sin marcar) y no hay extras
+  if (con_plan === planificados && cumplidos === 0 && no_cumplidos === 0 && no_aplica === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.SIN_EMPEZAR;
+  }
+
+  // Caso 7: todos los planificados son no_aplica (sin ningun cumplio)
+  if (planificados > 0 && no_aplica === planificados && cumplidos === 0 && extra_cumplio === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.CANCELADO;
+  }
+
+  // Caso 6: hay al menos un no_cumplio o un extra_no_cumplio
+  if (no_cumplidos > 0 || extra_no_cumplio > 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.RETRASADO;
+  }
+
+  // Caso 5: todos los planificados cumplio + al menos un extra_cumplio (sin no_cumplio)
+  if (cumplidos > 0 && cumplidos + no_aplica === planificados && con_plan === 0 && extra_cumplio > 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.CUMPLIDO_CON_ATRASO;
+  }
+
+  // Caso 4: todos los planificados cumplio, sin extras, sin pendientes
+  if (cumplidos > 0 && cumplidos + no_aplica === planificados && con_plan === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.TERMINADO;
+  }
+
+  // Caso 3: hay cumplio pero quedan PLAN pendientes y sin no_cumplio
+  if (cumplidos > 0 && con_plan > 0 && no_cumplidos === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.EN_PROCESO;
+  }
+
+  // Caso fallback: cualquier combinacion no contemplada queda como en_proceso
+  return AXC_BL.ESTADOS_ACTIVIDAD.EN_PROCESO;
+};
+
+// Calcula resumen consolidado de una actividad
+// Devuelve objeto con porcentaje, estado, etiqueta y metricas
+// Util para renderizado en interfaz
+AXC_BL.calcularResumenActividad = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  const porcentaje = AXC_BL.calcularPorcentajeCumplimiento(arr);
+  const estado = AXC_BL.calcularEstadoAutomatico(arr);
+  const planificados = AXC_BL.contarDiasPlanificados(arr);
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const no_aplica = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_APLICA);
+  const extra_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_CUMPLIO);
+  const extra_no_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_NO_CUMPLIO);
+  return {
+    porcentaje: porcentaje,
+    porcentaje_texto: porcentaje === null ? '—' : porcentaje.toFixed(1) + '%',
+    estado: estado,
+    estado_etiqueta: AXC_BL.ETIQUETAS_ESTADO[estado] || estado,
+    dias_planificados: planificados,
+    dias_cumplidos: cumplidos,
+    dias_no_cumplidos: no_cumplidos,
+    dias_no_aplica: no_aplica,
+    dias_extra_cumplio: extra_cumplio,
+    dias_extra_no_cumplio: extra_no_cumplio,
+    dias_atraso: extra_cumplio + extra_no_cumplio
+  };
+};
+
+// ============================================================
+// FIN MODULO 2 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 3 DE 8: Validaciones temporales
+// ============================================================
+// Implementa reglas de fecha del modelo Baseline Congelada
+// segun decisiones operativas consolidadas con AXC Constructora.
+// Regla principal: residente solo puede confirmar el dia de
+// inicio de actividad. Dias anteriores a confirmacion quedan
+// bloqueados.
+// ============================================================
+
+// Convierte fecha string YYYY-MM-DD a objeto Date sin zona horaria
+AXC_BL.parsearFechaISO = function(fechaStr) {
+  if (!fechaStr) return null;
+  if (fechaStr instanceof Date) return fechaStr;
+  const partes = String(fechaStr).split('T')[0].split('-');
+  if (partes.length !== 3) return null;
+  const ano = parseInt(partes[0], 10);
+  const mes = parseInt(partes[1], 10) - 1;
+  const dia = parseInt(partes[2], 10);
+  if (isNaN(ano) || isNaN(mes) || isNaN(dia)) return null;
+  return new Date(ano, mes, dia);
+};
+
+// Convierte objeto Date a string YYYY-MM-DD para almacenar en BD
+AXC_BL.formatearFechaISO = function(fecha) {
+  if (!fecha) return null;
+  const f = (fecha instanceof Date) ? fecha : AXC_BL.parsearFechaISO(fecha);
+  if (!f) return null;
+  const ano = f.getFullYear();
+  const mes = String(f.getMonth() + 1).padStart(2, '0');
+  const dia = String(f.getDate()).padStart(2, '0');
+  return ano + '-' + mes + '-' + dia;
+};
+
+// Devuelve la fecha de hoy a medianoche local (sin hora)
+AXC_BL.obtenerFechaHoy = function() {
+  const ahora = new Date();
+  return new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+};
+
+// Compara dos fechas ignorando hora. Devuelve -1, 0 o 1
+AXC_BL.compararFechas = function(fechaA, fechaB) {
+  const a = (fechaA instanceof Date) ? fechaA : AXC_BL.parsearFechaISO(fechaA);
+  const b = (fechaB instanceof Date) ? fechaB : AXC_BL.parsearFechaISO(fechaB);
+  if (!a || !b) return null;
+  const ta = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  const tb = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+  if (ta < tb) return -1;
+  if (ta > tb) return 1;
+  return 0;
+};
+
+// Suma dias a una fecha dada. Acepta dias negativos para restar
+AXC_BL.sumarDias = function(fecha, dias) {
+  const f = (fecha instanceof Date) ? new Date(fecha.getTime()) : AXC_BL.parsearFechaISO(fecha);
+  if (!f) return null;
+  f.setDate(f.getDate() + parseInt(dias, 10));
+  return f;
+};
+
+// Calcula array de fechas calendario para cada posicion del array days
+// A partir de fecha_inicio y la longitud del array
+AXC_BL.calcularFechasDelDay = function(fechaInicio, cantidadDias) {
+  const inicio = (fechaInicio instanceof Date) ? fechaInicio : AXC_BL.parsearFechaISO(fechaInicio);
+  if (!inicio) return [];
+  const cant = Math.max(0, parseInt(cantidadDias, 10) || 0);
+  const fechas = [];
+  for (let i = 0; i < cant; i++) {
+    fechas.push(AXC_BL.sumarDias(inicio, i));
+  }
+  return fechas;
+};
+
+// Localiza la posicion del array days que corresponde a la fecha de hoy
+// Devuelve -1 si hoy esta fuera del rango de la actividad
+AXC_BL.obtenerDiaActualEnArray = function(fechaInicio, cantidadDias) {
+  const fechas = AXC_BL.calcularFechasDelDay(fechaInicio, cantidadDias);
+  if (fechas.length === 0) return -1;
+  const hoy = AXC_BL.obtenerFechaHoy();
+  for (let i = 0; i < fechas.length; i++) {
+    if (AXC_BL.compararFechas(fechas[i], hoy) === 0) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+// Evalua si el residente puede confirmar una actividad segun regla de fecha
+// Regla operativa: solo el dia de inicio o anteriores
+// Devuelve objeto con propiedades permitido (boolean) y mensaje (string)
+AXC_BL.puedeConfirmarResidente = function(actividad) {
+  if (!actividad || !actividad.fecha_inicio) {
+    return {
+      permitido: false,
+      mensaje: 'La actividad no tiene fecha de inicio definida'
+    };
+  }
+  if (actividad.baseline_confirmada === true) {
+    return {
+      permitido: false,
+      mensaje: 'La actividad ya esta confirmada'
+    };
+  }
+  const hoy = AXC_BL.obtenerFechaHoy();
+  const inicio = AXC_BL.parsearFechaISO(actividad.fecha_inicio);
+  if (!inicio) {
+    return {
+      permitido: false,
+      mensaje: 'La fecha de inicio tiene formato invalido'
+    };
+  }
+  const comparacion = AXC_BL.compararFechas(hoy, inicio);
+  if (comparacion === 1) {
+    return {
+      permitido: false,
+      mensaje: 'La fecha de inicio ya paso. Solicite al administrador una confirmacion retroactiva',
+      requiere_admin: true
+    };
+  }
+  return {
+    permitido: true,
+    mensaje: 'Confirmacion habilitada'
+  };
+};
+
+// VERSION CORREGIDA de diaEsMarcable
+// Compara solo fechas calendario sin considerar hora del timestamp
+// Permite marcar el mismo dia de la confirmacion aunque la confirmacion
+// se haya realizado en horas posteriores
+
+AXC_BL.diaEsMarcable = function(actividad, indiceDay) {
+  if (!actividad) {
+    return { marcable: false, motivo: 'Actividad invalida' };
+  }
+  if (actividad.baseline_confirmada !== true) {
+    return { marcable: false, motivo: 'La actividad no esta confirmada' };
+  }
+  if (!actividad.baseline_confirmada_at) {
+    return { marcable: false, motivo: 'Falta fecha de confirmacion en la actividad' };
+  }
+  if (!actividad.fecha_inicio) {
+    return { marcable: false, motivo: 'Falta fecha de inicio en la actividad' };
+  }
+  const idx = parseInt(indiceDay, 10);
+  if (isNaN(idx) || idx < 0) {
+    return { marcable: false, motivo: 'Indice de dia invalido' };
+  }
+  const fechaDelDia = AXC_BL.sumarDias(actividad.fecha_inicio, idx);
+  const fechaConfirmacionRaw = AXC_BL.parsearFechaISO(actividad.baseline_confirmada_at);
+  if (!fechaDelDia || !fechaConfirmacionRaw) {
+    return { marcable: false, motivo: 'Error al procesar fechas' };
+  }
+  const fechaConfirmacionSoloFecha = new Date(
+    fechaConfirmacionRaw.getFullYear(),
+    fechaConfirmacionRaw.getMonth(),
+    fechaConfirmacionRaw.getDate()
+  );
+  if (AXC_BL.compararFechas(fechaDelDia, fechaConfirmacionSoloFecha) === -1) {
+    return {
+      marcable: false,
+      motivo: 'El dia es anterior a la fecha de confirmacion de la baseline'
+    };
+  }
+  return { marcable: true, motivo: 'Dia disponible para marcar' };
+};
+
+
+// ============================================================
+// FIN MODULO 3 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 4 DE 8: Persistencia contra Supabase
+// ============================================================
+// Implementa operaciones de base de datos que ejecutan los
+// cambios efectivos del modelo de Baseline Congelada.
+// Decision 7: operaciones masivas son transaccionales atomicas.
+// Decision 4: cambios en baseline registran auditoria automatica.
+// ============================================================
+
+// Cache del usuario autenticado para evitar consultas repetidas
+AXC_BL._usuarioCache = null;
+
+// Recupera la informacion del usuario autenticado desde Supabase Auth
+// Devuelve objeto con id y email o null si no hay sesion activa
+AXC_BL.obtenerUsuarioActual = async function() {
+  if (AXC_BL._usuarioCache) {
+    return AXC_BL._usuarioCache;
+  }
+  try {
+    const respuesta = await _SB.auth.getUser();
+    if (respuesta.error || !respuesta.data || !respuesta.data.user) {
+      return null;
+    }
+    AXC_BL._usuarioCache = {
+      id: respuesta.data.user.id,
+      email: respuesta.data.user.email
+    };
+    return AXC_BL._usuarioCache;
+  } catch (err) {
+    console.error('Error obteniendo usuario actual:', err);
+    return null;
+  }
+};
+
+// Determina si el usuario actual tiene rol administrador
+// Consulta la tabla perfiles para verificar el campo rol
+AXC_BL.esUsuarioAdmin = async function() {
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) return false;
+  try {
+    const respuesta = await _SB.from('perfiles').select('rol').eq('id', usuario.id).single();
+    if (respuesta.error || !respuesta.data) return false;
+    return respuesta.data.rol === 'admin';
+  } catch (err) {
+    console.error('Error verificando rol admin:', err);
+    return false;
+  }
+};
+
+// Confirma la baseline de una actividad individual
+// Aplica las reglas operativas y registra los campos de auditoria
+// Devuelve objeto con success (boolean), data (actividad actualizada) y error (string)
+AXC_BL.confirmarBaseline = async function(actividadId) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.puedeConfirmarResidente(actividad);
+    if (!validacion.permitido) {
+      return { success: false, error: validacion.mensaje, requiere_admin: validacion.requiere_admin };
+    }
+    const daysNuevos = AXC_BL.convertirAFormatoNuevo(actividad.days);
+    const ahora = new Date().toISOString();
+    const update = {
+      baseline_confirmada: true,
+      baseline_confirmada_at: ahora,
+      baseline_confirmada_por: usuario.id,
+      fecha_fin_plan: actividad.fecha_fin,
+      days: daysNuevos
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error al confirmar: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// VERSION CORREGIDA de confirmarBaselineMasiva
+// Reemplaza el upsert por updates individuales secuenciales
+// que respetan las politicas RLS de Supabase
+
+AXC_BL.confirmarBaselineMasiva = async function(actividadIds) {
+  if (!Array.isArray(actividadIds) || actividadIds.length === 0) {
+    return { success: false, error: 'Lista de actividades vacia', confirmadas: [], errores: [] };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible', confirmadas: [], errores: [] };
+  }
+  const errores = [];
+  const actividadesValidadas = [];
+  try {
+    const consulta = await _SB.from('actividades').select('*').in('id', actividadIds);
+    if (consulta.error) {
+      return { success: false, error: 'Error consultando actividades', confirmadas: [], errores: [] };
+    }
+    consulta.data.forEach(function(act) {
+      const validacion = AXC_BL.puedeConfirmarResidente(act);
+      if (!validacion.permitido) {
+        errores.push({ id: act.id, motivo: validacion.mensaje });
+      } else {
+        actividadesValidadas.push(act);
+      }
+    });
+    if (errores.length > 0) {
+      return {
+        success: false,
+        error: 'Algunas actividades no son confirmables',
+        confirmadas: [],
+        errores: errores
+      };
+    }
+    const ahora = new Date().toISOString();
+    const confirmadas = [];
+    for (const act of actividadesValidadas) {
+      const update = {
+        baseline_confirmada: true,
+        baseline_confirmada_at: ahora,
+        baseline_confirmada_por: usuario.id,
+        fecha_fin_plan: act.fecha_fin,
+        days: AXC_BL.convertirAFormatoNuevo(act.days)
+      };
+      const resultado = await _SB.from('actividades').update(update).eq('id', act.id).select().single();
+      if (resultado.error) {
+        return {
+          success: false,
+          error: 'Error en actividad ' + act.id + ': ' + resultado.error.message,
+          confirmadas: confirmadas,
+          errores: []
+        };
+      }
+      confirmadas.push(resultado.data.id);
+    }
+    return {
+      success: true,
+      confirmadas: confirmadas,
+      errores: []
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: 'Error inesperado: ' + err.message,
+      confirmadas: [],
+      errores: []
+    };
+  }
+};
+
+
+// Actualiza el estado de cumplimiento de un dia especifico
+// Registra automaticamente marcado_por y marcado_at
+// Devuelve objeto con success y data o error
+AXC_BL.actualizarDiaActividad = async function(actividadId, indiceDia, nuevoEstado) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.diaEsMarcable(actividad, indiceDia);
+    if (!validacion.marcable) {
+      return { success: false, error: validacion.motivo };
+    }
+    const daysActualizados = AXC_BL.convertirAFormatoNuevo(actividad.days).slice();
+    if (indiceDia >= daysActualizados.length) {
+      return { success: false, error: 'Indice de dia fuera de rango' };
+    }
+    const diaActual = daysActualizados[indiceDia];
+    daysActualizados[indiceDia] = {
+      plan: diaActual.plan,
+      cumple: nuevoEstado,
+      marcado_por: usuario.id,
+      marcado_at: new Date().toISOString()
+    };
+    const resultado = await _SB.from('actividades').update({ days: daysActualizados }).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error actualizando dia: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Recarga la informacion del usuario actual descartando el cache
+// Util cuando se cambia de sesion sin recargar la pagina
+AXC_BL.recargarUsuarioActual = function() {
+  AXC_BL._usuarioCache = null;
+};
+
+// ============================================================
+// FIN MODULO 4 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 5 DE 8: Sistema de notificaciones toast
+// ============================================================
+// Implementa retroalimentacion visual unificada para el usuario
+// segun decision 8 (toast tres niveles) y decision 9 (deshacer).
+// Notificaciones aparecen en esquina superior derecha con
+// animacion suave y desaparecen automaticamente tras 5 segundos.
+// ============================================================
+
+// Niveles de severidad de las notificaciones
+AXC_BL.TOAST_NIVELES = {
+  EXITO: 'exito',
+  ADVERTENCIA: 'advertencia',
+  ERROR: 'error',
+  INFO: 'info'
+};
+
+// Configuracion de colores por nivel segun decisiones operativas
+AXC_BL._toastEstilos = {
+  exito: { bg: '#2E7D32', borde: '#1B5E20', icono: '✓' },
+  advertencia: { bg: '#E65100', borde: '#BF360C', icono: '⚠' },
+  error: { bg: '#C62828', borde: '#8E0000', icono: '✗' },
+  info: { bg: '#1565C0', borde: '#0D47A1', icono: 'ℹ' }
+};
+
+// Almacena las acciones reversibles activas para mecanismo de deshacer
+AXC_BL._accionesDeshacer = new Map();
+
+// Crea el contenedor de toasts si no existe en el DOM
+AXC_BL._asegurarContenedorToasts = function() {
+  let contenedor = document.getElementById('axc-toast-contenedor');
+  if (contenedor) return contenedor;
+  contenedor = document.createElement('div');
+  contenedor.id = 'axc-toast-contenedor';
+  contenedor.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;max-width:420px;font-family:sans-serif;';
+  document.body.appendChild(contenedor);
+  return contenedor;
+};
+
+// Muestra una notificacion toast en la interfaz
+// Parametros: mensaje (string), nivel (string), opciones (object)
+// Opciones soportadas:
+//   duracion: milisegundos antes de cierre automatico (default 5000)
+//   accionDeshacer: funcion async que ejecuta el deshacer
+//   etiquetaDeshacer: texto del boton de deshacer (default 'Deshacer')
+AXC_BL.mostrarToast = function(mensaje, nivel, opciones) {
+  opciones = opciones || {};
+  const nivelValido = AXC_BL._toastEstilos[nivel] ? nivel : AXC_BL.TOAST_NIVELES.INFO;
+  const estilo = AXC_BL._toastEstilos[nivelValido];
+  const duracion = opciones.duracion || 5000;
+  const tieneDeshacer = typeof opciones.accionDeshacer === 'function';
+  const etiquetaDeshacer = opciones.etiquetaDeshacer || 'Deshacer';
+  const contenedor = AXC_BL._asegurarContenedorToasts();
+  const toastId = 'toast-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+  const toast = document.createElement('div');
+  toast.id = toastId;
+  toast.style.cssText = 'background:' + estilo.bg + ';color:white;padding:12px 16px;border-radius:6px;border-left:4px solid ' + estilo.borde + ';box-shadow:0 4px 12px rgba(0,0,0,0.25);display:flex;align-items:center;gap:10px;font-size:14px;line-height:1.4;opacity:0;transform:translateX(20px);transition:all 0.3s ease;';
+  const iconoEl = document.createElement('span');
+  iconoEl.style.cssText = 'font-size:18px;font-weight:bold;flex-shrink:0;';
+  iconoEl.textContent = estilo.icono;
+  const mensajeEl = document.createElement('span');
+  mensajeEl.style.cssText = 'flex:1;';
+  mensajeEl.textContent = mensaje;
+  const cerrarEl = document.createElement('button');
+  cerrarEl.style.cssText = 'background:transparent;border:none;color:white;font-size:18px;cursor:pointer;padding:0 4px;flex-shrink:0;opacity:0.7;';
+  cerrarEl.textContent = '×';
+  cerrarEl.onmouseover = function() { cerrarEl.style.opacity = '1'; };
+  cerrarEl.onmouseout = function() { cerrarEl.style.opacity = '0.7'; };
+  cerrarEl.onclick = function() { AXC_BL._cerrarToast(toastId); };
+  toast.appendChild(iconoEl);
+  toast.appendChild(mensajeEl);
+  if (tieneDeshacer) {
+    const deshacerEl = document.createElement('button');
+    deshacerEl.style.cssText = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.4);color:white;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;flex-shrink:0;';
+    deshacerEl.textContent = etiquetaDeshacer;
+    deshacerEl.onmouseover = function() { deshacerEl.style.background = 'rgba(255,255,255,0.3)'; };
+    deshacerEl.onmouseout = function() { deshacerEl.style.background = 'rgba(255,255,255,0.2)'; };
+    deshacerEl.onclick = async function() {
+      try {
+        await opciones.accionDeshacer();
+        AXC_BL.mostrarToast('Accion deshecha', AXC_BL.TOAST_NIVELES.INFO, { duracion: 2500 });
+      } catch (err) {
+        AXC_BL.mostrarToast('Error al deshacer: ' + err.message, AXC_BL.TOAST_NIVELES.ERROR);
+      }
+      AXC_BL._cerrarToast(toastId);
+    };
+    toast.appendChild(deshacerEl);
+    AXC_BL._accionesDeshacer.set(toastId, opciones.accionDeshacer);
+  }
+  toast.appendChild(cerrarEl);
+  contenedor.appendChild(toast);
+  setTimeout(function() {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(0)';
+  }, 10);
+  setTimeout(function() {
+    AXC_BL._cerrarToast(toastId);
+  }, duracion);
+  return toastId;
+};
+
+// Cierra una notificacion toast especifica con animacion de salida
+AXC_BL._cerrarToast = function(toastId) {
+  const toast = document.getElementById(toastId);
+  if (!toast) return;
+  toast.style.opacity = '0';
+  toast.style.transform = 'translateX(20px)';
+  AXC_BL._accionesDeshacer.delete(toastId);
+  setTimeout(function() {
+    if (toast.parentNode) {
+      toast.parentNode.removeChild(toast);
+    }
+  }, 300);
+};
+
+// Helpers convenientes para cada nivel de severidad
+AXC_BL.toastExito = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.EXITO, opciones);
+};
+
+AXC_BL.toastAdvertencia = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.ADVERTENCIA, opciones);
+};
+
+AXC_BL.toastError = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.ERROR, opciones);
+};
+
+AXC_BL.toastInfo = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.INFO, opciones);
+};
+
+// Cierra todas las notificaciones activas
+AXC_BL.cerrarTodosLosToasts = function() {
+  const contenedor = document.getElementById('axc-toast-contenedor');
+  if (!contenedor) return;
+  const toasts = contenedor.querySelectorAll('div[id^="toast-"]');
+  toasts.forEach(function(toast) {
+    AXC_BL._cerrarToast(toast.id);
+  });
+};
+
+// ============================================================
+// FIN MODULO 5 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 6 DE 8: Mecanica de clicks acumulativos
+// ============================================================
+// Implementa rotacion de estados sobre celdas de dia segun
+// iconografia oficial. Decision 9: clicks rotan estados con
+// opcion deshacer durante 5 segundos.
+// ============================================================
+
+// Define la secuencia de rotacion de estados para dias planificados
+// Ciclo: PLAN -> CUMPLIO -> NO_CUMPLIO -> NO_APLICA -> PLAN
+AXC_BL.SECUENCIA_ROTACION_PLAN = [
+  'plan',
+  'cumplio',
+  'no_cumplio',
+  'no_aplica',
+  'plan'
+];
+
+// Define la secuencia de rotacion de estados para dias no planificados
+// Ciclo: SIN_MARCAR -> EXTRA_CUMPLIO -> EXTRA_NO_CUMPLIO -> SIN_MARCAR
+AXC_BL.SECUENCIA_ROTACION_EXTRA = [
+  'sin_marcar',
+  'extra_cumplio',
+  'extra_no_cumplio',
+  'sin_marcar'
+];
+
+// Calcula el siguiente estado en la secuencia de rotacion correspondiente
+// Recibe estado actual y devuelve el siguiente estado del ciclo
+AXC_BL.calcularSiguienteEstadoRotacion = function(estadoActual, esPlanificado) {
+  const secuencia = esPlanificado ? AXC_BL.SECUENCIA_ROTACION_PLAN : AXC_BL.SECUENCIA_ROTACION_EXTRA;
+  const indiceActual = secuencia.indexOf(estadoActual);
+  if (indiceActual === -1 || indiceActual === secuencia.length - 1) {
+    return secuencia[0];
+  }
+  return secuencia[indiceActual + 1];
+};
+
+// Ejecuta el click sobre una celda de dia con rotacion de estado
+// Aplica validaciones del modelo y registra los cambios en BD
+// Devuelve objeto con success, estado_anterior, estado_nuevo
+AXC_BL.rotarEstadoCelda = async function(actividadId, indiceDia) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacionMarcable = AXC_BL.diaEsMarcable(actividad, indiceDia);
+    if (!validacionMarcable.marcable) {
+      return { success: false, error: validacionMarcable.motivo };
+    }
+    const daysNormalizado = AXC_BL.convertirAFormatoNuevo(actividad.days);
+    if (indiceDia >= daysNormalizado.length) {
+      return { success: false, error: 'Indice de dia fuera de rango' };
+    }
+    const dia = daysNormalizado[indiceDia];
+    const estadoAnterior = dia.cumple;
+    const estadoNuevo = AXC_BL.calcularSiguienteEstadoRotacion(estadoAnterior, dia.plan);
+    const resultado = await AXC_BL.actualizarDiaActividad(actividadId, indiceDia, estadoNuevo);
+    if (!resultado.success) {
+      return { success: false, error: resultado.error };
+    }
+    return {
+      success: true,
+      estado_anterior: estadoAnterior,
+      estado_nuevo: estadoNuevo,
+      data: resultado.data
+    };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Genera la accion deshacer para una rotacion ejecutada
+// Permite al usuario revertir el cambio durante la ventana de 5 segundos
+AXC_BL.generarAccionDeshacerRotacion = function(actividadId, indiceDia, estadoAnterior) {
+  return async function() {
+    return await AXC_BL.actualizarDiaActividad(actividadId, indiceDia, estadoAnterior);
+  };
+};
+
+// Ejecuta la rotacion completa con notificacion toast y opcion deshacer
+// Funcion conveniente que combina la rotacion con el feedback visual
+AXC_BL.clickearCelda = async function(actividadId, indiceDia) {
+  const resultado = await AXC_BL.rotarEstadoCelda(actividadId, indiceDia);
+  if (!resultado.success) {
+    AXC_BL.toastError(resultado.error);
+    return resultado;
+  }
+  const accionDeshacer = AXC_BL.generarAccionDeshacerRotacion(
+    actividadId,
+    indiceDia,
+    resultado.estado_anterior
+  );
+  AXC_BL.toastExito('Dia actualizado', {
+    accionDeshacer: accionDeshacer,
+    etiquetaDeshacer: 'Deshacer'
+  });
+  return resultado;
+};
+
+// ============================================================
+// FIN MODULO 6 DE 8
+// ============================================================
+
+
+// ============================================================
+// AXC v2.5 - MODULO 7 DE 8: Funciones administrativas
+// ============================================================
+// Implementa operaciones reservadas para usuarios con rol admin.
+// Decision 4: cambios administrativos requieren motivo >= 20 chars
+// y registran auditoria automatica en baseline_audit_log.
+// ============================================================
+
+// Longitud minima del motivo para operaciones administrativas
+AXC_BL.MOTIVO_LONGITUD_MINIMA = 20;
+
+// Valida que un motivo administrativo cumple la longitud minima
+AXC_BL.validarMotivoAdmin = function(motivo) {
+  if (!motivo || typeof motivo !== 'string') {
+    return { valido: false, error: 'El motivo es obligatorio' };
+  }
+  const trimmed = motivo.trim();
+  if (trimmed.length < AXC_BL.MOTIVO_LONGITUD_MINIMA) {
+    return {
+      valido: false,
+      error: 'El motivo debe tener al menos ' + AXC_BL.MOTIVO_LONGITUD_MINIMA + ' caracteres'
+    };
+  }
+  return { valido: true, motivo: trimmed };
+};
+
+// Registra una entrada en la tabla de auditoria
+// Utilizado por las funciones administrativas para trazabilidad
+AXC_BL._registrarAuditoria = async function(actividadId, accion, motivo, contextoPrevio) {
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const entrada = {
+      actividad_id: actividadId,
+      accion: accion,
+      admin_id: usuario.id,
+      motivo: motivo,
+      contexto_previo: contextoPrevio
+    };
+    const resultado = await _SB.from('baseline_audit_log').insert(entrada).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error registrando auditoria: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Confirma retroactivamente la baseline de una actividad
+// Operacion administrativa que ignora la regla del dia de inicio
+// Requiere motivo >= 20 caracteres y registra entrada en auditoria
+AXC_BL.confirmarRetroactivo = async function(actividadId, motivo) {
+  const validacionMotivo = AXC_BL.validarMotivoAdmin(motivo);
+  if (!validacionMotivo.valido) {
+    return { success: false, error: validacionMotivo.error };
+  }
+  const esAdmin = await AXC_BL.esUsuarioAdmin();
+  if (!esAdmin) {
+    return { success: false, error: 'Operacion reservada para administradores' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    if (actividad.baseline_confirmada === true) {
+      return { success: false, error: 'La actividad ya esta confirmada' };
+    }
+    const contextoPrevio = {
+      baseline_confirmada: actividad.baseline_confirmada,
+      fecha_inicio: actividad.fecha_inicio,
+      days: actividad.days
+    };
+    const ahora = new Date().toISOString();
+    const update = {
+      baseline_confirmada: true,
+      baseline_confirmada_at: ahora,
+      baseline_confirmada_por: usuario.id,
+      fecha_fin_plan: actividad.fecha_fin,
+      days: AXC_BL.convertirAFormatoNuevo(actividad.days)
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error confirmando: ' + resultado.error.message };
+    }
+    await AXC_BL._registrarAuditoria(actividadId, 'confirmacion_retroactiva', validacionMotivo.motivo, contextoPrevio);
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Revierte una baseline confirmada al estado de borrador
+// Operacion administrativa que limpia los campos de confirmacion
+// Requiere motivo >= 20 caracteres y registra entrada en auditoria
+AXC_BL.revertirABorrador = async function(actividadId, motivo) {
+  const validacionMotivo = AXC_BL.validarMotivoAdmin(motivo);
+  if (!validacionMotivo.valido) {
+    return { success: false, error: validacionMotivo.error };
+  }
+  const esAdmin = await AXC_BL.esUsuarioAdmin();
+  if (!esAdmin) {
+    return { success: false, error: 'Operacion reservada para administradores' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    if (actividad.baseline_confirmada !== true) {
+      return { success: false, error: 'La actividad no esta confirmada' };
+    }
+    const contextoPrevio = {
+      baseline_confirmada: actividad.baseline_confirmada,
+      baseline_confirmada_at: actividad.baseline_confirmada_at,
+      baseline_confirmada_por: actividad.baseline_confirmada_por,
+      fecha_fin_plan: actividad.fecha_fin_plan,
+      days: actividad.days
+    };
+    const update = {
+      baseline_confirmada: false,
+      baseline_confirmada_at: null,
+      baseline_confirmada_por: null,
+      fecha_fin_plan: null
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error revirtiendo: ' + resultado.error.message };
+    }
+    await AXC_BL._registrarAuditoria(actividadId, 'reversion_a_borrador', validacionMotivo.motivo, contextoPrevio);
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Consulta el historial de auditoria de una actividad
+// Devuelve array de entradas ordenadas cronologicamente
+AXC_BL.consultarHistorialAuditoria = async function(actividadId) {
+  try {
+    const resultado = await _SB.from('baseline_audit_log').select('*').eq('actividad_id', actividadId).order('created_at', { ascending: false });
+    if (resultado.error) {
+      return { success: false, error: 'Error consultando historial: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// ============================================================
+// FIN MODULO 7 DE 8
+// ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 8 DE 8: Utilidades complementarias
+// ============================================================
+// Implementa funciones de presentacion, formateo y soporte
+// general para los componentes visuales de la aplicacion.
+// Este modulo cierra la capa de utilidades de Fase 3.
+// ============================================================
+
+// Nombres de los meses en espanol para formateo visual
+AXC_BL.MESES_ES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+];
+
+// Nombres de los meses abreviados en espanol
+AXC_BL.MESES_ES_CORTO = [
+  'ene', 'feb', 'mar', 'abr', 'may', 'jun',
+  'jul', 'ago', 'sep', 'oct', 'nov', 'dic'
+];
+
+// Nombres de los dias de la semana en espanol
+AXC_BL.DIAS_SEMANA_ES = [
+  'domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'
+];
+
+// Nombres de los dias de la semana abreviados
+AXC_BL.DIAS_SEMANA_ES_CORTO = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+
+// Formatea una fecha para presentacion visual al usuario
+// Formato: "27 de abril de 2026" o variantes segun opciones
+AXC_BL.formatearFechaVisual = function(fecha, formato) {
+  formato = formato || 'completo';
+  const f = (fecha instanceof Date) ? fecha : AXC_BL.parsearFechaISO(fecha);
+  if (!f) return '';
+  const dia = f.getDate();
+  const mes = f.getMonth();
+  const ano = f.getFullYear();
+  if (formato === 'completo') {
+    return dia + ' de ' + AXC_BL.MESES_ES[mes] + ' de ' + ano;
+  }
+  if (formato === 'corto') {
+    return dia + ' ' + AXC_BL.MESES_ES_CORTO[mes];
+  }
+  if (formato === 'numerico') {
+    const diaStr = String(dia).padStart(2, '0');
+    const mesStr = String(mes + 1).padStart(2, '0');
+    return diaStr + '/' + mesStr + '/' + ano;
+  }
+  if (formato === 'iso') {
+    return AXC_BL.formatearFechaISO(f);
+  }
+  return AXC_BL.formatearFechaISO(f);
+};
+
+// Formatea un timestamp ISO para presentacion visual con hora
+// Formato: "27/04/2026 14:35" segun opciones
+AXC_BL.formatearTimestampVisual = function(timestamp) {
+  if (!timestamp) return '';
+  const f = new Date(timestamp);
+  if (isNaN(f.getTime())) return '';
+  const dia = String(f.getDate()).padStart(2, '0');
+  const mes = String(f.getMonth() + 1).padStart(2, '0');
+  const ano = f.getFullYear();
+  const hora = String(f.getHours()).padStart(2, '0');
+  const min = String(f.getMinutes()).padStart(2, '0');
+  return dia + '/' + mes + '/' + ano + ' ' + hora + ':' + min;
+};
+
+// Formatea un porcentaje para presentacion visual
+// Devuelve cadena con un decimal y simbolo de porcentaje
+AXC_BL.formatearPorcentaje = function(valor) {
+  if (valor === null || valor === undefined || isNaN(valor)) return '—';
+  return Number(valor).toFixed(1) + '%';
+};
+
+// Formatea un numero entero para presentacion visual
+// Devuelve cadena con separadores de miles si corresponde
+AXC_BL.formatearEntero = function(valor) {
+  if (valor === null || valor === undefined || isNaN(valor)) return '—';
+  return Math.round(Number(valor)).toLocaleString('es-PY');
+};
+
+// Genera la etiqueta visual del dia segun su estado de cumplimiento
+// Devuelve objeto con texto, color de fondo y icono
+AXC_BL.obtenerEtiquetaDia = function(diaObj) {
+  const estado = diaObj && diaObj.cumple ? diaObj.cumple : 'sin_marcar';
+  const planificado = diaObj && diaObj.plan === true;
+  const etiquetas = {
+    'plan': { texto: 'PLAN', color: '#FFB300', icono: '◼' },
+    'cumplio': { texto: 'Cumplio', color: '#2E7D32', icono: '✓' },
+    'no_cumplio': { texto: 'No cumplio', color: '#C62828', icono: '✗' },
+    'no_aplica': { texto: 'No aplica', color: '#757575', icono: 'N/A' },
+    'sin_marcar': { texto: '', color: '#212121', icono: '' },
+    'extra_cumplio': { texto: 'Extra cumplio', color: '#1565C0', icono: '+✓' },
+    'extra_no_cumplio': { texto: 'Extra no cumplio', color: '#E65100', icono: '+✗' }
+  };
+  const etiqueta = etiquetas[estado] || etiquetas['sin_marcar'];
+  return {
+    texto: etiqueta.texto,
+    color: etiqueta.color,
+    icono: etiqueta.icono,
+    es_planificado: planificado,
+    estado: estado
+  };
+};
+
+// Genera un identificador unico para elementos del DOM
+// Util para creacion dinamica de componentes visuales
+AXC_BL.generarIdUnico = function(prefijo) {
+  prefijo = prefijo || 'axc';
+  return prefijo + '-' + Date.now() + '-' + Math.random().toString(36).substr(2, 7);
+};
+
+// Calcula la cantidad de dias habiles entre dos fechas
+// Excluye sabados y domingos del conteo
+AXC_BL.contarDiasHabiles = function(fechaInicio, fechaFin) {
+  const inicio = (fechaInicio instanceof Date) ? fechaInicio : AXC_BL.parsearFechaISO(fechaInicio);
+  const fin = (fechaFin instanceof Date) ? fechaFin : AXC_BL.parsearFechaISO(fechaFin);
+  if (!inicio || !fin) return 0;
+  let dias = 0;
+  const cursor = new Date(inicio.getTime());
+  while (cursor.getTime() <= fin.getTime()) {
+    const diaSemana = cursor.getDay();
+    if (diaSemana !== 0 && diaSemana !== 6) {
+      dias++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dias;
+};
+
+// Valida si una cadena tiene formato de UUID v4
+// Util para validacion de identificadores recibidos como parametros
+AXC_BL.esUUIDValido = function(cadena) {
+  if (!cadena || typeof cadena !== 'string') return false;
+  const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return regex.test(cadena);
+};
+
+// Trunca un texto a una longitud maxima agregando puntos suspensivos
+// Util para presentacion en celdas de tabla con espacio limitado
+AXC_BL.truncarTexto = function(texto, longitudMaxima) {
+  if (!texto) return '';
+  longitudMaxima = longitudMaxima || 50;
+  const str = String(texto);
+  if (str.length <= longitudMaxima) return str;
+  return str.substring(0, longitudMaxima - 3) + '...';
+};
+
+// Convierte un objeto de error de Supabase en un mensaje legible
+// Util para presentacion uniforme de errores en notificaciones toast
+AXC_BL.formatearErrorSupabase = function(error) {
+  if (!error) return 'Error desconocido';
+  if (typeof error === 'string') return error;
+  if (error.message) {
+    if (error.code === 'PGRST116') return 'No se encontro el registro';
+    if (error.code === '23505') return 'El registro ya existe';
+    if (error.code === '23503') return 'Existe una referencia que impide la operacion';
+    return error.message;
+  }
+  return 'Error inesperado en la operacion';
+};
+
+// Calcula la diferencia en dias entre dos fechas
+// Devuelve numero positivo si la segunda es posterior, negativo si anterior
+AXC_BL.diferenciaEnDias = function(fechaA, fechaB) {
+  const a = (fechaA instanceof Date) ? fechaA : AXC_BL.parsearFechaISO(fechaA);
+  const b = (fechaB instanceof Date) ? fechaB : AXC_BL.parsearFechaISO(fechaB);
+  if (!a || !b) return null;
+  const ms = b.getTime() - a.getTime();
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+};
+
+// Capitaliza la primera letra de una cadena
+// Util para presentacion de etiquetas y nombres
+AXC_BL.capitalizar = function(cadena) {
+  if (!cadena) return '';
+  const str = String(cadena);
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+};
+
+// ============================================================
+// FIN MODULO 8 DE 8
+// ============================================================
+// FIN DE LA CAPA DE UTILIDADES JAVASCRIPT v2.5
+// ============================================================
+
+
 // Banner naranja sticky solo en local
 if (_ES_LOCAL) {
   document.addEventListener('DOMContentLoaded', () => {
