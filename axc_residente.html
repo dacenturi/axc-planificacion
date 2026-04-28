@@ -1018,6 +1018,170 @@ AXC_BL.calcularResumenActividad = function(daysArray) {
 // FIN MODULO 2 DE 8
 // ============================================================
 
+// ============================================================
+// AXC v2.5 - MODULO 3 DE 8: Validaciones temporales
+// ============================================================
+// Implementa reglas de fecha del modelo Baseline Congelada
+// segun decisiones operativas consolidadas con AXC Constructora.
+// Regla principal: residente solo puede confirmar el dia de
+// inicio de actividad. Dias anteriores a confirmacion quedan
+// bloqueados.
+// ============================================================
+
+// Convierte fecha string YYYY-MM-DD a objeto Date sin zona horaria
+AXC_BL.parsearFechaISO = function(fechaStr) {
+  if (!fechaStr) return null;
+  if (fechaStr instanceof Date) return fechaStr;
+  const partes = String(fechaStr).split('T')[0].split('-');
+  if (partes.length !== 3) return null;
+  const ano = parseInt(partes[0], 10);
+  const mes = parseInt(partes[1], 10) - 1;
+  const dia = parseInt(partes[2], 10);
+  if (isNaN(ano) || isNaN(mes) || isNaN(dia)) return null;
+  return new Date(ano, mes, dia);
+};
+
+// Convierte objeto Date a string YYYY-MM-DD para almacenar en BD
+AXC_BL.formatearFechaISO = function(fecha) {
+  if (!fecha) return null;
+  const f = (fecha instanceof Date) ? fecha : AXC_BL.parsearFechaISO(fecha);
+  if (!f) return null;
+  const ano = f.getFullYear();
+  const mes = String(f.getMonth() + 1).padStart(2, '0');
+  const dia = String(f.getDate()).padStart(2, '0');
+  return ano + '-' + mes + '-' + dia;
+};
+
+// Devuelve la fecha de hoy a medianoche local (sin hora)
+AXC_BL.obtenerFechaHoy = function() {
+  const ahora = new Date();
+  return new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+};
+
+// Compara dos fechas ignorando hora. Devuelve -1, 0 o 1
+AXC_BL.compararFechas = function(fechaA, fechaB) {
+  const a = (fechaA instanceof Date) ? fechaA : AXC_BL.parsearFechaISO(fechaA);
+  const b = (fechaB instanceof Date) ? fechaB : AXC_BL.parsearFechaISO(fechaB);
+  if (!a || !b) return null;
+  const ta = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  const tb = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+  if (ta < tb) return -1;
+  if (ta > tb) return 1;
+  return 0;
+};
+
+// Suma dias a una fecha dada. Acepta dias negativos para restar
+AXC_BL.sumarDias = function(fecha, dias) {
+  const f = (fecha instanceof Date) ? new Date(fecha.getTime()) : AXC_BL.parsearFechaISO(fecha);
+  if (!f) return null;
+  f.setDate(f.getDate() + parseInt(dias, 10));
+  return f;
+};
+
+// Calcula array de fechas calendario para cada posicion del array days
+// A partir de fecha_inicio y la longitud del array
+AXC_BL.calcularFechasDelDay = function(fechaInicio, cantidadDias) {
+  const inicio = (fechaInicio instanceof Date) ? fechaInicio : AXC_BL.parsearFechaISO(fechaInicio);
+  if (!inicio) return [];
+  const cant = Math.max(0, parseInt(cantidadDias, 10) || 0);
+  const fechas = [];
+  for (let i = 0; i < cant; i++) {
+    fechas.push(AXC_BL.sumarDias(inicio, i));
+  }
+  return fechas;
+};
+
+// Localiza la posicion del array days que corresponde a la fecha de hoy
+// Devuelve -1 si hoy esta fuera del rango de la actividad
+AXC_BL.obtenerDiaActualEnArray = function(fechaInicio, cantidadDias) {
+  const fechas = AXC_BL.calcularFechasDelDay(fechaInicio, cantidadDias);
+  if (fechas.length === 0) return -1;
+  const hoy = AXC_BL.obtenerFechaHoy();
+  for (let i = 0; i < fechas.length; i++) {
+    if (AXC_BL.compararFechas(fechas[i], hoy) === 0) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+// Evalua si el residente puede confirmar una actividad segun regla de fecha
+// Regla operativa: solo el dia de inicio o anteriores
+// Devuelve objeto con propiedades permitido (boolean) y mensaje (string)
+AXC_BL.puedeConfirmarResidente = function(actividad) {
+  if (!actividad || !actividad.fecha_inicio) {
+    return {
+      permitido: false,
+      mensaje: 'La actividad no tiene fecha de inicio definida'
+    };
+  }
+  if (actividad.baseline_confirmada === true) {
+    return {
+      permitido: false,
+      mensaje: 'La actividad ya esta confirmada'
+    };
+  }
+  const hoy = AXC_BL.obtenerFechaHoy();
+  const inicio = AXC_BL.parsearFechaISO(actividad.fecha_inicio);
+  if (!inicio) {
+    return {
+      permitido: false,
+      mensaje: 'La fecha de inicio tiene formato invalido'
+    };
+  }
+  const comparacion = AXC_BL.compararFechas(hoy, inicio);
+  if (comparacion === 1) {
+    return {
+      permitido: false,
+      mensaje: 'La fecha de inicio ya paso. Solicite al administrador una confirmacion retroactiva',
+      requiere_admin: true
+    };
+  }
+  return {
+    permitido: true,
+    mensaje: 'Confirmacion habilitada'
+  };
+};
+
+// Evalua si un dia especifico de una actividad confirmada puede recibir marcas
+// Regla operativa: solo dias desde la fecha de confirmacion en adelante
+// Devuelve objeto con propiedades marcable (boolean) y motivo (string)
+AXC_BL.diaEsMarcable = function(actividad, indiceDay) {
+  if (!actividad) {
+    return { marcable: false, motivo: 'Actividad invalida' };
+  }
+  if (actividad.baseline_confirmada !== true) {
+    return { marcable: false, motivo: 'La actividad no esta confirmada' };
+  }
+  if (!actividad.baseline_confirmada_at) {
+    return { marcable: false, motivo: 'Falta fecha de confirmacion en la actividad' };
+  }
+  if (!actividad.fecha_inicio) {
+    return { marcable: false, motivo: 'Falta fecha de inicio en la actividad' };
+  }
+  const idx = parseInt(indiceDay, 10);
+  if (isNaN(idx) || idx < 0) {
+    return { marcable: false, motivo: 'Indice de dia invalido' };
+  }
+  const fechaDelDia = AXC_BL.sumarDias(actividad.fecha_inicio, idx);
+  const fechaConfirmacion = AXC_BL.parsearFechaISO(actividad.baseline_confirmada_at);
+  if (!fechaDelDia || !fechaConfirmacion) {
+    return { marcable: false, motivo: 'Error al procesar fechas' };
+  }
+  if (AXC_BL.compararFechas(fechaDelDia, fechaConfirmacion) === -1) {
+    return {
+      marcable: false,
+      motivo: 'El dia es anterior a la fecha de confirmacion de la baseline'
+    };
+  }
+  return { marcable: true, motivo: 'Dia disponible para marcar' };
+};
+
+// ============================================================
+// FIN MODULO 3 DE 8
+// ============================================================
+
+
 
 
 async function doLogin(){
