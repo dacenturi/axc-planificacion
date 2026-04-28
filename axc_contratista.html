@@ -394,6 +394,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
         <thead>
           <tr id="tr-groups" style="height:30px">
             <th class="thl" style="width:28px">#</th>
+            <th class="thl" style="width:32px" title="Estado de baseline"></th>
             <th class="thl" id="th-obra-col" style="width:110px">Obra</th>
             <th class="thl" id="th-cont-col" style="width:110px">Contratista</th>
             <th class="thl" style="width:100px">Sector</th>
@@ -2274,7 +2275,7 @@ function buildDateHeaders(){
   const DL=getDL(n);
   // Columnas fijas al inicio: # + obra + cont + sector + actividad = 5
   // Al final: Inicio + Fin + Estado + Razón + Días atraso + Criticidad + botón acciones = 7
-  const FIXED_START = 5;
+  const FIXED_START = 6;
   const FIXED_END = 7;
   const grpRow=document.getElementById('tr-groups');
   // Eliminar grupos de semana dinámicos anteriores
@@ -2296,7 +2297,7 @@ function buildDateHeaders(){
     grpRow.insertBefore(th,grpRef);
   });
   // Fila de fechas (tr-dates): mismos 5 fijos al inicio, 7 al final
-  const DATES_FIXED_START = 5;
+  const DATES_FIXED_START = 6;
   const DATES_FIXED_END = 7;
   const tr=document.getElementById('tr-dates');
   while(tr.children.length>DATES_FIXED_START+DATES_FIXED_END) tr.children[DATES_FIXED_START].remove();
@@ -2832,6 +2833,40 @@ function renderTable(){
     t0.style.cssText='font-family:"DM Mono",monospace;font-size:11px;color:var(--text2);text-align:center';
     t0.textContent=idx+1;tr.appendChild(t0);
 
+    // CANDADO BASELINE Etapas 2 y 5
+    const tCand=document.createElement('td');
+    tCand.style.cssText='padding:2px 3px;text-align:center;width:32px;min-width:32px';
+    const bCand=document.createElement('button');
+    bCand.style.cssText='width:24px;height:24px;padding:0;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;border:1px solid;background:transparent;line-height:1';
+    if(a.baseline_confirmada === true){
+      bCand.style.borderColor='rgba(63,185,80,.4)';
+      bCand.style.color='var(--green)';
+      bCand.style.background='rgba(63,185,80,.08)';
+      bCand.textContent='*';
+      const fchConf = a.baseline_confirmada_at ? new Date(a.baseline_confirmada_at).toLocaleDateString('es-PY') : '';
+      bCand.title='Baseline confirmada el ' + fchConf;
+      bCand.style.cursor='default';
+    } else {
+      bCand.style.borderColor='rgba(240,165,0,.4)';
+      bCand.style.color='var(--accent)';
+      bCand.style.background='rgba(240,165,0,.08)';
+      bCand.textContent='!';
+      bCand.title='Confirmar baseline';
+      bCand.onclick=async function(){
+        if(!a.id){ alert('La actividad debe guardarse antes'); return; }
+        if(!confirm('Confirmar baseline?')) return;
+        try{
+          const res = await AXC_BL.confirmarBaseline(a.id);
+          if(res.success){
+            const r = await _SB.from('actividades').select('*').eq('id', a.id).single();
+            if(r.data){ acts[idx] = r.data; renderAll(); }
+          } else { alert('Error: ' + (res.error || 'desconocido')); }
+        } catch(e){ alert('Error inesperado'); console.error(e); }
+      };
+    }
+    tCand.appendChild(bCand);
+    tr.appendChild(tCand);
+
     // Obra select + botón ＋ (Multi-obra: obra por fila)
     const tOb=document.createElement('td');tOb.className='cpl';
     tOb.style.cssText='padding:2px 3px';
@@ -2910,11 +2945,51 @@ function renderTable(){
       td.style.background='transparent';
       if(di===0||di===6||di===12) td.style.borderLeft='2px solid rgba(240,165,0,.2)';
       if(td.getBoundingClientRect) {} // noop
-      const on=!!a.days[di];
-      const btn=document.createElement('div');btn.className='db'+(on?' on':'');
-      btn.title=dates[di]?fmt(dates[di]):'';
+      const dia=a.days[di];
+      const esConfirmada = a.baseline_confirmada === true;
+      const btn=document.createElement('div');
+      if(esConfirmada && dia && typeof dia === 'object'){
+        const estado = dia.cumple || 'sin_marcar';
+        const tienePlan = dia.plan === true;
+        let icono = '';
+        let bgColor = '';
+        let txtColor = '';
+        if(estado === 'cumple'){ icono='OK'; bgColor='rgba(63,185,80,.25)'; txtColor='var(--green)'; }
+        else if(estado === 'no_cumple'){ icono='X'; bgColor='rgba(248,81,73,.25)'; txtColor='var(--red)'; }
+        else if(estado === 'no_aplica'){ icono='-'; bgColor='rgba(120,120,120,.20)'; txtColor='var(--text3)'; }
+        else if(estado === 'extra_cumple'){ icono='+'; bgColor='rgba(88,166,255,.25)'; txtColor='var(--blue)'; }
+        else if(estado === 'extra_no_cumple'){ icono='~'; bgColor='rgba(88,166,255,.15)'; txtColor='var(--blue)'; }
+        else if(tienePlan){ icono=''; bgColor='rgba(240,165,0,.30)'; txtColor='var(--accent)'; }
+        btn.className='db';
+        btn.style.background = bgColor;
+        btn.style.color = txtColor;
+        btn.style.fontSize = '11px';
+        btn.style.fontWeight = '700';
+        btn.style.display = 'flex';
+        btn.style.alignItems = 'center';
+        btn.style.justifyContent = 'center';
+        btn.textContent = icono;
+        btn.title = (dates[di]?fmt(dates[di]):'') + (estado!=='sin_marcar'?(' - '+estado):'');
+      } else {
+        const on = !!(dia && (typeof dia === 'object' ? dia.plan : dia));
+        btn.className='db'+(on?' on':'');
+        btn.title=dates[di]?fmt(dates[di]):'';
+      }
       btn.onclick=(function(i,b){
         return function(){
+          if(acts[idx].baseline_confirmada === true && acts[idx].id){
+            AXC_BL.clickearCelda(acts[idx].id, i).then(function(resultado){
+              if(resultado.success){
+                _SB.from('actividades').select('*').eq('id', acts[idx].id).single().then(function(r){
+                  if(r.data){
+                    acts[idx] = r.data;
+                    renderAll();
+                  }
+                });
+              }
+            });
+            return;
+          }
           if(acts[idx].days.length<=i) acts[idx].days[i]=false;
           acts[idx].days[i]=!acts[idx].days[i];
           b.classList.toggle('on',acts[idx].days[i]);
@@ -2963,6 +3038,20 @@ function renderTable(){
       else if(_estadosNoCumple.includes(v)){ se.style.borderColor='rgba(248,81,73,.4)'; se.style.color='var(--red)'; }
     };
     _colorSel(_curEstado);
+    if(a.baseline_confirmada === true && a.id){
+      try{
+        const calc = AXC_BL.calcularEstadoAutomatico(a);
+        const pct = AXC_BL.calcularPorcentajeCumplimiento(a);
+        if(calc && calc.estado){
+          let opt = se.querySelector('option[value="' + calc.estado + '"]');
+          if(opt){ se.value = calc.estado; _colorSel(calc.estado); }
+          se.title = 'Calculado. Cumplimiento: ' + (pct !== null ? pct + '%' : 'N/A');
+          se.disabled = true;
+          se.style.opacity = '0.85';
+          se.style.cursor = 'not-allowed';
+        }
+      } catch(e){ console.warn('No calc:', e); }
+    }
     se.onchange=()=>{
       acts[idx].cumple = se.value;
       // Si el estado no requiere razón, limpiarla
