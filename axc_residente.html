@@ -880,6 +880,145 @@ AXC_BL.contarDiasPorEstado = function(daysArray, estado) {
 // FIN MODULO 1 DE 8
 // ============================================================
 
+// ============================================================
+// AXC v2.5 - MODULO 2 DE 8: Calculos automaticos
+// ============================================================
+// Implementa formula oficial de porcentaje de cumplimiento y
+// tabla de 7 situaciones para estado calculado automaticamente.
+// Documentado en propuesta presentada a gerencia.
+// ============================================================
+
+// Estados calculados de la actividad (tabla de 7 situaciones)
+AXC_BL.ESTADOS_ACTIVIDAD = {
+  VACIO: '',
+  SIN_EMPEZAR: 'sin_empezar',
+  EN_PROCESO: 'en_proceso',
+  TERMINADO: 'terminado',
+  CUMPLIDO_CON_ATRASO: 'cumplido_con_atraso',
+  RETRASADO: 'retrasado',
+  CANCELADO: 'cancelado'
+};
+
+// Etiquetas legibles para los estados (uso en interfaz)
+AXC_BL.ETIQUETAS_ESTADO = {
+  '': '(vacio)',
+  'sin_empezar': '(sin empezar)',
+  'en_proceso': 'En proceso',
+  'terminado': 'Terminado',
+  'cumplido_con_atraso': 'Cumplido con atraso',
+  'retrasado': 'Retrasado',
+  'cancelado': 'Cancelado'
+};
+
+// Calcula porcentaje de cumplimiento segun formula oficial
+// Formula: cumplidos / (cumplidos + no_cumplidos) * 100
+// Excluye dias no_aplica del calculo
+// Devuelve null si no hay dias evaluados para mostrar como guion en UI
+AXC_BL.calcularPorcentajeCumplimiento = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  if (arr.length === 0) {
+    return null;
+  }
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const total_evaluados = cumplidos + no_cumplidos;
+  if (total_evaluados === 0) {
+    return null;
+  }
+  const porcentaje = (cumplidos / total_evaluados) * 100;
+  return Math.round(porcentaje * 10) / 10;
+};
+
+// Calcula estado automatico segun tabla de 7 situaciones
+// Evalua condiciones en orden de especificidad
+// Documentado en propuesta presentada a gerencia
+AXC_BL.calcularEstadoAutomatico = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  if (arr.length === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.VACIO;
+  }
+
+  const planificados = AXC_BL.contarDiasPlanificados(arr);
+  const con_plan = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.PLAN);
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const no_aplica = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_APLICA);
+  const extra_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_CUMPLIO);
+  const extra_no_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_NO_CUMPLIO);
+  const dias_extra = extra_cumplio + extra_no_cumplio;
+
+  // Caso 1: sin dias planificados ni dias extra
+  if (planificados === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.VACIO;
+  }
+
+  // Caso 2: todos los planificados son PLAN (sin marcar) y no hay extras
+  if (con_plan === planificados && cumplidos === 0 && no_cumplidos === 0 && no_aplica === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.SIN_EMPEZAR;
+  }
+
+  // Caso 7: todos los planificados son no_aplica (sin ningun cumplio)
+  if (planificados > 0 && no_aplica === planificados && cumplidos === 0 && extra_cumplio === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.CANCELADO;
+  }
+
+  // Caso 6: hay al menos un no_cumplio o un extra_no_cumplio
+  if (no_cumplidos > 0 || extra_no_cumplio > 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.RETRASADO;
+  }
+
+  // Caso 5: todos los planificados cumplio + al menos un extra_cumplio (sin no_cumplio)
+  if (cumplidos > 0 && cumplidos + no_aplica === planificados && con_plan === 0 && extra_cumplio > 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.CUMPLIDO_CON_ATRASO;
+  }
+
+  // Caso 4: todos los planificados cumplio, sin extras, sin pendientes
+  if (cumplidos > 0 && cumplidos + no_aplica === planificados && con_plan === 0 && dias_extra === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.TERMINADO;
+  }
+
+  // Caso 3: hay cumplio pero quedan PLAN pendientes y sin no_cumplio
+  if (cumplidos > 0 && con_plan > 0 && no_cumplidos === 0) {
+    return AXC_BL.ESTADOS_ACTIVIDAD.EN_PROCESO;
+  }
+
+  // Caso fallback: cualquier combinacion no contemplada queda como en_proceso
+  return AXC_BL.ESTADOS_ACTIVIDAD.EN_PROCESO;
+};
+
+// Calcula resumen consolidado de una actividad
+// Devuelve objeto con porcentaje, estado, etiqueta y metricas
+// Util para renderizado en interfaz
+AXC_BL.calcularResumenActividad = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  const porcentaje = AXC_BL.calcularPorcentajeCumplimiento(arr);
+  const estado = AXC_BL.calcularEstadoAutomatico(arr);
+  const planificados = AXC_BL.contarDiasPlanificados(arr);
+  const cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.CUMPLIO);
+  const no_cumplidos = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_CUMPLIO);
+  const no_aplica = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.NO_APLICA);
+  const extra_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_CUMPLIO);
+  const extra_no_cumplio = AXC_BL.contarDiasPorEstado(arr, AXC_BL.ESTADOS_CUMPLE.EXTRA_NO_CUMPLIO);
+  return {
+    porcentaje: porcentaje,
+    porcentaje_texto: porcentaje === null ? '—' : porcentaje.toFixed(1) + '%',
+    estado: estado,
+    estado_etiqueta: AXC_BL.ETIQUETAS_ESTADO[estado] || estado,
+    dias_planificados: planificados,
+    dias_cumplidos: cumplidos,
+    dias_no_cumplidos: no_cumplidos,
+    dias_no_aplica: no_aplica,
+    dias_extra_cumplio: extra_cumplio,
+    dias_extra_no_cumplio: extra_no_cumplio,
+    dias_atraso: extra_cumplio + extra_no_cumplio
+  };
+};
+
+// ============================================================
+// FIN MODULO 2 DE 8
+// ============================================================
+
+
 
 async function doLogin(){
   const email = document.getElementById('auth-email').value.trim();
