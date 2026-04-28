@@ -1402,6 +1402,364 @@ AXC_BL.recargarUsuarioActual = function() {
 // FIN MODULO 4 DE 8
 // ============================================================
 
+// ============================================================
+// AXC v2.5 - MODULO 5 DE 8: Sistema de notificaciones toast
+// ============================================================
+// Implementa retroalimentacion visual unificada para el usuario
+// segun decision 8 (toast tres niveles) y decision 9 (deshacer).
+// Notificaciones aparecen en esquina superior derecha con
+// animacion suave y desaparecen automaticamente tras 5 segundos.
+// ============================================================
+
+// Niveles de severidad de las notificaciones
+AXC_BL.TOAST_NIVELES = {
+  EXITO: 'exito',
+  ADVERTENCIA: 'advertencia',
+  ERROR: 'error',
+  INFO: 'info'
+};
+
+// Configuracion de colores por nivel segun decisiones operativas
+AXC_BL._toastEstilos = {
+  exito: { bg: '#2E7D32', borde: '#1B5E20', icono: '✓' },
+  advertencia: { bg: '#E65100', borde: '#BF360C', icono: '⚠' },
+  error: { bg: '#C62828', borde: '#8E0000', icono: '✗' },
+  info: { bg: '#1565C0', borde: '#0D47A1', icono: 'ℹ' }
+};
+
+// Almacena las acciones reversibles activas para mecanismo de deshacer
+AXC_BL._accionesDeshacer = new Map();
+
+// Crea el contenedor de toasts si no existe en el DOM
+AXC_BL._asegurarContenedorToasts = function() {
+  let contenedor = document.getElementById('axc-toast-contenedor');
+  if (contenedor) return contenedor;
+  contenedor = document.createElement('div');
+  contenedor.id = 'axc-toast-contenedor';
+  contenedor.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px;max-width:420px;font-family:sans-serif;';
+  document.body.appendChild(contenedor);
+  return contenedor;
+};
+
+// Muestra una notificacion toast en la interfaz
+// Parametros: mensaje (string), nivel (string), opciones (object)
+// Opciones soportadas:
+//   duracion: milisegundos antes de cierre automatico (default 5000)
+//   accionDeshacer: funcion async que ejecuta el deshacer
+//   etiquetaDeshacer: texto del boton de deshacer (default 'Deshacer')
+AXC_BL.mostrarToast = function(mensaje, nivel, opciones) {
+  opciones = opciones || {};
+  const nivelValido = AXC_BL._toastEstilos[nivel] ? nivel : AXC_BL.TOAST_NIVELES.INFO;
+  const estilo = AXC_BL._toastEstilos[nivelValido];
+  const duracion = opciones.duracion || 5000;
+  const tieneDeshacer = typeof opciones.accionDeshacer === 'function';
+  const etiquetaDeshacer = opciones.etiquetaDeshacer || 'Deshacer';
+  const contenedor = AXC_BL._asegurarContenedorToasts();
+  const toastId = 'toast-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+  const toast = document.createElement('div');
+  toast.id = toastId;
+  toast.style.cssText = 'background:' + estilo.bg + ';color:white;padding:12px 16px;border-radius:6px;border-left:4px solid ' + estilo.borde + ';box-shadow:0 4px 12px rgba(0,0,0,0.25);display:flex;align-items:center;gap:10px;font-size:14px;line-height:1.4;opacity:0;transform:translateX(20px);transition:all 0.3s ease;';
+  const iconoEl = document.createElement('span');
+  iconoEl.style.cssText = 'font-size:18px;font-weight:bold;flex-shrink:0;';
+  iconoEl.textContent = estilo.icono;
+  const mensajeEl = document.createElement('span');
+  mensajeEl.style.cssText = 'flex:1;';
+  mensajeEl.textContent = mensaje;
+  const cerrarEl = document.createElement('button');
+  cerrarEl.style.cssText = 'background:transparent;border:none;color:white;font-size:18px;cursor:pointer;padding:0 4px;flex-shrink:0;opacity:0.7;';
+  cerrarEl.textContent = '×';
+  cerrarEl.onmouseover = function() { cerrarEl.style.opacity = '1'; };
+  cerrarEl.onmouseout = function() { cerrarEl.style.opacity = '0.7'; };
+  cerrarEl.onclick = function() { AXC_BL._cerrarToast(toastId); };
+  toast.appendChild(iconoEl);
+  toast.appendChild(mensajeEl);
+  if (tieneDeshacer) {
+    const deshacerEl = document.createElement('button');
+    deshacerEl.style.cssText = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.4);color:white;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;flex-shrink:0;';
+    deshacerEl.textContent = etiquetaDeshacer;
+    deshacerEl.onmouseover = function() { deshacerEl.style.background = 'rgba(255,255,255,0.3)'; };
+    deshacerEl.onmouseout = function() { deshacerEl.style.background = 'rgba(255,255,255,0.2)'; };
+    deshacerEl.onclick = async function() {
+      try {
+        await opciones.accionDeshacer();
+        AXC_BL.mostrarToast('Accion deshecha', AXC_BL.TOAST_NIVELES.INFO, { duracion: 2500 });
+      } catch (err) {
+        AXC_BL.mostrarToast('Error al deshacer: ' + err.message, AXC_BL.TOAST_NIVELES.ERROR);
+      }
+      AXC_BL._cerrarToast(toastId);
+    };
+    toast.appendChild(deshacerEl);
+    AXC_BL._accionesDeshacer.set(toastId, opciones.accionDeshacer);
+  }
+  toast.appendChild(cerrarEl);
+  contenedor.appendChild(toast);
+  setTimeout(function() {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(0)';
+  }, 10);
+  setTimeout(function() {
+    AXC_BL._cerrarToast(toastId);
+  }, duracion);
+  return toastId;
+};
+
+// Cierra una notificacion toast especifica con animacion de salida
+AXC_BL._cerrarToast = function(toastId) {
+  const toast = document.getElementById(toastId);
+  if (!toast) return;
+  toast.style.opacity = '0';
+  toast.style.transform = 'translateX(20px)';
+  AXC_BL._accionesDeshacer.delete(toastId);
+  setTimeout(function() {
+    if (toast.parentNode) {
+      toast.parentNode.removeChild(toast);
+    }
+  }, 300);
+};
+
+// Helpers convenientes para cada nivel de severidad
+AXC_BL.toastExito = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.EXITO, opciones);
+};
+
+AXC_BL.toastAdvertencia = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.ADVERTENCIA, opciones);
+};
+
+AXC_BL.toastError = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.ERROR, opciones);
+};
+
+AXC_BL.toastInfo = function(mensaje, opciones) {
+  return AXC_BL.mostrarToast(mensaje, AXC_BL.TOAST_NIVELES.INFO, opciones);
+};
+
+// Cierra todas las notificaciones activas
+AXC_BL.cerrarTodosLosToasts = function() {
+  const contenedor = document.getElementById('axc-toast-contenedor');
+  if (!contenedor) return;
+  const toasts = contenedor.querySelectorAll('div[id^="toast-"]');
+  toasts.forEach(function(toast) {
+    AXC_BL._cerrarToast(toast.id);
+  });
+};
+
+// ============================================================
+// FIN MODULO 5 DE 8
+// ============================================================
+
+
+// ============================================================
+// AXC v2.5 - MODULO 4 DE 8: Persistencia contra Supabase
+// ============================================================
+// Implementa operaciones de base de datos que ejecutan los
+// cambios efectivos del modelo de Baseline Congelada.
+// Decision 7: operaciones masivas son transaccionales atomicas.
+// Decision 4: cambios en baseline registran auditoria automatica.
+// ============================================================
+
+// Cache del usuario autenticado para evitar consultas repetidas
+AXC_BL._usuarioCache = null;
+
+// Recupera la informacion del usuario autenticado desde Supabase Auth
+// Devuelve objeto con id y email o null si no hay sesion activa
+AXC_BL.obtenerUsuarioActual = async function() {
+  if (AXC_BL._usuarioCache) {
+    return AXC_BL._usuarioCache;
+  }
+  try {
+    const respuesta = await _SB.auth.getUser();
+    if (respuesta.error || !respuesta.data || !respuesta.data.user) {
+      return null;
+    }
+    AXC_BL._usuarioCache = {
+      id: respuesta.data.user.id,
+      email: respuesta.data.user.email
+    };
+    return AXC_BL._usuarioCache;
+  } catch (err) {
+    console.error('Error obteniendo usuario actual:', err);
+    return null;
+  }
+};
+
+// Determina si el usuario actual tiene rol administrador
+// Consulta la tabla perfiles para verificar el campo rol
+AXC_BL.esUsuarioAdmin = async function() {
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) return false;
+  try {
+    const respuesta = await _SB.from('perfiles').select('rol').eq('id', usuario.id).single();
+    if (respuesta.error || !respuesta.data) return false;
+    return respuesta.data.rol === 'admin';
+  } catch (err) {
+    console.error('Error verificando rol admin:', err);
+    return false;
+  }
+};
+
+// Confirma la baseline de una actividad individual
+// Aplica las reglas operativas y registra los campos de auditoria
+// Devuelve objeto con success (boolean), data (actividad actualizada) y error (string)
+AXC_BL.confirmarBaseline = async function(actividadId) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.puedeConfirmarResidente(actividad);
+    if (!validacion.permitido) {
+      return { success: false, error: validacion.mensaje, requiere_admin: validacion.requiere_admin };
+    }
+    const daysNuevos = AXC_BL.convertirAFormatoNuevo(actividad.days);
+    const ahora = new Date().toISOString();
+    const update = {
+      baseline_confirmada: true,
+      baseline_confirmada_at: ahora,
+      baseline_confirmada_por: usuario.id,
+      fecha_fin_plan: actividad.fecha_fin,
+      days: daysNuevos
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error al confirmar: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Confirma la baseline de multiples actividades en una operacion atomica
+// Si alguna falla, ninguna queda confirmada (decision operativa 7)
+// Devuelve objeto con success, confirmadas (array de IDs) y errores (array)
+AXC_BL.confirmarBaselineMasiva = async function(actividadIds) {
+  if (!Array.isArray(actividadIds) || actividadIds.length === 0) {
+    return { success: false, error: 'Lista de actividades vacia', confirmadas: [], errores: [] };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible', confirmadas: [], errores: [] };
+  }
+  const errores = [];
+  const actividadesValidadas = [];
+  try {
+    const consulta = await _SB.from('actividades').select('*').in('id', actividadIds);
+    if (consulta.error) {
+      return { success: false, error: 'Error consultando actividades', confirmadas: [], errores: [] };
+    }
+    consulta.data.forEach(function(act) {
+      const validacion = AXC_BL.puedeConfirmarResidente(act);
+      if (!validacion.permitido) {
+        errores.push({ id: act.id, motivo: validacion.mensaje });
+      } else {
+        actividadesValidadas.push(act);
+      }
+    });
+    if (errores.length > 0) {
+      return {
+        success: false,
+        error: 'Algunas actividades no son confirmables',
+        confirmadas: [],
+        errores: errores
+      };
+    }
+    const ahora = new Date().toISOString();
+    const updates = actividadesValidadas.map(function(act) {
+      return {
+        id: act.id,
+        baseline_confirmada: true,
+        baseline_confirmada_at: ahora,
+        baseline_confirmada_por: usuario.id,
+        fecha_fin_plan: act.fecha_fin,
+        days: AXC_BL.convertirAFormatoNuevo(act.days)
+      };
+    });
+    const resultado = await _SB.from('actividades').upsert(updates).select();
+    if (resultado.error) {
+      return {
+        success: false,
+        error: 'Error en confirmacion masiva: ' + resultado.error.message,
+        confirmadas: [],
+        errores: []
+      };
+    }
+    return {
+      success: true,
+      confirmadas: resultado.data.map(function(a) { return a.id; }),
+      errores: []
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: 'Error inesperado: ' + err.message,
+      confirmadas: [],
+      errores: []
+    };
+  }
+};
+
+// Actualiza el estado de cumplimiento de un dia especifico
+// Registra automaticamente marcado_por y marcado_at
+// Devuelve objeto con success y data o error
+AXC_BL.actualizarDiaActividad = async function(actividadId, indiceDia, nuevoEstado) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.diaEsMarcable(actividad, indiceDia);
+    if (!validacion.marcable) {
+      return { success: false, error: validacion.motivo };
+    }
+    const daysActualizados = AXC_BL.convertirAFormatoNuevo(actividad.days).slice();
+    if (indiceDia >= daysActualizados.length) {
+      return { success: false, error: 'Indice de dia fuera de rango' };
+    }
+    const diaActual = daysActualizados[indiceDia];
+    daysActualizados[indiceDia] = {
+      plan: diaActual.plan,
+      cumple: nuevoEstado,
+      marcado_por: usuario.id,
+      marcado_at: new Date().toISOString()
+    };
+    const resultado = await _SB.from('actividades').update({ days: daysActualizados }).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error actualizando dia: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Recarga la informacion del usuario actual descartando el cache
+// Util cuando se cambia de sesion sin recargar la pagina
+AXC_BL.recargarUsuarioActual = function() {
+  AXC_BL._usuarioCache = null;
+};
+
+// ============================================================
+// FIN MODULO 4 DE 8
+// ============================================================
+
+
 
 
 
