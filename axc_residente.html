@@ -768,6 +768,119 @@ window._axcEmail = null;
 window._modoLocked = false;
 let _bvSelected = 'unica';
 
+// ============================================================
+// AXC v2.5 - MODULO 1 DE 8: Normalizacion de array days
+// ============================================================
+// Convierte entre formato viejo (array de booleanos) y formato
+// nuevo (array de objetos con plan/cumple/marcado_por/marcado_at).
+// Las funciones son IDEMPOTENTES: aplicar dos veces produce el
+// mismo resultado que aplicar una vez.
+// ============================================================
+
+const AXC_BL = window.AXC_BL || {};
+window.AXC_BL = AXC_BL;
+
+// Estados validos para la propiedad cumple en el formato nuevo
+AXC_BL.ESTADOS_CUMPLE = {
+  PLAN: 'plan',
+  CUMPLIO: 'cumplio',
+  NO_CUMPLIO: 'no_cumplio',
+  NO_APLICA: 'no_aplica',
+  SIN_MARCAR: 'sin_marcar',
+  EXTRA_CUMPLIO: 'extra_cumplio',
+  EXTRA_NO_CUMPLIO: 'extra_no_cumplio'
+};
+
+// Detecta si un array de days esta en formato viejo o nuevo
+AXC_BL.detectarFormato = function(daysArray) {
+  if (!Array.isArray(daysArray) || daysArray.length === 0) {
+    return 'vacio';
+  }
+  const primero = daysArray[0];
+  if (typeof primero === 'boolean') {
+    return 'viejo';
+  }
+  if (typeof primero === 'object' && primero !== null && 'plan' in primero) {
+    return 'nuevo';
+  }
+  return 'desconocido';
+};
+
+// Convierte un array de days al formato nuevo (objetos con plan/cumple/marcado_por/marcado_at)
+// Funcion idempotente: si ya esta en formato nuevo, lo devuelve sin cambios
+AXC_BL.convertirAFormatoNuevo = function(daysArray) {
+  if (!Array.isArray(daysArray)) {
+    return [];
+  }
+  const formato = AXC_BL.detectarFormato(daysArray);
+  if (formato === 'nuevo') {
+    return daysArray;
+  }
+  if (formato === 'vacio') {
+    return [];
+  }
+  // Formato viejo: convertir cada booleano a un objeto
+  return daysArray.map(function(valor) {
+    const planificado = (valor === true);
+    return {
+      plan: planificado,
+      cumple: planificado ? AXC_BL.ESTADOS_CUMPLE.PLAN : AXC_BL.ESTADOS_CUMPLE.SIN_MARCAR,
+      marcado_por: null,
+      marcado_at: null
+    };
+  });
+};
+
+// Convierte un array de days al formato viejo (array de booleanos representando plan)
+// Util para retrocompatibilidad puntual con codigo legacy
+AXC_BL.convertirAFormatoViejo = function(daysArray) {
+  if (!Array.isArray(daysArray)) {
+    return [];
+  }
+  const formato = AXC_BL.detectarFormato(daysArray);
+  if (formato === 'viejo') {
+    return daysArray;
+  }
+  if (formato === 'vacio') {
+    return [];
+  }
+  return daysArray.map(function(item) {
+    return (item && item.plan === true);
+  });
+};
+
+// Crea un array de days vacio del tamaño solicitado en formato nuevo
+AXC_BL.crearArrayVacio = function(cantidad) {
+  const cant = Math.max(0, parseInt(cantidad, 10) || 0);
+  const resultado = [];
+  for (let i = 0; i < cant; i++) {
+    resultado.push({
+      plan: false,
+      cumple: AXC_BL.ESTADOS_CUMPLE.SIN_MARCAR,
+      marcado_por: null,
+      marcado_at: null
+    });
+  }
+  return resultado;
+};
+
+// Cuenta dias planificados (plan === true) en un array
+AXC_BL.contarDiasPlanificados = function(daysArray) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  return arr.filter(function(d) { return d.plan === true; }).length;
+};
+
+// Cuenta dias por estado especifico en un array
+AXC_BL.contarDiasPorEstado = function(daysArray, estado) {
+  const arr = AXC_BL.convertirAFormatoNuevo(daysArray);
+  return arr.filter(function(d) { return d.cumple === estado; }).length;
+};
+
+// ============================================================
+// FIN MODULO 1 DE 8
+// ============================================================
+
+
 async function doLogin(){
   const email = document.getElementById('auth-email').value.trim();
   const pass  = document.getElementById('auth-pass').value;
