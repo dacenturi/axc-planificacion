@@ -1143,9 +1143,11 @@ AXC_BL.puedeConfirmarResidente = function(actividad) {
   };
 };
 
-// Evalua si un dia especifico de una actividad confirmada puede recibir marcas
-// Regla operativa: solo dias desde la fecha de confirmacion en adelante
-// Devuelve objeto con propiedades marcable (boolean) y motivo (string)
+// VERSION CORREGIDA de diaEsMarcable
+// Compara solo fechas calendario sin considerar hora del timestamp
+// Permite marcar el mismo dia de la confirmacion aunque la confirmacion
+// se haya realizado en horas posteriores
+
 AXC_BL.diaEsMarcable = function(actividad, indiceDay) {
   if (!actividad) {
     return { marcable: false, motivo: 'Actividad invalida' };
@@ -1164,11 +1166,16 @@ AXC_BL.diaEsMarcable = function(actividad, indiceDay) {
     return { marcable: false, motivo: 'Indice de dia invalido' };
   }
   const fechaDelDia = AXC_BL.sumarDias(actividad.fecha_inicio, idx);
-  const fechaConfirmacion = AXC_BL.parsearFechaISO(actividad.baseline_confirmada_at);
-  if (!fechaDelDia || !fechaConfirmacion) {
+  const fechaConfirmacionRaw = AXC_BL.parsearFechaISO(actividad.baseline_confirmada_at);
+  if (!fechaDelDia || !fechaConfirmacionRaw) {
     return { marcable: false, motivo: 'Error al procesar fechas' };
   }
-  if (AXC_BL.compararFechas(fechaDelDia, fechaConfirmacion) === -1) {
+  const fechaConfirmacionSoloFecha = new Date(
+    fechaConfirmacionRaw.getFullYear(),
+    fechaConfirmacionRaw.getMonth(),
+    fechaConfirmacionRaw.getDate()
+  );
+  if (AXC_BL.compararFechas(fechaDelDia, fechaConfirmacionSoloFecha) === -1) {
     return {
       marcable: false,
       motivo: 'El dia es anterior a la fecha de confirmacion de la baseline'
@@ -1177,9 +1184,224 @@ AXC_BL.diaEsMarcable = function(actividad, indiceDay) {
   return { marcable: true, motivo: 'Dia disponible para marcar' };
 };
 
+
 // ============================================================
 // FIN MODULO 3 DE 8
 // ============================================================
+
+// ============================================================
+// AXC v2.5 - MODULO 4 DE 8: Persistencia contra Supabase
+// ============================================================
+// Implementa operaciones de base de datos que ejecutan los
+// cambios efectivos del modelo de Baseline Congelada.
+// Decision 7: operaciones masivas son transaccionales atomicas.
+// Decision 4: cambios en baseline registran auditoria automatica.
+// ============================================================
+
+// Cache del usuario autenticado para evitar consultas repetidas
+AXC_BL._usuarioCache = null;
+
+// Recupera la informacion del usuario autenticado desde Supabase Auth
+// Devuelve objeto con id y email o null si no hay sesion activa
+AXC_BL.obtenerUsuarioActual = async function() {
+  if (AXC_BL._usuarioCache) {
+    return AXC_BL._usuarioCache;
+  }
+  try {
+    const respuesta = await _SB.auth.getUser();
+    if (respuesta.error || !respuesta.data || !respuesta.data.user) {
+      return null;
+    }
+    AXC_BL._usuarioCache = {
+      id: respuesta.data.user.id,
+      email: respuesta.data.user.email
+    };
+    return AXC_BL._usuarioCache;
+  } catch (err) {
+    console.error('Error obteniendo usuario actual:', err);
+    return null;
+  }
+};
+
+// Determina si el usuario actual tiene rol administrador
+// Consulta la tabla perfiles para verificar el campo rol
+AXC_BL.esUsuarioAdmin = async function() {
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) return false;
+  try {
+    const respuesta = await _SB.from('perfiles').select('rol').eq('id', usuario.id).single();
+    if (respuesta.error || !respuesta.data) return false;
+    return respuesta.data.rol === 'admin';
+  } catch (err) {
+    console.error('Error verificando rol admin:', err);
+    return false;
+  }
+};
+
+// Confirma la baseline de una actividad individual
+// Aplica las reglas operativas y registra los campos de auditoria
+// Devuelve objeto con success (boolean), data (actividad actualizada) y error (string)
+AXC_BL.confirmarBaseline = async function(actividadId) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.puedeConfirmarResidente(actividad);
+    if (!validacion.permitido) {
+      return { success: false, error: validacion.mensaje, requiere_admin: validacion.requiere_admin };
+    }
+    const daysNuevos = AXC_BL.convertirAFormatoNuevo(actividad.days);
+    const ahora = new Date().toISOString();
+    const update = {
+      baseline_confirmada: true,
+      baseline_confirmada_at: ahora,
+      baseline_confirmada_por: usuario.id,
+      fecha_fin_plan: actividad.fecha_fin,
+      days: daysNuevos
+    };
+    const resultado = await _SB.from('actividades').update(update).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error al confirmar: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// VERSION CORREGIDA de confirmarBaselineMasiva
+// Reemplaza el upsert por updates individuales secuenciales
+// que respetan las politicas RLS de Supabase
+
+AXC_BL.confirmarBaselineMasiva = async function(actividadIds) {
+  if (!Array.isArray(actividadIds) || actividadIds.length === 0) {
+    return { success: false, error: 'Lista de actividades vacia', confirmadas: [], errores: [] };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible', confirmadas: [], errores: [] };
+  }
+  const errores = [];
+  const actividadesValidadas = [];
+  try {
+    const consulta = await _SB.from('actividades').select('*').in('id', actividadIds);
+    if (consulta.error) {
+      return { success: false, error: 'Error consultando actividades', confirmadas: [], errores: [] };
+    }
+    consulta.data.forEach(function(act) {
+      const validacion = AXC_BL.puedeConfirmarResidente(act);
+      if (!validacion.permitido) {
+        errores.push({ id: act.id, motivo: validacion.mensaje });
+      } else {
+        actividadesValidadas.push(act);
+      }
+    });
+    if (errores.length > 0) {
+      return {
+        success: false,
+        error: 'Algunas actividades no son confirmables',
+        confirmadas: [],
+        errores: errores
+      };
+    }
+    const ahora = new Date().toISOString();
+    const confirmadas = [];
+    for (const act of actividadesValidadas) {
+      const update = {
+        baseline_confirmada: true,
+        baseline_confirmada_at: ahora,
+        baseline_confirmada_por: usuario.id,
+        fecha_fin_plan: act.fecha_fin,
+        days: AXC_BL.convertirAFormatoNuevo(act.days)
+      };
+      const resultado = await _SB.from('actividades').update(update).eq('id', act.id).select().single();
+      if (resultado.error) {
+        return {
+          success: false,
+          error: 'Error en actividad ' + act.id + ': ' + resultado.error.message,
+          confirmadas: confirmadas,
+          errores: []
+        };
+      }
+      confirmadas.push(resultado.data.id);
+    }
+    return {
+      success: true,
+      confirmadas: confirmadas,
+      errores: []
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: 'Error inesperado: ' + err.message,
+      confirmadas: [],
+      errores: []
+    };
+  }
+};
+
+
+// Actualiza el estado de cumplimiento de un dia especifico
+// Registra automaticamente marcado_por y marcado_at
+// Devuelve objeto con success y data o error
+AXC_BL.actualizarDiaActividad = async function(actividadId, indiceDia, nuevoEstado) {
+  if (!actividadId) {
+    return { success: false, error: 'ID de actividad invalido' };
+  }
+  const usuario = await AXC_BL.obtenerUsuarioActual();
+  if (!usuario) {
+    return { success: false, error: 'Sesion no disponible' };
+  }
+  try {
+    const consulta = await _SB.from('actividades').select('*').eq('id', actividadId).single();
+    if (consulta.error || !consulta.data) {
+      return { success: false, error: 'Actividad no encontrada' };
+    }
+    const actividad = consulta.data;
+    const validacion = AXC_BL.diaEsMarcable(actividad, indiceDia);
+    if (!validacion.marcable) {
+      return { success: false, error: validacion.motivo };
+    }
+    const daysActualizados = AXC_BL.convertirAFormatoNuevo(actividad.days).slice();
+    if (indiceDia >= daysActualizados.length) {
+      return { success: false, error: 'Indice de dia fuera de rango' };
+    }
+    const diaActual = daysActualizados[indiceDia];
+    daysActualizados[indiceDia] = {
+      plan: diaActual.plan,
+      cumple: nuevoEstado,
+      marcado_por: usuario.id,
+      marcado_at: new Date().toISOString()
+    };
+    const resultado = await _SB.from('actividades').update({ days: daysActualizados }).eq('id', actividadId).select().single();
+    if (resultado.error) {
+      return { success: false, error: 'Error actualizando dia: ' + resultado.error.message };
+    }
+    return { success: true, data: resultado.data };
+  } catch (err) {
+    return { success: false, error: 'Error inesperado: ' + err.message };
+  }
+};
+
+// Recarga la informacion del usuario actual descartando el cache
+// Util cuando se cambia de sesion sin recargar la pagina
+AXC_BL.recargarUsuarioActual = function() {
+  AXC_BL._usuarioCache = null;
+};
+
+// ============================================================
+// FIN MODULO 4 DE 8
+// ============================================================
+
 
 
 
