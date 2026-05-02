@@ -840,23 +840,20 @@ async function doLogin(){
 }
 
 async function doBackToPortal(){
-  // Si hay cambios pendientes, forzar guardado antes de salir
-  if(_syncDirty || _syncInFlight){
-    try{ await forceSave(); }catch(e){ console.error(e); }
-    if(_syncStatus === 'error'){
-      if(!confirm('No se pudieron guardar todos los cambios en la nube. ¿Salir igualmente al Portal?\n\nSi sales ahora, se perderán los cambios no guardados.')) return;
-    }
+  // Siempre llamar a forceSave: aunque _syncDirty parezca false ahora, el blur
+  // que hace forceSave puede disparar un onchange con cambios pendientes.
+  try{ await forceSave(); }catch(e){ console.error(e); }
+  if(_syncStatus === 'error'){
+    if(!confirm('No se pudieron guardar todos los cambios en la nube. ¿Salir igualmente al Portal?\n\nSi sales ahora, se perderán los cambios no guardados.')) return;
   }
   // Navega al portal manteniendo la sesión activa (muestra el selector de apps)
   window.location.href = 'index.html';
 }
 async function doLogout(){
-  // Si hay cambios pendientes, forzar guardado antes de cerrar sesión
-  if(_syncDirty || _syncInFlight){
-    try{ await forceSave(); }catch(e){ console.error(e); }
-    if(_syncStatus === 'error'){
-      if(!confirm('No se pudieron guardar todos los cambios en la nube. ¿Cerrar sesión igualmente?\n\nSi cierras sesión ahora, se perderán los cambios no guardados.')) return;
-    }
+  // Siempre llamar a forceSave (mismo motivo que doBackToPortal)
+  try{ await forceSave(); }catch(e){ console.error(e); }
+  if(_syncStatus === 'error'){
+    if(!confirm('No se pudieron guardar todos los cambios en la nube. ¿Cerrar sesión igualmente?\n\nSi cierras sesión ahora, se perderán los cambios no guardados.')) return;
   }
   // Cierra la sesión de Supabase y vuelve al portal (mostrará el login)
   await _SB.auth.signOut();
@@ -2367,6 +2364,21 @@ function _setSyncStatus(status){
 // También se usa internamente antes de navegar al portal o cerrar sesión.
 async function forceSave(){
   if(!window._axcUid) return;
+
+  // ★ FIX CRÍTICO ★ Forzar blur del campo activo (textarea/input/select) para
+  // que su onchange se dispare ANTES de seguir. Sin este blur, el último
+  // cambio escrito en un campo de texto se perdía: el usuario tipeaba y
+  // hacía clic directo en "Portal" sin que el textarea perdiera el foco,
+  // entonces onchange nunca corría, save() nunca se llamaba, y el cambio
+  // jamás llegaba a Supabase aunque el botón mostrara "✓ Guardado".
+  const ae = document.activeElement;
+  if(ae && ae !== document.body && typeof ae.blur === 'function'){
+    ae.blur();
+    // Esperar un tick para que onchange ejecute save() y marque _syncDirty.
+    // 60ms es suficiente para todos los handlers sincrónicos del DOM.
+    await new Promise(r => setTimeout(r, 60));
+  }
+
   clearTimeout(_syncTimer);
   // Esperar si hay un sync en vuelo (máx ~10s)
   let waits = 0;
@@ -2402,10 +2414,23 @@ function _showSyncError(msg){
   if(!el){
     el = document.createElement('div');
     el.id = 'sync-error-banner';
-    el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#c43a3a;color:#fff;padding:10px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:13px;font-weight:600;z-index:99998;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#c43a3a;color:#fff;padding:10px 40px 10px 16px;text-align:left;font-family:Mulish,sans-serif;font-size:12px;font-weight:600;z-index:99998;box-shadow:0 2px 8px rgba(0,0,0,.4);max-height:30vh;overflow-y:auto;user-select:text;white-space:pre-wrap;word-break:break-word';
     document.body.appendChild(el);
+    // Botón cerrar
+    const close = document.createElement('button');
+    close.textContent = '✕';
+    close.title = 'Cerrar';
+    close.style.cssText = 'position:absolute;top:6px;right:8px;background:transparent;border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:4px;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:1';
+    close.onclick = () => { el.style.display = 'none'; };
+    el.appendChild(close);
   }
-  el.textContent = '⚠️ ' + msg + ' — Los cambios no se están guardando en la nube.';
+  // Limpiar contenido previo (excepto botón cerrar)
+  const closeBtn = el.querySelector('button');
+  el.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = '⚠️ ' + msg;
+  el.appendChild(span);
+  if(closeBtn) el.appendChild(closeBtn);
   el.style.display = 'block';
 }
 
@@ -2686,9 +2711,30 @@ async function _syncActsToSupabase(){
     if(hdrResidente){
       // 1. Upsert de las filas completas (se crean o actualizan según exista id)
       if(rowsToSave.length){
-        const { error: upErr } = await _SB.from('actividades')
-          .upsert(rowsToSave, { onConflict: 'id' });
+        // Pedimos .select() para que Supabase devuelva las filas que SÍ se
+        // upsertaron. Si RLS bloquea silenciosamente algunas filas (UPDATE
+        // que filtra por policy USING sin devolver error), las contamos y
+        // lanzamos un error real para que el usuario lo vea.
+        const { data: upData, error: upErr } = await _SB.from('actividades')
+          .upsert(rowsToSave, { onConflict: 'id' })
+          .select();
         if(upErr) throw upErr;
+        const aplicadas = (upData && upData.length) || 0;
+        if(aplicadas < rowsToSave.length){
+          const faltantes = rowsToSave.length - aplicadas;
+          console.warn('RLS silent failure detectado:', {
+            enviadas: rowsToSave.length,
+            aplicadas: aplicadas,
+            bloqueadas: faltantes,
+            uid_actual: window._axcUid
+          });
+          throw new Error(
+            'RLS bloqueó ' + faltantes + ' de ' + rowsToSave.length +
+            ' fila(s) silenciosamente. El usuario actual no tiene permisos ' +
+            'UPDATE sobre filas creadas por otro usuario. ' +
+            'Revisar las policies de la tabla actividades en Supabase.'
+          );
+        }
       }
 
       // 2. Borrar del residente del header las filas que ya no están en la UI
@@ -2716,7 +2762,16 @@ async function _syncActsToSupabase(){
     _setSyncStatus('saved');
   } catch(e){
     console.error('Sync Supabase error:', e);
-    _showSyncError('Error guardando en la nube');
+    // Construir mensaje detallado para que se vea POR QUÉ falló sin abrir DevTools
+    let detalle = '';
+    if(e){
+      if(e.message)  detalle += e.message;
+      if(e.code)     detalle += ' [code: ' + e.code + ']';
+      if(e.details)  detalle += ' — ' + e.details;
+      if(e.hint)     detalle += ' (hint: ' + e.hint + ')';
+    }
+    if(!detalle) detalle = 'Error desconocido al guardar en Supabase';
+    _showSyncError('Error guardando en la nube: ' + detalle);
     _setSyncStatus('error');
   } finally {
     _syncInFlight = false;
