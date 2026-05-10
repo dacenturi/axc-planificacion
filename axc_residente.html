@@ -1090,7 +1090,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.4-pdf-3';
+const _PDF_VERSION = 'v2.4-pdf-4';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -3225,12 +3225,220 @@ function _drawPortada(doc){
   doc.setTextColor(glr, glg, glb);
   doc.setFont('helvetica','italic');
   doc.setFontSize(9);
-  doc.text('— Resumen ejecutivo, tabla detallada y diagrama Gantt en páginas siguientes —', pw/2, ph - 30, {align:'center'});
+  doc.text('— Tabla detallada y diagrama Gantt en páginas siguientes —', pw/2, ph - 30, {align:'center'});
 }
 
+// ─── FASE 4: Helpers para resumen ejecutivo ───
+
+// Dibuja título de sección con línea dorada decorativa debajo.
+function _drawSeccionTitulo(doc, texto, y){
+  const pw = doc.internal.pageSize.getWidth();
+  const [nr,ng,nb] = _hexToRgb(PDF_COLORS.navy);
+  const [gr,gg,gb] = _hexToRgb(PDF_COLORS.gold);
+  doc.setTextColor(nr,ng,nb);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(20);
+  doc.text(texto, 20, y);
+  // Línea dorada decorativa debajo del título
+  doc.setDrawColor(gr,gg,gb);
+  doc.setLineWidth(0.8);
+  doc.line(20, y + 2.5, 60, y + 2.5);
+  doc.setLineWidth(0.1); // resetear
+}
+
+// Dibuja una "KPI card" tipo dashboard.
+// x,y = esquina superior izquierda; w,h = dimensiones; label = texto pequeño arriba; value = texto grande abajo.
+function _drawKpiCard(doc, x, y, w, h, label, value, accentHex){
+  const [glr,glg,glb] = _hexToRgb(PDF_COLORS.grayLight);
+  const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+  const [nr,ng,nb]    = _hexToRgb(PDF_COLORS.navy);
+  const [ar,ag,ab]    = _hexToRgb(accentHex || PDF_COLORS.gold);
+  // Fondo casi-blanco con borde gris claro
+  doc.setFillColor(252,252,253);
+  doc.setDrawColor(glr,glg,glb);
+  doc.setLineWidth(0.2);
+  doc.roundedRect(x, y, w, h, 2, 2, 'FD');
+  // Barra superior de color (acento)
+  doc.setFillColor(ar,ag,ab);
+  doc.rect(x, y, w, 1.5, 'F');
+  // Label arriba (pequeño, gris)
+  doc.setTextColor(grr,grg,grb);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(8);
+  doc.text(String(label), x + w/2, y + 7, {align:'center'});
+  // Valor grande en navy
+  doc.setTextColor(nr,ng,nb);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(22);
+  doc.text(String(value), x + w/2, y + h - 4, {align:'center'});
+}
+
+// Calcula los KPIs y la distribución por estado para todas las actividades del residente activo.
+// Devuelve: {total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib}
+// donde distrib es [{estado, cantidad, pct}] para los 7 estados (6 + "(Sin estado)").
+function _calcKpisDelResidente(){
+  const _okStates   = ['Cumple','En proceso','Terminado'];
+  const _failStates = ['No Cumple','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+  // Estados que mostramos en la tabla de distribución (los 6 nuevos + sin estado).
+  // 'Cumple' y 'No Cumple' son retrocompat; los mapeamos sumándolos a Terminado y Retrasado respectivamente.
+  const estadosTabla = ['En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','(Sin estado)'];
+  const conteos = Object.fromEntries(estadosTabla.map(s => [s, 0]));
+
+  const total = acts.length;
+  let sumAvance = 0, nConAvance = 0;
+  let ppcOk = 0, ppcFail = 0;
+  let diasAtrasoTotal = 0, actsConAtraso = 0;
+
+  acts.forEach(a => {
+    const c = (a.cumple || '').trim();
+    // Conteo para distribución
+    if(c === 'Cumple') conteos['Terminado']++;
+    else if(c === 'No Cumple') conteos['Retrasado']++;
+    else if(estadosTabla.includes(c)) conteos[c]++;
+    else conteos['(Sin estado)']++;
+    // PPC (misma lógica que renderReport)
+    if(_okStates.includes(c)) ppcOk++;
+    else if(_failStates.includes(c)) ppcFail++;
+    // Avance promedio (solo actividades confirmadas)
+    try {
+      const av = (typeof calcularAvancePct === 'function') ? calcularAvancePct(a) : null;
+      if(typeof av === 'number' && av >= 0){
+        sumAvance += av;
+        nConAvance++;
+      }
+    } catch(e) { /* ignorar */ }
+    // Días de atraso
+    const da = Number(a.dias_atraso);
+    if(Number.isFinite(da) && da > 0){
+      diasAtrasoTotal += da;
+      actsConAtraso++;
+    }
+  });
+
+  const avancePromedio = nConAvance > 0 ? Math.round(sumAvance / nConAvance) : null;
+  const ppcAsignadas = ppcOk + ppcFail;
+  const ppcPct = ppcAsignadas > 0 ? Math.round(ppcOk / ppcAsignadas * 100) : null;
+
+  const distrib = estadosTabla.map(estado => ({
+    estado,
+    cantidad: conteos[estado],
+    pct: total > 0 ? Math.round(conteos[estado] / total * 100) : 0
+  }));
+
+  return { total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib };
+}
+
+// Dibuja la página 2: resumen ejecutivo (KPIs + tabla distribución).
+function _drawResumenEjecutivo(doc){
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  const k = _calcKpisDelResidente();
+
+  // ─── Título de sección ───
+  _drawSeccionTitulo(doc, 'Resumen Ejecutivo', 25);
+
+  // ─── 4 KPI cards en grid 2x2 ───
+  const gridX = 20, gridY = 38;
+  const cardW = (pw - 40 - 6) / 2; // 6mm de separación entre cards
+  const cardH = 24;
+  const gapX = 6, gapY = 6;
+
+  const ppcText = k.ppcPct !== null ? (k.ppcPct + '%') : '—';
+  const avanceText = k.avancePromedio !== null ? (k.avancePromedio + '%') : '—';
+
+  _drawKpiCard(doc, gridX,                gridY,             cardW, cardH, 'TOTAL ACTIVIDADES',     String(k.total),     PDF_COLORS.estados['En proceso']);
+  _drawKpiCard(doc, gridX + cardW + gapX, gridY,             cardW, cardH, 'AVANCE PROMEDIO',       avanceText,          PDF_COLORS.estados['Terminado']);
+  _drawKpiCard(doc, gridX,                gridY + cardH + gapY, cardW, cardH, 'CUMPLIMIENTO PPC',    ppcText,             PDF_COLORS.gold);
+  _drawKpiCard(doc, gridX + cardW + gapX, gridY + cardH + gapY, cardW, cardH, 'DÍAS DE ATRASO TOT.', String(k.diasAtrasoTotal), PDF_COLORS.estados['Retrasado']);
+
+  // ─── Tabla "Distribución por Estado" ───
+  const tablaY = gridY + 2*cardH + gapY + 14;
+  const [nr,ng,nb] = _hexToRgb(PDF_COLORS.navy);
+  const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+  doc.setTextColor(nr,ng,nb);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(13);
+  doc.text('Distribución por Estado', 20, tablaY);
+
+  // Construir filas para autoTable. Cuarta columna = barra visual proporcional.
+  // Como autoTable no dibuja barras nativamente, usamos didDrawCell para pintarlas.
+  const rows = k.distrib.map(d => [d.estado, String(d.cantidad), d.pct + '%', '']);
+
+  doc.autoTable({
+    startY: tablaY + 4,
+    head: [['Estado', 'Cantidad', '% del total', 'Distribución visual']],
+    body: rows,
+    theme: 'grid',
+    styles: {
+      font: 'helvetica',
+      fontSize: 9,
+      cellPadding: 2.5,
+      lineColor: _hexToRgb(PDF_COLORS.grayLight),
+      lineWidth: 0.1,
+      textColor: _hexToRgb(PDF_COLORS.navy)
+    },
+    headStyles: {
+      fillColor: _hexToRgb(PDF_COLORS.navy),
+      textColor: [255,255,255],
+      fontStyle: 'bold',
+      fontSize: 9,
+      halign: 'left'
+    },
+    columnStyles: {
+      0: { cellWidth: 55 },
+      1: { cellWidth: 22, halign: 'center' },
+      2: { cellWidth: 25, halign: 'center' },
+      3: { cellWidth: 'auto' }
+    },
+    margin: { left: 20, right: 20 },
+    didDrawCell: function(data){
+      // Barra visual en la cuarta columna (índice 3) del body
+      if(data.section === 'body' && data.column.index === 3){
+        const rowIdx = data.row.index;
+        const d = k.distrib[rowIdx];
+        if(d && d.pct > 0){
+          const color = PDF_COLORS.estados[d.estado] || PDF_COLORS.gray;
+          const [cr,cg,cb] = _hexToRgb(color);
+          const cell = data.cell;
+          const barMaxW = cell.width - 6;
+          const barW = Math.max(1, (d.pct / 100) * barMaxW);
+          const barH = 3.5;
+          const barX = cell.x + 3;
+          const barY = cell.y + (cell.height - barH) / 2;
+          doc.setFillColor(cr,cg,cb);
+          doc.rect(barX, barY, barW, barH, 'F');
+        }
+      }
+    }
+  });
+
+  // ─── Métrica destacada inferior (caja navy invertida) ───
+  const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : (tablaY + 60);
+  const boxY = finalY + 8;
+  const boxH = 16;
+  if(boxY + boxH < ph - 25){ // solo si entra antes del footer
+    const [bgr,bgg,bgb] = _hexToRgb(PDF_COLORS.navy);
+    const [gr2,gg2,gb2] = _hexToRgb(PDF_COLORS.gold);
+    doc.setFillColor(bgr,bgg,bgb);
+    doc.roundedRect(20, boxY, pw - 40, boxH, 2, 2, 'F');
+    // Texto principal blanco
+    doc.setTextColor(255,255,255);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(11);
+    const msg = k.actsConAtraso === 0
+      ? 'Sin actividades con atraso registrado.'
+      : `${k.actsConAtraso} ${k.actsConAtraso===1?'actividad':'actividades'} con atraso · ${k.diasAtrasoTotal} ${k.diasAtrasoTotal===1?'día':'días'} acumulados`;
+    doc.text(msg, pw/2, boxY + boxH/2 + 1.5, {align:'center'});
+    // Pequeño acento dorado a la izquierda
+    doc.setFillColor(gr2,gg2,gb2);
+    doc.rect(20, boxY, 1.5, boxH, 'F');
+  }
+}
+// ─── FIN HELPERS FASE 4 ───
+
 // Función orquestadora de exportación a PDF.
-// Fase 3: portada + footer + marca de agua. Las páginas con KPIs, tabla
-// y Gantt vendrán en Fases 4-6.
+// Fase 4: portada + resumen ejecutivo + footer + marca de agua.
+// Las páginas con tabla detallada y Gantt vendrán en Fases 5-6.
 async function exportPDF(){
   const btn = document.getElementById('btn-export-pdf');
   const txtOriginal = btn ? btn.textContent : '📄 Exportar PDF';
@@ -3248,7 +3456,11 @@ async function exportPDF(){
     // ─── Página 1: Portada institucional ───
     _drawPortada(doc);
 
-    // ─── Fases 4-6: aquí se agregarán KPIs, tabla detallada y Gantt ───
+    // ─── Página 2: Resumen ejecutivo (Fase 4) ───
+    doc.addPage();
+    _drawResumenEjecutivo(doc);
+
+    // ─── Fases 5-6: aquí se agregarán tabla detallada y Gantt ───
 
     // ─── Marca de agua "BORRADOR" en cada página (si aplica) ───
     const totalPages = doc.internal.getNumberOfPages();
