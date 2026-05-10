@@ -2274,22 +2274,44 @@ function renderTable(){
     tr.appendChild(tr2);
 
     // ── DÍAS ATRASO  ──────────────────────────────────────────
-    // Visible solo para "Cumplido con atraso" o "Retrasado" (efectivo)
+    // FASE 2: si la actividad está CONFIRMADA, días atraso = cantidad de días azules
+    // (días no previstos trabajados). Input disabled, valor automático.
+    // Si NO está confirmada, sigue editable manual (legacy).
     const tda=document.createElement('td');
     tda.style.cssText='padding:2px 3px;width:62px';
     if(_estadosConDias.includes(_estadoEfectivo)){
-      const inpDias=document.createElement('input');
-      inpDias.type='number';
-      inpDias.min='0';inpDias.max='9999';inpDias.step='1';
-      inpDias.value = (a.dias_atraso || 0) === 0 ? '' : String(a.dias_atraso);
-      inpDias.placeholder='0';
-      inpDias.style.cssText='width:100%;background:var(--bg3);border:1px solid rgba(240,165,0,.3);border-radius:5px;color:var(--accent);font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box';
-      inpDias.onchange=()=>{
-        const v = parseInt(inpDias.value, 10);
-        acts[idx].dias_atraso = (Number.isFinite(v) && v >= 0) ? v : 0;
-        save();
-      };
-      tda.appendChild(inpDias);
+      if(_isConfirmada){
+        // CONFIRMADA: días atraso = a.domingos.length (todos los azules)
+        const diasAtrasoAuto = Array.isArray(a.domingos) ? a.domingos.length : 0;
+        const inpDias = document.createElement('input');
+        inpDias.type = 'number';
+        inpDias.value = String(diasAtrasoAuto);
+        inpDias.disabled = true;
+        inpDias.title = 'Calculado automáticamente: cantidad de días azules (no previstos trabajados).\n' +
+                        'Para cambiarlo manualmente, pedile a un admin que desbloquee la actividad.';
+        inpDias.style.cssText = 'width:100%;background:rgba(240,165,0,.06);border:1px dashed rgba(240,165,0,.3);' +
+                                'border-radius:5px;color:var(--accent);font-family:"DM Mono",monospace;' +
+                                'font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;' +
+                                'height:28px;box-sizing:border-box;cursor:not-allowed;opacity:.95';
+        tda.appendChild(inpDias);
+        // Sincronizar el valor en el modelo (sin save() para no entrar en loop):
+        // el upsert recalculará al guardar
+        if(a.dias_atraso !== diasAtrasoAuto) a.dias_atraso = diasAtrasoAuto;
+      } else {
+        // NO CONFIRMADA: editable manual (legacy)
+        const inpDias=document.createElement('input');
+        inpDias.type='number';
+        inpDias.min='0';inpDias.max='9999';inpDias.step='1';
+        inpDias.value = (a.dias_atraso || 0) === 0 ? '' : String(a.dias_atraso);
+        inpDias.placeholder='0';
+        inpDias.style.cssText='width:100%;background:var(--bg3);border:1px solid rgba(240,165,0,.3);border-radius:5px;color:var(--accent);font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box';
+        inpDias.onchange=()=>{
+          const v = parseInt(inpDias.value, 10);
+          acts[idx].dias_atraso = (Number.isFinite(v) && v >= 0) ? v : 0;
+          save();
+        };
+        tda.appendChild(inpDias);
+      }
     } else {
       tda.innerHTML='<span style="color:var(--text3);font-size:11px;padding:0 6px">—</span>';
     }
@@ -3184,7 +3206,13 @@ async function _syncActsToSupabase(){
           return mapCumple(a.cumple);
         })(),
         razon:          a.razon || '',
-        dias_atraso:    Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
+        // FASE 2: si está confirmada, días atraso = cantidad de azules (a.domingos.length)
+        dias_atraso:    (function(){
+          if(a.confirmada){
+            return Array.isArray(a.domingos) ? a.domingos.length : 0;
+          }
+          return Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0;
+        })(),
         criticidad:     mapCriticidad(a.criticidad),
         comentario:     (a.comentario || '').slice(0, 2000),
         // Confirmación de planificación (Fase 1)
