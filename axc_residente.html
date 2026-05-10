@@ -1090,7 +1090,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.4-pdf-4';
+const _PDF_VERSION = 'v2.4-pdf-6';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -3221,11 +3221,7 @@ function _drawPortada(doc){
     lineY += 11.5;
   });
 
-  // Nota inferior sobre contenido pendiente (mientras estamos en desarrollo)
-  doc.setTextColor(glr, glg, glb);
-  doc.setFont('helvetica','italic');
-  doc.setFontSize(9);
-  doc.text('— Tabla detallada y diagrama Gantt en páginas siguientes —', pw/2, ph - 30, {align:'center'});
+  // (Nota de páginas siguientes removida — ya están en el PDF)
 }
 
 // ─── FASE 4: Helpers para resumen ejecutivo ───
@@ -3436,9 +3432,272 @@ function _drawResumenEjecutivo(doc){
 }
 // ─── FIN HELPERS FASE 4 ───
 
+// ─── FASE 5: Tabla detallada de actividades ───
+
+// Formatea 'YYYY-MM-DD' como 'DD/MM/YY' (corto para tabla)
+function _fmtFechaCorta(iso){
+  if(!iso) return '—';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return String(iso);
+  return `${m[3]}/${m[2]}/${m[1].slice(2)}`;
+}
+
+// Construye las filas de la tabla detallada a partir de TODO acts[] (sin filtros UI).
+function _filasTablaDetallada(){
+  return acts.map((a, idx) => {
+    const estado = (a.cumple || '').trim() || '—';
+    const desc = (a.descripcion || a.item || '(sin descripción)').trim();
+    const descCorta = desc.length > 60 ? desc.slice(0, 57) + '…' : desc;
+    const ob = (a.obra_row || (typeof obra !== 'undefined' && obra && obra.obra) || '—');
+    const obraSec = [ob, a.sector || ''].filter(Boolean).join(' / ');
+    const obraSecCorta = obraSec.length > 42 ? obraSec.slice(0, 39) + '…' : obraSec;
+    let periodo = '—';
+    if(a.fechaIni && a.fechaFin){
+      periodo = _fmtFechaCorta(a.fechaIni) + ' → ' + _fmtFechaCorta(a.fechaFin);
+    } else if(a.fechaIni){
+      periodo = _fmtFechaCorta(a.fechaIni);
+    }
+    let avance = '—';
+    try {
+      const av = (typeof calcularAvancePct === 'function') ? calcularAvancePct(a) : null;
+      if(typeof av === 'number' && av >= 0) avance = av + '%';
+    } catch(e) { /* ignorar */ }
+    const da = Number(a.dias_atraso);
+    const atraso = (Number.isFinite(da) && da > 0) ? (da + 'd') : '—';
+    return [
+      String(idx + 1),
+      descCorta,
+      obraSecCorta,
+      periodo,
+      estado,
+      avance,
+      atraso
+    ];
+  });
+}
+
+// Dibuja la tabla detallada en una nueva página (puede paginar automáticamente).
+function _drawTablaDetallada(doc){
+  doc.addPage();
+  _drawSeccionTitulo(doc, 'Detalle de Actividades', 25);
+
+  // Subtítulo con conteo
+  const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+  doc.setTextColor(grr,grg,grb);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.text(`${acts.length} actividad${acts.length===1?'':'es'} · ${_residenteActivoNombre()}`, 20, 32);
+
+  const rows = _filasTablaDetallada();
+  if(rows.length === 0){
+    doc.setTextColor(grr,grg,grb);
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(11);
+    doc.text('Sin actividades cargadas para este residente.', 20, 50);
+    return;
+  }
+
+  doc.autoTable({
+    startY: 38,
+    head: [['#', 'Actividad', 'Obra / Sector', 'Período', 'Estado', 'Avance', 'Atraso']],
+    body: rows,
+    theme: 'striped',
+    styles: {
+      font: 'helvetica',
+      fontSize: 8,
+      cellPadding: 2,
+      lineColor: _hexToRgb(PDF_COLORS.grayLight),
+      lineWidth: 0.1,
+      textColor: _hexToRgb(PDF_COLORS.navy),
+      overflow: 'linebreak',
+      valign: 'middle'
+    },
+    headStyles: {
+      fillColor: _hexToRgb(PDF_COLORS.navy),
+      textColor: [255,255,255],
+      fontStyle: 'bold',
+      fontSize: 8.5,
+      halign: 'center'
+    },
+    alternateRowStyles: { fillColor: [250,250,252] },
+    columnStyles: {
+      0: { cellWidth: 8,  halign: 'center', fontStyle: 'bold' },
+      1: { cellWidth: 60 },
+      2: { cellWidth: 38, fontSize: 7.5 },
+      3: { cellWidth: 26, halign: 'center', fontSize: 7.5 },
+      4: { cellWidth: 22, halign: 'center', fontStyle: 'bold', fontSize: 7.5 },
+      5: { cellWidth: 13, halign: 'center' },
+      6: { cellWidth: 13, halign: 'center' }
+    },
+    margin: { left: 15, right: 15, top: 25, bottom: 20 },
+    didParseCell: function(data){
+      // Colorear celda "Estado" según su valor (índice 4 del body)
+      if(data.section === 'body' && data.column.index === 4){
+        const estado = String(data.cell.raw || '').trim();
+        const color = PDF_COLORS.estados[estado];
+        if(color){
+          data.cell.styles.fillColor = _hexToRgb(color);
+          data.cell.styles.textColor = [255,255,255];
+        }
+      }
+    }
+  });
+}
+// ─── FIN FASE 5 ───
+
+
+// ─── FASE 6: Gantt apaisado vía html2canvas + paginación ───
+
+// Captura el contenedor #g-wrap como canvas. Activa temporalmente la página
+// del Gantt si no estaba activa, y restaura el estado al terminar.
+// Devuelve un HTMLCanvasElement o null si no hay nada que capturar.
+async function _capturarGantt(){
+  const pages = ['carga','reporte','gantt'];
+  let pagActiva = null;
+  pages.forEach(p => {
+    if(document.getElementById('page-'+p)?.classList.contains('active')) pagActiva = p;
+  });
+
+  try {
+    // Activar página Gantt (oculta las demás)
+    pages.forEach(p => {
+      document.getElementById('page-'+p)?.classList.remove('active');
+      document.getElementById('tab-'+p)?.classList.remove('active');
+    });
+    document.getElementById('page-gantt')?.classList.add('active');
+    document.getElementById('tab-gantt')?.classList.add('active');
+
+    // Forzar renderizado
+    if(typeof renderGantt === 'function') renderGantt();
+
+    // Esperar al paint del navegador
+    await new Promise(r => setTimeout(r, 350));
+
+    if(typeof html2canvas !== 'function'){
+      console.warn('html2canvas no disponible');
+      return null;
+    }
+
+    const gWrap = document.getElementById('g-wrap');
+    if(!gWrap) return null;
+    const w = gWrap.scrollWidth, h = gWrap.scrollHeight;
+    if(w === 0 || h === 0) return null;
+    // Si el wrap está vacío (no se cargaron acts), no capturar
+    if(!gWrap.querySelector('.g-hdr')) return null;
+
+    const canvas = await html2canvas(gWrap, {
+      scale: 1.5,
+      backgroundColor: '#161b22',
+      width: w,
+      height: h,
+      windowWidth: w,
+      windowHeight: h,
+      logging: false,
+      useCORS: true,
+      scrollX: 0,
+      scrollY: 0
+    });
+    return canvas;
+  } catch(err) {
+    console.error('Error capturando Gantt:', err);
+    return null;
+  } finally {
+    // Restaurar página activa original
+    pages.forEach(p => {
+      document.getElementById('page-'+p)?.classList.remove('active');
+      document.getElementById('tab-'+p)?.classList.remove('active');
+    });
+    if(pagActiva){
+      document.getElementById('page-'+pagActiva)?.classList.add('active');
+      document.getElementById('tab-'+pagActiva)?.classList.add('active');
+    }
+  }
+}
+
+// Dibuja el header (título + sub) en una página landscape del PDF.
+function _drawGanttHeaderLandscape(doc, parteN, totalPartes){
+  const pw = doc.internal.pageSize.getWidth();
+  const [nr,ng,nb] = _hexToRgb(PDF_COLORS.navy);
+  const [gr,gg,gb] = _hexToRgb(PDF_COLORS.gold);
+  const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+
+  doc.setTextColor(nr,ng,nb);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(16);
+  let titulo = 'Diagrama Gantt';
+  if(parteN && totalPartes && totalPartes > 1) titulo += `  (parte ${parteN}/${totalPartes})`;
+  doc.text(titulo, 15, 14);
+
+  // Línea dorada decorativa debajo del título
+  doc.setDrawColor(gr,gg,gb);
+  doc.setLineWidth(0.8);
+  doc.line(15, 16.5, 55, 16.5);
+  doc.setLineWidth(0.1);
+
+  // Sub a la derecha: residente activo + fecha desde
+  doc.setTextColor(grr,grg,grb);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  let sub = _residenteActivoNombre();
+  try {
+    if(typeof obra !== 'undefined' && obra && obra.fecha) sub += '  ·  Desde ' + obra.fecha;
+  } catch(e){}
+  doc.text(sub, pw - 15, 14, {align:'right'});
+}
+
+// Inserta el canvas del Gantt en el PDF en páginas A4 landscape, paginando
+// verticalmente si la altura excede una página.
+function _dibujarGanttEnPDF(doc, canvas){
+  if(!canvas) return;
+  // A4 landscape: 297 × 210 mm
+  const pageW = 297, pageH = 210;
+  const marginX = 15;
+  const yStart = 22;          // espacio para header
+  const footerReserve = 15;   // espacio para footer
+  const usableW = pageW - 2 * marginX;            // 267 mm
+  const usableH = pageH - yStart - footerReserve; // 173 mm
+
+  const cw = canvas.width, ch = canvas.height;
+  const totalH_mm = usableW * (ch / cw);
+
+  if(totalH_mm <= usableH){
+    // Cabe en una sola página landscape
+    doc.addPage('a4', 'landscape');
+    _drawGanttHeaderLandscape(doc);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    doc.addImage(dataUrl, 'JPEG', marginX, yStart, usableW, totalH_mm, undefined, 'FAST');
+  } else {
+    // Particionar en N páginas
+    const slicesNeeded = Math.ceil(totalH_mm / usableH);
+    const slicePxH = Math.floor(ch / slicesNeeded);
+
+    for(let i = 0; i < slicesNeeded; i++){
+      const isLast = (i === slicesNeeded - 1);
+      const thisSlicePxH = isLast ? (ch - i * slicePxH) : slicePxH;
+
+      const sliceCanvas = document.createElement('canvas');
+      sliceCanvas.width = cw;
+      sliceCanvas.height = thisSlicePxH;
+      const ctx = sliceCanvas.getContext('2d');
+      // Fondo dark por si el slice tiene áreas transparentes
+      ctx.fillStyle = '#161b22';
+      ctx.fillRect(0, 0, cw, thisSlicePxH);
+      ctx.drawImage(canvas, 0, -i * slicePxH);
+
+      const sliceMmH = usableW * (thisSlicePxH / cw);
+
+      doc.addPage('a4', 'landscape');
+      _drawGanttHeaderLandscape(doc, i + 1, slicesNeeded);
+      const dataUrl = sliceCanvas.toDataURL('image/jpeg', 0.85);
+      doc.addImage(dataUrl, 'JPEG', marginX, yStart, usableW, sliceMmH, undefined, 'FAST');
+    }
+  }
+}
+// ─── FIN FASE 6 ───
+
+
 // Función orquestadora de exportación a PDF.
-// Fase 4: portada + resumen ejecutivo + footer + marca de agua.
-// Las páginas con tabla detallada y Gantt vendrán en Fases 5-6.
+// Fase 6 (completo): portada + resumen ejecutivo + tabla detallada + Gantt apaisado.
 async function exportPDF(){
   const btn = document.getElementById('btn-export-pdf');
   const txtOriginal = btn ? btn.textContent : '📄 Exportar PDF';
@@ -3460,7 +3719,28 @@ async function exportPDF(){
     doc.addPage();
     _drawResumenEjecutivo(doc);
 
-    // ─── Fases 5-6: aquí se agregarán tabla detallada y Gantt ───
+    // ─── Páginas 3+: Tabla detallada (Fase 5) ───
+    _drawTablaDetallada(doc);
+
+    // ─── Páginas finales: Gantt apaisado (Fase 6) ───
+    if(btn) btn.textContent = 'Capturando Gantt...';
+    const ganttCanvas = await _capturarGantt();
+    if(btn) btn.textContent = 'Generando PDF...';
+    if(ganttCanvas){
+      _dibujarGanttEnPDF(doc, ganttCanvas);
+    } else {
+      // Sin Gantt: agregar una página con aviso para que el PDF deje constancia
+      doc.addPage('a4', 'landscape');
+      _drawGanttHeaderLandscape(doc);
+      const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+      doc.setTextColor(grr,grg,grb);
+      doc.setFont('helvetica','italic');
+      doc.setFontSize(12);
+      doc.text('Sin diagrama Gantt disponible para este reporte.',
+               doc.internal.pageSize.getWidth() / 2,
+               doc.internal.pageSize.getHeight() / 2,
+               {align:'center'});
+    }
 
     // ─── Marca de agua "BORRADOR" en cada página (si aplica) ───
     const totalPages = doc.internal.getNumberOfPages();
@@ -3483,7 +3763,7 @@ async function exportPDF(){
     }
   }
 }
-// ═══════════════ FIN FASE 2-3 PDF ═══════════════
+// ═══════════════ FIN FASES 2-6 PDF ═══════════════
 
 
 // ════════════════════════════════════════════════════════════
