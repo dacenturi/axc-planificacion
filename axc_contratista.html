@@ -1051,6 +1051,100 @@ function getFin(){return document.getElementById('inp-fecha-fin').value||'';}
 function fmt(d){return d.toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'});}
 function fmts(d){return d.toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit'});}
 
+// ════════════════════════════════════════════════════════════════════
+// HELPERS DE FECHAS POR ACTIVIDAD (anclaje a fecha real, no al filtro)
+// ════════════════════════════════════════════════════════════════════
+// Cada actividad guarda su propio fechaIni/fechaFin (formato 'YYYY-MM-DD').
+// El array a.days[] está indexado desde a.fechaIni saltando domingos.
+// Estos helpers permiten mapear:
+//   - índice del array → fecha calendario real
+//   - fecha calendario real → índice del array
+// El filtro del header solo controla el RANGO VISIBLE; no afecta los datos.
+
+// Convierte 'YYYY-MM-DD' a Date (medianoche local) o devuelve null.
+function _parseISODate(s){
+  if(!s || typeof s !== 'string') return null;
+  const d = new Date(s + 'T00:00:00');
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Formatea Date a 'YYYY-MM-DD' (sin TZ).
+function _toISODate(d){
+  if(!(d instanceof Date) || isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+
+// Día siguiente que NO sea domingo. Si d ya es domingo, salta a lunes.
+function _nextHabil(d){
+  const x = new Date(d); x.setHours(0,0,0,0);
+  if(x.getDay() === 0) x.setDate(x.getDate()+1);
+  return x;
+}
+
+// Cuenta días hábiles entre fechaIni (inclusive) y fechaFin (inclusive).
+function _habilDaysBetween(fechaIniISO, fechaFinISO){
+  const ini = _parseISODate(fechaIniISO);
+  const fin = _parseISODate(fechaFinISO);
+  if(!ini || !fin || fin < ini) return 0;
+  let n = 0;
+  const d = new Date(ini);
+  while(d <= fin){
+    if(d.getDay() !== 0) n++;
+    d.setDate(d.getDate()+1);
+  }
+  return n;
+}
+
+// Dado un índice del array a.days[], devuelve la fecha calendario real.
+// Retorna null si la actividad no tiene fechaIni o el índice es inválido.
+function actIdxToDate(act, idx){
+  const ini = _parseISODate(act.fechaIni);
+  if(!ini || idx < 0) return null;
+  const d = _nextHabil(ini);
+  let counter = 0;
+  while(counter < idx){
+    d.setDate(d.getDate()+1);
+    if(d.getDay() !== 0) counter++;
+  }
+  return d;
+}
+
+// Dada una fecha calendario, devuelve el índice correspondiente en a.days[].
+// Retorna -1 si la fecha está fuera del rango [fechaIni, fechaFin] o
+// si la actividad no tiene fechas definidas.
+function dateToActIdx(act, targetDate){
+  const ini = _parseISODate(act.fechaIni);
+  const fin = _parseISODate(act.fechaFin);
+  if(!ini) return -1;
+  const tgt = (targetDate instanceof Date) ? new Date(targetDate) : _parseISODate(targetDate);
+  if(!tgt) return -1;
+  tgt.setHours(0,0,0,0);
+  if(tgt.getDay() === 0) return -1; // Domingo no es día hábil
+  if(tgt < _nextHabil(ini)) return -1;
+  if(fin && tgt > fin) return -1;
+  let idx = 0;
+  const d = _nextHabil(ini);
+  while(d.getTime() < tgt.getTime()){
+    d.setDate(d.getDate()+1);
+    if(d.getDay() !== 0) idx++;
+  }
+  return idx;
+}
+
+// Verifica si el rango [a.fechaIni, a.fechaFin] se solapa con [filtroIni, filtroFin].
+// Si la actividad no tiene fechas, se considera que SI se solapa (compatibilidad).
+function actOverlapsRange(act, filtroIniDate, filtroFinDate){
+  const ini = _parseISODate(act.fechaIni);
+  const fin = _parseISODate(act.fechaFin);
+  if(!ini || !fin) return true;  // Sin fechas individuales → mostrar siempre
+  if(!filtroIniDate || !filtroFinDate) return true;
+  // Solapamiento estándar: maxIni <= minFin
+  return ini <= filtroFinDate && fin >= filtroIniDate;
+}
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
@@ -1174,6 +1268,8 @@ async function onResidenteChange(){
         acts = (data||[]).map(r => ({
           _syncId:          r.id,
           _ownerUid:        r.user_id,
+          fechaIni:         r.fecha_inicio || '',   // Fecha individual de la actividad (NO del header)
+          fechaFin:         r.fecha_fin || '',      // Fecha individual de la actividad (NO del header)
           sector:           r.sector || '',
           item:             r.descripcion || '',
           descripcion:      r.descripcion || '',
@@ -1187,17 +1283,27 @@ async function onResidenteChange(){
           contratista_act:  r.contratista || ''
         }));
 
-        // ── Cargar HEADER desde la primera actividad VÁLIDA ──
-        // Buscamos la primera fila que tenga obra y contratista (filas
-        // con esos campos vacíos pueden ser residuos de pruebas viejas).
-        // Si no encontramos ninguna válida, usamos data[0] como fallback.
+        // ── Cargar HEADER desde el rango GLOBAL de las actividades ──
+        // En lugar de tomar solo las fechas de la primera, calculamos el rango
+        // [min(fecha_inicio), max(fecha_fin)] de TODAS las actividades para que
+        // el filtro inicial muestre todo. El usuario puede ajustarlo después.
         if(data && data.length > 0){
           const primera = data.find(r => (r.obra||'').trim() && (r.contratista||'').trim())
                        || data.find(r => (r.fecha_inicio || r.fecha_fin))
                        || data[0];
-          // Fechas
-          if(primera.fecha_inicio) fechaIniEl.value = primera.fecha_inicio;
-          if(primera.fecha_fin)    fechaFinEl.value = primera.fecha_fin;
+
+          // Calcular rango global cubriendo todas las filas con fechas
+          let minIni = null, maxFin = null;
+          data.forEach(r => {
+            if(r.fecha_inicio && (!minIni || r.fecha_inicio < minIni)) minIni = r.fecha_inicio;
+            if(r.fecha_fin    && (!maxFin || r.fecha_fin    > maxFin)) maxFin = r.fecha_fin;
+          });
+
+          // Fechas del header: rango global que cubre TODAS las actividades
+          if(minIni) fechaIniEl.value = minIni;
+          else if(primera.fecha_inicio) fechaIniEl.value = primera.fecha_inicio;
+          if(maxFin) fechaFinEl.value = maxFin;
+          else if(primera.fecha_fin)    fechaFinEl.value = primera.fecha_fin;
 
           // App solo soporta modo multi-obra. Migrar datos legacy en caliente:
           // si hay filas con modo:'unica', copiar la obra del header a obra_act
@@ -1313,7 +1419,8 @@ function onObraChange(){
   const nd=getNumDays();
   const sub=document.getElementById('sec-sub');
   if(sub) sub.textContent='Período de '+nd+' día'+(nd!==1?'s':'')+' hábiles';
-  acts.forEach(a=>{while(a.days.length<nd) a.days.push(false);});
+  // NOTA: ya NO se extiende a.days al cambiar el header. Cada actividad
+  // mantiene su propio array indexado desde su fechaIni individual.
   buildDateHeaders();renderTable();
 }
 
@@ -1488,6 +1595,14 @@ function _passAllFilters(a){
     const estado = (a.cumple || '').trim() || '(Sin estado)';
     if(!fe.has(estado)) return false;
   }
+  // Filtro por rango del header: ocultar actividades cuyo rango individual
+  // [a.fechaIni, a.fechaFin] no se solape con [filtroIni, filtroFin].
+  // Si la actividad no tiene fechas individuales (legacy), se muestra siempre.
+  try {
+    const filtroIni = getStart();
+    const filtroFin = _parseISODate(getFin());
+    if(filtroIni && filtroFin && !actOverlapsRange(a, filtroIni, filtroFin)) return false;
+  } catch(e){}
   return true;
 }
 
@@ -1590,12 +1705,20 @@ function _updateSortArrow(){
   }
 }
 
-// Devuelve índice del primer día marcado, o Infinity si la fila no tiene días.
-// Usado para ordenar por "fecha de inicio" sin convertir a Date (el índice del
-// día dentro del período es suficiente para ordenar relativamente).
+// Devuelve la fecha (epoch ms) del primer día marcado de la actividad, o Infinity.
+// Usado para ordenar por "fecha de inicio". Si la actividad tiene fechas
+// individuales, usamos la fecha real; si no (legacy), caemos al índice del array.
 function _firstDayIdx(a){
   if(!Array.isArray(a.days)) return Infinity;
-  for(let i=0;i<a.days.length;i++){ if(a.days[i]) return i; }
+  for(let i=0;i<a.days.length;i++){
+    if(a.days[i]){
+      if(a.fechaIni){
+        const d = actIdxToDate(a, i);
+        return d ? d.getTime() : Infinity;
+      }
+      return i;
+    }
+  }
   return Infinity;
 }
 
@@ -1627,9 +1750,18 @@ function renderTable(){
   acts.forEach((a,idx)=>{
     if(!_passAllFilters(a)) return;
 
+    // Inicio / Fin reales de la fila: derivados desde a.fechaIni + índices
+    // marcados, no desde dates[] del filtro. Si la actividad no tiene fechas
+    // individuales (legacy), caemos al modo viejo.
     const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const sd=marked.length?dates[marked[0]]:null;
-    const ed=marked.length?dates[marked[marked.length-1]]:null;
+    let sd, ed;
+    if(a.fechaIni){
+      sd = marked.length ? actIdxToDate(a, marked[0]) : null;
+      ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+    } else {
+      sd = marked.length ? dates[marked[0]] : null;
+      ed = marked.length ? dates[marked[marked.length-1]] : null;
+    }
     const isFail = ['No Cumple','No','Retrasado','Cancelado','En espera','Cumplido con atraso'].includes(a.cumple||'');
     const tr=document.createElement('tr');
 
@@ -1760,22 +1892,43 @@ function renderTable(){
     t2.appendChild(wAct);tr.appendChild(t2);
 
     // Day toggle buttons
+    // Cada celda corresponde a una fecha calendario REAL (dates[di]).
+    // Buscamos el índice correspondiente en a.days[] usando la fechaIni
+    // individual de la actividad. Si la fecha cae fuera del rango de la
+    // actividad, la celda queda no clickeable (visualmente atenuada).
     for(let di=0;di<n;di++){
       const td=document.createElement('td');td.className='cp';
       td.style.background='transparent';
       if(di===0||di===6||di===12) td.style.borderLeft='2px solid rgba(240,165,0,.2)';
-      if(td.getBoundingClientRect) {} // noop
-      const on=!!a.days[di];
-      const btn=document.createElement('div');btn.className='db'+(on?' on':'');
-      btn.title=dates[di]?fmt(dates[di]):'';
-      btn.onclick=(function(i,b){
-        return function(){
-          if(acts[idx].days.length<=i) acts[idx].days[i]=false;
-          acts[idx].days[i]=!acts[idx].days[i];
-          b.classList.toggle('on',acts[idx].days[i]);
-          save();refreshDateCells(tr,acts[idx],dates);
-        };
-      })(di,btn);
+      const fechaCelda = dates[di];
+      // Si la actividad NO tiene fechas individuales (legacy), usar índice directo
+      const usarLegacy = !a.fechaIni || !a.fechaFin;
+      const actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
+      const enRangoActividad = usarLegacy || (actIdx >= 0);
+      const on = enRangoActividad && !!a.days[actIdx];
+      const btn = document.createElement('div');
+      btn.className = 'db' + (on ? ' on' : '');
+      if(!enRangoActividad){
+        // Fuera del rango individual de la actividad: no clickeable y atenuado
+        btn.style.opacity = '0.25';
+        btn.style.cursor = 'not-allowed';
+        btn.title = 'Fuera del rango de la actividad (' +
+                    (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
+                    (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
+      } else {
+        btn.title = fechaCelda ? fmt(fechaCelda) : '';
+        btn.onclick = (function(targetIdx, b){
+          return function(){
+            // Asegurar que el array tenga al menos targetIdx+1 posiciones
+            while(acts[idx].days.length <= targetIdx){
+              acts[idx].days.push(false);
+            }
+            acts[idx].days[targetIdx] = !acts[idx].days[targetIdx];
+            b.classList.toggle('on', acts[idx].days[targetIdx]);
+            save(); refreshDateCells(tr, acts[idx], dates);
+          };
+        })(actIdx, btn);
+      }
       td.appendChild(btn);tr.appendChild(td);
     }
 
@@ -1905,6 +2058,8 @@ function renderTable(){
     bDup.title='Duplicar esta fila (copia obra, contratista, sector, actividad y días)';
     bDup.onclick=()=>{
       const copia = {
+        fechaIni:         a.fechaIni || '',
+        fechaFin:         a.fechaFin || '',
         sector:           a.sector || '',
         item:             a.item || '',
         descripcion:      a.descripcion || '',
@@ -1953,8 +2108,14 @@ function updateRowCrit(tr, criticidad){
 
 function refreshDateCells(tr,a,dates){
   const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-  const sd=marked.length?dates[marked[0]]:null;
-  const ed=marked.length?dates[marked[marked.length-1]]:null;
+  let sd, ed;
+  if(a.fechaIni){
+    sd = marked.length ? actIdxToDate(a, marked[0]) : null;
+    ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+  } else {
+    sd = marked.length ? dates[marked[0]] : null;
+    ed = marked.length ? dates[marked[marked.length-1]] : null;
+  }
   const sc=tr.querySelector('[data-s]');const ec=tr.querySelector('[data-e]');
   if(sc) sc.textContent=sd?fmts(sd):'—';
   if(ec) ec.textContent=ed?fmts(ed):'—';
@@ -2089,10 +2250,16 @@ function addRow(){
   }
 
   // Agregar actividad
-  const nd = getNumDays();
+  // Las fechas se ANCLAN al rango actual del header. Después, si el usuario
+  // cambia el header, la actividad mantiene su rango original.
+  const hdrIni = document.getElementById('inp-fecha').value;
+  const hdrFin = document.getElementById('inp-fecha-fin').value;
+  const ndAct  = _habilDaysBetween(hdrIni, hdrFin) || getNumDays();
   acts.push({
+    fechaIni: hdrIni || '',
+    fechaFin: hdrFin || '',
     sector:'', item:'', descripcion:'',
-    days: new Array(nd).fill(false),
+    days: new Array(ndAct).fill(false),
     cumple:'', razon:'', criticidad:'', dias_atraso:0,
     comentario:'',
     obra_act:'', contratista_act:''
@@ -2215,12 +2382,21 @@ function renderGantt(){
   // Aplicar los 3 filtros (Obra/Contratista/Sector)
   const actsFiltrado = acts.filter(_passAllFilters);
 
-  // Ordenar por fecha de inicio (primer día marcado)
+  // Ordenar por fecha de inicio (primer día marcado mapeado a fecha real)
   const actsGantt=actsFiltrado.slice().sort((a,b)=>{
     const ma=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
     const mb=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const da=ma.length?dates[ma[0]]:null;
-    const db=mb.length?dates[mb[0]]:null;
+    let da, db;
+    if(a.fechaIni){
+      da = ma.length ? actIdxToDate(a, ma[0]) : null;
+    } else {
+      da = ma.length ? dates[ma[0]] : null;
+    }
+    if(b.fechaIni){
+      db = mb.length ? actIdxToDate(b, mb[0]) : null;
+    } else {
+      db = mb.length ? dates[mb[0]] : null;
+    }
     if(!da&&!db)return 0;if(!da)return 1;if(!db)return -1;
     return da-db;
   });
@@ -2237,7 +2413,25 @@ function renderGantt(){
 
   // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
   actsGantt.forEach(a=>{
-    const markedIdx=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
+    // Mapear cada tilde de a.days[] a una columna del rango visible.
+    // Si la actividad tiene fecha individual, usar mapeo por fecha real.
+    // Si es legacy (sin fechaIni), caer al modo viejo (índice directo).
+    let markedIdx;
+    if(a.fechaIni){
+      markedIdx = [];
+      const datesISO = dates.map(d => _toISODate(d));
+      a.days.forEach((v, i) => {
+        if(!v) return;
+        const realDate = actIdxToDate(a, i);
+        if(!realDate) return;
+        const realISO = _toISODate(realDate);
+        const colIdx = datesISO.indexOf(realISO);
+        if(colIdx >= 0 && colIdx < n) markedIdx.push(colIdx);
+      });
+      markedIdx.sort((x,y)=>x-y);
+    } else {
+      markedIdx = a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
+    }
     const isFail = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'].includes(a.cumple||'');
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
@@ -2602,13 +2796,21 @@ function exportPDF(){
     }
 
     // ───────────────────────────────────────────────────────────
-    // Helper: determinar fecha inicio/fin/días de una actividad a partir de days[]
+    // Helper: determinar fecha inicio/fin/días de una actividad
+    // Usa fechas individuales (a.fechaIni) si están disponibles.
     // ───────────────────────────────────────────────────────────
     function actDateRange(a){
-      const marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0 && i < dates.length);
+      const marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
       if(!marked.length) return { ini:'—', fin:'—', dias:0 };
-      const di = dates[marked[0]];
-      const df = dates[marked[marked.length - 1]];
+      let di, df;
+      if(a.fechaIni){
+        di = actIdxToDate(a, marked[0]);
+        df = actIdxToDate(a, marked[marked.length - 1]);
+      } else {
+        // Legacy: usar dates[] del filtro
+        di = marked[0] < dates.length ? dates[marked[0]] : null;
+        df = marked[marked.length - 1] < dates.length ? dates[marked[marked.length - 1]] : null;
+      }
       return {
         ini: di ? fmt(di) : '—',
         fin: df ? fmt(df) : '—',
@@ -3045,12 +3247,15 @@ function exportPDF(){
     doc.line(MX + nameColW, ganttTopY, MX + nameColW, ganttTopY + cellH);
     doc.line(ganttX, ganttTopY, ganttX, ganttTopY + cellH);
 
-    // Ordenar actividades por fecha de inicio (igual que renderGantt)
+    // Ordenar actividades por fecha de inicio (mapeada a fecha real si la actividad la tiene)
     const actsGantt = actsExport.slice().sort((a,b) => {
       const ma = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
       const mb = (b.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
-      const da = ma.length ? dates[ma[0]] : null;
-      const db = mb.length ? dates[mb[0]] : null;
+      let da, db;
+      if(a.fechaIni){ da = ma.length ? actIdxToDate(a, ma[0]) : null; }
+      else          { da = ma.length ? dates[ma[0]] : null; }
+      if(b.fechaIni){ db = mb.length ? actIdxToDate(b, mb[0]) : null; }
+      else          { db = mb.length ? dates[mb[0]] : null; }
       if(!da && !db) return 0;
       if(!da) return 1;
       if(!db) return -1;
@@ -3093,8 +3298,23 @@ function exportPDF(){
       doc.line(MX, rowY + cellH, pageW - MX, rowY + cellH);
 
       // Bloques del Gantt
+      // Convertir tildes del array de actividad a posiciones en `dates[]` (rango visible)
       const isFail = failStates.includes(a.cumple || '');
-      const marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0 && i < numDays);
+      let marked;
+      if(a.fechaIni){
+        marked = [];
+        const datesISO = dates.map(d => _toISODate(d));
+        (a.days || []).forEach((v, i) => {
+          if(!v) return;
+          const realDate = actIdxToDate(a, i);
+          if(!realDate) return;
+          const realISO = _toISODate(realDate);
+          const colIdx = datesISO.indexOf(realISO);
+          if(colIdx >= 0 && colIdx < numDays) marked.push(colIdx);
+        });
+      } else {
+        marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0 && i < numDays);
+      }
 
       marked.forEach(di => {
         const d = dates[di];
@@ -3646,8 +3866,10 @@ async function _syncActsToSupabase(){
         user_id:       a._ownerUid || window._axcUid,
         app:           APP_NAME,
         modo:          'multi',
-        fecha_inicio:  hdrFechaIni,
-        fecha_fin:     hdrFechaFin,
+        // Cada actividad guarda SUS fechas (no las del header). Si la actividad
+        // no tiene fechas individuales (legacy), caemos a las del header.
+        fecha_inicio:  a.fechaIni || hdrFechaIni,
+        fecha_fin:     a.fechaFin || hdrFechaFin,
         obra:          a.obra_act || '',
         // Contratista: siempre por fila
         contratista:   a.contratista_act || '',
