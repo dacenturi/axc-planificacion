@@ -62,6 +62,13 @@ tbody td{padding:0;vertical-align:middle}
 /* DOMINGO: tilde activa en azul (excepción) */
 .db.dom:hover{border-color:var(--blue);background:rgba(88,166,255,.18)}
 .db.dom.on{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 0 5px rgba(88,166,255,.45)}
+/* FASE 3 — Celdas de actividad CONFIRMADA */
+.db.cumple{background:#22C55E;border-color:#22C55E;color:#fff;box-shadow:0 0 5px rgba(34,197,94,.45)}
+.db.cumple:hover{background:#16A34A;border-color:#16A34A}
+.db.no-cumple{background:#EF4444;border-color:#EF4444;color:#fff;box-shadow:0 0 5px rgba(239,68,68,.45)}
+.db.no-cumple:hover{background:#DC2626;border-color:#DC2626}
+.db.confirmed-pending{border:1.5px dashed var(--accent);background:rgba(240,165,0,.12);color:var(--accent)}
+.db.confirmed-pending:hover{background:rgba(240,165,0,.25)}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -1198,7 +1205,7 @@ function actToggleDomingo(act, fecha){
 // Replica exacta del feature en axc_residente.html. Los helpers son
 // inalterados a propósito para mantener consistencia 1:1 entre apps.
 // ════════════════════════════════════════════════════════════════════
-const _CONF_VERSION = 'v2.4-conf-2';
+const _CONF_VERSION = 'v2.4-conf-3';
 
 // ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
 // Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
@@ -2172,9 +2179,18 @@ function renderTable(){
       // Fondo de celda DOMINGO sin tildar: levemente azulado (B.1=2)
       td.style.background = isDom ? 'rgba(88,166,255,.10)' : 'transparent';
 
-      // Determinar si la celda está dentro del rango de la actividad
+      // ════════════════════════════════════════════════════════════
+      // FASE 3 — Render de celda con soporte de actividad CONFIRMADA
+      // Lógica espejo de axc_residente.html. Branching:
+      //   - Fuera de rango          → opaca, sin click
+      //   - Domingo                 → toggle a.domingos[] (siempre)
+      //   - Confirmada + planificado → cycle pendiente/✓/✗
+      //   - Confirmada + no planif. → toggle azul (extra trabajado)
+      //   - NO confirmada           → toggle dorado (comportamiento legacy)
+      // ════════════════════════════════════════════════════════════
       const usarLegacy = !a.fechaIni || !a.fechaFin;
-      let enRangoActividad, on, actIdx;
+      const isConfirmada = !!a.confirmada;
+      let enRangoActividad, onPlanif, actIdx;
       if(isDom){
         // Para domingos, "en rango" = la fecha está entre fechaIni y fechaFin (inclusive)
         if(usarLegacy){
@@ -2184,16 +2200,47 @@ function renderTable(){
           const fin = _parseISODate(a.fechaFin);
           enRangoActividad = !!(ini && fin && fechaCelda >= ini && fechaCelda <= fin);
         }
-        on = enRangoActividad && actHasDomingo(a, fechaCelda);
-        actIdx = -1; // no aplica para domingos
+        onPlanif = false; // Domingos no se planifican como dorados
+        actIdx = -1;
       } else {
         actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
         enRangoActividad = usarLegacy || (actIdx >= 0);
-        on = enRangoActividad && !!a.days[actIdx];
+        onPlanif = enRangoActividad && !!a.days[actIdx];
       }
+      // ¿Esta fecha está marcada como AZUL (extra trabajado / domingo tildado)?
+      const onAzul = enRangoActividad && actHasDomingo(a, fechaCelda);
 
       const btn = document.createElement('div');
-      btn.className = 'db' + (on ? ' on' : '') + (isDom ? ' dom' : '');
+
+      // ── Determinar clase visual ──
+      let claseExtra = '';
+      let estadoCumpl = null; // null | 'cumple' | 'no_cumple'
+      let pintarAzul = false;
+
+      if(onPlanif && !isDom && isConfirmada){
+        // Día planificado en actividad CONFIRMADA → cumple/no_cumple/pendiente
+        ensureCumplimiento(a);
+        estadoCumpl = a.cumplimiento[actIdx];
+        if(estadoCumpl === 'cumple')         claseExtra = ' cumple';
+        else if(estadoCumpl === 'no_cumple') claseExtra = ' no-cumple';
+        else                                 claseExtra = ' confirmed-pending';
+      } else if(onPlanif){
+        // Tilde dorada planificada (actividad NO confirmada)
+        claseExtra = ' on';
+      } else if(onAzul){
+        // Azul: día extra trabajado (hábil) o domingo tildado
+        pintarAzul = true;
+        claseExtra = ' on';
+      }
+      const necesitaClaseDom = isDom || pintarAzul;
+      btn.className = 'db' + claseExtra + (necesitaClaseDom ? ' dom' : '');
+
+      // ── Texto interno ──
+      if(estadoCumpl === 'cumple')         btn.textContent = '✓';
+      else if(estadoCumpl === 'no_cumple') btn.textContent = '✗';
+      else                                 btn.textContent = '';
+
+      // ── Click handlers ──
       if(!enRangoActividad){
         btn.style.opacity = '0.25';
         btn.style.cursor = 'not-allowed';
@@ -2201,18 +2248,48 @@ function renderTable(){
                     (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
                     (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
       } else if(isDom){
-        // Click handler para DOMINGO: toggle en a.domingos[]
-        btn.title = 'Domingo ' + fmt(fechaCelda) + ' (excepción)';
-        btn.onclick = (function(fecha, b){
+        // DOMINGO: toggle en a.domingos[]
+        btn.title = onAzul
+          ? 'Domingo ' + fmt(fechaCelda) + ' tildado (excepción).\nClick para quitar.'
+          : 'Domingo ' + fmt(fechaCelda) + ' (excepción).\nClick para tildar.';
+        btn.onclick = (function(fecha){
           return function(){
             actToggleDomingo(acts[idx], fecha);
-            const nowOn = actHasDomingo(acts[idx], fecha);
-            b.classList.toggle('on', nowOn);
-            save(); refreshDateCells(tr, acts[idx], dates);
+            save();
+            renderTable();
           };
-        })(fechaCelda, btn);
+        })(fechaCelda);
+      } else if(isConfirmada){
+        // ── ACTIVIDAD CONFIRMADA ──
+        if(onPlanif){
+          // Día planificado: cycle pendiente → cumple → no_cumple → pendiente
+          btn.title = 'Día planificado · ' + fmt(fechaCelda) +
+                      '\nClick para marcar: pendiente → cumple → no cumple';
+          btn.onclick = (function(targetIdx){
+            return function(){
+              cycleCumplimiento(acts[idx], targetIdx);
+              save();
+              renderTable();
+            };
+          })(actIdx);
+        } else {
+          // Día NO planificado en actividad confirmada
+          // → permitir tildar AZUL (día extra trabajado, no previsto)
+          btn.title = onAzul
+            ? 'Día extra trabajado · ' + fmt(fechaCelda) +
+              '\n(no estaba planificado, suma como No Cumple a la actividad)\nClick para quitar.'
+            : 'Marcar ' + fmt(fechaCelda) + ' como día extra trabajado (no previsto).\n' +
+              'Suma como No Cumple a la actividad.';
+          btn.onclick = (function(fecha){
+            return function(){
+              actToggleDomingo(acts[idx], fecha);
+              save();
+              renderTable();
+            };
+          })(fechaCelda);
+        }
       } else {
-        // Click handler para DÍA HÁBIL: toggle en a.days[]
+        // ── ACTIVIDAD NO CONFIRMADA: comportamiento original (toggle dorado) ──
         btn.title = fechaCelda ? fmt(fechaCelda) : '';
         btn.onclick = (function(targetIdx, b){
           return function(){
@@ -2225,6 +2302,9 @@ function renderTable(){
           };
         })(actIdx, btn);
       }
+      // ════════════════════════════════════════════════════════════
+      // FIN FASE 3
+      // ════════════════════════════════════════════════════════════
       td.appendChild(btn);tr.appendChild(td);
     }
 
