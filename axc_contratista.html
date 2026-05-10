@@ -27,6 +27,11 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .btn-secondary{background:var(--bg3);color:var(--text);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-danger{background:rgba(248,81,73,.12);color:var(--red);border:1px solid rgba(248,81,73,.25)}.btn-danger:hover{background:rgba(248,81,73,.22)}
 .btn-sm{padding:4px 9px;font-size:12px;border-radius:5px}
+.btn-confirm{background:linear-gradient(135deg,#22C55E,#16A34A);border:none;color:#fff;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;line-height:1;transition:all .15s;box-shadow:0 1px 4px rgba(34,197,94,.3);flex-shrink:0}
+.btn-confirm:hover{transform:translateY(-1px);box-shadow:0 2px 6px rgba(34,197,94,.5)}
+.btn-confirm:disabled{background:var(--bg3);color:var(--text3);cursor:not-allowed;box-shadow:none;transform:none}
+.btn-unlock{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#EF4444;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;line-height:1;transition:all .15s;flex-shrink:0}
+.btn-unlock:hover{background:rgba(239,68,68,.3);border-color:#EF4444;transform:translateY(-1px)}
 .obra-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;margin-bottom:16px}
 .obra-grid{display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:14px;align-items:start}
 .date-group{display:flex;gap:10px;align-items:start}
@@ -1188,6 +1193,143 @@ function actToggleDomingo(act, fecha){
   else        { act.domingos.push(iso); }
 }
 
+// ════════════════════════════════════════════════════════════════════
+// FASE 1 — CONFIRMACIÓN DE PLANIFICACIÓN (v2.4-conf-1)
+// Replica exacta del feature en axc_residente.html. Los helpers son
+// inalterados a propósito para mantener consistencia 1:1 entre apps.
+// ════════════════════════════════════════════════════════════════════
+const _CONF_VERSION = 'v2.4-conf-1';
+
+// ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
+// Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
+// puede tener uno de estos estados en a.cumplimiento[i]:
+//   null o "pendiente" → sin marcar todavía (visual: dorado)
+//   "cumple"           → se hizo (visual: verde con ✓)
+//   "no_cumple"        → no se hizo (visual: rojo con ✗)
+
+// Garantiza que a.cumplimiento[] tenga el largo correcto (sincronizado con a.days[]).
+function ensureCumplimiento(act){
+  if(!Array.isArray(act.cumplimiento)) act.cumplimiento = [];
+  const targetLen = (act.days || []).length;
+  while(act.cumplimiento.length < targetLen) act.cumplimiento.push(null);
+  if(act.cumplimiento.length > targetLen) act.cumplimiento.length = targetLen;
+  return act.cumplimiento;
+}
+
+// Cycle de click en celda confirmada: pendiente → cumple → no_cumple → pendiente
+function cycleCumplimiento(act, idx){
+  ensureCumplimiento(act);
+  const v = act.cumplimiento[idx];
+  if(v === 'cumple')         act.cumplimiento[idx] = 'no_cumple';
+  else if(v === 'no_cumple') act.cumplimiento[idx] = null;
+  else                       act.cumplimiento[idx] = 'cumple';
+  return act.cumplimiento[idx];
+}
+
+// ¿Hay al menos un día tildado? (hábil o domingo)
+function actHasAnyTilde(act){
+  const hayHabil = Array.isArray(act.days) && act.days.some(v => !!v);
+  const hayDom   = Array.isArray(act.domingos) && act.domingos.length > 0;
+  return hayHabil || hayDom;
+}
+
+// Cuenta actividades que NO están confirmadas y tienen al menos un tilde
+// (es decir, candidatas a confirmar).
+function countActsPendientesConfirmar(){
+  return (acts || []).filter(a => !a.confirmada && actHasAnyTilde(a)).length;
+}
+
+// ═══ CÁLCULO AUTOMÁTICO DE ESTADO Y AVANCE ═══════════════════════════
+// Reglas confirmadas con el cliente (Reglas_Medicion_Residentes.docx):
+//   D = total días planificados (a.days[i]=true)
+//   V = días con cumplimiento "cumple"
+//   R = días con cumplimiento "no_cumple"
+//   A = días azules (a.domingos.length, días no previstos trabajados)
+//   P = días planificados sin marcar (D - V - R)
+//   hoy <= fechaFin → en plazo
+//   hoy >  fechaFin → fuera de plazo
+//
+// Estados manuales (gana sobre el cálculo): "En espera", "Cancelado"
+// Estados calculados: "En proceso", "Terminado", "Cumplido con atraso", "Retrasado"
+// Si A >= 1 → la actividad cuenta como No Cumple (Cumplido con atraso)
+
+const ESTADOS_MANUALES = ['En espera', 'Cancelado'];
+const ESTADOS_NO_CUMPLE = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
+const ESTADOS_CALCULADOS = ['En proceso', 'Terminado', 'Cumplido con atraso', 'Retrasado'];
+
+// Calcula contadores de la actividad. Usa solo días dentro del rango planificado.
+function _contadoresActividad(act){
+  const D = (act.days || []).filter(v => !!v).length;
+  const cumpl = Array.isArray(act.cumplimiento) ? act.cumplimiento : [];
+  let V = 0, R = 0;
+  (act.days || []).forEach((v, i) => {
+    if(!v) return;
+    if(cumpl[i] === 'cumple')         V++;
+    else if(cumpl[i] === 'no_cumple') R++;
+  });
+  const A = Array.isArray(act.domingos) ? act.domingos.length : 0;
+  const P = D - V - R;
+  return { D, V, R, A, P };
+}
+
+// Devuelve el avance % (0-100). Si la actividad no está confirmada, devuelve null.
+function calcularAvancePct(act){
+  if(!act || !act.confirmada) return null;
+  const { D, V } = _contadoresActividad(act);
+  if(D === 0) return 0;
+  return Math.round((V / D) * 100);
+}
+
+// Devuelve el estado calculado aplicando las reglas en orden de prioridad.
+// Si el estado actual es manual ("En espera" / "Cancelado"), lo mantiene.
+function calcularEstadoAuto(act){
+  if(!act) return 'Sin asignar';
+  // Regla 1: no confirmada → Sin asignar
+  if(!act.confirmada) return 'Sin asignar';
+  // Reglas 2 y 3: estados manuales ganan sobre el cálculo
+  const cumpleActual = (act.cumple || '').trim();
+  if(ESTADOS_MANUALES.includes(cumpleActual)) return cumpleActual;
+
+  const { D, V, R, A, P } = _contadoresActividad(act);
+  // Sin días planificados, no hay nada que medir
+  if(D === 0) return 'Sin asignar';
+
+  // Calcular si pasó la fecha fin
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const fechaFin = act.fechaFin ? _parseISODate(act.fechaFin) : null;
+  if(fechaFin) fechaFin.setHours(23,59,59,999);
+  const pasoFechaFin = !!(fechaFin && hoy > fechaFin);
+
+  // Regla extra: ≥1 azul → la actividad se desvió del plan → Cumplido con atraso
+  if(A >= 1) return 'Cumplido con atraso';
+
+  // Regla 4: V == D (todos los planificados verdes) → Terminado
+  if(V === D) return 'Terminado';
+
+  // Reglas 5-7: pasó la fecha fin
+  if(pasoFechaFin){
+    // 5: hubo verdes y rojos
+    if(R > 0 && V > 0) return 'Cumplido con atraso';
+    // 6: solo rojos
+    if(R > 0 && V === 0) return 'Retrasado';
+    // 7: faltan marcar (P>0)
+    if(P > 0) return 'Retrasado';
+  }
+
+  // Reglas 8-10: en plazo
+  if(V >= 1) return 'En proceso';
+  if(R >= 1 && V === 0) return 'Retrasado';
+  // Default: recién confirmada, todavía sin marcar nada
+  return 'En proceso';
+}
+
+// Devuelve true si la razón es obligatoria para el estado calculado actual.
+function razonEsObligatoria(act){
+  const estado = calcularEstadoAuto(act);
+  return ESTADOS_NO_CUMPLE.includes(estado);
+}
+// ═══ FIN FASE 1 ═══════════════════════════════════════════════════════
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
@@ -2225,7 +2367,12 @@ function renderTable(){
         dias_atraso:      a.dias_atraso || 0,
         obra_act:         a.obra_act || '',
         contratista_act:  a.contratista_act || '',
-        comentario:       a.comentario || ''
+        comentario:       a.comentario || '',
+        // La copia es una fila NUEVA: arranca sin confirmar
+        confirmada:       false,
+        confirmada_at:    null,
+        confirmada_por:   '',
+        cumplimiento:     []
         // _syncId y _ownerUid NO se copian: la copia es una fila nueva
       };
       acts.splice(idx+1, 0, copia);
@@ -2421,7 +2568,12 @@ function addRow(){
     domingos: [],
     cumple:'', razon:'', criticidad:'', dias_atraso:0,
     comentario:'',
-    obra_act:'', contratista_act:''
+    obra_act:'', contratista_act:'',
+    // Campos de confirmación de planificación (Fase 1)
+    confirmada: false,
+    confirmada_at: null,
+    confirmada_por: '',
+    cumplimiento: []
   });
   save();
   renderTable();
@@ -4052,6 +4204,11 @@ async function _syncActsToSupabase(){
         criticidad:    mapCriticidad(a.criticidad),
         dias_atraso:   Number.isFinite(a.dias_atraso) ? a.dias_atraso : 0,
         comentario:    (a.comentario || '').slice(0, 2000),
+        // Campos de confirmación de planificación (Fase 1)
+        confirmada:    !!a.confirmada,
+        confirmada_at: a.confirmada_at || null,
+        confirmada_por: a.confirmada_por || '',
+        cumplimiento:  Array.isArray(a.cumplimiento) ? a.cumplimiento : [],
         orden:         i
       });
     });
@@ -4197,7 +4354,12 @@ async function _loadActsFromSupabase(){
       // En Obra Única ahora TAMBIÉN va por fila — antes estaba en el header
       // y compartido por todas; si un registro viejo tiene contratista en
       // el header, lo trasladamos a cada fila acá.
-      contratista_act:  r.contratista || ''
+      contratista_act:  r.contratista || '',
+      // Campos de confirmación de planificación (Fase 1)
+      confirmada:       !!r.confirmada,
+      confirmada_at:    r.confirmada_at || null,
+      confirmada_por:   r.confirmada_por || '',
+      cumplimiento:     Array.isArray(r.cumplimiento) ? r.cumplimiento : []
     }));
   } catch(e){
     console.error('Load Supabase error:', e);
