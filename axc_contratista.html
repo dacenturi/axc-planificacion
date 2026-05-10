@@ -54,6 +54,9 @@ tbody td{padding:0;vertical-align:middle}
 .db{width:18px;height:20px;border-radius:3px;border:1px solid var(--border);background:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--text3);transition:all .12s;margin:auto;user-select:none;flex-shrink:0}
 .db:hover{border-color:var(--accent);background:rgba(240,165,0,.1)}
 .db.on{background:var(--accent);border-color:var(--accent);color:#000;box-shadow:0 0 5px rgba(240,165,0,.35)}
+/* DOMINGO: tilde activa en azul (excepción) */
+.db.dom:hover{border-color:var(--blue);background:rgba(88,166,255,.18)}
+.db.dom.on{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 0 5px rgba(88,166,255,.45)}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -1036,19 +1039,25 @@ let acts=[];
 let obra=JSON.parse(localStorage.getItem('axc_obra')||'{}');
 
 function getStart(){const v=document.getElementById('inp-fecha').value;return v?new Date(v+'T00:00:00'):new Date();}
+// wDates: devuelve TODAS las fechas en el rango, INCLUYENDO domingos.
+// Antes filtraba domingos; ahora se incluyen para que la columna Domingo
+// sea visible y tildable como excepción (a.domingos[]).
 function wDates(s,e){
-  // s=start date, e=end date (optional). Max 30 working days.
+  // s=start date, e=end date (optional). Max 35 días totales.
   const out=[];let d=new Date(s);d.setHours(0,0,0,0);
   const endD=e?new Date(e+'T23:59:59'):null;
-  while(out.length<30){
-    if(d.getDay()!==0){
-      if(endD&&d>endD) break;
-      out.push(new Date(d));
-    }
+  while(out.length<35){
+    if(endD&&d>endD) break;
+    out.push(new Date(d));
     d.setDate(d.getDate()+1);
-    if(!endD&&out.length>=15) break;
+    if(!endD&&out.length>=17) break; // 12 hábiles ≈ 14 días con domingos
   }
   return out;
+}
+// Cuenta solo los días HÁBILES (Lun-Sáb) en el rango. Útil para el subtítulo
+// "Período de N días hábiles" sin contar los domingos visibles.
+function getNumDaysHabiles(){
+  return wDates(getStart(),getFin()).filter(d => d.getDay() !== 0).length;
 }
 function getNumDays(){return wDates(getStart(),getFin()).length;}
 function getFin(){return document.getElementById('inp-fecha-fin').value||'';}
@@ -1149,6 +1158,22 @@ function actOverlapsRange(act, filtroIniDate, filtroFinDate){
   return ini <= filtroFinDate && fin >= filtroIniDate;
 }
 
+// Verifica si una fecha (Date) está marcada en a.domingos[] (array de ISO YYYY-MM-DD).
+function actHasDomingo(act, fecha){
+  if(!Array.isArray(act.domingos) || !fecha) return false;
+  const iso = _toISODate(fecha);
+  return act.domingos.includes(iso);
+}
+
+// Toggle: agrega o remueve una fecha ISO del array a.domingos[].
+function actToggleDomingo(act, fecha){
+  if(!Array.isArray(act.domingos)) act.domingos = [];
+  const iso = _toISODate(fecha);
+  const idx = act.domingos.indexOf(iso);
+  if(idx >= 0){ act.domingos.splice(idx, 1); }
+  else        { act.domingos.push(iso); }
+}
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
@@ -1162,12 +1187,12 @@ function buildDateHeaders(){
   while(grpRow.children.length > FIXED_START + FIXED_END)
     grpRow.children[FIXED_START].remove();
   const grpRef=grpRow.children[FIXED_START];
-  // Construir grupos de semana
+  // Construir grupos de semana — cierran al final del DOMINGO (no del sábado)
   let wk=1,dayInWk=0,wkCols=[];
   for(let i=0;i<n;i++){
     dayInWk++;
-    const isSat=dates[i].getDay()===6;
-    if(isSat||i===n-1){wkCols.push({wk,cols:dayInWk});wk++;dayInWk=0;}
+    const isDom=dates[i].getDay()===0;
+    if(isDom||i===n-1){wkCols.push({wk,cols:dayInWk});wk++;dayInWk=0;}
   }
   wkCols.forEach(({wk:w,cols:c})=>{
     const th=document.createElement('th');
@@ -1184,11 +1209,12 @@ function buildDateHeaders(){
   const refNode=tr.children[DATES_FIXED_START];
   dates.forEach((d,i)=>{
     const th=document.createElement('th');
-    const isSat=d.getDay()===6;
-    th.className='col-day'+(isSat?' sat-hdr':'');
-    const isWkStart=i>0&&dates[i-1].getDay()===6;
-    th.style.cssText=`width:20px;min-width:20px;text-align:center;${isSat?'background:rgba(88,166,255,.05);':''}`
-      +(isWkStart||i===0?'border-left:2px solid rgba(240,165,0,.25);':'');
+    const isDom=d.getDay()===0;
+    th.className='col-day'+(isDom?' dom-hdr':'');
+    // El borde izquierdo marca INICIO de semana: primera columna o lunes después de domingo.
+    const isWkStart = i===0 || (i>0 && dates[i-1].getDay()===0);
+    th.style.cssText=`width:20px;min-width:20px;text-align:center;${isDom?'background:rgba(88,166,255,.10);':''}`
+      +(isWkStart?'border-left:2px solid rgba(240,165,0,.25);':'');
     th.innerHTML=`<span style="font-size:8px;font-weight:700;display:block">${DL[i]}</span><span style="font-size:7px;opacity:.6">${fmts(d)}</span>`;
     tr.insertBefore(th,refNode);
   });
@@ -1278,6 +1304,7 @@ async function onResidenteChange(){
           item:             r.descripcion || '',
           descripcion:      r.descripcion || '',
           days:             Array.isArray(r.days) ? r.days : [],
+          domingos:         Array.isArray(r.domingos) ? r.domingos : [],
           cumple:           fromDBCumple(r.cumple),
           razon:            r.razon || '',
           criticidad:       fromDBCriticidad(r.criticidad),
@@ -1420,7 +1447,7 @@ function onObraChange(){
     try{ localStorage.removeItem('axc_obra'); }catch(e){}
   }
 
-  const nd=getNumDays();
+  const nd=getNumDaysHabiles();
   const sub=document.getElementById('sec-sub');
   if(sub) sub.textContent='Período de '+nd+' día'+(nd!==1?'s':'')+' hábiles';
   // NOTA: ya NO se extiende a.days al cambiar el header. Cada actividad
@@ -1611,16 +1638,31 @@ function _passAllFilters(a){
     const filtroIni = getStart();
     const filtroFin = _parseISODate(getFin());
     if(filtroIni && filtroFin && a.fechaIni){
-      const tieneTildes = Array.isArray(a.days) && a.days.some(v => !!v);
+      const tieneTildesHabiles = Array.isArray(a.days) && a.days.some(v => !!v);
+      const tieneTildesDom     = Array.isArray(a.domingos) && a.domingos.length > 0;
+      const tieneTildes = tieneTildesHabiles || tieneTildesDom;
       if(tieneTildes){
-        // Buscar al menos un tilde cuya fecha real esté en el rango filtrado
+        // Buscar al menos un tilde (hábil o domingo) cuya fecha esté en el rango
         let hayTildeEnRango = false;
-        for(let i=0; i < a.days.length; i++){
-          if(!a.days[i]) continue;
-          const fechaTilde = actIdxToDate(a, i);
-          if(fechaTilde && fechaTilde >= filtroIni && fechaTilde <= filtroFin){
-            hayTildeEnRango = true;
-            break;
+        // 1) Tildes en a.days[]
+        if(tieneTildesHabiles){
+          for(let i=0; i < a.days.length; i++){
+            if(!a.days[i]) continue;
+            const fechaTilde = actIdxToDate(a, i);
+            if(fechaTilde && fechaTilde >= filtroIni && fechaTilde <= filtroFin){
+              hayTildeEnRango = true;
+              break;
+            }
+          }
+        }
+        // 2) Tildes en a.domingos[]
+        if(!hayTildeEnRango && tieneTildesDom){
+          for(const iso of a.domingos){
+            const fechaDom = _parseISODate(iso);
+            if(fechaDom && fechaDom >= filtroIni && fechaDom <= filtroFin){
+              hayTildeEnRango = true;
+              break;
+            }
           }
         }
         if(!hayTildeEnRango) return false;
@@ -1732,21 +1774,34 @@ function _updateSortArrow(){
   }
 }
 
-// Devuelve la fecha (epoch ms) del primer día marcado de la actividad, o Infinity.
-// Usado para ordenar por "fecha de inicio". Si la actividad tiene fechas
-// individuales, usamos la fecha real; si no (legacy), caemos al índice del array.
+// Devuelve el timestamp del primer día tildado de la actividad, o Infinity.
+// Considera tanto a.days[] (hábiles) como a.domingos[] (domingos excepcionales).
 function _firstDayIdx(a){
-  if(!Array.isArray(a.days)) return Infinity;
-  for(let i=0;i<a.days.length;i++){
-    if(a.days[i]){
-      if(a.fechaIni){
-        const d = actIdxToDate(a, i);
-        return d ? d.getTime() : Infinity;
+  let mejor = Infinity;
+  // 1) Primer día hábil tildado
+  if(Array.isArray(a.days)){
+    for(let i=0;i<a.days.length;i++){
+      if(a.days[i]){
+        if(a.fechaIni){
+          const d = actIdxToDate(a, i);
+          if(d) mejor = Math.min(mejor, d.getTime());
+        } else {
+          // Legacy sin fechaIni: el "índice como timestamp" no es comparable
+          // con timestamps reales, así que devolvemos el índice tal cual.
+          return i;
+        }
+        break;
       }
-      return i;
     }
   }
-  return Infinity;
+  // 2) Primer domingo tildado
+  if(Array.isArray(a.domingos) && a.domingos.length){
+    for(const iso of a.domingos){
+      const d = _parseISODate(iso);
+      if(d) mejor = Math.min(mejor, d.getTime());
+    }
+  }
+  return mejor;
 }
 
 // Devuelve una copia de `acts` ordenada según _sortMode. Como el orden ya
@@ -1778,13 +1833,24 @@ function renderTable(){
     if(!_passAllFilters(a)) return;
 
     // Inicio / Fin reales de la fila: derivados desde a.fechaIni + índices
-    // marcados, no desde dates[] del filtro. Si la actividad no tiene fechas
-    // individuales (legacy), caemos al modo viejo.
+    // marcados, no desde dates[] del filtro. Considera tanto a.days[] como
+    // las fechas en a.domingos[]. Si la actividad no tiene fechas individuales
+    // (legacy), caemos al modo viejo.
     const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+    const domsArr = Array.isArray(a.domingos) ? a.domingos : [];
     let sd, ed;
     if(a.fechaIni){
-      sd = marked.length ? actIdxToDate(a, marked[0]) : null;
-      ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+      // Recolectar todas las fechas tildadas (hábiles + domingos) y tomar min/max
+      const todasFechas = [];
+      marked.forEach(i => { const f = actIdxToDate(a, i); if(f) todasFechas.push(f); });
+      domsArr.forEach(iso => { const f = _parseISODate(iso); if(f) todasFechas.push(f); });
+      if(todasFechas.length){
+        todasFechas.sort((x,y) => x - y);
+        sd = todasFechas[0];
+        ed = todasFechas[todasFechas.length-1];
+      } else {
+        sd = null; ed = null;
+      }
     } else {
       sd = marked.length ? dates[marked[0]] : null;
       ed = marked.length ? dates[marked[marked.length-1]] : null;
@@ -1937,33 +2003,63 @@ function renderTable(){
 
     // Day toggle buttons
     // Cada celda corresponde a una fecha calendario REAL (dates[di]).
-    // Buscamos el índice correspondiente en a.days[] usando la fechaIni
-    // individual de la actividad. Si la fecha cae fuera del rango de la
-    // actividad, la celda queda no clickeable (visualmente atenuada).
+    // - Si la fecha es DOMINGO (getDay===0), usamos a.domingos[] (array de fechas ISO).
+    // - Si es DÍA HÁBIL, usamos a.days[] indexado por dateToActIdx().
+    // Si la fecha cae fuera del rango individual de la actividad, queda no clickeable.
     for(let di=0;di<n;di++){
       const td=document.createElement('td');td.className='cp';
-      td.style.background='transparent';
-      if(di===0||di===6||di===12) td.style.borderLeft='2px solid rgba(240,165,0,.2)';
       const fechaCelda = dates[di];
-      // Si la actividad NO tiene fechas individuales (legacy), usar índice directo
+      const isDom = fechaCelda.getDay() === 0;
+      // Borde izquierdo: marcar el inicio de cada semana (lunes después de domingo) o la primera columna
+      const isWkStart = di===0 || (di>0 && dates[di-1].getDay()===0);
+      if(isWkStart) td.style.borderLeft='2px solid rgba(240,165,0,.2)';
+      // Fondo de celda DOMINGO sin tildar: levemente azulado (B.1=2)
+      td.style.background = isDom ? 'rgba(88,166,255,.10)' : 'transparent';
+
+      // Determinar si la celda está dentro del rango de la actividad
       const usarLegacy = !a.fechaIni || !a.fechaFin;
-      const actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
-      const enRangoActividad = usarLegacy || (actIdx >= 0);
-      const on = enRangoActividad && !!a.days[actIdx];
+      let enRangoActividad, on, actIdx;
+      if(isDom){
+        // Para domingos, "en rango" = la fecha está entre fechaIni y fechaFin (inclusive)
+        if(usarLegacy){
+          enRangoActividad = true;
+        } else {
+          const ini = _parseISODate(a.fechaIni);
+          const fin = _parseISODate(a.fechaFin);
+          enRangoActividad = !!(ini && fin && fechaCelda >= ini && fechaCelda <= fin);
+        }
+        on = enRangoActividad && actHasDomingo(a, fechaCelda);
+        actIdx = -1; // no aplica para domingos
+      } else {
+        actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
+        enRangoActividad = usarLegacy || (actIdx >= 0);
+        on = enRangoActividad && !!a.days[actIdx];
+      }
+
       const btn = document.createElement('div');
-      btn.className = 'db' + (on ? ' on' : '');
+      btn.className = 'db' + (on ? ' on' : '') + (isDom ? ' dom' : '');
       if(!enRangoActividad){
-        // Fuera del rango individual de la actividad: no clickeable y atenuado
         btn.style.opacity = '0.25';
         btn.style.cursor = 'not-allowed';
         btn.title = 'Fuera del rango de la actividad (' +
                     (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
                     (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
+      } else if(isDom){
+        // Click handler para DOMINGO: toggle en a.domingos[]
+        btn.title = 'Domingo ' + fmt(fechaCelda) + ' (excepción)';
+        btn.onclick = (function(fecha, b){
+          return function(){
+            actToggleDomingo(acts[idx], fecha);
+            const nowOn = actHasDomingo(acts[idx], fecha);
+            b.classList.toggle('on', nowOn);
+            save(); refreshDateCells(tr, acts[idx], dates);
+          };
+        })(fechaCelda, btn);
       } else {
+        // Click handler para DÍA HÁBIL: toggle en a.days[]
         btn.title = fechaCelda ? fmt(fechaCelda) : '';
         btn.onclick = (function(targetIdx, b){
           return function(){
-            // Asegurar que el array tenga al menos targetIdx+1 posiciones
             while(acts[idx].days.length <= targetIdx){
               acts[idx].days.push(false);
             }
@@ -2108,6 +2204,7 @@ function renderTable(){
         item:             a.item || '',
         descripcion:      a.descripcion || '',
         days:             Array.isArray(a.days) ? a.days.slice() : [],
+        domingos:         Array.isArray(a.domingos) ? a.domingos.slice() : [],
         cumple:           a.cumple || '',
         razon:            a.razon || '',
         criticidad:       a.criticidad || '',
@@ -2147,10 +2244,18 @@ function updateRowCrit(tr, criticidad){
 
 function refreshDateCells(tr,a,dates){
   const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+  const domsArr = Array.isArray(a.domingos) ? a.domingos : [];
   let sd, ed;
   if(a.fechaIni){
-    sd = marked.length ? actIdxToDate(a, marked[0]) : null;
-    ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+    // Recolectar todas las fechas tildadas (hábiles + domingos) y tomar min/max
+    const todasFechas = [];
+    marked.forEach(i => { const f = actIdxToDate(a, i); if(f) todasFechas.push(f); });
+    domsArr.forEach(iso => { const f = _parseISODate(iso); if(f) todasFechas.push(f); });
+    if(todasFechas.length){
+      todasFechas.sort((x,y) => x - y);
+      sd = todasFechas[0];
+      ed = todasFechas[todasFechas.length-1];
+    } else { sd = null; ed = null; }
   } else {
     sd = marked.length ? dates[marked[0]] : null;
     ed = marked.length ? dates[marked[marked.length-1]] : null;
@@ -2299,6 +2404,7 @@ function addRow(){
     fechaFin: hdrFin || '',
     sector:'', item:'', descripcion:'',
     days: new Array(ndAct).fill(false),
+    domingos: [],
     cumple:'', razon:'', criticidad:'', dias_atraso:0,
     comentario:'',
     obra_act:'', contratista_act:''
@@ -2421,30 +2527,21 @@ function renderGantt(){
   // Aplicar los 3 filtros (Obra/Contratista/Sector)
   const actsFiltrado = acts.filter(_passAllFilters);
 
-  // Ordenar por fecha de inicio (primer día marcado mapeado a fecha real)
+  // Ordenar por fecha de inicio (primer día tildado, considera hábiles + domingos)
   const actsGantt=actsFiltrado.slice().sort((a,b)=>{
-    const ma=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const mb=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    let da, db;
-    if(a.fechaIni){
-      da = ma.length ? actIdxToDate(a, ma[0]) : null;
-    } else {
-      da = ma.length ? dates[ma[0]] : null;
-    }
-    if(b.fechaIni){
-      db = mb.length ? actIdxToDate(b, mb[0]) : null;
-    } else {
-      db = mb.length ? dates[mb[0]] : null;
-    }
-    if(!da&&!db)return 0;if(!da)return 1;if(!db)return -1;
-    return da-db;
+    const ta = _firstDayIdx(a);
+    const tb = _firstDayIdx(b);
+    if(ta === Infinity && tb === Infinity) return 0;
+    if(ta === Infinity) return 1;
+    if(tb === Infinity) return -1;
+    return ta - tb;
   });
 
   // ── Header ──────────────────────────────────────────────────────
   let html=`<div class="g-hdr"><div class="g-lhdr">Actividad</div><div class="g-dhdr-wrap">`;
   dates.forEach((d,i)=>{
-    const isSat=d.getDay()===6;
-    html+=`<div class="g-dh${isSat?' sat':''}" style="min-width:${CELL}px">
+    const isDom=d.getDay()===0;
+    html+=`<div class="g-dh${isDom?' dom':''}" style="min-width:${CELL}px${isDom?';background:rgba(88,166,255,.10)':''}">
       ${DL[i]}<br><span style="font-size:8px">${fmts(d)}</span>
     </div>`;
   });
@@ -2452,10 +2549,10 @@ function renderGantt(){
 
   // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
   actsGantt.forEach(a=>{
-    // Mapear cada tilde de a.days[] a una columna del rango visible.
-    // Si la actividad tiene fecha individual, usar mapeo por fecha real.
-    // Si es legacy (sin fechaIni), caer al modo viejo (índice directo).
-    let markedIdx;
+    // Mapear cada tilde a una columna del rango visible.
+    // - Hábiles desde a.days[] (mediante actIdxToDate)
+    // - Domingos desde a.domingos[] (búsqueda directa por fecha ISO)
+    let markedIdx; let domIdxSet = new Set();
     if(a.fechaIni){
       markedIdx = [];
       const datesISO = dates.map(d => _toISODate(d));
@@ -2467,18 +2564,27 @@ function renderGantt(){
         const colIdx = datesISO.indexOf(realISO);
         if(colIdx >= 0 && colIdx < n) markedIdx.push(colIdx);
       });
+      // Domingos tildados de a.domingos[]
+      if(Array.isArray(a.domingos)){
+        a.domingos.forEach(iso => {
+          const colIdx = datesISO.indexOf(iso);
+          if(colIdx >= 0 && colIdx < n){ markedIdx.push(colIdx); domIdxSet.add(colIdx); }
+        });
+      }
       markedIdx.sort((x,y)=>x-y);
+      // Deduplicar (por si acaso)
+      markedIdx = markedIdx.filter((v,i,arr) => i===0 || v !== arr[i-1]);
     } else {
       markedIdx = a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
     }
     const isFail = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'].includes(a.cumple||'');
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
-    // tick lines (column dividers)
+    // tick lines (column dividers) — domingo levemente azulado
     let ticks='';
     for(let i=0;i<=n;i++){
-      const isSatTick=i<n&&dates[i].getDay()===6;
-      ticks+=`<div class="g-tick" style="left:${i*CELL}px;${isSatTick?'background:rgba(88,166,255,.12);width:'+CELL+'px;':''}"></div>`;
+      const isDomTick=i<n&&dates[i].getDay()===0;
+      ticks+=`<div class="g-tick" style="left:${i*CELL}px;${isDomTick?'background:rgba(88,166,255,.12);width:'+CELL+'px;':''}"></div>`;
     }
 
     let blocks='';
@@ -2498,12 +2604,12 @@ function renderGantt(){
         const rR=isNext?0:5;
         const borderRadius=`${rL}px ${rR}px ${rR}px ${rL}px`;
 
-        // Color: fail=red, sat=blue tint, normal=gold
-        const isSat=d.getDay()===6;
+        // Color: fail=red, dom=blue tint, normal=gold
+        const isDom=d.getDay()===0;
         const bg=isFail
-          ? (isSat?'#c0392b':'#f85149')
-          : (isSat?'#3b82f6':'var(--accent)');
-        const textColor=isFail?'#fff':(isSat?'#fff':'#000');
+          ? (isDom?'#c0392b':'#f85149')
+          : (isDom?'#3b82f6':'var(--accent)');
+        const textColor=isFail?'#fff':(isDom?'#fff':'#000');
 
         // Left margin: 1px gap on left edge of cell (except if continuing from prev)
         const leftOffset=di*CELL+(isPrev?0:1);
@@ -2526,7 +2632,7 @@ function renderGantt(){
           display:flex;align-items:center;justify-content:center;
           font-size:9px;font-weight:700;color:${textColor};
           overflow:hidden;white-space:nowrap;
-          box-shadow:${isFail?'0 1px 4px rgba(248,81,73,.4)':'0 1px 4px rgba(240,165,0,.3)'};
+          box-shadow:${isFail?'0 1px 4px rgba(248,81,73,.4)':(isDom?'0 1px 4px rgba(88,166,255,.4)':'0 1px 4px rgba(240,165,0,.3)')};
           cursor:default;
         ">${showLbl?segLen+'d':''}</div>`;
       });
@@ -2689,6 +2795,7 @@ function exportPDF(){
     const fechaFin     = document.getElementById('inp-fecha-fin')?.value || '';
     const dates        = wDates(getStart(), getFin());
     const numDays      = dates.length;
+    const numDiasHabiles = dates.filter(d => d.getDay() !== 0).length;
     const periodoTxt   = (fechaIni && fechaFin)
       ? `${fmt(new Date(fechaIni+'T00:00:00'))} al ${fmt(new Date(fechaFin+'T00:00:00'))}`
       : (fechaIni ? `Desde ${fmt(new Date(fechaIni+'T00:00:00'))}` : '—');
@@ -2840,20 +2947,24 @@ function exportPDF(){
     // ───────────────────────────────────────────────────────────
     function actDateRange(a){
       const marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
-      if(!marked.length) return { ini:'—', fin:'—', dias:0 };
-      let di, df;
+      const domsArr = Array.isArray(a.domingos) ? a.domingos : [];
+      // Recolectar fechas tildadas (hábiles + domingos) y tomar min/max
+      const todasFechas = [];
       if(a.fechaIni){
-        di = actIdxToDate(a, marked[0]);
-        df = actIdxToDate(a, marked[marked.length - 1]);
+        marked.forEach(i => { const f = actIdxToDate(a, i); if(f) todasFechas.push(f); });
+        domsArr.forEach(iso => { const f = _parseISODate(iso); if(f) todasFechas.push(f); });
       } else {
-        // Legacy: usar dates[] del filtro
-        di = marked[0] < dates.length ? dates[marked[0]] : null;
-        df = marked[marked.length - 1] < dates.length ? dates[marked[marked.length - 1]] : null;
+        // Legacy sin fechaIni
+        marked.forEach(i => { if(i < dates.length) todasFechas.push(dates[i]); });
       }
+      if(!todasFechas.length) return { ini:'—', fin:'—', dias:0 };
+      todasFechas.sort((x,y) => x - y);
+      const di = todasFechas[0];
+      const df = todasFechas[todasFechas.length - 1];
       return {
         ini: di ? fmt(di) : '—',
         fin: df ? fmt(df) : '—',
-        dias: marked.length
+        dias: marked.length + domsArr.length
       };
     }
 
@@ -2872,7 +2983,7 @@ function exportPDF(){
 
     const infoBotY = infoTopY + 14;
     drawInfoCard(MX,                       infoBotY, 'PERÍODO',        periodoTxt,    cardW);
-    drawInfoCard(MX + cardW + cardGap,     infoBotY, 'DÍAS HÁBILES',   String(numDays), cardW);
+    drawInfoCard(MX + cardW + cardGap,     infoBotY, 'DÍAS HÁBILES',   String(numDiasHabiles), cardW);
     drawInfoCard(MX + 2*(cardW + cardGap), infoBotY, 'FECHA EMISIÓN',  fechaEmision,   cardW);
 
     // ── Banda título de la sección de tareas ──
@@ -3247,7 +3358,7 @@ function exportPDF(){
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     const gantSubt = numDays > 0
-      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${numDays} día(s) hábil(es)`
+      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${dates.filter(d => d.getDay()!==0).length} día(s) hábil(es)`
       : `Sin días hábiles definidos`;
     doc.text(gantSubt, pageW - MX - 3, ganttTopY + 4.8, { align: 'right' });
 
@@ -3262,11 +3373,11 @@ function exportPDF(){
     doc.text('Actividad', MX + 3, ganttTopY + 5.5);
     doc.text('Sector', MX + nameColW + 3, ganttTopY + 5.5);
 
-    // Cabecera de días - calcular letra desde la fecha real (más preciso que getDL)
-    const dayLetters = ['D','L','M','X','J','V','S']; // 0=Domingo..6=Sábado (no aparecerán domingos)
+    // Cabecera de días - el DOMINGO se diferencia con fondo azul
+    const dayLetters = ['D','L','M','X','J','V','S']; // 0=Domingo..6=Sábado
     dates.forEach((d, i) => {
-      const isSat = d.getDay() === 6;
-      doc.setFillColor(...(isSat ? [59,130,246] : NAVY_DARK));
+      const isDom = d.getDay() === 0;
+      doc.setFillColor(...(isDom ? [59,130,246] : NAVY_DARK));
       doc.rect(ganttX + i*cellW, ganttTopY, cellW, cellH, 'F');
       doc.setTextColor(...WHITE);
       doc.setFont('helvetica', 'bold');
@@ -3286,19 +3397,14 @@ function exportPDF(){
     doc.line(MX + nameColW, ganttTopY, MX + nameColW, ganttTopY + cellH);
     doc.line(ganttX, ganttTopY, ganttX, ganttTopY + cellH);
 
-    // Ordenar actividades por fecha de inicio (mapeada a fecha real si la actividad la tiene)
+    // Ordenar actividades por fecha de inicio (considera tildes hábiles + domingos)
     const actsGantt = actsExport.slice().sort((a,b) => {
-      const ma = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
-      const mb = (b.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0);
-      let da, db;
-      if(a.fechaIni){ da = ma.length ? actIdxToDate(a, ma[0]) : null; }
-      else          { da = ma.length ? dates[ma[0]] : null; }
-      if(b.fechaIni){ db = mb.length ? actIdxToDate(b, mb[0]) : null; }
-      else          { db = mb.length ? dates[mb[0]] : null; }
-      if(!da && !db) return 0;
-      if(!da) return 1;
-      if(!db) return -1;
-      return da - db;
+      const ta = _firstDayIdx(a);
+      const tb = _firstDayIdx(b);
+      if(ta === Infinity && tb === Infinity) return 0;
+      if(ta === Infinity) return 1;
+      if(tb === Infinity) return -1;
+      return ta - tb;
     });
 
     // Filas del Gantt
@@ -3337,7 +3443,7 @@ function exportPDF(){
       doc.line(MX, rowY + cellH, pageW - MX, rowY + cellH);
 
       // Bloques del Gantt
-      // Convertir tildes del array de actividad a posiciones en `dates[]` (rango visible)
+      // Convertir tildes (hábiles + domingos) a posiciones en `dates[]`
       const isFail = failStates.includes(a.cumple || '');
       let marked;
       if(a.fechaIni){
@@ -3351,6 +3457,16 @@ function exportPDF(){
           const colIdx = datesISO.indexOf(realISO);
           if(colIdx >= 0 && colIdx < numDays) marked.push(colIdx);
         });
+        // Domingos tildados
+        if(Array.isArray(a.domingos)){
+          a.domingos.forEach(iso => {
+            const colIdx = datesISO.indexOf(iso);
+            if(colIdx >= 0 && colIdx < numDays) marked.push(colIdx);
+          });
+        }
+        marked.sort((x,y)=>x-y);
+        // Deduplicar
+        marked = marked.filter((v,i,arr) => i===0 || v !== arr[i-1]);
       } else {
         marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0 && i < numDays);
       }
@@ -3358,10 +3474,10 @@ function exportPDF(){
       marked.forEach(di => {
         const d = dates[di];
         if(!d) return;
-        const isSat = d.getDay() === 6;
+        const isDom = d.getDay() === 0;
         let color;
-        if(isFail) color = isSat ? [153,27,27] : [220,38,38];
-        else       color = isSat ? [59,130,246] : GOLD;
+        if(isFail) color = isDom ? [153,27,27] : [220,38,38];
+        else       color = isDom ? [59,130,246] : GOLD;
         doc.setFillColor(...color);
         const bx = ganttX + di*cellW + 1.2;
         const by = rowY + 1.5;
@@ -3916,6 +4032,7 @@ async function _syncActsToSupabase(){
         sector:        a.sector || '',
         descripcion:   a.descripcion || a.item || '',
         days:          a.days || [],
+        domingos:      Array.isArray(a.domingos) ? a.domingos : [],
         cumple:        mapCumple(a.cumple),
         razon:         a.razon || '',
         criticidad:    mapCriticidad(a.criticidad),
@@ -4056,6 +4173,7 @@ async function _loadActsFromSupabase(){
       item:             r.descripcion || '',
       descripcion:      r.descripcion || '',
       days:             Array.isArray(r.days) ? r.days : [],
+      domingos:         Array.isArray(r.domingos) ? r.domingos : [],
       cumple:           fromDBCumple(r.cumple),
       razon:            r.razon || '',
       criticidad:       fromDBCriticidad(r.criticidad),
