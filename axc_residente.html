@@ -1090,7 +1090,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.4-pdf-1';
+const _PDF_VERSION = 'v2.4-pdf-3';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -3041,7 +3041,7 @@ function exportXLSX(){
 
 
 // ════════════════════════════════════════════════════════════
-// FASE 2 PDF: Esqueleto de exportación a PDF
+// FASE 2-3 PDF: Esqueleto + portada + footer + marca de agua
 // ════════════════════════════════════════════════════════════
 // Resuelve el nombre del residente activo aplicando el mismo patrón que
 // el resto del módulo (línea ~1459): si es residente no-admin, usa la
@@ -3071,9 +3071,166 @@ function _pdfFilename(){
   return `AXC_Planificacion_Residentes_${slug}_${yyyy}-${mm}-${dd}.pdf`;
 }
 
+// Convierte '#RRGGBB' a [r,g,b] para uso con doc.setFillColor / setTextColor.
+function _hexToRgb(hex){
+  const h = (hex || '#000000').replace('#','');
+  return [
+    parseInt(h.slice(0,2), 16) || 0,
+    parseInt(h.slice(2,4), 16) || 0,
+    parseInt(h.slice(4,6), 16) || 0
+  ];
+}
+
+// Dibuja la marca de agua "BORRADOR" en la página actual.
+// Solo se aplica si _isPlanBorrador() === true.
+// Se llama DESPUÉS del contenido; la baja opacidad la hace ver como fondo.
+function _drawPdfWatermark(doc){
+  if(!_isPlanBorrador()) return;
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  doc.saveGraphicsState();
+  try {
+    // GState para opacidad (jsPDF 2.x)
+    doc.setGState(new doc.GState({opacity: 0.10}));
+    const [r,g,b] = _hexToRgb(PDF_COLORS.navy);
+    doc.setTextColor(r, g, b);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(110);
+    doc.text('BORRADOR', pw/2, ph/2 + 20, {align: 'center', angle: -30});
+  } catch(e){
+    console.warn('No se pudo dibujar marca de agua:', e);
+  } finally {
+    doc.restoreGraphicsState();
+  }
+}
+
+// Dibuja el footer en todas las páginas del documento (llamar AL FINAL,
+// cuando ya están todas las páginas creadas).
+function _drawPdfFooter(doc){
+  const pw = doc.internal.pageSize.getWidth();
+  const total = doc.internal.getNumberOfPages();
+  const margin = 12;
+  for(let i = 1; i <= total; i++){
+    doc.setPage(i);
+    const ph = doc.internal.pageSize.getHeight();   // re-leer (puede ser landscape)
+    const pwi = doc.internal.pageSize.getWidth();
+    const footerY = ph - 9;
+    // Línea separadora navy fina
+    const [nr,ng,nb] = _hexToRgb(PDF_COLORS.navy);
+    doc.setDrawColor(nr, ng, nb);
+    doc.setLineWidth(0.3);
+    doc.line(margin, footerY - 4, pwi - margin, footerY - 4);
+    // Texto
+    const [gr,gg,gb] = _hexToRgb(PDF_COLORS.gray);
+    doc.setTextColor(gr, gg, gb);
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8);
+    doc.text('AXC Constructora — Sistema de Planificación', margin, footerY);
+    doc.text(`Página ${i} de ${total}`, pwi/2, footerY, {align: 'center'});
+    doc.text(`Conexdata · ${_PDF_VERSION}`, pwi - margin, footerY, {align: 'right'});
+  }
+}
+
+// Dibuja la portada institucional en la página actual (asume página 1 recién creada).
+function _drawPortada(doc){
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+
+  // ─── Banda superior navy (full-width, 35mm de alto) ───
+  const [nr,ng,nb] = _hexToRgb(PDF_COLORS.navy);
+  doc.setFillColor(nr, ng, nb);
+  doc.rect(0, 0, pw, 35, 'F');
+
+  // Logo AXC sobre la banda navy
+  if(LOGO_AXC_B64){
+    try {
+      // posición: izquierda 12mm, top 7mm, alto 21mm, ancho auto
+      doc.addImage(LOGO_AXC_B64, 'AUTO', 12, 7, 0, 21);
+    } catch(e){
+      console.warn('No se pudo agregar logo AXC al PDF:', e);
+    }
+  }
+
+  // "AXC CONSTRUCTORA" en blanco a la derecha de la banda
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(16);
+  doc.text('AXC CONSTRUCTORA', pw - 12, 22, {align: 'right'});
+
+  // ─── Título principal centrado ───
+  doc.setTextColor(nr, ng, nb);   // navy
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(26);
+  doc.text('Planificación de Actividades', pw/2, 80, {align: 'center'});
+
+  const [gr,gg,gb] = _hexToRgb(PDF_COLORS.gray);
+  doc.setTextColor(gr, gg, gb);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(16);
+  doc.text('Reporte de Residente', pw/2, 92, {align: 'center'});
+
+  // Línea decorativa gold
+  const [gdr,gdg,gdb] = _hexToRgb(PDF_COLORS.gold);
+  doc.setDrawColor(gdr, gdg, gdb);
+  doc.setLineWidth(0.9);
+  doc.line(pw/2 - 32, 99, pw/2 + 32, 99);
+
+  // ─── Caja de metadatos ───
+  const boxX = 30;
+  const boxY = 120;
+  const boxW = pw - 60;
+  const boxH = 72;
+  const [glr,glg,glb] = _hexToRgb(PDF_COLORS.grayLight);
+  doc.setDrawColor(glr, glg, glb);
+  doc.setLineWidth(0.3);
+  doc.setFillColor(252, 252, 253);
+  doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2, 'FD');
+
+  // Datos a mostrar
+  const residente = _residenteActivoNombre() || 'Sin asignar';
+  const fechaIni  = document.getElementById('inp-fecha')?.value     || '—';
+  const fechaFin  = document.getElementById('inp-fecha-fin')?.value || '—';
+  const now       = new Date();
+  let generado;
+  try {
+    generado = now.toLocaleString('es-PY', {dateStyle:'short', timeStyle:'short'});
+  } catch(e){
+    generado = now.toLocaleString();
+  }
+  const estadoPlan = _isPlanBorrador() ? 'BORRADOR (baseline sin confirmar)' : 'BASELINE CONFIRMADA';
+
+  const rows = [
+    ['Residente:', residente],
+    ['Período:',   `${fechaIni} a ${fechaFin}`],
+    ['Generado:',  generado],
+    ['Estado:',    estadoPlan],
+    ['Versión:',   _PDF_VERSION]
+  ];
+
+  const labelX = boxX + 10;
+  const valueX = boxX + 42;
+  let lineY    = boxY + 13;
+  doc.setFontSize(10);
+  rows.forEach(([label, value]) => {
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(nr, ng, nb);   // navy
+    doc.text(label, labelX, lineY);
+    doc.setFont('helvetica','normal');
+    doc.setTextColor(gr, gg, gb);   // gray
+    doc.text(String(value), valueX, lineY);
+    lineY += 11.5;
+  });
+
+  // Nota inferior sobre contenido pendiente (mientras estamos en desarrollo)
+  doc.setTextColor(glr, glg, glb);
+  doc.setFont('helvetica','italic');
+  doc.setFontSize(9);
+  doc.text('— Resumen ejecutivo, tabla detallada y diagrama Gantt en páginas siguientes —', pw/2, ph - 30, {align:'center'});
+}
+
 // Función orquestadora de exportación a PDF.
-// Fase 2: solo crea el documento en blanco y lo descarga con el nombre correcto.
-// Fases 3-6 agregarán portada, KPIs, tabla y Gantt.
+// Fase 3: portada + footer + marca de agua. Las páginas con KPIs, tabla
+// y Gantt vendrán en Fases 4-6.
 async function exportPDF(){
   const btn = document.getElementById('btn-export-pdf');
   const txtOriginal = btn ? btn.textContent : '📄 Exportar PDF';
@@ -3088,8 +3245,20 @@ async function exportPDF(){
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
-    // ─── Fase 3-6: aquí se dibujarán portada, KPIs, tabla y Gantt ───
-    // Por ahora el PDF se genera vacío como prueba de pipeline.
+    // ─── Página 1: Portada institucional ───
+    _drawPortada(doc);
+
+    // ─── Fases 4-6: aquí se agregarán KPIs, tabla detallada y Gantt ───
+
+    // ─── Marca de agua "BORRADOR" en cada página (si aplica) ───
+    const totalPages = doc.internal.getNumberOfPages();
+    for(let i = 1; i <= totalPages; i++){
+      doc.setPage(i);
+      _drawPdfWatermark(doc);
+    }
+
+    // ─── Footer en todas las páginas (al final, para tener el total correcto) ───
+    _drawPdfFooter(doc);
 
     doc.save(_pdfFilename());
   } catch(err) {
@@ -3102,7 +3271,7 @@ async function exportPDF(){
     }
   }
 }
-// ═══════════════ FIN FASE 2 PDF ═══════════════
+// ═══════════════ FIN FASE 2-3 PDF ═══════════════
 
 
 // ════════════════════════════════════════════════════════════
