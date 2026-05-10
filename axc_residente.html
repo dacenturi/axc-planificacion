@@ -78,6 +78,26 @@ tbody td{padding:0;vertical-align:middle}
 .banner-pendientes{background:linear-gradient(135deg,rgba(240,165,0,.18),rgba(240,165,0,.10));border:1px solid rgba(240,165,0,.45);border-radius:8px;padding:10px 16px;margin:10px 0;display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text);font-weight:500}
 .banner-pendientes-icon{font-size:18px}
 .banner-pendientes-count{background:var(--accent);color:#000;font-weight:700;padding:2px 9px;border-radius:10px;font-size:12px}
+/* FASE 2 — Columna Avance % y razón highlight */
+.avance-cell{display:flex;flex-direction:column;align-items:stretch;gap:3px;padding:0 2px}
+.avance-bar{position:relative;height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;width:100%}
+.avance-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .25s ease}
+.avance-fill.lvl-low{background:linear-gradient(90deg,#EF4444,#F87171)}
+.avance-fill.lvl-mid{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
+.avance-fill.lvl-high{background:linear-gradient(90deg,#22C55E,#4ADE80)}
+.avance-fill.lvl-full{background:linear-gradient(90deg,#22C55E,#16A34A);box-shadow:0 0 4px rgba(34,197,94,.5)}
+.avance-num{font-family:'DM Mono',monospace;font-size:11px;font-weight:700;text-align:center;color:var(--text)}
+.avance-num.lvl-low{color:#FCA5A5}
+.avance-num.lvl-mid{color:#FBBF24}
+.avance-num.lvl-high{color:#4ADE80}
+.avance-num.lvl-full{color:#22C55E}
+.avance-cell.empty{color:var(--text3);font-size:11px;text-align:center;font-style:italic;opacity:.55}
+/* Razón obligatoria pero vacía */
+.sel-razon-warn{border:1.5px solid #EF4444 !important;background:rgba(239,68,68,.08) !important;animation:razon-pulse 2s ease-in-out infinite}
+@keyframes razon-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 4px rgba(239,68,68,0)}}
+/* Estado dropdown disabled (calculado automáticamente) */
+.sel-e[data-locked="1"]{cursor:not-allowed;opacity:.92}
+.sel-e[data-locked="1"]:hover{filter:brightness(1.05)}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -465,6 +485,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
             </th>
             <th style="width:48px">Fin</th>
             <th style="width:110px">Estado</th>
+            <th style="width:90px" title="Avance % = días verdes / días planificados × 100">Avance %</th>
             <th style="width:110px" class="thl">Razones del estado</th>
             <th style="width:62px" id="th-dias-atraso">Días atraso</th>
             <th style="width:90px">Criticidad</th>
@@ -473,7 +494,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
           <tr class="tr-dates" id="tr-dates" style="height:34px">
             <th></th><th></th><th></th>
             <!-- días generados por JS -->
-            <th></th><th></th><th></th><th></th><th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -1188,14 +1209,126 @@ function countActsPendientesConfirmar(){
   return (acts || []).filter(a => !a.confirmada && actHasAnyTilde(a)).length;
 }
 
+// ═══ FASE 2 — CÁLCULO AUTOMÁTICO DE ESTADO Y AVANCE ═══════════════════
+// Reglas confirmadas con el cliente (Reglas_Medicion_Residentes.docx):
+//   D = total días planificados (a.days[i]=true)
+//   V = días con cumplimiento "cumple"
+//   R = días con cumplimiento "no_cumple"
+//   A = días azules (a.domingos.length, días no previstos trabajados)
+//   P = días planificados sin marcar (D - V - R)
+//   hoy <= fechaFin → en plazo
+//   hoy >  fechaFin → fuera de plazo
+//
+// Estados manuales (gana sobre el cálculo): "En espera", "Cancelado"
+// Estados calculados: "En proceso", "Terminado", "Cumplido con atraso", "Retrasado"
+// Si A >= 1 → la actividad cuenta como No Cumple (Cumplido con atraso)
+
+const ESTADOS_MANUALES = ['En espera', 'Cancelado'];
+const ESTADOS_NO_CUMPLE = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
+const ESTADOS_CALCULADOS = ['En proceso', 'Terminado', 'Cumplido con atraso', 'Retrasado'];
+
+// Calcula contadores de la actividad. Usa solo días dentro del rango planificado.
+function _contadoresActividad(act){
+  const D = (act.days || []).filter(v => !!v).length;
+  const cumpl = Array.isArray(act.cumplimiento) ? act.cumplimiento : [];
+  let V = 0, R = 0;
+  (act.days || []).forEach((v, i) => {
+    if(!v) return;
+    if(cumpl[i] === 'cumple')         V++;
+    else if(cumpl[i] === 'no_cumple') R++;
+  });
+  const A = Array.isArray(act.domingos) ? act.domingos.length : 0;
+  const P = D - V - R;
+  return { D, V, R, A, P };
+}
+
+// Devuelve el avance % (0-100). Si D=0, devuelve 0.
+function calcularAvancePct(act){
+  if(!act || !act.confirmada) return null;
+  const { D, V } = _contadoresActividad(act);
+  if(D === 0) return 0;
+  return Math.round((V / D) * 100);
+}
+
+// Devuelve el estado calculado aplicando las reglas en orden de prioridad.
+// Si el estado actual es manual ("En espera" / "Cancelado"), lo mantiene.
+function calcularEstadoAuto(act){
+  if(!act) return 'Sin asignar';
+  // Regla 1: no confirmada → Sin asignar
+  if(!act.confirmada) return 'Sin asignar';
+  // Reglas 2 y 3: estados manuales ganan sobre el cálculo
+  const cumpleActual = (act.cumple || '').trim();
+  if(ESTADOS_MANUALES.includes(cumpleActual)) return cumpleActual;
+
+  const { D, V, R, A, P } = _contadoresActividad(act);
+  // Sin días planificados, no hay nada que medir
+  if(D === 0) return 'Sin asignar';
+
+  // Calcular si pasó la fecha fin
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const fechaFin = act.fechaFin ? _parseISODate(act.fechaFin) : null;
+  if(fechaFin) fechaFin.setHours(23,59,59,999);
+  const pasoFechaFin = !!(fechaFin && hoy > fechaFin);
+
+  // Regla extra: ≥1 azul → la actividad se desvió del plan → Cumplido con atraso
+  if(A >= 1) return 'Cumplido con atraso';
+
+  // Regla 4: V == D (todos los planificados verdes) → Terminado
+  if(V === D) return 'Terminado';
+
+  // Reglas 5-7: pasó la fecha fin
+  if(pasoFechaFin){
+    // 5: hubo verdes y rojos
+    if(R > 0 && V > 0) return 'Cumplido con atraso';
+    // 6: solo rojos
+    if(R > 0 && V === 0) return 'Retrasado';
+    // 7: faltan marcar (P>0)
+    if(P > 0) return 'Retrasado';
+  }
+
+  // Reglas 8-10: en plazo
+  if(V >= 1) return 'En proceso';
+  if(R >= 1 && V === 0) return 'Retrasado';
+  // Default: recién confirmada, todavía sin marcar nada
+  return 'En proceso';
+}
+
+// Devuelve true si la razón es obligatoria para el estado calculado actual.
+function razonEsObligatoria(act){
+  const estado = calcularEstadoAuto(act);
+  return ESTADOS_NO_CUMPLE.includes(estado);
+}
+
+// Renderiza la celda de Avance % con barra de progreso visual.
+// Si la actividad NO está confirmada → "—" tenue (B1).
+function renderAvanceCell(act){
+  const td = document.createElement('td');
+  td.style.cssText = 'padding:4px 6px;text-align:center;width:90px;min-width:90px';
+  if(!act.confirmada){
+    td.innerHTML = '<div class="avance-cell empty">—</div>';
+    return td;
+  }
+  const pct = calcularAvancePct(act) || 0;
+  const { D, V } = _contadoresActividad(act);
+  let lvl = 'lvl-low';
+  if(pct >= 100)      lvl = 'lvl-full';
+  else if(pct >= 75)  lvl = 'lvl-high';
+  else if(pct >= 40)  lvl = 'lvl-mid';
+  td.innerHTML = `
+    <div class="avance-cell" title="${V} de ${D} días planificados completados">
+      <div class="avance-bar"><div class="avance-fill ${lvl}" style="width:${pct}%"></div></div>
+      <div class="avance-num ${lvl}">${pct}%</div>
+    </div>`;
+  return td;
+}
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
   const DL=getDL(dates);
-  // Columnas fijas: # + actividadtor, Actividad = 3 visibles siempre + 2 ocultas fijas
-  // Columnas fijas: # + Obra + Actividad = 3, al final: Inicio+Fin+Estado+Razón+Criticidad+botón = 6
+  // Columnas fijas: # + Obra + Actividad = 3, al final: Inicio+Fin+Estado+AvancePct+Razón+DíasAtraso+Criticidad+Acciones = 8
   const FIXED_START = 3;
-  const FIXED_END = 7;
+  const FIXED_END = 8;
   const grpRow=document.getElementById('tr-groups');
   // Eliminar grupos de semana dinámicos anteriores
   while(grpRow.children.length > FIXED_START + FIXED_END)
@@ -1217,7 +1350,7 @@ function buildDateHeaders(){
   });
   // Fila de fechas
   const DATES_FIXED_START = 3;
-  const DATES_FIXED_END = 7;
+  const DATES_FIXED_END = 8;
   const tr=document.getElementById('tr-dates');
   while(tr.children.length>DATES_FIXED_START+DATES_FIXED_END) tr.children[DATES_FIXED_START].remove();
   const refNode=tr.children[DATES_FIXED_START];
@@ -2015,9 +2148,9 @@ function renderTable(){
     tr.appendChild(ted);
 
     // ── ESTADO  ───────────────────────────────────────────────
-    // 7 opciones: Sin asignar + En proceso, Terminado, Cumplido con atraso,
-    // En espera, Retrasado, Cancelado. Los valores legacy 'Cumple' y 'No Cumple'
-    // se re-interpretan como 'Terminado' y 'Retrasado' respectivamente.
+    // FASE 2: si la actividad está confirmada, el estado se CALCULA automáticamente
+    // y el dropdown solo permite override manual con "En espera" o "Cancelado".
+    // Si NO está confirmada, el dropdown sigue funcionando como antes (manual).
     const te=document.createElement('td');
     te.style.cssText='padding:2px 3px;width:110px';
     const se=document.createElement('select');
@@ -2033,14 +2166,36 @@ function renderTable(){
     const _estadosCumple   = ['En proceso', 'Terminado'];
     const _estadosNoCumple = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
 
-    se.innerHTML = `<option value=""${!_curEstado?' selected':''}>— Sin asignar —</option>`
-      + `<option value="En proceso"${_curEstado==='En proceso'?' selected':''}>⏳ En proceso</option>`
-      + `<option value="Terminado"${_curEstado==='Terminado'?' selected':''}>✓ Terminado</option>`
-      + `<option value="Cumplido con atraso"${_curEstado==='Cumplido con atraso'?' selected':''}>⚠ Cumplido con atraso</option>`
-      + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
-      + `<option value="Retrasado"${_curEstado==='Retrasado'?' selected':''}>⚠ Retrasado</option>`
-      + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
-    // Colorear según estado
+    const _isConfirmada = !!a.confirmada;
+    const _calculado = _isConfirmada ? calcularEstadoAuto(a) : '';
+    const _esManual  = _isConfirmada && (_curEstado === 'En espera' || _curEstado === 'Cancelado');
+    // Estado efectivo que se muestra en pantalla
+    const _estadoEfectivo = _isConfirmada ? (_esManual ? _curEstado : _calculado) : _curEstado;
+
+    if(_isConfirmada){
+      // CONFIRMADA: 3 opciones (Auto + manuales)
+      // Etiqueta "Auto" muestra el estado calculado dinámicamente
+      const labelAuto = _calculado ? `🤖 Auto: ${_calculado}` : '🤖 Auto';
+      se.innerHTML =
+          `<option value=""${!_esManual?' selected':''}>${labelAuto}</option>`
+        + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
+        + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
+      se.dataset.locked = '1';
+      se.title = _esManual
+        ? `Estado MANUAL: ${_curEstado}\nElegí "Auto" para volver al cálculo automático.`
+        : `Estado AUTO: ${_calculado}\nPuede cambiarse manualmente solo a "En espera" o "Cancelado".`;
+    } else {
+      // NO CONFIRMADA: dropdown completo (comportamiento original)
+      se.innerHTML = `<option value=""${!_curEstado?' selected':''}>— Sin asignar —</option>`
+        + `<option value="En proceso"${_curEstado==='En proceso'?' selected':''}>⏳ En proceso</option>`
+        + `<option value="Terminado"${_curEstado==='Terminado'?' selected':''}>✓ Terminado</option>`
+        + `<option value="Cumplido con atraso"${_curEstado==='Cumplido con atraso'?' selected':''}>⚠ Cumplido con atraso</option>`
+        + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
+        + `<option value="Retrasado"${_curEstado==='Retrasado'?' selected':''}>⚠ Retrasado</option>`
+        + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
+    }
+
+    // Colorear según estado efectivo
     const _colorSel = (v) => {
       se.style.borderColor = '';
       se.style.color = '';
@@ -2048,7 +2203,7 @@ function renderTable(){
       else if(v === 'Cumplido con atraso'){ se.style.borderColor='rgba(240,165,0,.4)'; se.style.color='var(--accent)'; }
       else if(_estadosNoCumple.includes(v)){ se.style.borderColor='rgba(248,81,73,.4)'; se.style.color='var(--red)'; }
     };
-    _colorSel(_curEstado);
+    _colorSel(_estadoEfectivo);
     se.onchange=()=>{
       acts[idx].cumple = se.value;
       // Si el estado no requiere razón, limpiarla
@@ -2061,18 +2216,27 @@ function renderTable(){
     te.appendChild(se);
     tr.appendChild(te);
 
+    // ── AVANCE %  ─────────────────────────────────────────────
+    tr.appendChild(renderAvanceCell(a));
+
     // ── RAZONES DEL ESTADO  ──────────────────────────────────
     const tr2=document.createElement('td');
     tr2.style.cssText='padding:2px 3px;width:110px';
-    const _requiereRazon = _estadosConRazon.includes(_curEstado);
+    const _requiereRazon = _estadosConRazon.includes(_estadoEfectivo);
     if(_requiereRazon){
       const wRaz=document.createElement('div');wRaz.style.cssText='display:flex;align-items:center;gap:3px';
       const sr=document.createElement('select');sr.className='sel-r';sr.style.flex='1';
       const _razones=getABMList('razones');
       sr.innerHTML=`<option value="">— Razón —</option>`+
         _razones.map(r=>`<option${a.razon===r?' selected':''}>${r}</option>`).join('');
+      // Highlight visual si la razón es obligatoria pero está vacía (B — no bloquea)
+      if(!a.razon){
+        sr.classList.add('sel-razon-warn');
+        sr.title = 'La razón es obligatoria para este estado.';
+      }
       sr.onchange=()=>{
         acts[idx].razon=sr.value;
+        if(sr.value){ sr.classList.remove('sel-razon-warn'); sr.title=''; }
         save();
         try{ _updateValidationUI(); }catch(e){}
       };
@@ -2090,10 +2254,10 @@ function renderTable(){
     tr.appendChild(tr2);
 
     // ── DÍAS ATRASO  ──────────────────────────────────────────
-    // Visible solo para "Cumplido con atraso" o "Retrasado"
+    // Visible solo para "Cumplido con atraso" o "Retrasado" (efectivo)
     const tda=document.createElement('td');
     tda.style.cssText='padding:2px 3px;width:62px';
-    if(_estadosConDias.includes(_curEstado)){
+    if(_estadosConDias.includes(_estadoEfectivo)){
       const inpDias=document.createElement('input');
       inpDias.type='number';
       inpDias.min='0';inpDias.max='9999';inpDias.step='1';
@@ -2983,7 +3147,14 @@ async function _syncActsToSupabase(){
         descripcion:   a.descripcion || a.item || '',
         days:          a.days || [],
         domingos:      Array.isArray(a.domingos) ? a.domingos : [],
-        cumple:         mapCumple(a.cumple),
+        // FASE 2: si está confirmada y el a.cumple no es manual,
+        // guardamos el estado calculado (para que el reporte/dashboard lean lo correcto).
+        cumple:         (function(){
+          if(a.confirmada && !ESTADOS_MANUALES.includes(a.cumple || '')){
+            return mapCumple(calcularEstadoAuto(a));
+          }
+          return mapCumple(a.cumple);
+        })(),
         razon:          a.razon || '',
         dias_atraso:    Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
         criticidad:     mapCriticidad(a.criticidad),
