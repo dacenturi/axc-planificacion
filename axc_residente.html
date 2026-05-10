@@ -56,6 +56,9 @@ tbody td{padding:0;vertical-align:middle}
 .db{width:20px;height:22px;border-radius:3px;border:1px solid var(--border);background:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--text3);transition:all .12s;margin:0 auto;user-select:none;flex-shrink:0}
 .db:hover{border-color:var(--accent);background:rgba(240,165,0,.1)}
 .db.on{background:var(--accent);border-color:var(--accent);color:#000;box-shadow:0 0 5px rgba(240,165,0,.35)}
+/* DOMINGO: tilde activa en azul (excepción) */
+.db.dom:hover{border-color:var(--blue);background:rgba(88,166,255,.18)}
+.db.dom.on{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 0 5px rgba(88,166,255,.45)}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -777,7 +780,19 @@ const SECTORS = new Proxy([], {
 });
 const RAZONES=['Falta de Planos','Falta de Material','Tareas Predecesoras','Motivos climaticos','Falta Personal','Mala Programación','Cambios de Proyectos'];
 // DL generado dinámicamente según cantidad de días
-function getDL(n){const base=['L','M','X','J','V','S'];const out=[];let wi=0,si=0;while(out.length<n){if(wi%7!==0||wi===0){}; const day=si%6;out.push(base[day]);si++;wi++;}return out;}
+// Devuelve un array de letras (L/M/X/J/V/S/D) para cada fecha del array.
+// - Si recibe un Array de Date: usa el día real de cada fecha (correcto siempre).
+// - Si recibe un número (legacy): asume secuencia hábil desde lunes (compat).
+function getDL(datesOrN){
+  const map = ['D','L','M','X','J','V','S']; // 0=domingo .. 6=sábado
+  if(Array.isArray(datesOrN)){
+    return datesOrN.map(d => map[d.getDay()]);
+  }
+  const base=['L','M','X','J','V','S'];
+  const out=[]; let si=0;
+  while(out.length<datesOrN){ out.push(base[si%6]); si++; }
+  return out;
+}
 
 
 // ════════════════════════════════════════════════════════════
@@ -987,19 +1002,23 @@ let acts=[];
 let obra=JSON.parse(localStorage.getItem('axc_obra')||'{}');
 
 function getStart(){const v=document.getElementById('inp-fecha').value;return v?new Date(v+'T00:00:00'):new Date();}
+// wDates: devuelve TODAS las fechas en el rango, INCLUYENDO domingos.
+// Antes filtraba domingos; ahora se incluyen para que la columna Domingo
+// sea visible y tildable como excepción (a.domingos[]).
 function wDates(s,e){
-  // s=start date, e=end date (optional). Max 30 working days.
   const out=[];let d=new Date(s);d.setHours(0,0,0,0);
   const endD=e?new Date(e+'T23:59:59'):null;
-  while(out.length<30){
-    if(d.getDay()!==0){
-      if(endD&&d>endD) break;
-      out.push(new Date(d));
-    }
+  while(out.length<35){
+    if(endD&&d>endD) break;
+    out.push(new Date(d));
     d.setDate(d.getDate()+1);
-    if(!endD&&out.length>=15) break;
+    if(!endD&&out.length>=17) break;
   }
   return out;
+}
+// Cuenta solo días hábiles (Lun-Sáb) en el rango.
+function getNumDaysHabiles(){
+  return wDates(getStart(),getFin()).filter(d => d.getDay() !== 0).length;
 }
 function getNumDays(){return wDates(getStart(),getFin()).length;}
 function getFin(){return document.getElementById('inp-fecha-fin').value||'';}
@@ -1085,10 +1104,26 @@ function actOverlapsRange(act, filtroIniDate, filtroFinDate){
   return ini <= filtroFinDate && fin >= filtroIniDate;
 }
 
+// Verifica si una fecha (Date) está marcada en a.domingos[] (array de ISO YYYY-MM-DD).
+function actHasDomingo(act, fecha){
+  if(!Array.isArray(act.domingos) || !fecha) return false;
+  const iso = _toISODate(fecha);
+  return act.domingos.includes(iso);
+}
+
+// Toggle: agrega o remueve una fecha ISO del array a.domingos[].
+function actToggleDomingo(act, fecha){
+  if(!Array.isArray(act.domingos)) act.domingos = [];
+  const iso = _toISODate(fecha);
+  const idx = act.domingos.indexOf(iso);
+  if(idx >= 0){ act.domingos.splice(idx, 1); }
+  else        { act.domingos.push(iso); }
+}
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
-  const DL=getDL(n);
+  const DL=getDL(dates);
   // Columnas fijas: # + actividadtor, Actividad = 3 visibles siempre + 2 ocultas fijas
   // Columnas fijas: # + Obra + Actividad = 3, al final: Inicio+Fin+Estado+Razón+Criticidad+botón = 6
   const FIXED_START = 3;
@@ -1098,12 +1133,12 @@ function buildDateHeaders(){
   while(grpRow.children.length > FIXED_START + FIXED_END)
     grpRow.children[FIXED_START].remove();
   const grpRef=grpRow.children[FIXED_START];
-  // Construir grupos de semana
+  // Construir grupos de semana — cierran al final del DOMINGO (no del sábado)
   let wk=1,dayInWk=0,wkCols=[];
   for(let i=0;i<n;i++){
     dayInWk++;
-    const isSat=dates[i].getDay()===6;
-    if(isSat||i===n-1){wkCols.push({wk,cols:dayInWk});wk++;dayInWk=0;}
+    const isDom=dates[i].getDay()===0;
+    if(isDom||i===n-1){wkCols.push({wk,cols:dayInWk});wk++;dayInWk=0;}
   }
   wkCols.forEach(({wk:w,cols:c})=>{
     const th=document.createElement('th');
@@ -1120,11 +1155,12 @@ function buildDateHeaders(){
   const refNode=tr.children[DATES_FIXED_START];
   dates.forEach((d,i)=>{
     const th=document.createElement('th');
-    const isSat=d.getDay()===6;
-    th.className='col-day'+(isSat?' sat-hdr':'');
-    const isWkStart=i>0&&dates[i-1].getDay()===6;
-    th.style.cssText=`width:26px;min-width:26px;text-align:center;${isSat?'background:rgba(88,166,255,.05);':''}`
-      +(isWkStart||i===0?'border-left:2px solid rgba(240,165,0,.25);':'');
+    const isDom=d.getDay()===0;
+    th.className='col-day'+(isDom?' dom-hdr':'');
+    // Borde izquierdo: primera columna o lunes después de domingo
+    const isWkStart = i===0 || (i>0 && dates[i-1].getDay()===0);
+    th.style.cssText=`width:26px;min-width:26px;text-align:center;${isDom?'background:rgba(88,166,255,.10);':''}`
+      +(isWkStart?'border-left:2px solid rgba(240,165,0,.25);':'');
     th.innerHTML=`<span style="font-size:8px;font-weight:700;display:block">${DL[i]}</span><span style="font-size:7px;opacity:.6">${fmts(d)}</span>`;
     tr.insertBefore(th,refNode);
   });
@@ -1203,6 +1239,7 @@ async function onResidenteChange(){
           obra_row:    r.obra || '',
           sector:      r.sector || '',
           days:        Array.isArray(r.days) ? r.days : [],
+          domingos:    Array.isArray(r.domingos) ? r.domingos : [],
           cumple:      fromDBCumple(r.cumple),
           razon:       r.razon || '',
           dias_atraso: Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
@@ -1286,7 +1323,7 @@ function onObraChange(){
     try{ localStorage.removeItem('axc_obra'); }catch(e){}
   }
 
-  const nd=getNumDays();
+  const nd=getNumDaysHabiles();
   const sub=document.getElementById('sec-sub');
   if(sub) sub.textContent='Período de '+nd+' día'+(nd!==1?'s':'')+' hábiles';
   // NOTA: ya NO se extiende a.days al cambiar el header. Cada actividad
@@ -1464,15 +1501,30 @@ function _passAllFilters(a){
     const filtroIni = getStart();
     const filtroFin = _parseISODate(getFin());
     if(filtroIni && filtroFin && a.fechaIni){
-      const tieneTildes = Array.isArray(a.days) && a.days.some(v => !!v);
+      const tieneTildesHabiles = Array.isArray(a.days) && a.days.some(v => !!v);
+      const tieneTildesDom     = Array.isArray(a.domingos) && a.domingos.length > 0;
+      const tieneTildes = tieneTildesHabiles || tieneTildesDom;
       if(tieneTildes){
         let hayTildeEnRango = false;
-        for(let i=0; i < a.days.length; i++){
-          if(!a.days[i]) continue;
-          const fechaTilde = actIdxToDate(a, i);
-          if(fechaTilde && fechaTilde >= filtroIni && fechaTilde <= filtroFin){
-            hayTildeEnRango = true;
-            break;
+        // 1) Tildes en a.days[]
+        if(tieneTildesHabiles){
+          for(let i=0; i < a.days.length; i++){
+            if(!a.days[i]) continue;
+            const fechaTilde = actIdxToDate(a, i);
+            if(fechaTilde && fechaTilde >= filtroIni && fechaTilde <= filtroFin){
+              hayTildeEnRango = true;
+              break;
+            }
+          }
+        }
+        // 2) Tildes en a.domingos[]
+        if(!hayTildeEnRango && tieneTildesDom){
+          for(const iso of a.domingos){
+            const fechaDom = _parseISODate(iso);
+            if(fechaDom && fechaDom >= filtroIni && fechaDom <= filtroFin){
+              hayTildeEnRango = true;
+              break;
+            }
           }
         }
         if(!hayTildeEnRango) return false;
@@ -1570,17 +1622,29 @@ function _updateSortArrow(){
 }
 
 function _firstDayIdx(a){
-  if(!Array.isArray(a.days)) return Infinity;
-  for(let i=0;i<a.days.length;i++){
-    if(a.days[i]){
-      if(a.fechaIni){
-        const d = actIdxToDate(a, i);
-        return d ? d.getTime() : Infinity;
+  let mejor = Infinity;
+  // 1) Primer día hábil tildado
+  if(Array.isArray(a.days)){
+    for(let i=0;i<a.days.length;i++){
+      if(a.days[i]){
+        if(a.fechaIni){
+          const d = actIdxToDate(a, i);
+          if(d) mejor = Math.min(mejor, d.getTime());
+        } else {
+          return i; // Legacy
+        }
+        break;
       }
-      return i;
     }
   }
-  return Infinity;
+  // 2) Primer domingo tildado
+  if(Array.isArray(a.domingos) && a.domingos.length){
+    for(const iso of a.domingos){
+      const d = _parseISODate(iso);
+      if(d) mejor = Math.min(mejor, d.getTime());
+    }
+  }
+  return mejor;
 }
 
 function _reorderActsByFecha(){
@@ -1617,13 +1681,21 @@ function renderTable(){
     if(!_passAllFilters(a)) return;
 
     // Inicio/Fin reales: derivados desde a.fechaIni + índices marcados.
+    // Considera tanto a.days[] como las fechas en a.domingos[].
     // Si la actividad no tiene fechas individuales (legacy), caemos al
     // modo viejo (dates[] del filtro).
     const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+    const domsArr = Array.isArray(a.domingos) ? a.domingos : [];
     let sd, ed;
     if(a.fechaIni){
-      sd = marked.length ? actIdxToDate(a, marked[0]) : null;
-      ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+      const todasFechas = [];
+      marked.forEach(i => { const f = actIdxToDate(a, i); if(f) todasFechas.push(f); });
+      domsArr.forEach(iso => { const f = _parseISODate(iso); if(f) todasFechas.push(f); });
+      if(todasFechas.length){
+        todasFechas.sort((x,y) => x - y);
+        sd = todasFechas[0];
+        ed = todasFechas[todasFechas.length-1];
+      } else { sd = null; ed = null; }
     } else {
       sd = marked.length ? dates[marked[0]] : null;
       ed = marked.length ? dates[marked[marked.length-1]] : null;
@@ -1735,21 +1807,52 @@ function renderTable(){
     for(let di=0;di<n;di++){
       const td=document.createElement('td');
       td.style.cssText='padding:1px 1px;text-align:center;width:26px;min-width:26px';
-      if(di===0||(di>0&&dates[di-1].getDay()===6))
-        td.style.borderLeft='2px solid rgba(240,165,0,.25)';
       const fechaCelda = dates[di];
+      const isDom = fechaCelda.getDay() === 0;
+      // Borde izquierdo: primera columna o lunes después de domingo
+      const isWkStart = di===0 || (di>0 && dates[di-1].getDay()===0);
+      if(isWkStart) td.style.borderLeft='2px solid rgba(240,165,0,.25)';
+      // Fondo de celda DOMINGO sin tildar
+      if(isDom) td.style.background = 'rgba(88,166,255,.10)';
+
       const usarLegacy = !a.fechaIni || !a.fechaFin;
-      const actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
-      const enRangoActividad = usarLegacy || (actIdx >= 0);
-      const on = enRangoActividad && !!a.days[actIdx];
+      let enRangoActividad, on, actIdx;
+      if(isDom){
+        // Para domingos, "en rango" = la fecha está entre fechaIni y fechaFin
+        if(usarLegacy){
+          enRangoActividad = true;
+        } else {
+          const ini = _parseISODate(a.fechaIni);
+          const fin = _parseISODate(a.fechaFin);
+          enRangoActividad = !!(ini && fin && fechaCelda >= ini && fechaCelda <= fin);
+        }
+        on = enRangoActividad && actHasDomingo(a, fechaCelda);
+        actIdx = -1;
+      } else {
+        actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
+        enRangoActividad = usarLegacy || (actIdx >= 0);
+        on = enRangoActividad && !!a.days[actIdx];
+      }
+
       const btn = document.createElement('div');
-      btn.className = 'db' + (on ? ' on' : '');
+      btn.className = 'db' + (on ? ' on' : '') + (isDom ? ' dom' : '');
       if(!enRangoActividad){
         btn.style.opacity = '0.25';
         btn.style.cursor = 'not-allowed';
         btn.title = 'Fuera del rango de la actividad (' +
                     (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
                     (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
+      } else if(isDom){
+        // Click handler para DOMINGO: toggle en a.domingos[]
+        btn.title = 'Domingo ' + fmt(fechaCelda) + ' (excepción)';
+        btn.onclick = (function(fecha, b){
+          return function(){
+            actToggleDomingo(acts[idx], fecha);
+            const nowOn = actHasDomingo(acts[idx], fecha);
+            b.classList.toggle('on', nowOn);
+            save(); refreshDateCells(tr, acts[idx], dates);
+          };
+        })(fechaCelda, btn);
       } else {
         btn.title = fechaCelda ? fmt(fechaCelda) : '';
         btn.onclick = (function(targetIdx, b){
@@ -1916,6 +2019,7 @@ function renderTable(){
         descripcion: a.descripcion || '',
         obra_row:    a.obra_row || '',
         days:        Array.isArray(a.days) ? a.days.slice() : [],
+        domingos:    Array.isArray(a.domingos) ? a.domingos.slice() : [],
         cumple:      a.cumple || '',
         razon:       a.razon || '',
         criticidad:  a.criticidad || '',
@@ -1955,10 +2059,17 @@ function updateRowCrit(tr, criticidad){
 
 function refreshDateCells(tr,a,dates){
   const marked=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
+  const domsArr = Array.isArray(a.domingos) ? a.domingos : [];
   let sd, ed;
   if(a.fechaIni){
-    sd = marked.length ? actIdxToDate(a, marked[0]) : null;
-    ed = marked.length ? actIdxToDate(a, marked[marked.length-1]) : null;
+    const todasFechas = [];
+    marked.forEach(i => { const f = actIdxToDate(a, i); if(f) todasFechas.push(f); });
+    domsArr.forEach(iso => { const f = _parseISODate(iso); if(f) todasFechas.push(f); });
+    if(todasFechas.length){
+      todasFechas.sort((x,y) => x - y);
+      sd = todasFechas[0];
+      ed = todasFechas[todasFechas.length-1];
+    } else { sd = null; ed = null; }
   } else {
     sd = marked.length ? dates[marked[0]] : null;
     ed = marked.length ? dates[marked[marked.length-1]] : null;
@@ -2072,6 +2183,7 @@ function addRow(){
     fechaFin: hdrFin || '',
     item:'', descripcion:'', obra_row:'', sector:'',
     days: new Array(ndAct).fill(false),
+    domingos: [],
     cumple:'', razon:'', criticidad:'', dias_atraso:0,
     comentario:''
   });
@@ -2182,7 +2294,7 @@ function renderReport(){
 function renderGantt(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
-  const DL=getDL(n);
+  const DL=getDL(dates);
   const CELL=30;
   const GAP=3;       // gap between non-consecutive day blocks
   const BLOCK=CELL-2; // block width (fits inside cell with margin)
@@ -2197,24 +2309,21 @@ function renderGantt(){
   // Aplicar filtros combinados (Obra + Sector + Estado)
   const actsFiltrado = acts.filter(_passAllFilters);
 
-  // Ordenar por fecha de inicio (primer día marcado mapeado a fecha real)
+  // Ordenar por fecha de inicio (considera tildes hábiles + domingos)
   const actsGantt=actsFiltrado.slice().sort((a,b)=>{
-    const ma=a.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    const mb=b.days.map((v,i)=>v?i:-1).filter(i=>i>=0);
-    let da, db;
-    if(a.fechaIni){ da = ma.length ? actIdxToDate(a, ma[0]) : null; }
-    else          { da = ma.length ? dates[ma[0]] : null; }
-    if(b.fechaIni){ db = mb.length ? actIdxToDate(b, mb[0]) : null; }
-    else          { db = mb.length ? dates[mb[0]] : null; }
-    if(!da&&!db)return 0;if(!da)return 1;if(!db)return -1;
-    return da-db;
+    const ta = _firstDayIdx(a);
+    const tb = _firstDayIdx(b);
+    if(ta === Infinity && tb === Infinity) return 0;
+    if(ta === Infinity) return 1;
+    if(tb === Infinity) return -1;
+    return ta - tb;
   });
 
   // ── Header ──────────────────────────────────────────────────────
   let html=`<div class="g-hdr"><div class="g-lhdr">Actividad</div><div class="g-dhdr-wrap">`;
   dates.forEach((d,i)=>{
-    const isSat=d.getDay()===6;
-    html+=`<div class="g-dh${isSat?' sat':''}" style="min-width:${CELL}px">
+    const isDom=d.getDay()===0;
+    html+=`<div class="g-dh${isDom?' dom':''}" style="min-width:${CELL}px${isDom?';background:rgba(88,166,255,.10)':''}">
       ${DL[i]}<br><span style="font-size:8px">${fmts(d)}</span>
     </div>`;
   });
@@ -2223,7 +2332,9 @@ function renderGantt(){
   // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
   const _failStatesG = ['No Cumple','Cumplido con atraso','En espera','Retrasado','Cancelado'];
   actsGantt.forEach(a=>{
-    // Mapear cada tilde de a.days[] a una columna del rango visible.
+    // Mapear cada tilde a una columna del rango visible.
+    // - Hábiles desde a.days[]
+    // - Domingos desde a.domingos[]
     let markedIdx;
     if(a.fechaIni){
       markedIdx = [];
@@ -2236,51 +2347,54 @@ function renderGantt(){
         const colIdx = datesISO.indexOf(realISO);
         if(colIdx >= 0 && colIdx < n) markedIdx.push(colIdx);
       });
+      // Domingos tildados
+      if(Array.isArray(a.domingos)){
+        a.domingos.forEach(iso => {
+          const colIdx = datesISO.indexOf(iso);
+          if(colIdx >= 0 && colIdx < n) markedIdx.push(colIdx);
+        });
+      }
       markedIdx.sort((x,y)=>x-y);
+      markedIdx = markedIdx.filter((v,i,arr) => i===0 || v !== arr[i-1]);
     } else {
       markedIdx = a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
     }
     const isFail=_failStatesG.includes(a.cumple||'');
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
-    // tick lines (column dividers)
+    // tick lines (column dividers) — domingo levemente azulado
     let ticks='';
     for(let i=0;i<=n;i++){
-      const isSatTick=i<n&&dates[i].getDay()===6;
-      ticks+=`<div class="g-tick" style="left:${i*CELL}px;${isSatTick?'background:rgba(88,166,255,.12);width:'+CELL+'px;':''}"></div>`;
+      const isDomTick=i<n&&dates[i].getDay()===0;
+      ticks+=`<div class="g-tick" style="left:${i*CELL}px;${isDomTick?'background:rgba(88,166,255,.12);width:'+CELL+'px;':''}"></div>`;
     }
 
     let blocks='';
     if(markedIdx.length===0){
       blocks=`<span style="color:var(--text3);font-size:11px;padding:0 14px;position:absolute;top:50%;transform:translateY(-50%)">Sin días asignados</span>`;
     } else {
-      // Group consecutive days into segments, draw each day as individual block
-      // but visually connect consecutive ones (no gap between them)
       markedIdx.forEach((di,pos)=>{
         const d=dates[di];
-        if(!d) return; // guard against out-of-bounds
-        const isPrev=pos>0&&markedIdx[pos-1]===di-1; // consecutive with previous
-        const isNext=pos<markedIdx.length-1&&markedIdx[pos+1]===di+1; // consecutive with next
+        if(!d) return;
+        const isPrev=pos>0&&markedIdx[pos-1]===di-1;
+        const isNext=pos<markedIdx.length-1&&markedIdx[pos+1]===di+1;
 
-        // radius: round left if first in group, round right if last in group
         const rL=isPrev?0:5;
         const rR=isNext?0:5;
         const borderRadius=`${rL}px ${rR}px ${rR}px ${rL}px`;
 
-        // Color: fail=red, sat=blue tint, normal=gold
-        const isSat=d.getDay()===6;
+        // Color: fail=red, dom=blue, normal=gold
+        const isDom=d.getDay()===0;
         const bg=isFail
-          ? (isSat?'#c0392b':'#f85149')
-          : (isSat?'#3b82f6':'var(--accent)');
-        const textColor=isFail?'#fff':(isSat?'#fff':'#000');
+          ? (isDom?'#c0392b':'#f85149')
+          : (isDom?'#3b82f6':'var(--accent)');
+        const textColor=isFail?'#fff':(isDom?'#fff':'#000');
 
-        // Left margin: 1px gap on left edge of cell (except if continuing from prev)
         const leftOffset=di*CELL+(isPrev?0:1);
         const width=isPrev?(isNext?CELL:CELL-1):(isNext?CELL-1:CELL-2);
 
         const dateLabel=fmt(d);
-        const isFirst=!isPrev; // show label only on first block of a group
-        // Count this segment's length for label
+        const isFirst=!isPrev;
         let segLen=1;
         if(isFirst){let j=pos;while(j+1<markedIdx.length&&markedIdx[j+1]===markedIdx[j]+1){segLen++;j++;}}
         const showLbl=isFirst&&(segLen*CELL>40);
@@ -2295,7 +2409,7 @@ function renderGantt(){
           display:flex;align-items:center;justify-content:center;
           font-size:9px;font-weight:700;color:${textColor};
           overflow:hidden;white-space:nowrap;
-          box-shadow:${isFail?'0 1px 4px rgba(248,81,73,.4)':'0 1px 4px rgba(240,165,0,.3)'};
+          box-shadow:${isFail?'0 1px 4px rgba(248,81,73,.4)':(isDom?'0 1px 4px rgba(88,166,255,.4)':'0 1px 4px rgba(240,165,0,.3)')};
           cursor:default;
         ">${showLbl?segLen+'d':''}</div>`;
       });
@@ -2359,7 +2473,8 @@ function exportXLSX(){
       dias_atraso: Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
       criticidad:  a.criticidad || '',
       comentario:  a.comentario || '',
-      days:        a.days || []
+      days:        a.days || [],
+      domingos:    Array.isArray(a.domingos) ? a.domingos : []
     }))
   };
 
@@ -2655,6 +2770,7 @@ async function _syncActsToSupabase(){
         sector:        a.sector || '',
         descripcion:   a.descripcion || a.item || '',
         days:          a.days || [],
+        domingos:      Array.isArray(a.domingos) ? a.domingos : [],
         cumple:        mapCumple(a.cumple),
         razon:         a.razon || '',
         dias_atraso:   Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
@@ -2820,6 +2936,7 @@ async function _loadActsFromSupabase(){
       obra_row:    r.obra || '',
       sector:      r.sector || '',
       days:        Array.isArray(r.days) ? r.days : [],
+      domingos:    Array.isArray(r.domingos) ? r.domingos : [],
       cumple:      fromDBCumple(r.cumple),
       razon:       r.razon || '',
       dias_atraso: Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
