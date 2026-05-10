@@ -1198,7 +1198,7 @@ function actToggleDomingo(act, fecha){
 // Replica exacta del feature en axc_residente.html. Los helpers son
 // inalterados a propósito para mantener consistencia 1:1 entre apps.
 // ════════════════════════════════════════════════════════════════════
-const _CONF_VERSION = 'v2.4-conf-1';
+const _CONF_VERSION = 'v2.4-conf-2';
 
 // ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
 // Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
@@ -2381,6 +2381,123 @@ function renderTable(){
       showToast('✓ Fila duplicada', 'ok');
     };
     td.appendChild(bDup);
+
+    // ════════════════════════════════════════════════════════════
+    // FASE 2 — BOTÓN CONFIRMAR / DESBLOQUEAR (v2.4-conf-2)
+    // Replica exacta del residente. No-confirmada: candado verde abierto.
+    // Confirmada + admin: candado rojo cerrado (clickeable para desbloquear).
+    // Confirmada + NO admin: sin botón.
+    // ════════════════════════════════════════════════════════════
+    if(!a.confirmada){
+      // No confirmada (planificable): candado ABIERTO en VERDE
+      const bConf = document.createElement('button');
+      bConf.className = 'btn-confirm';
+      const tieneTildes = actHasAnyTilde(a);
+      if(!tieneTildes){
+        bConf.disabled = true;
+        bConf.title = 'No se puede confirmar: la actividad no tiene días planificados.';
+      } else {
+        bConf.title = 'Planificación abierta — click para confirmar.\n' +
+                      'Una vez confirmada, no podrás mover los días planificados, pero sí marcar verde/rojo.';
+      }
+      bConf.textContent = '🔓';
+      bConf.onclick = () => {
+        if(bConf.disabled) return;
+        if(!confirm('¿Confirmar la planificación de esta actividad?\n\n' +
+                    'Después de confirmar:\n' +
+                    '  · Los días planificados quedarán bloqueados\n' +
+                    '  · Cada día se marca con check (✓) o cruz (✗)\n' +
+                    '  · Solo un admin puede desbloquear\n\n' +
+                    '¿Continuar?')) return;
+        acts[idx].confirmada = true;
+        acts[idx].confirmada_at = new Date().toISOString();
+        acts[idx].confirmada_por = window._axcEmail || '';
+        ensureCumplimiento(acts[idx]);
+        save();
+        renderAll();
+        showToast('🔒 Planificación confirmada', 'ok');
+      };
+      td.appendChild(bConf);
+    } else if(window._axcEsAdmin){
+      // Confirmada Y soy admin: candado CERRADO en ROJO CLARO (clickeable para desbloquear)
+      const bUnlock = document.createElement('button');
+      bUnlock.className = 'btn-unlock';
+      bUnlock.textContent = '🔒';
+      // Tooltip: muestra quién confirmó si está disponible
+      let tooltipUnlock = 'Planificación confirmada — click para desbloquear (solo admin)';
+      if(a.confirmada_por || a.confirmada_at){
+        let fechaTxtT = '';
+        if(a.confirmada_at){
+          try {
+            const dT = new Date(a.confirmada_at);
+            if(!isNaN(dT.getTime())){
+              fechaTxtT = ' el ' + String(dT.getDate()).padStart(2,'0') + '/' +
+                          String(dT.getMonth()+1).padStart(2,'0') + '/' + dT.getFullYear();
+            }
+          } catch(e){}
+        }
+        tooltipUnlock = 'Confirmada por ' + (a.confirmada_por || '—') + fechaTxtT +
+                        '\nClick para desbloquear (solo admin)';
+      }
+      bUnlock.title = tooltipUnlock;
+      bUnlock.onclick = () => {
+        // Formatear fecha de confirmación en español: "10/05/2026 14:30"
+        let fechaConfTxt = '—';
+        if(a.confirmada_at){
+          try {
+            const dConf = new Date(a.confirmada_at);
+            if(!isNaN(dConf.getTime())){
+              const dd = String(dConf.getDate()).padStart(2,'0');
+              const mm = String(dConf.getMonth()+1).padStart(2,'0');
+              const yyyy = dConf.getFullYear();
+              const hh = String(dConf.getHours()).padStart(2,'0');
+              const mi = String(dConf.getMinutes()).padStart(2,'0');
+              fechaConfTxt = `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+            }
+          } catch(e){}
+        }
+        const quien = (a.confirmada_por || '—').trim() || '—';
+        // Resumen de marcas que se van a perder
+        const { V, R } = _contadoresActividad(a);
+        const azulesHabiles = Array.isArray(a.domingos)
+          ? a.domingos.filter(iso => { const d = _parseISODate(iso); return d && d.getDay() !== 0; }).length
+          : 0;
+        const totalMarcas = V + R + azulesHabiles;
+
+        if(!confirm(
+          'DESBLOQUEAR ACTIVIDAD\n' +
+          '────────────────────────────────\n\n' +
+          'Confirmada por: ' + quien + '\n' +
+          'Fecha de confirmación: ' + fechaConfTxt + '\n\n' +
+          'Al desbloquear:\n' +
+          '  · Se borrarán las marcas verde/rojo/azul ' +
+          (totalMarcas > 0 ? `(${totalMarcas} marca${totalMarcas !== 1 ? 's' : ''})` : '(sin marcas aún)') + '\n' +
+          '  · El contratista podrá modificar la planificación\n' +
+          '  · Tendrá que volver a confirmar después\n\n' +
+          '¿Continuar?'
+        )) return;
+
+        acts[idx].confirmada = false;
+        acts[idx].confirmada_at = null;
+        acts[idx].confirmada_por = '';
+        acts[idx].cumplimiento = [];
+        // Borrar azules de días HÁBILES (extras trabajados).
+        // Conservamos los domingos tildados (son excepciones planificadas reales).
+        if(Array.isArray(acts[idx].domingos)){
+          acts[idx].domingos = acts[idx].domingos.filter(iso => {
+            const d = _parseISODate(iso);
+            return d && d.getDay() === 0;
+          });
+        }
+        save();
+        renderAll();
+        showToast('🔓 Actividad desbloqueada', 'ok');
+      };
+      td.appendChild(bUnlock);
+    }
+    // ════════════════════════════════════════════════════════════
+    // FIN FASE 2
+    // ════════════════════════════════════════════════════════════
 
     const bd=document.createElement('button');bd.className='btn btn-danger btn-sm';
     bd.style.cssText='width:28px;height:28px;padding:0;justify-content:center;font-size:13px';
