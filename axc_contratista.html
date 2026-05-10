@@ -4069,6 +4069,10 @@ function openCommentModal(idx){
   window._commentModalIdx = idx;
   const a = acts[idx];
 
+  // Guardar el comentario actual ANTES de editar para poder detectar
+  // cambios y decidir si disparar la notificación de WhatsApp.
+  window._commentModalPrevious = a.comentario || '';
+
   // Preparar textarea
   const ta = document.getElementById('comment-modal-textarea');
   ta.value = a.comentario || '';
@@ -4115,18 +4119,132 @@ function _updateCommentCounter(){
   counter.style.color = n > 1900 ? 'var(--red)' : (n > 1700 ? 'var(--accent)' : 'var(--text2)');
 }
 
-function saveCommentModal(){
+async function saveCommentModal(){
   const idx = window._commentModalIdx;
   if(idx < 0 || idx >= acts.length){ closeCommentModal(); return; }
   const ta = document.getElementById('comment-modal-textarea');
   const nuevoComentario = (ta.value || '').trim();
+  const previo = (window._commentModalPrevious || '').trim();
+  const a = acts[idx];
+
+  // Snapshot de campos relevantes ANTES de cerrar el modal (porque después
+  // de closeCommentModal el idx cambia y a podría desreferenciarse).
+  const snapshot = {
+    obra:        a.obra_act || '',
+    contratista: a.contratista_act || '',
+    sector:      a.sector || '',
+    descripcion: (a.descripcion || a.item || '').trim(),
+    estado:      a.cumple || '',
+    criticidad:  a.criticidad || ''
+  };
+
+  // Persistir cambio
   acts[idx].comentario = nuevoComentario;
   save();
-  // Re-renderizar para que el botón cambie de color si aplica
   renderTable();
   closeCommentModal();
+
   if(typeof showToast === 'function'){
     showToast(nuevoComentario ? '✓ Comentario guardado' : '✓ Comentario eliminado', 'ok');
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // NOTIFICACIÓN POR WHATSAPP — disparada solo bajo TODAS estas reglas:
+  //   1. Usuario logueado es admin (Daniel o Vladimir)
+  //   2. El comentario tiene contenido (no se borró)
+  //   3. El comentario CAMBIÓ vs el valor anterior
+  //   4. La actividad tiene un residente asignado en el header
+  // Si falta un teléfono o un campo, mostramos toast informativo y
+  // NO bloqueamos el guardado normal.
+  // ════════════════════════════════════════════════════════════════
+  try {
+    if(!window._axcEsAdmin) return;
+    if(!nuevoComentario) return;
+    if(nuevoComentario === previo) return;
+
+    const residenteName = (document.getElementById('inp-residente').value || '').trim();
+    if(!residenteName){
+      if(typeof showToast === 'function'){
+        showToast('⚠ Sin residente asignado: no se envía notificación', 'warn');
+      }
+      return;
+    }
+
+    // Buscar teléfono del residente en perfiles
+    const { data: perfilRes, error: errRes } = await _SB.from('perfiles')
+      .select('telefono, nombre')
+      .eq('residente', residenteName)
+      .maybeSingle();
+
+    if(errRes){
+      console.error('Error buscando teléfono del residente:', errRes);
+      if(typeof showToast === 'function'){
+        showToast('⚠ No se pudo consultar el teléfono del residente', 'warn');
+      }
+      return;
+    }
+
+    if(!perfilRes || !perfilRes.telefono){
+      if(typeof showToast === 'function'){
+        showToast(`⚠ ${residenteName} no tiene teléfono cargado en perfiles`, 'warn');
+      }
+      return;
+    }
+
+    // Construir mensaje de WhatsApp
+    const fechaTxt = new Date().toLocaleString('es-PY', {
+      day:'2-digit', month:'2-digit', year:'numeric',
+      hour:'2-digit', minute:'2-digit'
+    });
+    const remitente = window._axcEmail || '(admin)';
+
+    const lines = [
+      '🔔 *AXC Planificación — Nuevo comentario*',
+      '',
+      `*Residente:* ${residenteName}`
+    ];
+    if(snapshot.obra)        lines.push(`*Obra:* ${snapshot.obra}`);
+    if(snapshot.contratista) lines.push(`*Contratista:* ${snapshot.contratista}`);
+    if(snapshot.sector)      lines.push(`*Sector:* ${snapshot.sector}`);
+    lines.push(`*Actividad:* ${snapshot.descripcion || '(sin descripción)'}`);
+    if(snapshot.estado)      lines.push(`*Estado:* ${snapshot.estado}`);
+    if(snapshot.criticidad)  lines.push(`*Criticidad:* ${snapshot.criticidad}`);
+    lines.push('');
+    lines.push('*Comentario:*');
+    lines.push(`"${nuevoComentario}"`);
+    lines.push('');
+    lines.push(`_Cargado: ${fechaTxt}_`);
+    lines.push(`_Por: ${remitente}_`);
+
+    const msg = lines.join('\n');
+
+    // Sanitizar teléfono: solo dígitos, sin '+', sin espacios, sin paréntesis
+    const telLimpio = String(perfilRes.telefono).replace(/[^0-9]/g, '');
+    if(!telLimpio || telLimpio.length < 10){
+      if(typeof showToast === 'function'){
+        showToast(`⚠ Teléfono inválido para ${residenteName}: ${perfilRes.telefono}`, 'warn');
+      }
+      return;
+    }
+
+    const url = `https://wa.me/${telLimpio}?text=${encodeURIComponent(msg)}`;
+    const popup = window.open(url, '_blank');
+
+    if(!popup || popup.closed || typeof popup.closed === 'undefined'){
+      if(typeof showToast === 'function'){
+        showToast('⚠ Popup bloqueado por el navegador. Permitir popups para enviar WhatsApp.', 'warn');
+      }
+      return;
+    }
+
+    if(typeof showToast === 'function'){
+      showToast(`📱 Abriendo WhatsApp para ${residenteName}...`, 'ok');
+    }
+  } catch(err){
+    console.error('Error en notificación de WhatsApp:', err);
+    if(typeof showToast === 'function'){
+      showToast('⚠ Error al preparar notificación de WhatsApp', 'warn');
+    }
   }
 }
 
