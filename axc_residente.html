@@ -2036,7 +2036,7 @@ function renderTable(){
 
       const usarLegacy = !a.fechaIni || !a.fechaFin;
       const isConfirmada = !!a.confirmada;
-      let enRangoActividad, on, actIdx;
+      let enRangoActividad, onPlanif, actIdx;
       if(isDom){
         if(usarLegacy){
           enRangoActividad = true;
@@ -2045,37 +2045,49 @@ function renderTable(){
           const fin = _parseISODate(a.fechaFin);
           enRangoActividad = !!(ini && fin && fechaCelda >= ini && fechaCelda <= fin);
         }
-        on = enRangoActividad && actHasDomingo(a, fechaCelda);
+        onPlanif = false; // Domingos no se planifican como dorados
         actIdx = -1;
       } else {
         actIdx = usarLegacy ? di : dateToActIdx(a, fechaCelda);
         enRangoActividad = usarLegacy || (actIdx >= 0);
-        on = enRangoActividad && !!a.days[actIdx];
+        onPlanif = enRangoActividad && !!a.days[actIdx];
       }
+      // ¿Esta fecha está marcada como AZUL (extra trabajado / domingo tildado)?
+      // Reutilizamos a.domingos[] para guardar fechas de "extras" (dom o hábil).
+      const onAzul = enRangoActividad && actHasDomingo(a, fechaCelda);
 
       const btn = document.createElement('div');
 
       // ── Determinar clase visual ──
       let claseExtra = '';
       let estadoCumpl = null; // null | 'cumple' | 'no_cumple'
-      if(on && !isDom && isConfirmada){
-        // Día tildado planificado en actividad CONFIRMADA
+      let pintarAzul = false;
+
+      if(onPlanif && !isDom && isConfirmada){
+        // Día planificado en actividad CONFIRMADA → cumple/no_cumple/pending
         ensureCumplimiento(a);
         estadoCumpl = a.cumplimiento[actIdx];
         if(estadoCumpl === 'cumple')         claseExtra = ' cumple';
         else if(estadoCumpl === 'no_cumple') claseExtra = ' no-cumple';
         else                                 claseExtra = ' confirmed-pending';
-      } else if(on){
-        // Tilde dorada normal (no confirmada o domingo)
+      } else if(onPlanif){
+        // Tilde dorada planificada (actividad NO confirmada)
+        claseExtra = ' on';
+      } else if(onAzul){
+        // Azul: día extra trabajado (hábil) o domingo tildado
+        pintarAzul = true;
         claseExtra = ' on';
       }
-      btn.className = 'db' + claseExtra + (isDom ? ' dom' : '');
+      // Marcadores: dom para azul (dominical), tildes hábiles azules también usan estilo dom
+      const necesitaClaseDom = isDom || pintarAzul;
+      btn.className = 'db' + claseExtra + (necesitaClaseDom ? ' dom' : '');
 
       // ── Texto interno ──
       if(estadoCumpl === 'cumple')         btn.textContent = '✓';
       else if(estadoCumpl === 'no_cumple') btn.textContent = '✗';
       else                                 btn.textContent = '';
 
+      // ── Click handlers ──
       if(!enRangoActividad){
         btn.style.opacity = '0.25';
         btn.style.cursor = 'not-allowed';
@@ -2083,22 +2095,22 @@ function renderTable(){
                     (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
                     (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
       } else if(isDom){
-        // DOMINGO: toggle en a.domingos[] (sin cambios respecto a versión anterior)
-        btn.title = 'Domingo ' + fmt(fechaCelda) + ' (excepción)';
-        btn.onclick = (function(fecha, b){
+        // DOMINGO: toggle en a.domingos[]
+        btn.title = onAzul
+          ? 'Domingo ' + fmt(fechaCelda) + ' tildado (excepción).\nClick para quitar.'
+          : 'Domingo ' + fmt(fechaCelda) + ' (excepción).\nClick para tildar.';
+        btn.onclick = (function(fecha){
           return function(){
             actToggleDomingo(acts[idx], fecha);
-            const nowOn = actHasDomingo(acts[idx], fecha);
-            b.classList.toggle('on', nowOn);
-            save(); refreshDateCells(tr, acts[idx], dates);
+            save();
+            renderTable();
           };
-        })(fechaCelda, btn);
+        })(fechaCelda);
       } else if(isConfirmada){
         // ── ACTIVIDAD CONFIRMADA ──
-        if(on){
-          // Tilde planificada: cycle dorado(pendiente) → verde → rojo → dorado
-          const fechaTxt = fmt(fechaCelda);
-          btn.title = 'Día planificado · ' + fechaTxt +
+        if(onPlanif){
+          // Día planificado: cycle pendiente → cumple → no_cumple → pendiente
+          btn.title = 'Día planificado · ' + fmt(fechaCelda) +
                       '\nClick para marcar: pendiente → cumple → no cumple';
           btn.onclick = (function(targetIdx){
             return function(){
@@ -2108,12 +2120,20 @@ function renderTable(){
             };
           })(actIdx);
         } else {
-          // Día NO planificado en actividad confirmada: NO se puede tildar
-          // (las nuevas tildes doradas no pueden agregarse cuando está bloqueada)
-          btn.style.opacity = '0.4';
-          btn.style.cursor = 'not-allowed';
-          btn.title = 'Actividad confirmada — la planificación no se puede modificar.\n' +
-                      'Pedile a un admin que la desbloquee si necesitás ajustarla.';
+          // Día NO planificado en actividad confirmada
+          // → permitir tildar AZUL (día extra trabajado, no previsto)
+          btn.title = onAzul
+            ? 'Día extra trabajado · ' + fmt(fechaCelda) +
+              '\n(no estaba planificado, suma como No Cumple a la actividad)\nClick para quitar.'
+            : 'Marcar ' + fmt(fechaCelda) + ' como día extra trabajado (no previsto).\n' +
+              'Suma como No Cumple a la actividad.';
+          btn.onclick = (function(fecha){
+            return function(){
+              actToggleDomingo(acts[idx], fecha);
+              save();
+              renderTable();
+            };
+          })(fechaCelda);
         }
       } else {
         // ── ACTIVIDAD NO CONFIRMADA: comportamiento original (toggle dorado) ──
@@ -2384,6 +2404,14 @@ function renderTable(){
         acts[idx].confirmada_por = '';
         if(opt === '2'){
           acts[idx].cumplimiento = [];
+          // También borrar azules de días HÁBILES (que son "extras trabajados").
+          // Conservamos los domingos tildados (son excepciones planificadas reales).
+          if(Array.isArray(acts[idx].domingos)){
+            acts[idx].domingos = acts[idx].domingos.filter(iso => {
+              const d = _parseISODate(iso);
+              return d && d.getDay() === 0;
+            });
+          }
         }
         save();
         renderAll();
