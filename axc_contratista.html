@@ -446,20 +446,34 @@ select[title]:hover, input[title]:hover { cursor:help; }
         <thead>
           <tr id="tr-groups" style="height:30px">
             <th class="thl" style="width:28px">#</th>
-            <th class="thl" id="th-obra-col" style="width:110px">Obra</th>
+            <th class="thl" id="th-obra-col" style="width:110px;cursor:pointer;user-select:none" onclick="toggleSortByColumn('obra')" title="Ordenar por Obra (click para alternar)">
+              <span id="th-obra-text">Obra</span><span id="th-obra-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
             <th class="thl" id="th-cont-col" style="width:110px">Contratista</th>
-            <th class="thl" style="width:100px">Sector</th>
+            <th class="thl" style="width:100px;cursor:pointer;user-select:none" onclick="toggleSortByColumn('sector')" title="Ordenar por Sector (click para alternar)">
+              <span id="th-sector-text">Sector</span><span id="th-sector-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
             <th class="thl" style="width:260px">Actividad</th>
             <!-- grupos de semana generados por JS -->
             <th id="th-inicio-sort" style="width:62px;cursor:pointer;user-select:none" onclick="toggleSortByFecha()" title="Ordenar por fecha de inicio (click para alternar)">
               <span id="th-inicio-text">Inicio</span><span id="th-inicio-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
             </th>
             <th style="width:52px">Fin</th>
-            <th style="width:72px">Estado</th>
-            <th style="width:90px" title="Avance % = días verdes / días planificados × 100">Avance %</th>
-            <th style="width:110px" class="thl">Razones del estado</th>
-            <th style="width:62px" id="th-dias-atraso">Días atraso</th>
-            <th style="width:78px">Criticidad</th>
+            <th style="width:72px;cursor:pointer;user-select:none" onclick="toggleSortByColumn('estado')" title="Ordenar por Estado (click para alternar)">
+              <span id="th-estado-text">Estado</span><span id="th-estado-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
+            <th style="width:90px;cursor:pointer;user-select:none" onclick="toggleSortByColumn('avance')" title="Ordenar por Avance % (click para alternar)">
+              <span id="th-avance-text">Avance %</span><span id="th-avance-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
+            <th style="width:110px;cursor:pointer;user-select:none" class="thl" onclick="toggleSortByColumn('razon')" title="Ordenar por Razón (click para alternar)">
+              <span id="th-razon-text">Razones del estado</span><span id="th-razon-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
+            <th style="width:62px;cursor:pointer;user-select:none" id="th-dias-atraso" onclick="toggleSortByColumn('dias_atraso')" title="Ordenar por Días atraso (click para alternar)">
+              <span id="th-diasat-text">Días atraso</span><span id="th-diasat-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
+            <th style="width:78px;cursor:pointer;user-select:none" onclick="toggleSortByColumn('criticidad')" title="Ordenar por Criticidad (click para alternar)">
+              <span id="th-crit-text">Criticidad</span><span id="th-crit-arrow" style="display:inline-block;margin-left:3px;font-size:10px;opacity:.55"></span>
+            </th>
             <th style="width:70px"></th>
           </tr>
           <tr class="tr-dates" id="tr-dates" style="height:34px">
@@ -1918,63 +1932,134 @@ function selectAllFilter(kind, all){
   renderAll();
 }
 
-// ─── Ordenamiento por fecha de inicio ─────────────────────────────────
-// _sortMode: null = orden original; 'asc' = ascendente; 'desc' = descendente
+// ─── Ordenamiento por columna (generalizado) ────────────────────────
+// _sortMode: null = orden original;
+//            {col: '<columna>', dir: 'asc'|'desc'} = ordenado activo
+// Columnas soportadas: inicio, obra, sector, estado, avance, razon, dias_atraso, criticidad
 window._sortMode = null;
 
-function toggleSortByFecha(){
-  // Ciclar: null → asc → desc → null
-  if(window._sortMode === null){
-    // Guardar copia del orden original antes de ordenar por primera vez
-    window._originalActsOrder = acts.slice();
-    window._sortMode = 'asc';
-    _reorderActsByFecha();
-  } else if(window._sortMode === 'asc'){
-    window._sortMode = 'desc';
-    _reorderActsByFecha();
+// Diccionario columna → función que devuelve la "clave" de ordenamiento
+function _sortKeyFor(col){
+  switch(col){
+    case 'inicio':
+      return _firstDayIdx;
+    case 'obra':
+      return a => (a.obra_act || '').toLowerCase();
+    case 'sector':
+      return a => (a.sector || '').toLowerCase();
+    case 'estado':
+      // Ordenar por estado EFECTIVO (lo que el usuario ve)
+      return a => {
+        if(a.confirmada){
+          const c = (a.cumple || '').trim();
+          if(c === 'En espera' || c === 'Cancelado') return c;
+          try { return calcularEstadoAuto(a); } catch(e){ return ''; }
+        }
+        return (a.cumple || '');
+      };
+    case 'avance':
+      // Avance % numérico; las no confirmadas (sin avance) van al final
+      return a => {
+        if(!a.confirmada) return null;
+        try { return calcularAvancePct(a) || 0; } catch(e){ return 0; }
+      };
+    case 'razon':
+      return a => (a.razon || '').toLowerCase();
+    case 'dias_atraso':
+      return a => Number.isFinite(a.dias_atraso) ? a.dias_atraso : 0;
+    case 'criticidad':
+      // Orden: bajo → medio → alto → vacío
+      return a => {
+        const m = {'bajo': 0, 'medio': 1, 'alto': 2};
+        const v = (a.criticidad || '').toLowerCase();
+        return m[v] !== undefined ? m[v] : 3;
+      };
+    default:
+      return () => 0;
+  }
+}
+
+// Toggle del ordenamiento por columna. Ciclo: null → asc → desc → null.
+// Si se hace click en una columna distinta a la activa, salta a 'asc' en la nueva.
+function toggleSortByColumn(col){
+  const same = window._sortMode && window._sortMode.col === col;
+  if(!same){
+    // Cambiando de columna (o desde null)
+    if(!window._sortMode){
+      window._originalActsOrder = acts.slice();
+    }
+    window._sortMode = { col: col, dir: 'asc' };
+    _reorderActsByColumn(col, 'asc');
+  } else if(window._sortMode.dir === 'asc'){
+    window._sortMode.dir = 'desc';
+    _reorderActsByColumn(col, 'desc');
   } else {
-    // Volver al orden original
+    // Tercer click en la misma columna → volver al orden original
     window._sortMode = null;
     if(Array.isArray(window._originalActsOrder)){
       acts = window._originalActsOrder.slice();
       window._originalActsOrder = null;
     }
   }
-  _updateSortArrow();
+  _updateSortArrows();
   save();
   renderAll();
 }
 
-function _reorderActsByFecha(){
-  // Re-ordena el array `acts` físicamente según _sortMode
-  const withIdx = acts.map((a, idx) => ({ a, idx, key: _firstDayIdx(a) }));
+// Backward-compat: la columna "Inicio" sigue llamando a toggleSortByFecha()
+function toggleSortByFecha(){ toggleSortByColumn('inicio'); }
+
+function _reorderActsByColumn(col, dir){
+  const keyFn = _sortKeyFor(col);
+  const withIdx = acts.map((a, idx) => ({ a, idx, key: keyFn(a) }));
   withIdx.sort((x, y) => {
+    // null/'' siempre al final (regardless of asc/desc)
+    const xEmpty = (x.key === null || x.key === undefined || x.key === '' || x.key === Infinity);
+    const yEmpty = (y.key === null || y.key === undefined || y.key === '' || y.key === Infinity);
+    if(xEmpty && yEmpty) return x.idx - y.idx;
+    if(xEmpty) return 1;
+    if(yEmpty) return -1;
     if(x.key === y.key) return x.idx - y.idx;
-    return window._sortMode === 'asc' ? (x.key - y.key) : (y.key - x.key);
+    let cmp;
+    if(typeof x.key === 'string'){
+      cmp = x.key.localeCompare(y.key, 'es', { sensitivity: 'base' });
+    } else {
+      cmp = x.key - y.key;
+    }
+    return dir === 'asc' ? cmp : -cmp;
   });
   acts = withIdx.map(w => w.a);
 }
 
-function _updateSortArrow(){
-  const arrow = document.getElementById('th-inicio-arrow');
-  const txt   = document.getElementById('th-inicio-text');
-  if(!arrow || !txt) return;
-  if(window._sortMode === 'asc'){
-    arrow.textContent = '▲';
-    arrow.style.opacity = '1';
-    arrow.style.color   = 'var(--accent)';
-    txt.style.color     = 'var(--accent)';
-  } else if(window._sortMode === 'desc'){
-    arrow.textContent = '▼';
-    arrow.style.opacity = '1';
-    arrow.style.color   = 'var(--accent)';
-    txt.style.color     = 'var(--accent)';
-  } else {
-    arrow.textContent = '';
-    arrow.style.opacity = '.55';
-    arrow.style.color   = '';
-    txt.style.color     = '';
-  }
+// Actualiza las flechas de TODAS las columnas sortables.
+// Solo la columna activa muestra ▲/▼ en color de acento.
+function _updateSortArrows(){
+  const cols = [
+    { col: 'inicio',      text: 'th-inicio-text',  arrow: 'th-inicio-arrow'  },
+    { col: 'obra',        text: 'th-obra-text',    arrow: 'th-obra-arrow'    },
+    { col: 'sector',      text: 'th-sector-text',  arrow: 'th-sector-arrow'  },
+    { col: 'estado',      text: 'th-estado-text',  arrow: 'th-estado-arrow'  },
+    { col: 'avance',      text: 'th-avance-text',  arrow: 'th-avance-arrow'  },
+    { col: 'razon',       text: 'th-razon-text',   arrow: 'th-razon-arrow'   },
+    { col: 'dias_atraso', text: 'th-diasat-text',  arrow: 'th-diasat-arrow'  },
+    { col: 'criticidad',  text: 'th-crit-text',    arrow: 'th-crit-arrow'    }
+  ];
+  cols.forEach(({ col, text, arrow }) => {
+    const t = document.getElementById(text);
+    const a = document.getElementById(arrow);
+    if(!t || !a) return;
+    if(window._sortMode && window._sortMode.col === col){
+      a.textContent = window._sortMode.dir === 'asc' ? '▲' : '▼';
+      a.style.opacity = '1';
+      a.style.color   = 'var(--accent)';
+      t.style.color   = 'var(--accent)';
+    } else {
+      a.textContent = '';
+      a.style.opacity = '.55';
+      a.style.color   = '';
+      t.style.color   = '';
+    }
+  });
 }
 
 // Devuelve el timestamp del primer día tildado de la actividad, o Infinity.
