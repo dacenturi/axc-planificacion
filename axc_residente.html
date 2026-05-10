@@ -59,6 +59,25 @@ tbody td{padding:0;vertical-align:middle}
 /* DOMINGO: tilde activa en azul (excepción) */
 .db.dom:hover{border-color:var(--blue);background:rgba(88,166,255,.18)}
 .db.dom.on{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 0 5px rgba(88,166,255,.45)}
+/* CUMPLIMIENTO (actividad CONFIRMADA): verde=cumple, rojo=no cumple */
+.db.cumple{background:#22C55E;border-color:#22C55E;color:#fff;box-shadow:0 0 5px rgba(34,197,94,.45)}
+.db.cumple:hover{background:#16A34A;border-color:#16A34A}
+.db.no-cumple{background:#EF4444;border-color:#EF4444;color:#fff;box-shadow:0 0 5px rgba(239,68,68,.45)}
+.db.no-cumple:hover{background:#DC2626;border-color:#DC2626}
+/* Indicador visual de fila CONFIRMADA: borde dorado más grueso */
+.db.confirmed-pending{border:1.5px dashed var(--accent);background:rgba(240,165,0,.12);color:var(--accent)}
+.db.confirmed-pending:hover{background:rgba(240,165,0,.25)}
+/* Botones de acción de confirmación */
+.btn-confirm{background:linear-gradient(135deg,#22C55E,#16A34A);border:none;color:#fff;font-weight:700;cursor:pointer;border-radius:5px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;transition:all .15s;box-shadow:0 1px 4px rgba(34,197,94,.3)}
+.btn-confirm:hover{transform:translateY(-1px);box-shadow:0 2px 6px rgba(34,197,94,.5)}
+.btn-confirm:disabled{background:var(--bg3);color:var(--text3);cursor:not-allowed;box-shadow:none;transform:none}
+.btn-unlock{background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4);color:#F59E0B;font-weight:700;cursor:pointer;border-radius:5px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;transition:all .15s}
+.btn-unlock:hover{background:rgba(245,158,11,.3);border-color:#F59E0B}
+.row-confirmed{background:rgba(34,197,94,.04)}
+/* Banner de actividades pendientes */
+.banner-pendientes{background:linear-gradient(135deg,rgba(240,165,0,.18),rgba(240,165,0,.10));border:1px solid rgba(240,165,0,.45);border-radius:8px;padding:10px 16px;margin:10px 0;display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text);font-weight:500}
+.banner-pendientes-icon{font-size:18px}
+.banner-pendientes-count{background:var(--accent);color:#000;font-weight:700;padding:2px 9px;border-radius:10px;font-size:12px}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -422,6 +441,16 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <span id="filter-count" style="font-family:Mulish,sans-serif;font-size:12px;color:var(--muted)"></span>
   </div>
 
+  <!-- Banner: actividades pendientes de confirmar -->
+  <div id="banner-pendientes" class="banner-pendientes" style="display:none">
+    <span class="banner-pendientes-icon">⚠️</span>
+    <div style="flex:1">
+      <div style="font-weight:700;color:var(--acc3);margin-bottom:2px">Tenés actividades pendientes de confirmar</div>
+      <div style="font-size:11px;color:var(--text2)">Una vez planificada cada actividad, hacé click en 🔒 (al final de la fila) para confirmar y poder marcar el cumplimiento diario.</div>
+    </div>
+    <span class="banner-pendientes-count" id="banner-pendientes-count">0</span>
+  </div>
+
   <div class="table-card">
     <div class="tbl-scroll">
       <table id="tbl">
@@ -439,7 +468,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
             <th style="width:110px" class="thl">Razones del estado</th>
             <th style="width:62px" id="th-dias-atraso">Días atraso</th>
             <th style="width:90px">Criticidad</th>
-            <th style="width:96px"></th>
+            <th style="width:120px"></th>
           </tr>
           <tr class="tr-dates" id="tr-dates" style="height:34px">
             <th></th><th></th><th></th>
@@ -1120,6 +1149,45 @@ function actToggleDomingo(act, fecha){
   else        { act.domingos.push(iso); }
 }
 
+// ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
+// Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
+// puede tener uno de estos estados en a.cumplimiento[i]:
+//   null o "pendiente" → sin marcar todavía (visual: dorado)
+//   "cumple"           → se hizo (visual: verde con ✓)
+//   "no_cumple"        → no se hizo (visual: rojo con ✗)
+
+// Garantiza que a.cumplimiento[] tenga el largo correcto (sincronizado con a.days[]).
+function ensureCumplimiento(act){
+  if(!Array.isArray(act.cumplimiento)) act.cumplimiento = [];
+  const targetLen = (act.days || []).length;
+  while(act.cumplimiento.length < targetLen) act.cumplimiento.push(null);
+  if(act.cumplimiento.length > targetLen) act.cumplimiento.length = targetLen;
+  return act.cumplimiento;
+}
+
+// Cycle de click en celda confirmada: pendiente → cumple → no_cumple → pendiente
+function cycleCumplimiento(act, idx){
+  ensureCumplimiento(act);
+  const v = act.cumplimiento[idx];
+  if(v === 'cumple')         act.cumplimiento[idx] = 'no_cumple';
+  else if(v === 'no_cumple') act.cumplimiento[idx] = null;
+  else                       act.cumplimiento[idx] = 'cumple';
+  return act.cumplimiento[idx];
+}
+
+// ¿Hay al menos un día tildado? (hábil o domingo)
+function actHasAnyTilde(act){
+  const hayHabil = Array.isArray(act.days) && act.days.some(v => !!v);
+  const hayDom   = Array.isArray(act.domingos) && act.domingos.length > 0;
+  return hayHabil || hayDom;
+}
+
+// Cuenta actividades del residente actual que NO están confirmadas
+// y tienen al menos un tilde (es decir, candidatas a confirmar).
+function countActsPendientesConfirmar(){
+  return (acts || []).filter(a => !a.confirmada && actHasAnyTilde(a)).length;
+}
+
 function buildDateHeaders(){
   const dates=wDates(getStart(),getFin());
   const n=dates.length;
@@ -1244,7 +1312,12 @@ async function onResidenteChange(){
           razon:       r.razon || '',
           dias_atraso: Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
           criticidad:  fromDBCriticidad(r.criticidad),
-          comentario:  r.comentario || ''
+          comentario:  r.comentario || '',
+          // Confirmación de planificación (Fase 1)
+          confirmada:    !!r.confirmada,
+          confirmada_at: r.confirmada_at || null,
+          confirmada_por: r.confirmada_por || '',
+          cumplimiento: Array.isArray(r.cumplimiento) ? r.cumplimiento : []
         }));
 
         // ── Cargar HEADER desde el rango GLOBAL de las actividades ──
@@ -1543,6 +1616,19 @@ function _updateFilterCounter(){
   counter.textContent = `(mostrando ${visibles} de ${acts.length} actividades)`;
 }
 
+function updateBannerPendientes(){
+  const banner = document.getElementById('banner-pendientes');
+  const countEl = document.getElementById('banner-pendientes-count');
+  if(!banner || !countEl) return;
+  const n = countActsPendientesConfirmar();
+  if(n > 0){
+    banner.style.display = 'flex';
+    countEl.textContent = n;
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
 function _onFilterCheckboxChange(kind, cb){
   const name = cb.value;
   const field = _getActField(kind);
@@ -1816,9 +1902,9 @@ function renderTable(){
       if(isDom) td.style.background = 'rgba(88,166,255,.10)';
 
       const usarLegacy = !a.fechaIni || !a.fechaFin;
+      const isConfirmada = !!a.confirmada;
       let enRangoActividad, on, actIdx;
       if(isDom){
-        // Para domingos, "en rango" = la fecha está entre fechaIni y fechaFin
         if(usarLegacy){
           enRangoActividad = true;
         } else {
@@ -1835,7 +1921,28 @@ function renderTable(){
       }
 
       const btn = document.createElement('div');
-      btn.className = 'db' + (on ? ' on' : '') + (isDom ? ' dom' : '');
+
+      // ── Determinar clase visual ──
+      let claseExtra = '';
+      let estadoCumpl = null; // null | 'cumple' | 'no_cumple'
+      if(on && !isDom && isConfirmada){
+        // Día tildado planificado en actividad CONFIRMADA
+        ensureCumplimiento(a);
+        estadoCumpl = a.cumplimiento[actIdx];
+        if(estadoCumpl === 'cumple')         claseExtra = ' cumple';
+        else if(estadoCumpl === 'no_cumple') claseExtra = ' no-cumple';
+        else                                 claseExtra = ' confirmed-pending';
+      } else if(on){
+        // Tilde dorada normal (no confirmada o domingo)
+        claseExtra = ' on';
+      }
+      btn.className = 'db' + claseExtra + (isDom ? ' dom' : '');
+
+      // ── Texto interno ──
+      if(estadoCumpl === 'cumple')         btn.textContent = '✓';
+      else if(estadoCumpl === 'no_cumple') btn.textContent = '✗';
+      else                                 btn.textContent = '';
+
       if(!enRangoActividad){
         btn.style.opacity = '0.25';
         btn.style.cursor = 'not-allowed';
@@ -1843,7 +1950,7 @@ function renderTable(){
                     (a.fechaIni ? fmts(_parseISODate(a.fechaIni)) : '?') + ' al ' +
                     (a.fechaFin ? fmts(_parseISODate(a.fechaFin)) : '?') + ')';
       } else if(isDom){
-        // Click handler para DOMINGO: toggle en a.domingos[]
+        // DOMINGO: toggle en a.domingos[] (sin cambios respecto a versión anterior)
         btn.title = 'Domingo ' + fmt(fechaCelda) + ' (excepción)';
         btn.onclick = (function(fecha, b){
           return function(){
@@ -1853,7 +1960,30 @@ function renderTable(){
             save(); refreshDateCells(tr, acts[idx], dates);
           };
         })(fechaCelda, btn);
+      } else if(isConfirmada){
+        // ── ACTIVIDAD CONFIRMADA ──
+        if(on){
+          // Tilde planificada: cycle dorado(pendiente) → verde → rojo → dorado
+          const fechaTxt = fmt(fechaCelda);
+          btn.title = 'Día planificado · ' + fechaTxt +
+                      '\nClick para marcar: pendiente → cumple → no cumple';
+          btn.onclick = (function(targetIdx){
+            return function(){
+              cycleCumplimiento(acts[idx], targetIdx);
+              save();
+              renderTable();
+            };
+          })(actIdx);
+        } else {
+          // Día NO planificado en actividad confirmada: NO se puede tildar
+          // (las nuevas tildes doradas no pueden agregarse cuando está bloqueada)
+          btn.style.opacity = '0.4';
+          btn.style.cursor = 'not-allowed';
+          btn.title = 'Actividad confirmada — la planificación no se puede modificar.\n' +
+                      'Pedile a un admin que la desbloquee si necesitás ajustarla.';
+        }
       } else {
+        // ── ACTIVIDAD NO CONFIRMADA: comportamiento original (toggle dorado) ──
         btn.title = fechaCelda ? fmt(fechaCelda) : '';
         btn.onclick = (function(targetIdx, b){
           return function(){
@@ -2002,7 +2132,7 @@ function renderTable(){
     // El botón Comentario fue movido al lado del textarea de Actividad,
     // por eso esta columna solo tiene Duplicar + Eliminar (ancho reducido).
     const tdel=document.createElement('td');
-    tdel.style.cssText='padding:2px 3px;text-align:center;width:70px;min-width:70px;display:flex;gap:3px;justify-content:center;align-items:center';
+    tdel.style.cssText='padding:2px 3px;text-align:center;width:100px;min-width:100px;display:flex;gap:3px;justify-content:center;align-items:center';
 
 
     // Duplicar
@@ -2024,7 +2154,12 @@ function renderTable(){
         razon:       a.razon || '',
         criticidad:  a.criticidad || '',
         dias_atraso: a.dias_atraso || 0,
-        comentario:  a.comentario || ''
+        comentario:  a.comentario || '',
+        // La copia siempre arranca SIN confirmar y sin marcas de cumplimiento
+        confirmada:  false,
+        confirmada_at: null,
+        confirmada_por: '',
+        cumplimiento: []
       };
       acts.splice(idx+1, 0, copia);
       save();
@@ -2032,6 +2167,73 @@ function renderTable(){
       showToast('✓ Fila duplicada', 'ok');
     };
     tdel.appendChild(bDup);
+
+    // ── BOTÓN CONFIRMAR / DESBLOQUEAR ──
+    if(!a.confirmada){
+      // No confirmada: mostrar botón "Confirmar" 🔒
+      const bConf = document.createElement('button');
+      bConf.className = 'btn-confirm';
+      const tieneTildes = actHasAnyTilde(a);
+      if(!tieneTildes){
+        bConf.disabled = true;
+        bConf.title = 'No se puede confirmar: la actividad no tiene días planificados.';
+      } else {
+        bConf.title = 'Confirmar planificación de esta actividad.\n' +
+                      'Una vez confirmada, no podrás mover los días planificados, pero sí marcar verde/rojo.';
+      }
+      bConf.textContent = '🔒';
+      bConf.onclick = () => {
+        if(bConf.disabled) return;
+        if(!confirm('¿Confirmar la planificación de esta actividad?\n\n' +
+                    'Después de confirmar:\n' +
+                    '  · Los días planificados quedarán bloqueados\n' +
+                    '  · Cada día se marca con check (✓) o cruz (✗)\n' +
+                    '  · Solo un admin puede desbloquear\n\n' +
+                    '¿Continuar?')) return;
+        acts[idx].confirmada = true;
+        acts[idx].confirmada_at = new Date().toISOString();
+        acts[idx].confirmada_por = window._axcEmail || window._axcResidente || '';
+        ensureCumplimiento(acts[idx]);
+        save();
+        renderAll();
+        showToast('🔒 Planificación confirmada', 'ok');
+      };
+      tdel.appendChild(bConf);
+    } else if(window._axcEsAdmin){
+      // Confirmada Y soy admin: mostrar botón "Desbloquear" 🔓
+      const bUnlock = document.createElement('button');
+      bUnlock.className = 'btn-unlock';
+      bUnlock.textContent = '🔓';
+      bUnlock.title = 'Desbloquear planificación (solo admin)';
+      bUnlock.onclick = () => {
+        const opt = prompt(
+          'DESBLOQUEAR ACTIVIDAD\n\n' +
+          'Elegí una opción:\n' +
+          '  1 = Desbloquear y CONSERVAR las marcas verde/rojo ya hechas\n' +
+          '  2 = Desbloquear y BORRAR todas las marcas\n' +
+          '  (cancelar) = no hacer nada\n\n' +
+          'Escribí 1 o 2:'
+        );
+        if(opt !== '1' && opt !== '2') return;
+        acts[idx].confirmada = false;
+        acts[idx].confirmada_at = null;
+        acts[idx].confirmada_por = '';
+        if(opt === '2'){
+          acts[idx].cumplimiento = [];
+        }
+        save();
+        renderAll();
+        showToast(opt === '1' ? '🔓 Desbloqueada (marcas conservadas)' : '🔓 Desbloqueada (marcas borradas)', 'ok');
+      };
+      tdel.appendChild(bUnlock);
+    } else {
+      // Confirmada pero NO soy admin: solo indicador visual
+      const span = document.createElement('span');
+      span.style.cssText = 'width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#22C55E;cursor:help';
+      span.textContent = '🔒';
+      span.title = 'Planificación confirmada.\nPedile a un admin que la desbloquee si necesitás cambiarla.';
+      tdel.appendChild(span);
+    }
 
     const bd=document.createElement('button');
     bd.className='btn btn-danger btn-sm';
@@ -2041,9 +2243,14 @@ function renderTable(){
     tdel.appendChild(bd);
     tr.appendChild(tdel);
 
+    // Estilo sutil de fila confirmada
+    if(a.confirmada) tr.classList.add('row-confirmed');
+
     updateRowCrit(tr,a.criticidad);
     tbody.appendChild(tr);
   });
+  // Refrescar banner de pendientes después de renderizar
+  updateBannerPendientes();
 }
 
 function updateRowCrit(tr, criticidad){
@@ -2185,7 +2392,12 @@ function addRow(){
     days: new Array(ndAct).fill(false),
     domingos: [],
     cumple:'', razon:'', criticidad:'', dias_atraso:0,
-    comentario:''
+    comentario:'',
+    // Confirmación de planificación (Fase 1)
+    confirmada: false,
+    confirmada_at: null,
+    confirmada_por: '',
+    cumplimiento: []
   });
   save();
   renderTable();
@@ -2771,11 +2983,16 @@ async function _syncActsToSupabase(){
         descripcion:   a.descripcion || a.item || '',
         days:          a.days || [],
         domingos:      Array.isArray(a.domingos) ? a.domingos : [],
-        cumple:        mapCumple(a.cumple),
-        razon:         a.razon || '',
-        dias_atraso:   Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
-        criticidad:    mapCriticidad(a.criticidad),
-        comentario:    (a.comentario || '').slice(0, 2000),
+        cumple:         mapCumple(a.cumple),
+        razon:          a.razon || '',
+        dias_atraso:    Number.isFinite(a.dias_atraso) && a.dias_atraso >= 0 ? a.dias_atraso : 0,
+        criticidad:     mapCriticidad(a.criticidad),
+        comentario:     (a.comentario || '').slice(0, 2000),
+        // Confirmación de planificación (Fase 1)
+        confirmada:     !!a.confirmada,
+        confirmada_at:  a.confirmada_at || null,
+        confirmada_por: a.confirmada_por || '',
+        cumplimiento:   Array.isArray(a.cumplimiento) ? a.cumplimiento : [],
         orden:         i
       });
     });
@@ -2941,7 +3158,12 @@ async function _loadActsFromSupabase(){
       razon:       r.razon || '',
       dias_atraso: Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
       criticidad:  fromDBCriticidad(r.criticidad),
-      comentario:  r.comentario || ''
+      comentario:  r.comentario || '',
+      // Confirmación de planificación (Fase 1)
+      confirmada:    !!r.confirmada,
+      confirmada_at: r.confirmada_at || null,
+      confirmada_por: r.confirmada_por || '',
+      cumplimiento: Array.isArray(r.cumplimiento) ? r.cumplimiento : []
     }));
   } catch(e){
     console.error('Load Supabase error:', e);
