@@ -276,7 +276,6 @@ select[title]:hover, input[title]:hover { cursor:help; }
       <span id="save-icon">✓</span>
       <span id="save-label">Guardado</span>
     </button>
-    <button onclick="limpiarPantalla()" style="font-family:'Mulish',sans-serif;font-size:11px;font-weight:700;border:1px solid rgba(248,81,73,.35);border-radius:8px;padding:5px 14px;cursor:pointer;background:rgba(248,81,73,.08);color:#f85149;transition:all .15s;white-space:nowrap" onmouseover="this.style.background='rgba(248,81,73,.18)'" onmouseout="this.style.background='rgba(248,81,73,.08)'">🗑 Limpiar</button>
   </div>
   <div class="nav-tabs">
     <button class="tab-btn active" onclick="showPage('carga')" id="tab-carga">📋 Carga</button>
@@ -1595,13 +1594,36 @@ function _passAllFilters(a){
     const estado = (a.cumple || '').trim() || '(Sin estado)';
     if(!fe.has(estado)) return false;
   }
-  // Filtro por rango del header: ocultar actividades cuyo rango individual
-  // [a.fechaIni, a.fechaFin] no se solape con [filtroIni, filtroFin].
-  // Si la actividad no tiene fechas individuales (legacy), se muestra siempre.
+  // Filtro por rango del header (lógica unificada):
+  //   - Si la actividad tiene al menos un día tildado, debe haber al menos
+  //     un tilde cuya fecha real caiga dentro del rango del filtro.
+  //   - Si la actividad NO tiene tildes (recién creada o pendiente), se
+  //     muestra si su rango individual [fechaIni, fechaFin] se solapa con
+  //     el rango del filtro (para que el usuario pueda tildar).
+  //   - Si la actividad no tiene fechas individuales (legacy), se muestra
+  //     siempre.
   try {
     const filtroIni = getStart();
     const filtroFin = _parseISODate(getFin());
-    if(filtroIni && filtroFin && !actOverlapsRange(a, filtroIni, filtroFin)) return false;
+    if(filtroIni && filtroFin && a.fechaIni){
+      const tieneTildes = Array.isArray(a.days) && a.days.some(v => !!v);
+      if(tieneTildes){
+        // Buscar al menos un tilde cuya fecha real esté en el rango filtrado
+        let hayTildeEnRango = false;
+        for(let i=0; i < a.days.length; i++){
+          if(!a.days[i]) continue;
+          const fechaTilde = actIdxToDate(a, i);
+          if(fechaTilde && fechaTilde >= filtroIni && fechaTilde <= filtroFin){
+            hayTildeEnRango = true;
+            break;
+          }
+        }
+        if(!hayTildeEnRango) return false;
+      } else {
+        // Sin tildes: mostrar solo si rango individual se solapa con filtrado
+        if(!actOverlapsRange(a, filtroIni, filtroFin)) return false;
+      }
+    }
   } catch(e){}
   return true;
 }
