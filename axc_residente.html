@@ -2419,34 +2419,75 @@ function renderTable(){
       const bUnlock = document.createElement('button');
       bUnlock.className = 'btn-unlock';
       bUnlock.textContent = '🔒';
-      bUnlock.title = 'Planificación confirmada — click para desbloquear (solo admin)';
+      // Tooltip: muestra quién confirmó si está disponible
+      let tooltipUnlock = 'Planificación confirmada — click para desbloquear (solo admin)';
+      if(a.confirmada_por || a.confirmada_at){
+        let fechaTxtT = '';
+        if(a.confirmada_at){
+          try {
+            const dT = new Date(a.confirmada_at);
+            if(!isNaN(dT.getTime())){
+              fechaTxtT = ' el ' + String(dT.getDate()).padStart(2,'0') + '/' +
+                          String(dT.getMonth()+1).padStart(2,'0') + '/' + dT.getFullYear();
+            }
+          } catch(e){}
+        }
+        tooltipUnlock = 'Confirmada por ' + (a.confirmada_por || '—') + fechaTxtT +
+                        '\nClick para desbloquear (solo admin)';
+      }
+      bUnlock.title = tooltipUnlock;
       bUnlock.onclick = () => {
-        const opt = prompt(
-          'DESBLOQUEAR ACTIVIDAD\n\n' +
-          'Elegí una opción:\n' +
-          '  1 = Desbloquear y CONSERVAR las marcas verde/rojo ya hechas\n' +
-          '  2 = Desbloquear y BORRAR todas las marcas\n' +
-          '  (cancelar) = no hacer nada\n\n' +
-          'Escribí 1 o 2:'
-        );
-        if(opt !== '1' && opt !== '2') return;
+        // Formatear fecha de confirmación en español: "10/05/2026 14:30"
+        let fechaConfTxt = '—';
+        if(a.confirmada_at){
+          try {
+            const dConf = new Date(a.confirmada_at);
+            if(!isNaN(dConf.getTime())){
+              const dd = String(dConf.getDate()).padStart(2,'0');
+              const mm = String(dConf.getMonth()+1).padStart(2,'0');
+              const yyyy = dConf.getFullYear();
+              const hh = String(dConf.getHours()).padStart(2,'0');
+              const mi = String(dConf.getMinutes()).padStart(2,'0');
+              fechaConfTxt = `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+            }
+          } catch(e){}
+        }
+        const quien = (a.confirmada_por || '—').trim() || '—';
+        // Resumen de marcas que se van a perder
+        const { V, R } = _contadoresActividad(a);
+        const azulesHabiles = Array.isArray(a.domingos)
+          ? a.domingos.filter(iso => { const d = _parseISODate(iso); return d && d.getDay() !== 0; }).length
+          : 0;
+        const totalMarcas = V + R + azulesHabiles;
+
+        if(!confirm(
+          'DESBLOQUEAR ACTIVIDAD\n' +
+          '────────────────────────────────\n\n' +
+          'Confirmada por: ' + quien + '\n' +
+          'Fecha de confirmación: ' + fechaConfTxt + '\n\n' +
+          'Al desbloquear:\n' +
+          '  · Se borrarán las marcas verde/rojo/azul ' +
+          (totalMarcas > 0 ? `(${totalMarcas} marca${totalMarcas !== 1 ? 's' : ''})` : '(sin marcas aún)') + '\n' +
+          '  · El residente podrá modificar la planificación\n' +
+          '  · Tendrá que volver a confirmar después\n\n' +
+          '¿Continuar?'
+        )) return;
+
         acts[idx].confirmada = false;
         acts[idx].confirmada_at = null;
         acts[idx].confirmada_por = '';
-        if(opt === '2'){
-          acts[idx].cumplimiento = [];
-          // También borrar azules de días HÁBILES (que son "extras trabajados").
-          // Conservamos los domingos tildados (son excepciones planificadas reales).
-          if(Array.isArray(acts[idx].domingos)){
-            acts[idx].domingos = acts[idx].domingos.filter(iso => {
-              const d = _parseISODate(iso);
-              return d && d.getDay() === 0;
-            });
-          }
+        acts[idx].cumplimiento = [];
+        // Borrar azules de días HÁBILES (extras trabajados).
+        // Conservamos los domingos tildados (son excepciones planificadas reales).
+        if(Array.isArray(acts[idx].domingos)){
+          acts[idx].domingos = acts[idx].domingos.filter(iso => {
+            const d = _parseISODate(iso);
+            return d && d.getDay() === 0;
+          });
         }
         save();
         renderAll();
-        showToast(opt === '1' ? '🔓 Desbloqueada (marcas conservadas)' : '🔓 Desbloqueada (marcas borradas)', 'ok');
+        showToast('🔓 Actividad desbloqueada', 'ok');
       };
       wActs.appendChild(bUnlock);
     } else {
