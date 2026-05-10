@@ -69,6 +69,22 @@ tbody td{padding:0;vertical-align:middle}
 .db.no-cumple:hover{background:#DC2626;border-color:#DC2626}
 .db.confirmed-pending{border:1.5px dashed var(--accent);background:rgba(240,165,0,.12);color:var(--accent)}
 .db.confirmed-pending:hover{background:rgba(240,165,0,.25)}
+/* FASE 4 — Columna Avance % y razón highlight */
+.avance-cell{display:flex;flex-direction:column;align-items:stretch;gap:3px;padding:0 2px}
+.avance-bar{position:relative;height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;width:100%}
+.avance-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .25s ease}
+.avance-fill.lvl-low{background:linear-gradient(90deg,#EF4444,#F87171)}
+.avance-fill.lvl-mid{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
+.avance-fill.lvl-high{background:linear-gradient(90deg,#22C55E,#4ADE80)}
+.avance-fill.lvl-full{background:linear-gradient(90deg,#22C55E,#16A34A);box-shadow:0 0 4px rgba(34,197,94,.5)}
+.avance-num{font-family:'DM Mono',monospace;font-size:11px;font-weight:700;text-align:center;color:var(--text)}
+.avance-num.lvl-low{color:#FCA5A5}
+.avance-num.lvl-mid{color:#FBBF24}
+.avance-num.lvl-high{color:#4ADE80}
+.avance-num.lvl-full{color:#22C55E}
+.avance-cell.empty{color:var(--text3);font-size:11px;text-align:center;font-style:italic;opacity:.55}
+.sel-razon-warn{border:1.5px solid #EF4444 !important;background:rgba(239,68,68,.08) !important;animation:razon-pulse 2s ease-in-out infinite}
+@keyframes razon-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 4px rgba(239,68,68,0)}}
 /* date cell */
 .dc{font-family:'DM Mono',monospace;font-size:10px;color:var(--text2);text-align:center;padding:3px 2px;white-space:nowrap}
 /* estado select */
@@ -440,6 +456,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
             </th>
             <th style="width:52px">Fin</th>
             <th style="width:72px">Estado</th>
+            <th style="width:90px" title="Avance % = días verdes / días planificados × 100">Avance %</th>
             <th style="width:110px" class="thl">Razones del estado</th>
             <th style="width:62px" id="th-dias-atraso">Días atraso</th>
             <th style="width:78px">Criticidad</th>
@@ -448,7 +465,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
           <tr class="tr-dates" id="tr-dates" style="height:34px">
             <th></th><th id="td-obra-col"></th><th id="td-cont-col"></th><th></th><th></th>
             <!-- días generados por JS -->
-            <th></th><th></th><th></th><th></th><th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -1205,7 +1222,7 @@ function actToggleDomingo(act, fecha){
 // Replica exacta del feature en axc_residente.html. Los helpers son
 // inalterados a propósito para mantener consistencia 1:1 entre apps.
 // ════════════════════════════════════════════════════════════════════
-const _CONF_VERSION = 'v2.4-conf-3';
+const _CONF_VERSION = 'v2.4-conf-4';
 
 // ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
 // Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
@@ -1335,6 +1352,29 @@ function razonEsObligatoria(act){
   const estado = calcularEstadoAuto(act);
   return ESTADOS_NO_CUMPLE.includes(estado);
 }
+
+// Renderiza la celda de Avance % con barra de progreso visual.
+// Si la actividad NO está confirmada → "—" tenue.
+function renderAvanceCell(act){
+  const td = document.createElement('td');
+  td.style.cssText = 'padding:4px 6px;text-align:center;width:90px;min-width:90px';
+  if(!act.confirmada){
+    td.innerHTML = '<div class="avance-cell empty">—</div>';
+    return td;
+  }
+  const pct = calcularAvancePct(act) || 0;
+  const { D, V } = _contadoresActividad(act);
+  let lvl = 'lvl-low';
+  if(pct >= 100)      lvl = 'lvl-full';
+  else if(pct >= 75)  lvl = 'lvl-high';
+  else if(pct >= 40)  lvl = 'lvl-mid';
+  td.innerHTML = `
+    <div class="avance-cell" title="${V} de ${D} días planificados completados">
+      <div class="avance-bar"><div class="avance-fill ${lvl}" style="width:${pct}%"></div></div>
+      <div class="avance-num ${lvl}">${pct}%</div>
+    </div>`;
+  return td;
+}
 // ═══ FIN FASE 1 ═══════════════════════════════════════════════════════
 
 function buildDateHeaders(){
@@ -1342,9 +1382,9 @@ function buildDateHeaders(){
   const n=dates.length;
   const DL=getDL(dates);
   // Columnas fijas al inicio: # + obra + cont + sector + actividad = 5
-  // Al final: Inicio + Fin + Estado + Razón + Días atraso + Criticidad + botón acciones = 7
+  // Al final: Inicio + Fin + Estado + Avance + Razón + Días atraso + Criticidad + botón acciones = 8
   const FIXED_START = 5;
-  const FIXED_END = 7;
+  const FIXED_END = 8;
   const grpRow=document.getElementById('tr-groups');
   // Eliminar grupos de semana dinámicos anteriores
   while(grpRow.children.length > FIXED_START + FIXED_END)
@@ -1364,9 +1404,9 @@ function buildDateHeaders(){
     th.textContent=w+'ª '+(c>=5?'SEMANA':'SEM.');
     grpRow.insertBefore(th,grpRef);
   });
-  // Fila de fechas (tr-dates): mismos 5 fijos al inicio, 7 al final
+  // Fila de fechas (tr-dates): mismos 5 fijos al inicio, 8 al final
   const DATES_FIXED_START = 5;
-  const DATES_FIXED_END = 7;
+  const DATES_FIXED_END = 8;
   const tr=document.getElementById('tr-dates');
   while(tr.children.length>DATES_FIXED_START+DATES_FIXED_END) tr.children[DATES_FIXED_START].remove();
   const refNode=tr.children[DATES_FIXED_START];
@@ -2316,6 +2356,14 @@ function renderTable(){
     const ted=document.createElement('td');ted.className='dc';ted.dataset.e='1';
     ted.textContent=ed?fmts(ed):'—';tr.appendChild(ted);
 
+    // ════════════════════════════════════════════════════════════
+    // FASE 4 — Estado read-only cuando confirmada + Avance + razón obligatoria
+    // Espejo de axc_residente.html. Cuando _isConfirmada:
+    //   - Dropdown limitado a 3 opciones: Auto (calculado) | En espera | Cancelado
+    //   - Razón se evalúa contra _estadoEfectivo (el calculado, no a.cumple)
+    //   - Días atraso = a.domingos.length, input disabled
+    // ════════════════════════════════════════════════════════════
+
     // Estado select (6 opciones + Sin asignar)
     // Clasificación: 'Cumple' y 'No Cumple' legacy se re-interpretan como Terminado/Retrasado
     const te=document.createElement('td');te.style.padding='4px 5px';
@@ -2331,14 +2379,34 @@ function renderTable(){
     const _estadosCumple   = ['En proceso', 'Terminado'];
     const _estadosNoCumple = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
 
-    se.innerHTML = `<option value=""${!_curEstado?' selected':''}>— Sin asignar —</option>`
-      + `<option value="En proceso"${_curEstado==='En proceso'?' selected':''}>⏳ En proceso</option>`
-      + `<option value="Terminado"${_curEstado==='Terminado'?' selected':''}>✓ Terminado</option>`
-      + `<option value="Cumplido con atraso"${_curEstado==='Cumplido con atraso'?' selected':''}>⚠ Cumplido con atraso</option>`
-      + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
-      + `<option value="Retrasado"${_curEstado==='Retrasado'?' selected':''}>⚠ Retrasado</option>`
-      + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
-    // Colorear según estado
+    const _isConfirmada = !!a.confirmada;
+    const _calculado = _isConfirmada ? calcularEstadoAuto(a) : '';
+    const _esManual  = _isConfirmada && (_curEstado === 'En espera' || _curEstado === 'Cancelado');
+    // Estado efectivo que se muestra en pantalla
+    const _estadoEfectivo = _isConfirmada ? (_esManual ? _curEstado : _calculado) : _curEstado;
+
+    if(_isConfirmada){
+      // CONFIRMADA: 3 opciones (Auto + manuales)
+      const labelAuto = _calculado ? `🤖 Auto: ${_calculado}` : '🤖 Auto';
+      se.innerHTML =
+          `<option value=""${!_esManual?' selected':''}>${labelAuto}</option>`
+        + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
+        + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
+      se.dataset.locked = '1';
+      se.title = _esManual
+        ? `Estado MANUAL: ${_curEstado}\nElegí "Auto" para volver al cálculo automático.`
+        : `Estado AUTO: ${_calculado}\nPuede cambiarse manualmente solo a "En espera" o "Cancelado".`;
+    } else {
+      // NO CONFIRMADA: dropdown completo (comportamiento original)
+      se.innerHTML = `<option value=""${!_curEstado?' selected':''}>— Sin asignar —</option>`
+        + `<option value="En proceso"${_curEstado==='En proceso'?' selected':''}>⏳ En proceso</option>`
+        + `<option value="Terminado"${_curEstado==='Terminado'?' selected':''}>✓ Terminado</option>`
+        + `<option value="Cumplido con atraso"${_curEstado==='Cumplido con atraso'?' selected':''}>⚠ Cumplido con atraso</option>`
+        + `<option value="En espera"${_curEstado==='En espera'?' selected':''}>⏸ En espera</option>`
+        + `<option value="Retrasado"${_curEstado==='Retrasado'?' selected':''}>⚠ Retrasado</option>`
+        + `<option value="Cancelado"${_curEstado==='Cancelado'?' selected':''}>✗ Cancelado</option>`;
+    }
+    // Colorear según estado EFECTIVO (no según el value crudo del select)
     const _colorSel = (v) => {
       se.style.borderColor = '';
       se.style.color = '';
@@ -2346,7 +2414,7 @@ function renderTable(){
       else if(v === 'Cumplido con atraso'){ se.style.borderColor='rgba(240,165,0,.4)'; se.style.color='var(--accent)'; }
       else if(_estadosNoCumple.includes(v)){ se.style.borderColor='rgba(248,81,73,.4)'; se.style.color='var(--red)'; }
     };
-    _colorSel(_curEstado);
+    _colorSel(_estadoEfectivo);
     se.onchange=()=>{
       acts[idx].cumple = se.value;
       // Si el estado no requiere razón, limpiarla
@@ -2358,16 +2426,25 @@ function renderTable(){
     };
     te.appendChild(se);tr.appendChild(te);
 
-    // Razones del estado
+    // ── AVANCE %  (Fase 4) ────────────────────────────────────
+    tr.appendChild(renderAvanceCell(a));
+
+    // Razones del estado (evalúa contra estado EFECTIVO)
     const tr2=document.createElement('td');tr2.style.padding='4px 5px';
-    const _requiereRazon = _estadosConRazon.includes(_curEstado);
+    const _requiereRazon = _estadosConRazon.includes(_estadoEfectivo);
     if(_requiereRazon){
       const wRaz=document.createElement('div');wRaz.style.cssText='display:flex;align-items:center;gap:3px';
       const sr=document.createElement('select');sr.className='sel-r';sr.style.flex='1';
       const _razones=getABMList('razones');
       sr.innerHTML=`<option value="">— Razón —</option>`+_razones.map(r=>`<option${a.razon===r?' selected':''}>${r}</option>`).join('');
+      // Highlight visual si la razón es obligatoria pero está vacía
+      if(!a.razon){
+        sr.classList.add('sel-razon-warn');
+        sr.title = 'La razón es obligatoria para este estado.';
+      }
       sr.onchange=()=>{
         acts[idx].razon=sr.value;
+        if(sr.value){ sr.classList.remove('sel-razon-warn'); sr.title=''; }
         save();
         try{ _updateValidationUI(); }catch(e){}
       };
@@ -2383,28 +2460,52 @@ function renderTable(){
     }
     tr.appendChild(tr2);
 
-    // Días atraso — visible solo para Cumplido con atraso o Retrasado
+    // Días atraso — usa estado EFECTIVO; si está confirmada, input disabled con valor automático
     const tda = document.createElement('td');
     tda.style.padding = '4px 5px';
-    if(_estadosConDias.includes(_curEstado)){
-      const inpDias = document.createElement('input');
-      inpDias.type = 'number';
-      inpDias.min = '0';
-      inpDias.max = '9999';
-      inpDias.step = '1';
-      inpDias.value = (a.dias_atraso || 0) === 0 ? '' : String(a.dias_atraso);
-      inpDias.placeholder = '0';
-      inpDias.style.cssText = 'width:100%;background:var(--bg3);border:1px solid rgba(240,165,0,.3);border-radius:5px;color:var(--accent);font-family:\"DM Mono\",monospace;font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box';
-      inpDias.onchange = () => {
-        const v = parseInt(inpDias.value, 10);
-        acts[idx].dias_atraso = (Number.isFinite(v) && v >= 0) ? v : 0;
-        save();
-      };
-      tda.appendChild(inpDias);
+    if(_estadosConDias.includes(_estadoEfectivo)){
+      if(_isConfirmada){
+        // CONFIRMADA: días atraso = a.domingos.length (cantidad de azules/extras)
+        const diasAtrasoAuto = Array.isArray(a.domingos) ? a.domingos.length : 0;
+        const inpDias = document.createElement('input');
+        inpDias.type = 'number';
+        inpDias.value = String(diasAtrasoAuto);
+        inpDias.disabled = true;
+        inpDias.title = 'Calculado automáticamente: cantidad de días azules (no previstos trabajados).\n' +
+                        'Para cambiarlo manualmente, pedile a un admin que desbloquee la actividad.';
+        inpDias.style.cssText = 'width:100%;background:rgba(240,165,0,.06);border:1px dashed rgba(240,165,0,.3);' +
+                                'border-radius:5px;color:var(--accent);font-family:"DM Mono",monospace;font-size:12px;' +
+                                'font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box;cursor:not-allowed';
+        // Mantener el dato sincronizado en el modelo
+        if(acts[idx].dias_atraso !== diasAtrasoAuto){
+          acts[idx].dias_atraso = diasAtrasoAuto;
+          // No llamamos save() aquí para evitar loop; el próximo cambio lo sincroniza
+        }
+        tda.appendChild(inpDias);
+      } else {
+        // NO CONFIRMADA: editable manual (legacy)
+        const inpDias = document.createElement('input');
+        inpDias.type = 'number';
+        inpDias.min = '0';
+        inpDias.max = '9999';
+        inpDias.step = '1';
+        inpDias.value = (a.dias_atraso || 0) === 0 ? '' : String(a.dias_atraso);
+        inpDias.placeholder = '0';
+        inpDias.style.cssText = 'width:100%;background:var(--bg3);border:1px solid rgba(240,165,0,.3);border-radius:5px;color:var(--accent);font-family:\"DM Mono\",monospace;font-size:12px;font-weight:700;padding:4px 6px;outline:none;text-align:center;height:28px;box-sizing:border-box';
+        inpDias.onchange = () => {
+          const v = parseInt(inpDias.value, 10);
+          acts[idx].dias_atraso = (Number.isFinite(v) && v >= 0) ? v : 0;
+          save();
+        };
+        tda.appendChild(inpDias);
+      }
     } else {
       tda.innerHTML = '<span style="color:var(--text3);font-size:11px;padding:0 8px">—</span>';
     }
     tr.appendChild(tda);
+    // ════════════════════════════════════════════════════════════
+    // FIN FASE 4
+    // ════════════════════════════════════════════════════════════
 
     // Criticidad — dropdown con colores
     const tc=document.createElement('td');tc.style.padding='4px 5px';
