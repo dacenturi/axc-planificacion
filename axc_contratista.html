@@ -1369,6 +1369,17 @@ function razonEsObligatoria(act){
   return ESTADOS_NO_CUMPLE.includes(estado);
 }
 
+// Estado EFECTIVO para Reporte / PDF / Excel (lo que el usuario espera ver):
+// - Confirmada → calcularEstadoAuto (que ya maneja Auto + En espera/Cancelado manual)
+// - NO confirmada → a.cumple crudo (compatibilidad legacy)
+function _estadoEfectivoExport(a){
+  if(!a) return '';
+  if(a.confirmada){
+    try { return calcularEstadoAuto(a) || ''; } catch(e){ return a.cumple || ''; }
+  }
+  return a.cumple || '';
+}
+
 // Renderiza la celda de Avance % con barra de progreso visual.
 // Si la actividad NO está confirmada → "—" tenue.
 function renderAvanceCell(act){
@@ -3025,8 +3036,12 @@ function renderReport(){
   const total=actsVis.length;
   const _okStates   = ['Cumple','Sí','En proceso','Terminado'];
   const _failStates = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
-  const ok=actsVis.filter(a=>_okStates.includes(a.cumple||'')).length;
-  const fail=actsVis.filter(a=>_failStates.includes(a.cumple||'')).length;
+  // Usar el estado EFECTIVO (auto-calculado si confirmada). Esto es lo que
+  // el usuario espera ver — antes leíamos a.cumple crudo, que para
+  // actividades en modo Auto era "" y contaba como Sin asignar.
+  const _eff = a => _estadoEfectivoExport(a);
+  const ok=actsVis.filter(a=>_okStates.includes(_eff(a))).length;
+  const fail=actsVis.filter(a=>_failStates.includes(_eff(a))).length;
   const asignadas=ok+fail;
   const pct=asignadas>0?Math.round(ok/asignadas*100):null;
   document.getElementById('kv-t').textContent=total;
@@ -3042,14 +3057,15 @@ function renderReport(){
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
     const _estadosCumpleRPT  = ['Cumple','Sí','En proceso','Terminado'];
     const _estadosNoCumpleRPT = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
-    const isFail = _estadosNoCumpleRPT.includes(a.cumple||'');
-    const isOk   = _estadosCumpleRPT.includes(a.cumple||'');
+    const estadoEf = _eff(a);
+    const isFail = _estadosNoCumpleRPT.includes(estadoEf);
+    const isOk   = _estadosCumpleRPT.includes(estadoEf);
     const badgeClass = isFail ? 'br' : (isOk ? 'bg' : '');
-    // Texto: usar el estado real si está en la nueva lista, si no mostrar Cumple/No cumple
+    // Texto: usar el estado efectivo
     const _labelsEstado = { 'Cumple':'✓ Cumple','No Cumple':'✗ No cumple','Sí':'✓ Cumple','No':'✗ No cumple',
       'En proceso':'⏳ En proceso','Terminado':'✓ Terminado','Cumplido con atraso':'⚠ Con atraso',
-      'En espera':'⏸ En espera','Retrasado':'⚠ Retrasado','Cancelado':'✗ Cancelado' };
-    const badgeText = _labelsEstado[a.cumple||''] || '— Sin asignar';
+      'En espera':'⏸ En espera','Retrasado':'⚠ Retrasado','Cancelado':'✗ Cancelado','Sin asignar':'— Sin asignar' };
+    const badgeText = _labelsEstado[estadoEf] || '— Sin asignar';
     const tr=document.createElement('tr');
     tr.innerHTML=`<td style="text-align:center;font-family:'DM Mono',monospace;font-size:11px">${i+1}</td>
       <td><span class="stag">${a.sector||'—'}</span></td>
@@ -3253,13 +3269,22 @@ function exportXLSX(){
     acts: actsExport.map(a => ({
       sector:          a.sector || '',
       descripcion:     a.descripcion || a.item || '',
-      cumple:          a.cumple || '',
+      // Estado EFECTIVO (auto-calculado si está confirmada, manual si no).
+      // Antes mandábamos a.cumple crudo, que para Auto era "" y el server
+      // lo interpretaba como Cumple por defecto.
+      cumple:          _estadoEfectivoExport(a),
       razon:           a.razon || a.razon_no_cumple || '',
       criticidad:      a.criticidad || '',
       comentario:      a.comentario || '',
       obra_act:        a.obra_act || '',
       contratista_act: a.contratista_act || '',
-      days:            a.days || []
+      days:            a.days || [],
+      // Campos nuevos para que el server (cuando esté actualizado) pueda
+      // renderizar marcas diferenciadas cumple/no_cumple/extra trabajado:
+      domingos:        Array.isArray(a.domingos) ? a.domingos : [],
+      cumplimiento:    Array.isArray(a.cumplimiento) ? a.cumplimiento : [],
+      confirmada:      !!a.confirmada,
+      dias_atraso:     Number.isFinite(a.dias_atraso) ? a.dias_atraso : 0
     }))
   };
 
@@ -3568,7 +3593,9 @@ function exportPDF(){
         r.ini,
         r.fin,
         String(r.dias),
-        a.cumple || ''
+        // Estado EFECTIVO: si la actividad está confirmada, usar el calculado
+        // automáticamente (Auto). Si está en manual o no confirmada, usar el valor crudo.
+        _estadoEfectivoExport(a)
       ];
     });
 
