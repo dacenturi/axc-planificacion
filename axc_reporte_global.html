@@ -581,6 +581,13 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
           <div id="empty-tiempo" class="chart-empty" style="display:none">Sin datos con fechas</div>
         </div>
 
+        <!-- 4B. Curva S: cumple vs no cumple (diario + acumulado) -->
+        <div class="dash-card dash-card-wide">
+          <div class="dash-card-title">📐 Curva S — Cumplimiento vs No cumplimiento<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: evolución diaria del cumplimiento, tanto día por día como acumulado.&#10;&#10;Cálculo: para cada día del rango de la planificación, se cuentan las marcas ✓ (cumple) y ✗ (no cumple) de TODAS las actividades confirmadas y filtradas. Las líneas suman estos valores progresivamente.&#10;&#10;Lectura:&#10;• Barras (eje izq.): cuánto se hizo y cuánto no, cada día&#10;• Líneas curvas (eje der.): acumulado a lo largo del tiempo — forma 'la S' cuando hay avance sostenido&#10;&#10;Solo aparecen datos de actividades CONFIRMADAS (con candado 🔒). Las que están en planificación abierta no entran.">ⓘ</button></div>
+          <div class="chart-wrap tall" id="wrap-curvas"><canvas id="chartCurvaS"></canvas></div>
+          <div id="empty-curvas" class="chart-empty" style="display:none">Sin actividades confirmadas con marcas de cumplimiento todavía</div>
+        </div>
+
         <!-- 5. Cumplimiento por Contratista -->
         <div class="dash-card" id="card-contratista">
           <div class="dash-card-title">🏗 Cumplimiento por Contratista<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: cumplimiento porcentual agrupado por Contratista.&#10;&#10;Cálculo: para cada Contratista, Cumple ÷ (Cumple + No Cumple) × 100.&#10;Actividades sin estado no suman.&#10;&#10;Útil para comparar performance entre contratistas contratados. Orden: menor % primero (problemas arriba).">ⓘ</button></div>
@@ -849,7 +856,11 @@ async function loadData(){
       razon:        r.razon || '',
       dias_atraso:  Number.isFinite(r.dias_atraso) ? r.dias_atraso : 0,
       criticidad:   _normalizeCriticidad(r.criticidad),
-      orden:        r.orden || 0
+      orden:        r.orden || 0,
+      // Campos de confirmación de planificación (necesarios para la Curva S)
+      confirmada:   !!r.confirmada,
+      cumplimiento: Array.isArray(r.cumplimiento) ? r.cumplimiento : [],
+      domingos:     Array.isArray(r.domingos) ? r.domingos : []
     }));
     _updateAppTabsCounts();
     _toggleContratistaCol(window._currentApp === 'contratista');
@@ -1512,6 +1523,8 @@ function renderDashboard(){
   renderChartResidente(acts);
   // 4. Cumplimiento en el tiempo
   renderChartTiempo(acts);
+  // 4B. Curva S — cumple vs no cumple (diario y acumulado)
+  renderChartCurvaS(acts);
   // 5. Cumplimiento por Contratista (solo en Contratista)
   if(isCont) renderChartContratista(acts);
   else _destroyChart('contratista');
@@ -1833,6 +1846,198 @@ function renderChartTiempo(acts){
           min: 0, max: 100,
           ticks: { color: DASH_COLORS.text2, callback: v => v + '%' },
           grid: { color: DASH_COLORS.border }
+        }
+      }
+    }
+  });
+}
+
+// ─── 4B. Curva S: cumple vs no cumple diario + acumulado ──────────────
+// Calcula por cada día del rango filtrado:
+//   - daily_cumple[i]    = cuántas actividades marcaron ✓ ese día
+//   - daily_nocumple[i]  = cuántas marcaron ✗ ese día
+// Luego acumula y dibuja chart mixto (bars diario + lines cumulativas).
+function renderChartCurvaS(acts){
+  const canvas = document.getElementById('chartCurvaS');
+  const empty  = document.getElementById('empty-curvas');
+  const wrap   = document.getElementById('wrap-curvas');
+  if(!canvas) return;
+
+  _destroyChart('curvas');
+
+  // Solo actividades confirmadas con cumplimiento marcado
+  const actsConfirmadas = acts.filter(a => a.confirmada && Array.isArray(a.cumplimiento) && Array.isArray(a.days));
+
+  // Encontrar rango global de fechas (desde la primera marca a la última)
+  let minDate = null, maxDate = null;
+  actsConfirmadas.forEach(a => {
+    if(!a.fecha_inicio) return;
+    const base = new Date(a.fecha_inicio + 'T00:00:00');
+    if(isNaN(base.getTime())) return;
+    a.days.forEach((planned, i) => {
+      if(!planned) return;
+      const c = a.cumplimiento[i];
+      if(c !== 'cumple' && c !== 'no_cumple') return;
+      const d = new Date(base);
+      d.setDate(d.getDate() + i);
+      const iso = d.toISOString().slice(0,10);
+      if(!minDate || iso < minDate) minDate = iso;
+      if(!maxDate || iso > maxDate) maxDate = iso;
+    });
+  });
+
+  if(!minDate || !maxDate){
+    if(wrap)  wrap.style.display  = 'none';
+    if(empty) empty.style.display = 'block';
+    return;
+  }
+  if(wrap)  wrap.style.display  = 'block';
+  if(empty) empty.style.display = 'none';
+
+  // Generar array de fechas diarias entre min y max
+  const dates = [];
+  const start = new Date(minDate + 'T00:00:00');
+  const end   = new Date(maxDate + 'T00:00:00');
+  for(let d = new Date(start); d <= end; d.setDate(d.getDate()+1)){
+    dates.push(new Date(d));
+  }
+  const n = dates.length;
+  const isoIndex = dates.map(d => d.toISOString().slice(0,10));
+
+  const daily_cumple   = new Array(n).fill(0);
+  const daily_nocumple = new Array(n).fill(0);
+
+  actsConfirmadas.forEach(a => {
+    if(!a.fecha_inicio) return;
+    const base = new Date(a.fecha_inicio + 'T00:00:00');
+    if(isNaN(base.getTime())) return;
+    a.days.forEach((planned, i) => {
+      if(!planned) return;
+      const c = a.cumplimiento[i];
+      if(c !== 'cumple' && c !== 'no_cumple') return;
+      const d = new Date(base);
+      d.setDate(d.getDate() + i);
+      const iso = d.toISOString().slice(0,10);
+      const colIdx = isoIndex.indexOf(iso);
+      if(colIdx < 0) return;
+      if(c === 'cumple') daily_cumple[colIdx]++;
+      else               daily_nocumple[colIdx]++;
+    });
+  });
+
+  // Acumulativos
+  const cum_cumple = [], cum_nocumple = [];
+  let runC = 0, runN = 0;
+  for(let i = 0; i < n; i++){
+    runC += daily_cumple[i];
+    runN += daily_nocumple[i];
+    cum_cumple.push(runC);
+    cum_nocumple.push(runN);
+  }
+
+  // Labels DD/MM
+  const labels = dates.map(d => {
+    const dd = String(d.getDate()).padStart(2,'0');
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    return `${dd}/${mm}`;
+  });
+
+  window._charts.curvas = new Chart(canvas.getContext('2d'), {
+    data: {
+      labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Cumple (día)',
+          data: daily_cumple,
+          backgroundColor: 'rgba(34,197,94,0.45)',
+          borderColor: 'rgba(34,197,94,0.85)',
+          borderWidth: 1,
+          yAxisID: 'yDaily',
+          order: 2
+        },
+        {
+          type: 'bar',
+          label: 'No cumple (día)',
+          data: daily_nocumple,
+          backgroundColor: 'rgba(239,68,68,0.45)',
+          borderColor: 'rgba(239,68,68,0.85)',
+          borderWidth: 1,
+          yAxisID: 'yDaily',
+          order: 2
+        },
+        {
+          type: 'line',
+          label: 'Cumple acumulado',
+          data: cum_cumple,
+          borderColor: '#22C55E',
+          backgroundColor: 'rgba(34,197,94,0.10)',
+          fill: false,
+          tension: 0.35,
+          borderWidth: 2.5,
+          pointRadius: 3,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#22C55E',
+          pointBorderColor: '#000',
+          pointBorderWidth: 1,
+          yAxisID: 'yCum',
+          order: 1
+        },
+        {
+          type: 'line',
+          label: 'No cumple acumulado',
+          data: cum_nocumple,
+          borderColor: '#EF4444',
+          backgroundColor: 'rgba(239,68,68,0.10)',
+          fill: false,
+          tension: 0.35,
+          borderWidth: 2.5,
+          pointRadius: 3,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#EF4444',
+          pointBorderColor: '#000',
+          pointBorderWidth: 1,
+          yAxisID: 'yCum',
+          order: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: DASH_COLORS.text, font: { size: 11 }, usePointStyle: true, padding: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.parsed.y;
+              return ` ${ctx.dataset.label}: ${v}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: DASH_COLORS.text2, font: { size: 10 }, maxRotation: 60, minRotation: 0, autoSkipPadding: 6 },
+          grid: { color: DASH_COLORS.border }
+        },
+        yDaily: {
+          type: 'linear', position: 'left',
+          title: { display: true, text: 'Por día', color: DASH_COLORS.text2, font: { size: 11 } },
+          ticks: { color: DASH_COLORS.text2, font: { size: 10 }, precision: 0 },
+          grid: { color: DASH_COLORS.border },
+          beginAtZero: true
+        },
+        yCum: {
+          type: 'linear', position: 'right',
+          title: { display: true, text: 'Acumulado', color: DASH_COLORS.text2, font: { size: 11 } },
+          ticks: { color: DASH_COLORS.text2, font: { size: 10 }, precision: 0 },
+          grid: { drawOnChartArea: false },
+          beginAtZero: true
         }
       }
     }
