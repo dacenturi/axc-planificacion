@@ -27,11 +27,14 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .btn-secondary{background:var(--bg3);color:var(--text);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-danger{background:rgba(248,81,73,.12);color:var(--red);border:1px solid rgba(248,81,73,.25)}.btn-danger:hover{background:rgba(248,81,73,.22)}
 .btn-sm{padding:4px 9px;font-size:12px;border-radius:5px}
-.btn-confirm{background:linear-gradient(135deg,#22C55E,#16A34A);border:none;color:#fff;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;line-height:1;transition:all .15s;box-shadow:0 1px 4px rgba(34,197,94,.3);flex-shrink:0}
+.btn-confirm{background:linear-gradient(135deg,#22C55E,#16A34A);border:none;color:#fff;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:28px;height:28px;font-size:13px;line-height:1;transition:all .15s;box-shadow:0 1px 4px rgba(34,197,94,.3);flex-shrink:0}
 .btn-confirm:hover{transform:translateY(-1px);box-shadow:0 2px 6px rgba(34,197,94,.5)}
 .btn-confirm:disabled{background:var(--bg3);color:var(--text3);cursor:not-allowed;box-shadow:none;transform:none}
-.btn-unlock{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#EF4444;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;font-size:13px;line-height:1;transition:all .15s;flex-shrink:0}
+.btn-unlock{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#EF4444;font-weight:700;cursor:pointer;border-radius:6px;padding:0;display:flex;align-items:center;justify-content:center;width:28px;height:28px;font-size:13px;line-height:1;transition:all .15s;flex-shrink:0}
 .btn-unlock:hover{background:rgba(239,68,68,.3);border-color:#EF4444;transform:translateY(-1px)}
+/* Filas con comentario: highlight pastel amarillo para que el residente las vea de un vistazo */
+tr.has-comment > td{background-color:rgba(255,224,130,0.06) !important}
+tr.has-comment{box-shadow:inset 3px 0 0 rgba(255,200,80,0.6)}
 .obra-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;margin-bottom:16px}
 .obra-grid{display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:14px;align-items:start}
 .date-group{display:flex;gap:10px;align-items:start}
@@ -2161,6 +2164,8 @@ function renderTable(){
     }
     const isFail = ['No Cumple','No','Retrasado','Cancelado','En espera','Cumplido con atraso'].includes(a.cumple||'');
     const tr=document.createElement('tr');
+    // Highlight pastel amarillo si la actividad tiene comentario (visible para el residente)
+    if((a.comentario || '').trim() !== '') tr.classList.add('has-comment');
 
     // Color de fondo sutil por contratista (Obra Única y Multi-obra)
     if(a.contratista_act){
@@ -2631,7 +2636,7 @@ function renderTable(){
 
     // Duplicar (disponible en ambos modos)
     const bDup=document.createElement('button');
-    bDup.style.cssText='width:24px;height:24px;padding:0;border-radius:6px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.12);color:var(--blue);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center';
+    bDup.style.cssText='width:28px;height:28px;padding:0;border-radius:6px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.12);color:var(--blue);cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0';
     bDup.textContent='⎘';
     bDup.title='Duplicar esta fila (copia obra, contratista, sector, actividad y días)';
     bDup.onclick=()=>{
@@ -3147,7 +3152,7 @@ function renderGantt(){
     } else {
       markedIdx = a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
     }
-    const isFail = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'].includes(a.cumple||'');
+    const isFailManual = !a.confirmada && ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'].includes(a.cumple||'');
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
     // tick lines (column dividers) — domingo levemente azulado
@@ -3161,38 +3166,83 @@ function renderGantt(){
     if(markedIdx.length===0){
       blocks=`<span style="color:var(--text3);font-size:11px;padding:0 14px;position:absolute;top:50%;transform:translateY(-50%)">Sin días asignados</span>`;
     } else {
-      // Group consecutive days into segments, draw each day as individual block
-      // but visually connect consecutive ones (no gap between them)
+      // Cada día tildado se dibuja como un bloque individual.
+      // Color depende del estado de cumplimiento (Fase 3 confirmación):
+      //   - cumple    → verde
+      //   - no_cumple → rojo
+      //   - confirmada pendiente → dorado tenue
+      //   - no confirmada → dorado lleno (o rojo si manual fail)
+      //   - domingo (azul/extra) → azul
       markedIdx.forEach((di,pos)=>{
         const d=dates[di];
-        if(!d) return; // guard against out-of-bounds
-        const isPrev=pos>0&&markedIdx[pos-1]===di-1; // consecutive with previous
-        const isNext=pos<markedIdx.length-1&&markedIdx[pos+1]===di+1; // consecutive with next
+        if(!d) return;
+        const isPrevConsec=pos>0&&markedIdx[pos-1]===di-1;
+        const isNextConsec=pos<markedIdx.length-1&&markedIdx[pos+1]===di+1;
 
-        // radius: round left if first in group, round right if last in group
-        const rL=isPrev?0:5;
-        const rR=isNext?0:5;
+        // Bordes redondeados solo en los extremos de cada segmento consecutivo
+        const rL=isPrevConsec?0:5;
+        const rR=isNextConsec?0:5;
         const borderRadius=`${rL}px ${rR}px ${rR}px ${rL}px`;
 
-        // Color: fail=red, dom=blue tint, normal=gold
         const isDom=d.getDay()===0;
-        const bg=isFail
-          ? (isDom?'#c0392b':'#f85149')
-          : (isDom?'#3b82f6':'var(--accent)');
-        const textColor=isFail?'#fff':(isDom?'#fff':'#000');
+        // Mapear este día a su índice en a.days[] / a.cumplimiento[] (-1 si es domingo extra)
+        let actIdx = -1;
+        if(!isDom){
+          actIdx = usarLegacy ? di : dateToActIdx(a, d);
+        }
+        const cumplState = (a.confirmada && actIdx >= 0 && Array.isArray(a.cumplimiento))
+          ? (a.cumplimiento[actIdx] || null)
+          : null;
 
-        // Left margin: 1px gap on left edge of cell (except if continuing from prev)
-        const leftOffset=di*CELL+(isPrev?0:1);
-        const width=isPrev?(isNext?CELL:CELL-1):(isNext?CELL-1:CELL-2);
+        // Determinar color del bloque
+        let bg, textColor, shadow;
+        if(isDom){
+          // Domingo tildado o extra trabajado → azul
+          bg = '#3b82f6';
+          textColor = '#fff';
+          shadow = '0 1px 4px rgba(88,166,255,.45)';
+        } else if(cumplState === 'cumple'){
+          bg = '#22C55E';
+          textColor = '#fff';
+          shadow = '0 1px 4px rgba(34,197,94,.5)';
+        } else if(cumplState === 'no_cumple'){
+          bg = '#EF4444';
+          textColor = '#fff';
+          shadow = '0 1px 4px rgba(239,68,68,.5)';
+        } else if(a.confirmada){
+          // Confirmada y aún sin marcar este día → dorado tenue (pendiente)
+          bg = 'rgba(240,165,0,0.55)';
+          textColor = '#000';
+          shadow = '0 1px 3px rgba(240,165,0,.25)';
+        } else if(isFailManual){
+          // No confirmada y estado manual de fail → rojo
+          bg = '#f85149';
+          textColor = '#fff';
+          shadow = '0 1px 4px rgba(248,81,73,.4)';
+        } else {
+          // No confirmada normal → dorado lleno
+          bg = 'var(--accent)';
+          textColor = '#000';
+          shadow = '0 1px 4px rgba(240,165,0,.3)';
+        }
+
+        const leftOffset=di*CELL+(isPrevConsec?0:1);
+        const width=isPrevConsec?(isNextConsec?CELL:CELL-1):(isNextConsec?CELL-1:CELL-2);
 
         const dateLabel=fmt(d);
-        const isFirst=!isPrev; // show label only on first block of a group
-        // Count this segment's length for label
+        // Tooltip enriquecido con estado del día
+        const stateLabel = isDom ? ' · extra trabajado'
+                         : cumplState === 'cumple' ? ' · ✓ cumple'
+                         : cumplState === 'no_cumple' ? ' · ✗ no cumple'
+                         : a.confirmada ? ' · pendiente' : '';
+
+        const isFirst=!isPrevConsec;
+        // Solo mostrar etiqueta de cantidad de días si el segmento es largo (más de 40px)
         let segLen=1;
         if(isFirst){let j=pos;while(j+1<markedIdx.length&&markedIdx[j+1]===markedIdx[j]+1){segLen++;j++;}}
         const showLbl=isFirst&&(segLen*CELL>40);
 
-        blocks+=`<div title="${dateLabel}" style="
+        blocks+=`<div title="${dateLabel}${stateLabel}" style="
           position:absolute;
           left:${leftOffset}px;
           width:${width}px;
@@ -3202,7 +3252,7 @@ function renderGantt(){
           display:flex;align-items:center;justify-content:center;
           font-size:9px;font-weight:700;color:${textColor};
           overflow:hidden;white-space:nowrap;
-          box-shadow:${isFail?'0 1px 4px rgba(248,81,73,.4)':(isDom?'0 1px 4px rgba(88,166,255,.4)':'0 1px 4px rgba(240,165,0,.3)')};
+          box-shadow:${shadow};
           cursor:default;
         ">${showLbl?segLen+'d':''}</div>`;
       });
