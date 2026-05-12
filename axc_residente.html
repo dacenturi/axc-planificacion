@@ -182,7 +182,10 @@ tbody tr{min-height:48px}
 /* week border */
 .wk-sep{border-left:1px solid var(--border2) !important}
 /* report */
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:18px}
+.kpi.ki::before{background:#FF6B35}
+.kpi.ki .kpi-v{color:#FF6B35}
+.kpi-sub{font-size:10.5px;color:var(--text3);margin-top:4px;line-height:1.35}
 .kpi{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;position:relative;overflow:hidden}
 .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
 .kpi.kt::before{background:var(--blue)}.kpi.ko::before{background:var(--green)}.kpi.kf::before{background:var(--red)}.kpi.kp::before{background:var(--accent)}
@@ -219,6 +222,7 @@ tbody tr{min-height:48px}
 ::-webkit-scrollbar-track{background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 @media(max-width:800px){.obra-grid{grid-template-columns:1fr 1fr}.kpi-grid{grid-template-columns:1fr 1fr}}
+@media(min-width:801px) and (max-width:1100px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
 
 
 
@@ -579,10 +583,11 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <div class="sec-title">Reporte de actividades <small id="rpt-sub"></small></div>
   </div>
   <div class="kpi-grid">
-    <div class="kpi kt"><div class="kpi-l">Total actividades</div><div class="kpi-v" id="kv-t">0</div></div>
+    <div class="kpi kt"><div class="kpi-l">Total actividades</div><div class="kpi-v" id="kv-t">0</div><div class="kpi-sub">del plan</div></div>
     <div class="kpi ko"><div class="kpi-l">Cumplidas</div><div class="kpi-v" id="kv-ok">0</div></div>
     <div class="kpi kf"><div class="kpi-l">No cumplidas</div><div class="kpi-v" id="kv-fail">0</div></div>
     <div class="kpi kp"><div class="kpi-l">% Cumplimiento</div><div class="kpi-v" id="kv-pct">—</div></div>
+    <div class="kpi ki" title="Actividades NO planificadas que surgieron en el período. No afectan el PPC."><div class="kpi-l">📌 Imprevistas</div><div class="kpi-v" id="kv-imp">0</div><div class="kpi-sub" id="kv-imp-sub">—</div></div>
   </div>
   <div class="rpt-card">
     <table>
@@ -2849,11 +2854,15 @@ function showPage(name){
 
 function renderReport(){
   const dates=wDates(getStart(),getFin());const DL=getDL(dates.length);
-  // Aplicar filtro de obras
-  const actsVis = acts.filter(_passAllFilters);
+  // Aplicar filtros (incluye rango de fechas del header)
+  const actsVisAll = acts.filter(_passAllFilters);
+
+  // SEPARACIÓN FASE 3: KPIs del PLAN excluyen imprevistas. Las imprevistas
+  // se reportan aparte en su propio card naranja.
+  const actsVis = actsVisAll.filter(a => !a.imprevista);
+  const actsImprev = actsVisAll.filter(a => !!a.imprevista);
+
   const total=actsVis.length;
-  // Clasificación nueva: Cumple = [Cumple, En proceso, Terminado]
-  //                      No Cumple = [No Cumple, Cumplido con atraso, En espera, Retrasado, Cancelado]
   const _okStates   = ['Cumple','En proceso','Terminado'];
   const _failStates = ['No Cumple','Cumplido con atraso','En espera','Retrasado','Cancelado'];
   const ok=actsVis.filter(a=>_okStates.includes(a.cumple||'')).length;
@@ -2864,9 +2873,24 @@ function renderReport(){
   document.getElementById('kv-ok').textContent=ok;
   document.getElementById('kv-fail').textContent=fail;
   document.getElementById('kv-pct').textContent=pct!==null?pct+'%':'—';
+
+  // Card de Imprevistas
+  const impTotal = actsImprev.length;
+  const impResueltas = actsImprev.filter(a => {
+    const c = (a.cumple || '').trim();
+    return c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple';
+  }).length;
+  const impPendientes = impTotal - impResueltas - actsImprev.filter(a => (a.cumple||'').trim() === 'Cancelado').length;
+  document.getElementById('kv-imp').textContent = impTotal;
+  document.getElementById('kv-imp-sub').textContent = impTotal > 0
+    ? `${impResueltas} resueltas · ${impPendientes} pendientes`
+    : 'ninguna en el período';
+
   document.getElementById('rpt-sub').textContent=[obra.residente,obra.fecha?'· desde '+obra.fecha:''].filter(Boolean).join(' ');
   const tbody=document.getElementById('rpt-tbody');
-  if(!total){tbody.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text2)">Cargá actividades en <strong>Carga</strong> para ver el reporte.</td></tr>`;return;}
+  // Mostrar todas (plan + imprevistas) en la tabla, pero marcando visualmente las imprevistas
+  const actsParaTabla = actsVisAll;
+  if(!actsParaTabla.length){tbody.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text2)">Cargá actividades en <strong>Carga</strong> para ver el reporte.</td></tr>`;return;}
   tbody.innerHTML='';
   // Labels bonitos para cada estado
   const _labelsEstado = {
@@ -2875,7 +2899,7 @@ function renderReport(){
     'Cumplido con atraso':'⚠ Con atraso',
     'En espera':'⏸ En espera', 'Retrasado':'⚠ Retrasado', 'Cancelado':'✗ Cancelado'
   };
-  actsVis.forEach((a,i)=>{
+  actsParaTabla.forEach((a,i)=>{
     const m=a.days.map((v,j)=>v?j:-1).filter(j=>j>=0);
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
     const cumpleVal = a.cumple || '';
@@ -2884,9 +2908,15 @@ function renderReport(){
     const badgeClass = isFail ? 'br' : (isOk ? 'bg' : '');
     const badgeText  = cumpleVal ? (_labelsEstado[cumpleVal] || cumpleVal) : '— Sin asignar';
     const tr=document.createElement('tr');
+    // Aplicar clase visual diferenciada si es imprevista (Fase 3 + Fase 2 reutilizado)
+    if(a.imprevista) tr.classList.add('row-imprevista');
+    // Badge "📌 IMPR" delante de la descripción si es imprevista
+    const impBadge = a.imprevista
+      ? '<span class="imp-badge-row" style="margin-right:6px" title="Imprevista — no cuenta en el PPC"><span class="pin">📌</span>IMPR</span>'
+      : '';
     tr.innerHTML=`<td style="text-align:center;font-family:'DM Mono',monospace;font-size:11px">${i+1}</td>
       <td><span class="stag">${a.obra_row||obra.obra||'—'}</span></td>
-      <td style="font-size:13px">${a.item||'—'}</td>
+      <td style="font-size:13px">${impBadge}${a.item||'—'}</td>
       <td style="text-align:center"><span class="chip">${sd?fmts(sd):'—'}</span></td>
       <td style="text-align:center"><span class="chip">${ed?fmts(ed):'—'}</span></td>
       <td style="text-align:center"><span class="dur">${dur}d</span></td>
@@ -3060,6 +3090,11 @@ function exportXLSX(){
   }
 
   // Preparar datos
+  // NOTA Fase 3: agregamos `imprevista` y `tipo` al payload para que el server
+  // de Excel (Render.com) pueda diferenciar las actividades planificadas de las
+  // imprevistas en una columna nueva y/o en una hoja dedicada. Mientras Conexdata
+  // no actualice el server, los campos se envían pero se ignoran silenciosamente
+  // (no rompe el export actual). El cliente sigue funcionando con el server viejo.
   const payload = {
     modo: 'unica',
     obra: {
@@ -3076,7 +3111,10 @@ function exportXLSX(){
       criticidad:  a.criticidad || '',
       comentario:  a.comentario || '',
       days:        a.days || [],
-      domingos:    Array.isArray(a.domingos) ? a.domingos : []
+      domingos:    Array.isArray(a.domingos) ? a.domingos : [],
+      // Feature Imprevista (Fase 3): bandera + etiqueta legible
+      imprevista:  !!a.imprevista,
+      tipo:        a.imprevista ? 'Imprevista' : 'Planificada'
     }))
   };
 
@@ -3338,9 +3376,16 @@ function _calcKpisDelResidente(){
   const conteos = Object.fromEntries(estadosTabla.map(s => [s, 0]));
 
   // Filtrar por rango de fechas + filtros UI (Obra/Sector/Estado).
-  // Antes este cálculo iteraba sobre acts entero — eso producía KPIs de TODO
-  // el plan, ignorando el filtro de fechas del header de Planificación.
-  const actsVis = acts.filter(_passAllFilters);
+  const actsVisAll = acts.filter(_passAllFilters);
+
+  // SEPARACIÓN FASE 3: actividades del PLAN vs IMPREVISTAS
+  // Defaults confirmados:
+  //   - Imprevistas NO cuentan en PPC ni en días de atraso del plan original
+  //   - Tienen su propia métrica reportada aparte
+  const actsVis = actsVisAll.filter(a => !a.imprevista);
+  const actsImprev = actsVisAll.filter(a => !!a.imprevista);
+
+  // ─── Métricas del PLAN ─────────────────────────────────────
   const total = actsVis.length;
   let sumAvance = 0, nConAvance = 0;
   let ppcOk = 0, ppcFail = 0;
@@ -3353,10 +3398,10 @@ function _calcKpisDelResidente(){
     else if(c === 'No Cumple') conteos['Retrasado']++;
     else if(estadosTabla.includes(c)) conteos[c]++;
     else conteos['(Sin estado)']++;
-    // PPC (misma lógica que renderReport)
+    // PPC
     if(_okStates.includes(c)) ppcOk++;
     else if(_failStates.includes(c)) ppcFail++;
-    // Avance promedio (solo actividades confirmadas)
+    // Avance promedio
     try {
       const av = (typeof calcularAvancePct === 'function') ? calcularAvancePct(a) : null;
       if(typeof av === 'number' && av >= 0){
@@ -3382,7 +3427,41 @@ function _calcKpisDelResidente(){
     pct: total > 0 ? Math.round(conteos[estado] / total * 100) : 0
   }));
 
-  return { total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib };
+  // ─── Métricas de IMPREVISTAS ───────────────────────────────
+  let impResueltas = 0, impPendientes = 0;
+  const razonesCount = {};
+  actsImprev.forEach(a => {
+    const c = (a.cumple || '').trim();
+    // Resuelta = Terminado / Cumplido con atraso / Cumple
+    if(c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple'){
+      impResueltas++;
+    } else if(c !== 'Cancelado'){
+      // Cancelado no cuenta como pendiente ni resuelta
+      impPendientes++;
+    }
+    // Top razones
+    const r = (a.razon || '').trim();
+    if(r) razonesCount[r] = (razonesCount[r] || 0) + 1;
+  });
+  const impTotal = actsImprev.length;
+  const impPctResol = (impResueltas + impPendientes) > 0
+    ? Math.round(impResueltas / (impResueltas + impPendientes) * 100)
+    : null;
+  // Top 3 razones ordenadas por cantidad descendente
+  const topRazones = Object.entries(razonesCount)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([razon, cant]) => ({razon, cant}));
+
+  const imprev = {
+    total: impTotal,
+    resueltas: impResueltas,
+    pendientes: impPendientes,
+    pctResol: impPctResol,
+    topRazones
+  };
+
+  return { total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib, imprev };
 }
 
 // Dibuja la página 2: resumen ejecutivo (KPIs + tabla distribución).
@@ -3490,6 +3569,75 @@ function _drawResumenEjecutivo(doc){
     doc.setFillColor(gr2,gg2,gb2);
     doc.rect(20, boxY, 1.5, boxH, 'F');
   }
+
+  // ─── BLOQUE IMPREVISTAS (Fase 3) ─────────────────────────
+  // Solo se dibuja si hay imprevistas en el período filtrado.
+  // No afecta el PPC del plan, se reporta como métrica separada.
+  if(k.imprev && k.imprev.total > 0){
+    const impY = boxY + boxH + 6;
+    if(impY + 30 < ph - 25){ // verificar que entra antes del footer
+      const [orR, orG, orB] = [255, 107, 53]; // naranja imprevista
+      // Marco con borde naranja
+      doc.setDrawColor(orR, orG, orB);
+      doc.setLineWidth(0.5);
+      doc.setFillColor(255, 245, 240); // fondo naranja muy claro
+      const impH = 26;
+      doc.roundedRect(20, impY, pw - 40, impH, 2, 2, 'FD');
+      // Banda naranja izquierda
+      doc.setFillColor(orR, orG, orB);
+      doc.rect(20, impY, 2.5, impH, 'F');
+      // Título
+      doc.setTextColor(orR, orG, orB);
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(10);
+      doc.text('📌 IMPREVISTAS DEL PERÍODO', 25, impY + 6);
+      // Subtítulo: no afectan PPC
+      doc.setTextColor(120, 120, 120);
+      doc.setFont('helvetica','italic');
+      doc.setFontSize(7);
+      doc.text('(no afectan el PPC del plan)', 25, impY + 10);
+      // Métricas en línea
+      doc.setTextColor(40, 40, 40);
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      const yMetrics = impY + 16;
+      const colW = (pw - 50) / 4;
+      const metrics = [
+        ['Total', String(k.imprev.total)],
+        ['Resueltas', String(k.imprev.resueltas)],
+        ['Pendientes', String(k.imprev.pendientes)],
+        ['% Resolución', (k.imprev.pctResol !== null ? k.imprev.pctResol + '%' : '—')]
+      ];
+      metrics.forEach(([label, value], idx) => {
+        const xCenter = 25 + colW * (idx + 0.5);
+        doc.setFont('helvetica','normal');
+        doc.setFontSize(7);
+        doc.setTextColor(120, 120, 120);
+        doc.text(label.toUpperCase(), xCenter, yMetrics, {align:'center'});
+        doc.setFont('helvetica','bold');
+        doc.setFontSize(13);
+        doc.setTextColor(orR, orG, orB);
+        doc.text(value, xCenter, yMetrics + 7, {align:'center'});
+      });
+      // Top razones (debajo, si hay y entran)
+      if(k.imprev.topRazones && k.imprev.topRazones.length > 0){
+        const razY = impY + impH + 5;
+        if(razY + 6 < ph - 25){
+          doc.setTextColor(80, 80, 80);
+          doc.setFont('helvetica','bold');
+          doc.setFontSize(8);
+          doc.text('Razones más frecuentes:', 22, razY);
+          doc.setFont('helvetica','normal');
+          doc.setFontSize(8);
+          doc.setTextColor(40, 40, 40);
+          const razText = k.imprev.topRazones
+            .map(r => `${r.razon} (${r.cant})`)
+            .join('  ·  ');
+          doc.text(razText, 22, razY + 4);
+        }
+      }
+    }
+  }
 }
 // ─── FIN HELPERS FASE 4 ───
 
@@ -3509,15 +3657,16 @@ function _fmtFechaCorta(iso){
 function _filasTablaDetallada(){
   return acts.filter(_passAllFilters).map((a, idx) => {
     const estado = (a.cumple || '').trim() || '—';
-    const desc = (a.descripcion || a.item || '(sin descripción)').trim();
-    const descCorta = desc.length > 60 ? desc.slice(0, 57) + '…' : desc;
+    const descBase = (a.descripcion || a.item || '(sin descripción)').trim();
+    // Prefijo [IMPR] para imprevistas — la fuente Helvetica de jsPDF no soporta
+    // emojis Unicode (📌), por eso usamos texto plano ASCII.
+    const descConPrefijo = a.imprevista ? `[IMPR] ${descBase}` : descBase;
+    const descCorta = descConPrefijo.length > 60 ? descConPrefijo.slice(0, 57) + '…' : descConPrefijo;
     const ob = (a.obra_row || (typeof obra !== 'undefined' && obra && obra.obra) || '—');
     const obraSec = [ob, a.sector || ''].filter(Boolean).join(' / ');
     const obraSecCorta = obraSec.length > 42 ? obraSec.slice(0, 39) + '…' : obraSec;
     let periodo = '—';
     if(a.fechaIni && a.fechaFin){
-      // Usar guion ASCII en vez de la flecha Unicode →, que la fuente Helvetica
-      // de jsPDF no soporta y rendea como artefactos (&1&1&/&0...).
       periodo = _fmtFechaCorta(a.fechaIni) + ' - ' + _fmtFechaCorta(a.fechaFin);
     } else if(a.fechaIni){
       periodo = _fmtFechaCorta(a.fechaIni);
@@ -3529,7 +3678,7 @@ function _filasTablaDetallada(){
     } catch(e) { /* ignorar */ }
     const da = Number(a.dias_atraso);
     const atraso = (Number.isFinite(da) && da > 0) ? (da + 'd') : '—';
-    return [
+    const row = [
       String(idx + 1),
       descCorta,
       obraSecCorta,
@@ -3538,6 +3687,9 @@ function _filasTablaDetallada(){
       avance,
       atraso
     ];
+    // Marcar la fila como imprevista para que didParseCell pueda colorearla
+    row._imprevista = !!a.imprevista;
+    return row;
   });
 }
 
@@ -3606,10 +3758,159 @@ function _drawTablaDetallada(doc){
           data.cell.styles.textColor = [255,255,255];
         }
       }
+      // Fila completa con fondo naranja tenue si es imprevista (Fase 3)
+      // Solo afecta a las celdas que NO son la del estado (estado mantiene color)
+      if(data.section === 'body' && data.column.index !== 4){
+        const rowData = rows[data.row.index];
+        if(rowData && rowData._imprevista){
+          data.cell.styles.fillColor = [255, 240, 230]; // naranja muy claro
+        }
+      }
+      // Bold + naranja para la descripción si es imprevista (índice 1)
+      if(data.section === 'body' && data.column.index === 1){
+        const rowData = rows[data.row.index];
+        if(rowData && rowData._imprevista){
+          data.cell.styles.textColor = [229, 81, 0]; // naranja oscuro
+          data.cell.styles.fontStyle = 'bold';
+        }
+      }
     }
   });
 }
 // ─── FIN FASE 5 ───
+
+
+// ─── FASE 3: Detalle de Imprevistos (página dedicada) ───
+// Genera una página A4 vertical con tabla de TODAS las imprevistas del
+// período filtrado. Solo se dibuja si hay al menos una imprevista.
+// Estructura: # | Fecha | Actividad | Razón | Estado | Avance
+function _drawDetalleImprevistos(doc){
+  const imprevistas = acts.filter(_passAllFilters).filter(a => !!a.imprevista);
+  if(imprevistas.length === 0) return; // no hay nada que mostrar
+
+  doc.addPage();
+  // Título con acento naranja (Fase 3 usa naranja como color identificador)
+  const pw = doc.internal.pageSize.getWidth();
+  const [orR, orG, orB] = [255, 107, 53];
+  doc.setTextColor(orR, orG, orB);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('📌 Detalle de Imprevistos', 20, 25);
+  // Línea naranja decorativa
+  doc.setDrawColor(orR, orG, orB);
+  doc.setLineWidth(0.8);
+  doc.line(20, 28, 65, 28);
+  doc.setLineWidth(0.1);
+
+  // Subtítulo
+  const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
+  doc.setTextColor(grr,grg,grb);
+  doc.setFont('helvetica','italic');
+  doc.setFontSize(9);
+  doc.text(
+    `${imprevistas.length} actividad${imprevistas.length===1?'':'es'} no planificada${imprevistas.length===1?'':'s'} · ${_residenteActivoNombre()}`,
+    20, 33);
+  doc.setFont('helvetica','normal');
+  doc.text('Estas actividades no afectan el cálculo del PPC del plan original.', 20, 37.5);
+
+  // Armar filas: # | Fecha | Actividad | Razón | Estado | Avance
+  const rows = imprevistas.map((a, idx) => {
+    const desc = (a.descripcion || a.item || '(sin descripción)').trim();
+    const descCorta = desc.length > 55 ? desc.slice(0, 52) + '…' : desc;
+    const fecha = _fmtFechaCorta(a.fechaIni);
+    const razon = (a.razon || '—').trim();
+    const razonCorta = razon.length > 30 ? razon.slice(0, 27) + '…' : razon;
+    const estado = (a.cumple || '').trim() || '—';
+    let avance = '—';
+    try {
+      const av = (typeof calcularAvancePct === 'function') ? calcularAvancePct(a) : null;
+      if(typeof av === 'number' && av >= 0) avance = av + '%';
+    } catch(e) { /* ignorar */ }
+    return [String(idx + 1), fecha, descCorta, razonCorta, estado, avance];
+  });
+
+  doc.autoTable({
+    startY: 42,
+    head: [['#', 'Fecha', 'Actividad', 'Razón / Motivo', 'Estado', 'Avance']],
+    body: rows,
+    theme: 'striped',
+    styles: {
+      font: 'helvetica',
+      fontSize: 8,
+      cellPadding: 2.2,
+      lineColor: [255, 220, 200],
+      lineWidth: 0.1,
+      textColor: _hexToRgb(PDF_COLORS.navy),
+      overflow: 'linebreak',
+      valign: 'middle'
+    },
+    headStyles: {
+      fillColor: [orR, orG, orB],   // header naranja
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 8.5,
+      halign: 'center'
+    },
+    alternateRowStyles: { fillColor: [255, 248, 244] }, // naranja muy claro
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center', fontStyle: 'bold' },
+      1: { cellWidth: 20, halign: 'center', fontSize: 7.5 },
+      2: { cellWidth: 58 },
+      3: { cellWidth: 40, fontSize: 7.5 },
+      4: { cellWidth: 24, halign: 'center', fontStyle: 'bold', fontSize: 7.5 },
+      5: { cellWidth: 18, halign: 'center' }
+    },
+    margin: { left: 15, right: 15, top: 25, bottom: 20 },
+    didParseCell: function(data){
+      if(data.section === 'body' && data.column.index === 4){
+        const estado = String(data.cell.raw || '').trim();
+        const color = PDF_COLORS.estados[estado];
+        if(color){
+          data.cell.styles.fillColor = _hexToRgb(color);
+          data.cell.styles.textColor = [255, 255, 255];
+        }
+      }
+    }
+  });
+
+  // Resumen al final: top razones
+  const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : 100;
+  const razonesCount = {};
+  imprevistas.forEach(a => {
+    const r = (a.razon || '').trim();
+    if(r) razonesCount[r] = (razonesCount[r] || 0) + 1;
+  });
+  const topRazones = Object.entries(razonesCount)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 5);
+
+  if(topRazones.length > 0 && finalY + 30 < doc.internal.pageSize.getHeight() - 20){
+    const boxY = finalY + 8;
+    // Cuadro de resumen naranja claro
+    doc.setFillColor(255, 248, 244);
+    doc.setDrawColor(orR, orG, orB);
+    doc.setLineWidth(0.4);
+    doc.roundedRect(15, boxY, pw - 30, Math.min(8 + topRazones.length * 5, 50), 2, 2, 'FD');
+    doc.setLineWidth(0.1);
+
+    doc.setTextColor(orR, orG, orB);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(9);
+    doc.text('Razones más frecuentes', 20, boxY + 6);
+
+    doc.setTextColor(40, 40, 40);
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8.5);
+    topRazones.forEach(([razon, cant], i) => {
+      const y = boxY + 12 + i * 5;
+      doc.setFont('helvetica','bold');
+      doc.text(`${cant}`, 22, y);
+      doc.setFont('helvetica','normal');
+      doc.text(`× ${razon}`, 30, y);
+    });
+  }
+}
+// ─── FIN FASE 3 (PDF) ───
 
 
 // ─── FASE 6: Gantt apaisado vía html2canvas + paginación ───
@@ -3787,6 +4088,10 @@ async function exportPDF(){
 
     // ─── Páginas 3+: Tabla detallada (Fase 5) ───
     _drawTablaDetallada(doc);
+
+    // ─── Página opcional: Detalle de Imprevistos (Fase 3) ───
+    // Solo se agrega si hay imprevistas en el rango filtrado.
+    _drawDetalleImprevistos(doc);
 
     // ─── Páginas finales: Gantt apaisado (Fase 6) ───
     if(btn) btn.textContent = 'Capturando Gantt...';
@@ -4842,10 +5147,10 @@ async function submitImprevisto(){
   const crit  = document.getElementById('imp-crit').value.trim() || 'Alto';
   const razon = document.getElementById('imp-razon').value.trim();
 
-  // Validación: Obra, Sector, Descripción y Razón son obligatorios
+  // Validación: Obra, Descripción y Razón son obligatorios.
+  // Sector es OPCIONAL — no todas las obras tienen sectores cargados.
   const falta = [];
   if(!obra)  falta.push('Obra');
-  if(!sec)   falta.push('Sector');
   if(!desc)  falta.push('Descripción');
   if(!razon) falta.push('Razón');
   if(falta.length){
@@ -4992,7 +5297,7 @@ document.addEventListener('keydown', (e) => {
         </div>
       </div>
       <div>
-        <label>Sector <span class="req">*</span></label>
+        <label>Sector</label>
         <div style="display:flex;gap:6px;align-items:stretch">
           <select id="imp-sector" style="flex:1;margin-top:5px"></select>
           <button type="button" class="imp-mini-add" onclick="toggleAddSector()" title="Agregar nuevo sector a la obra seleccionada" style="margin-top:5px">＋</button>
