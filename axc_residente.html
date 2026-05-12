@@ -44,6 +44,19 @@ body{background:var(--bg);color:var(--text);font-family:'Mulish',sans-serif;font
 .imp-modal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;border-top:1px solid rgba(255,255,255,.08);padding-top:14px}
 .imp-modal-foot .btn{padding:8px 16px;font-size:13px}
 .imp-info{background:rgba(255,107,53,.08);border-left:3px solid #FF6B35;padding:8px 12px;border-radius:4px;font-size:11.5px;color:var(--text2);margin-top:8px;line-height:1.5}
+/* Botón "+" naranja al lado de los dropdowns */
+.imp-mini-add{background:linear-gradient(135deg,#FF6B35,#E55100);color:#fff;border:none;border-radius:6px;width:34px;flex-shrink:0;font-size:16px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;line-height:1}
+.imp-mini-add:hover{background:linear-gradient(135deg,#FF8454,#FF6B35);box-shadow:0 2px 6px rgba(255,107,53,.4);transform:translateY(-1px)}
+.imp-mini-add:active{transform:translateY(0)}
+/* Input inline para crear nueva obra/sector */
+.imp-inline-add{display:none;gap:6px;margin-top:6px;align-items:stretch;animation:fadeIn .15s ease}
+.imp-inline-add.show{display:flex}
+.imp-inline-add input{flex:1;margin-top:0 !important;background:rgba(255,107,53,.06) !important;border-color:#FF6B35 !important}
+.imp-inline-mini{padding:0 10px;border:none;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;transition:all .15s;flex-shrink:0;min-width:34px}
+.imp-inline-ok{background:#22C55E;color:#fff}
+.imp-inline-ok:hover{background:#16A34A}
+.imp-inline-cancel{background:rgba(239,68,68,.15);color:#EF4444;border:1px solid rgba(239,68,68,.4)}
+.imp-inline-cancel:hover{background:rgba(239,68,68,.3)}
 .btn-secondary{background:var(--bg3);color:var(--text);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-danger{background:rgba(248,81,73,.12);color:var(--red);border:1px solid rgba(248,81,73,.25)}.btn-danger:hover{background:rgba(248,81,73,.22)}
 .btn-sm{padding:4px 9px;font-size:12px;border-radius:5px}
@@ -4572,28 +4585,153 @@ function openImprevistoModal(){
 }
 
 // Popula el dropdown de sector según la obra elegida
+// Usa getSectoresDeObra(), la misma función que las filas de la tabla principal.
 function _populateImpSectores(){
   const obra = document.getElementById('imp-obra').value;
   const selSec = document.getElementById('imp-sector');
   let sectores = [];
-  if(obra){
-    // Usar cache de sectores por obra (igual que en addRow)
-    if(window._sectoresCache && Array.isArray(window._sectoresCache[obra])){
-      sectores = window._sectoresCache[obra];
-    } else if(typeof getABMList === 'function'){
-      // Fallback: setear override y consultar
-      const prev = window._abmObraOverride;
-      window._abmObraOverride = obra;
-      sectores = getABMList('sectores') || [];
-      window._abmObraOverride = prev;
-    }
+  if(obra && typeof getSectoresDeObra === 'function'){
+    sectores = getSectoresDeObra(obra) || [];
   }
   selSec.innerHTML = '<option value="">— Sector —</option>' +
     sectores.map(s => `<option value="${_escHtml(s)}">${_escHtml(s)}</option>`).join('');
+  // Si no hay sectores, no avisamos con toast — el usuario tiene el botón "+"
+  // al lado del dropdown para crear uno nuevo inline.
 }
 
 function closeImprevistoModal(){
   document.getElementById('imp-modal-bg').classList.remove('open');
+  // Cerrar también los inline-add si quedaron abiertos
+  document.getElementById('imp-add-obra-wrap')?.classList.remove('show');
+  document.getElementById('imp-add-sector-wrap')?.classList.remove('show');
+}
+
+// ─── Crear nueva Obra inline (sin salir del modal) ─────────────────
+function toggleAddObra(){
+  const wrap = document.getElementById('imp-add-obra-wrap');
+  const inp  = document.getElementById('imp-add-obra');
+  const opening = !wrap.classList.contains('show');
+  wrap.classList.toggle('show');
+  // Cerrar el otro inline-add si estaba abierto (no abrir dos a la vez)
+  if(opening) document.getElementById('imp-add-sector-wrap')?.classList.remove('show');
+  if(opening){
+    inp.value = '';
+    setTimeout(() => inp.focus(), 50);
+  }
+}
+
+function cancelAddObra(){
+  document.getElementById('imp-add-obra-wrap').classList.remove('show');
+}
+
+async function confirmAddObra(){
+  const inp = document.getElementById('imp-add-obra');
+  const nombre = (inp.value || '').trim();
+  if(!nombre){
+    showToast('⚠️ Escribí un nombre para la obra', 'warn');
+    inp.focus();
+    return;
+  }
+  const existentes = (typeof getABMList === 'function') ? (getABMList('obras') || []) : [];
+  if(existentes.some(o => String(o).toLowerCase() === nombre.toLowerCase())){
+    showToast('⚠️ Esa obra ya existe', 'warn');
+    inp.focus();
+    return;
+  }
+  try {
+    await saveABMList('obras', [...existentes, nombre]);
+    // Refrescar dropdown de obra
+    const selObra = document.getElementById('imp-obra');
+    const obras = getABMList('obras') || [];
+    selObra.innerHTML = '<option value="">— Seleccionar obra —</option>' +
+      obras.map(o => `<option value="${_escHtml(o)}">${_escHtml(o)}</option>`).join('');
+    selObra.value = nombre;
+    // Refrescar sectores (la obra nueva no tiene aún)
+    _populateImpSectores();
+    document.getElementById('imp-add-obra-wrap').classList.remove('show');
+    showToast(`✓ Obra "${nombre}" agregada`, 'ok');
+  } catch(e){
+    console.error('Error guardando obra:', e);
+    showToast('⚠️ Error guardando la obra. Intentá de nuevo.', 'warn');
+  }
+}
+
+// ─── Crear nuevo Sector inline (asociado a la obra seleccionada) ────
+function toggleAddSector(){
+  const obra = document.getElementById('imp-obra').value.trim();
+  if(!obra){
+    showToast('⚠️ Primero seleccioná o creá una obra', 'warn');
+    document.getElementById('imp-obra').focus();
+    return;
+  }
+  const wrap = document.getElementById('imp-add-sector-wrap');
+  const inp  = document.getElementById('imp-add-sector');
+  const opening = !wrap.classList.contains('show');
+  wrap.classList.toggle('show');
+  if(opening) document.getElementById('imp-add-obra-wrap')?.classList.remove('show');
+  if(opening){
+    inp.value = '';
+    inp.placeholder = `Nuevo sector para "${obra.length > 24 ? obra.slice(0,22)+'…' : obra}"…`;
+    setTimeout(() => inp.focus(), 50);
+  }
+}
+
+function cancelAddSector(){
+  document.getElementById('imp-add-sector-wrap').classList.remove('show');
+}
+
+async function confirmAddSector(){
+  const obra = document.getElementById('imp-obra').value.trim();
+  if(!obra){
+    showToast('⚠️ Falta obra seleccionada', 'warn');
+    return;
+  }
+  const inp = document.getElementById('imp-add-sector');
+  const nombre = (inp.value || '').trim();
+  if(!nombre){
+    showToast('⚠️ Escribí un nombre para el sector', 'warn');
+    inp.focus();
+    return;
+  }
+  const existentes = (typeof getSectoresDeObra === 'function') ? (getSectoresDeObra(obra) || []) : [];
+  if(existentes.some(s => String(s).toLowerCase() === nombre.toLowerCase())){
+    showToast(`⚠️ El sector "${nombre}" ya existe en ${obra}`, 'warn');
+    inp.focus();
+    return;
+  }
+  try {
+    // saveABMList('sectores', ...) lee window._abmObraOverride para saber a qué obra
+    // asociar los sectores, así que lo seteamos temporalmente.
+    const prev = window._abmObraOverride;
+    window._abmObraOverride = obra;
+    try {
+      await saveABMList('sectores', [...existentes, nombre]);
+    } finally {
+      window._abmObraOverride = prev;
+    }
+    // Refrescar sectores y auto-seleccionar el nuevo
+    _populateImpSectores();
+    document.getElementById('imp-sector').value = nombre;
+    document.getElementById('imp-add-sector-wrap').classList.remove('show');
+    showToast(`✓ Sector "${nombre}" agregado a ${obra}`, 'ok');
+  } catch(e){
+    console.error('Error guardando sector:', e);
+    showToast('⚠️ Error guardando el sector. Intentá de nuevo.', 'warn');
+  }
+}
+
+// Enter para confirmar / Esc para cancelar dentro de los inputs inline
+function _handleAddKey(e, tipo){
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    if(tipo === 'obra') confirmAddObra();
+    else confirmAddSector();
+  } else if(e.key === 'Escape'){
+    e.preventDefault();
+    e.stopPropagation();  // evitar que cierre el modal entero
+    if(tipo === 'obra') cancelAddObra();
+    else cancelAddSector();
+  }
 }
 
 // Helper para escapar HTML en valores de option (defensa básica)
@@ -4748,11 +4886,27 @@ document.addEventListener('keydown', (e) => {
     <div class="row2">
       <div>
         <label>Obra <span class="req">*</span></label>
-        <select id="imp-obra"></select>
+        <div style="display:flex;gap:6px;align-items:stretch">
+          <select id="imp-obra" style="flex:1;margin-top:5px"></select>
+          <button type="button" class="imp-mini-add" onclick="toggleAddObra()" title="Agregar nueva obra" style="margin-top:5px">＋</button>
+        </div>
+        <div id="imp-add-obra-wrap" class="imp-inline-add">
+          <input id="imp-add-obra" type="text" placeholder="Nombre de la nueva obra…" maxlength="60" onkeydown="_handleAddKey(event,'obra')">
+          <button type="button" class="imp-inline-mini imp-inline-ok" onclick="confirmAddObra()" title="Guardar (Enter)">✓</button>
+          <button type="button" class="imp-inline-mini imp-inline-cancel" onclick="cancelAddObra()" title="Cancelar (Esc)">✕</button>
+        </div>
       </div>
       <div>
         <label>Sector <span class="req">*</span></label>
-        <select id="imp-sector"></select>
+        <div style="display:flex;gap:6px;align-items:stretch">
+          <select id="imp-sector" style="flex:1;margin-top:5px"></select>
+          <button type="button" class="imp-mini-add" onclick="toggleAddSector()" title="Agregar nuevo sector a la obra seleccionada" style="margin-top:5px">＋</button>
+        </div>
+        <div id="imp-add-sector-wrap" class="imp-inline-add">
+          <input id="imp-add-sector" type="text" placeholder="Nombre del nuevo sector…" maxlength="60" onkeydown="_handleAddKey(event,'sector')">
+          <button type="button" class="imp-inline-mini imp-inline-ok" onclick="confirmAddSector()" title="Guardar (Enter)">✓</button>
+          <button type="button" class="imp-inline-mini imp-inline-cancel" onclick="cancelAddSector()" title="Cancelar (Esc)">✕</button>
+        </div>
       </div>
     </div>
 
