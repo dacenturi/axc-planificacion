@@ -2971,16 +2971,13 @@ function exportXLSX(){
     return;
   }
 
-  // Aplicar filtros combinados (Obra + Sector + Estado)
-  const anyFilter = (window._filtroObras instanceof Set) ||
-                    (window._filtroSectores instanceof Set) ||
-                    (window._filtroEstados instanceof Set);
-  let actsExport = acts.slice();
-  if(anyFilter){
-    actsExport = acts.filter(_passAllFilters);
-    if(actsExport.length !== acts.length){
-      showToast(`📥 Exportando ${actsExport.length} de ${acts.length} filas (filtro aplicado)`, 'ok');
-    }
+  // Aplicar SIEMPRE los filtros combinados — _passAllFilters incluye el filtro
+  // de fechas del header (que está SIEMPRE activo) además de Obra/Sector/Estado.
+  // Antes solo se aplicaba si había filtros UI activos, lo que hacía que el Excel
+  // exportara TODO el plan, ignorando el rango de fechas seleccionado.
+  const actsExport = acts.filter(_passAllFilters);
+  if(actsExport.length !== acts.length){
+    showToast(`📥 Exportando ${actsExport.length} de ${acts.length} filas (según filtro de fechas y otros)`, 'ok');
   }
 
   // Preparar datos
@@ -3269,23 +3266,25 @@ function _drawKpiCard(doc, x, y, w, h, label, value, accentHex){
   doc.text(String(value), x + w/2, y + h - 4, {align:'center'});
 }
 
-// Calcula los KPIs y la distribución por estado para todas las actividades del residente activo.
+// Calcula los KPIs y la distribución por estado, RESPETANDO los filtros activos
+// (rango de fechas del header + Obra + Sector + Estado).
 // Devuelve: {total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib}
-// donde distrib es [{estado, cantidad, pct}] para los 7 estados (6 + "(Sin estado)").
 function _calcKpisDelResidente(){
   const _okStates   = ['Cumple','En proceso','Terminado'];
   const _failStates = ['No Cumple','Cumplido con atraso','En espera','Retrasado','Cancelado'];
-  // Estados que mostramos en la tabla de distribución (los 6 nuevos + sin estado).
-  // 'Cumple' y 'No Cumple' son retrocompat; los mapeamos sumándolos a Terminado y Retrasado respectivamente.
   const estadosTabla = ['En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','(Sin estado)'];
   const conteos = Object.fromEntries(estadosTabla.map(s => [s, 0]));
 
-  const total = acts.length;
+  // Filtrar por rango de fechas + filtros UI (Obra/Sector/Estado).
+  // Antes este cálculo iteraba sobre acts entero — eso producía KPIs de TODO
+  // el plan, ignorando el filtro de fechas del header de Planificación.
+  const actsVis = acts.filter(_passAllFilters);
+  const total = actsVis.length;
   let sumAvance = 0, nConAvance = 0;
   let ppcOk = 0, ppcFail = 0;
   let diasAtrasoTotal = 0, actsConAtraso = 0;
 
-  acts.forEach(a => {
+  actsVis.forEach(a => {
     const c = (a.cumple || '').trim();
     // Conteo para distribución
     if(c === 'Cumple') conteos['Terminado']++;
@@ -3442,9 +3441,11 @@ function _fmtFechaCorta(iso){
   return `${m[3]}/${m[2]}/${m[1].slice(2)}`;
 }
 
-// Construye las filas de la tabla detallada a partir de TODO acts[] (sin filtros UI).
+// Construye las filas de la tabla detallada respetando los filtros activos
+// (rango de fechas del header + filtros UI). Solo aparecen las actividades
+// con planificación dentro del período seleccionado.
 function _filasTablaDetallada(){
-  return acts.map((a, idx) => {
+  return acts.filter(_passAllFilters).map((a, idx) => {
     const estado = (a.cumple || '').trim() || '—';
     const desc = (a.descripcion || a.item || '(sin descripción)').trim();
     const descCorta = desc.length > 60 ? desc.slice(0, 57) + '…' : desc;
@@ -3481,12 +3482,13 @@ function _drawTablaDetallada(doc){
   doc.addPage();
   _drawSeccionTitulo(doc, 'Detalle de Actividades', 25);
 
-  // Subtítulo con conteo
+  // Subtítulo con conteo (respetando filtros)
   const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
   doc.setTextColor(grr,grg,grb);
   doc.setFont('helvetica','normal');
   doc.setFontSize(9);
-  doc.text(`${acts.length} actividad${acts.length===1?'':'es'} · ${_residenteActivoNombre()}`, 20, 32);
+  const totalFiltrado = acts.filter(_passAllFilters).length;
+  doc.text(`${totalFiltrado} actividad${totalFiltrado===1?'':'es'} · ${_residenteActivoNombre()}`, 20, 32);
 
   const rows = _filasTablaDetallada();
   if(rows.length === 0){
