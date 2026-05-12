@@ -4604,6 +4604,7 @@ function closeImprevistoModal(){
   // Cerrar también los inline-add si quedaron abiertos
   document.getElementById('imp-add-obra-wrap')?.classList.remove('show');
   document.getElementById('imp-add-sector-wrap')?.classList.remove('show');
+  document.getElementById('imp-add-razon-wrap')?.classList.remove('show');
 }
 
 // ─── Crear nueva Obra inline (sin salir del modal) ─────────────────
@@ -4720,17 +4721,70 @@ async function confirmAddSector(){
   }
 }
 
+// ─── Crear nueva Razón inline (lista global, sin asociar a obra) ────
+function toggleAddRazon(){
+  const wrap = document.getElementById('imp-add-razon-wrap');
+  const inp  = document.getElementById('imp-add-razon');
+  const opening = !wrap.classList.contains('show');
+  wrap.classList.toggle('show');
+  // Cerrar los otros inline-add si estaban abiertos (no abrir varios a la vez)
+  if(opening){
+    document.getElementById('imp-add-obra-wrap')?.classList.remove('show');
+    document.getElementById('imp-add-sector-wrap')?.classList.remove('show');
+  }
+  if(opening){
+    inp.value = '';
+    setTimeout(() => inp.focus(), 50);
+  }
+}
+
+function cancelAddRazon(){
+  document.getElementById('imp-add-razon-wrap').classList.remove('show');
+}
+
+async function confirmAddRazon(){
+  const inp = document.getElementById('imp-add-razon');
+  const nombre = (inp.value || '').trim();
+  if(!nombre){
+    showToast('⚠️ Escribí un motivo para la razón', 'warn');
+    inp.focus();
+    return;
+  }
+  const existentes = (typeof getABMList === 'function') ? (getABMList('razones') || []) : [];
+  if(existentes.some(r => String(r).toLowerCase() === nombre.toLowerCase())){
+    showToast('⚠️ Esa razón ya existe', 'warn');
+    inp.focus();
+    return;
+  }
+  try {
+    await saveABMList('razones', [...existentes, nombre]);
+    // Refrescar dropdown de razón y auto-seleccionar la nueva
+    const selRz = document.getElementById('imp-razon');
+    const razones = getABMList('razones') || [];
+    selRz.innerHTML = '<option value="">— Seleccionar razón —</option>' +
+      razones.map(r => `<option value="${_escHtml(r)}">${_escHtml(r)}</option>`).join('');
+    selRz.value = nombre;
+    document.getElementById('imp-add-razon-wrap').classList.remove('show');
+    showToast(`✓ Razón "${nombre}" agregada`, 'ok');
+  } catch(e){
+    console.error('Error guardando razón:', e);
+    showToast('⚠️ Error guardando la razón. Intentá de nuevo.', 'warn');
+  }
+}
+
 // Enter para confirmar / Esc para cancelar dentro de los inputs inline
 function _handleAddKey(e, tipo){
   if(e.key === 'Enter'){
     e.preventDefault();
     if(tipo === 'obra') confirmAddObra();
-    else confirmAddSector();
+    else if(tipo === 'sector') confirmAddSector();
+    else if(tipo === 'razon') confirmAddRazon();
   } else if(e.key === 'Escape'){
     e.preventDefault();
     e.stopPropagation();  // evitar que cierre el modal entero
     if(tipo === 'obra') cancelAddObra();
-    else cancelAddSector();
+    else if(tipo === 'sector') cancelAddSector();
+    else if(tipo === 'razon') cancelAddRazon();
   }
 }
 
@@ -4774,7 +4828,9 @@ async function submitImprevisto(){
   acts.push({
     fechaIni: hoyISO,
     fechaFin: hoyISO,
-    item: '',
+    // IMPORTANTE: el input de la tabla renderiza `a.item`, no `a.descripcion`.
+    // Ambos campos deben coincidir para que la descripción se vea en la fila.
+    item: desc,
     descripcion: desc,
     obra_row: obra,
     sector: sec,
@@ -4924,7 +4980,15 @@ document.addEventListener('keydown', (e) => {
       </div>
       <div>
         <label>Razón / Motivo <span class="req">*</span></label>
-        <select id="imp-razon"></select>
+        <div style="display:flex;gap:6px;align-items:stretch">
+          <select id="imp-razon" style="flex:1;margin-top:5px"></select>
+          <button type="button" class="imp-mini-add" onclick="toggleAddRazon()" title="Agregar nueva razón" style="margin-top:5px">＋</button>
+        </div>
+        <div id="imp-add-razon-wrap" class="imp-inline-add">
+          <input id="imp-add-razon" type="text" placeholder="Nueva razón / motivo…" maxlength="80" onkeydown="_handleAddKey(event,'razon')">
+          <button type="button" class="imp-inline-mini imp-inline-ok" onclick="confirmAddRazon()" title="Guardar (Enter)">✓</button>
+          <button type="button" class="imp-inline-mini imp-inline-cancel" onclick="cancelAddRazon()" title="Cancelar (Esc)">✕</button>
+        </div>
       </div>
     </div>
 
