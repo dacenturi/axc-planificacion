@@ -1509,7 +1509,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-9';
+    const VERSION   = 'global-pdf-10';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1931,22 +1931,32 @@ async function exportPDF(){
       const lMB = 14;
       const dayLetters = ['D','L','M','X','J','V','S'];
 
-      // Columnas adaptativas según numDays
-      let nameColW, sectorColW;
-      if(numDays > 35){ nameColW = 50; sectorColW = 18; }
-      else if(numDays > 22){ nameColW = 60; sectorColW = 22; }
-      else if(numDays > 14){ nameColW = 70; sectorColW = 28; }
-      else { nameColW = 80; sectorColW = 32; }
-      const availW = lpw - 2*lMX - nameColW - sectorColW;
+      // Columnas adaptativas según numDays — incluye nueva columna RESIDENTE
+      let nameColW, resColW, sectorColW;
+      if(numDays > 35){ nameColW = 38; resColW = 22; sectorColW = 16; }
+      else if(numDays > 22){ nameColW = 48; resColW = 26; sectorColW = 20; }
+      else if(numDays > 14){ nameColW = 58; resColW = 30; sectorColW = 24; }
+      else { nameColW = 68; resColW = 32; sectorColW = 28; }
+      const availW = lpw - 2*lMX - nameColW - resColW - sectorColW;
       const cellW = Math.min(14, availW / numDays); // sin mínimo: SIEMPRE entra
       const cellH = 7.5;
-      const showDayDate = true; // SIEMPRE mostrar fecha (ya no es opcional)
-      const ganttX = lMX + nameColW + sectorColW;
-      const headerH = 10; // 10mm: fecha arriba + letra día abajo
+      const showDayDate = true;
+      const ganttX = lMX + nameColW + resColW + sectorColW;
+      const headerH = 10;
 
       // Filas por página: calcular según altura disponible
       const usableH = lph - lMT - lMB - headerH - 22; // 22mm para título + leyenda
       const maxRowsPerPage = Math.floor(usableH / cellH);
+
+      // RE-ORDENAR: por residente alfabético, luego por fecha de inicio
+      sortedActs.sort((a, b) => {
+        const ra = (a.residente || 'zzzz').toLowerCase();
+        const rb = (b.residente || 'zzzz').toLowerCase();
+        if(ra !== rb) return ra.localeCompare(rb);
+        const fa = _getFechaActividad(a) || '9999';
+        const fb = _getFechaActividad(b) || '9999';
+        return fa.localeCompare(fb);
+      });
 
       const totalParts = Math.ceil(sortedActs.length / maxRowsPerPage);
 
@@ -1990,15 +2000,21 @@ async function exportPDF(){
 
         // ─── Cabecera de columnas ───
         const ganttTopY = lMT + 14;
+        // Bloque Actividad
         doc.setFillColor(...NAVY_DARK);
         doc.rect(lMX, ganttTopY, nameColW, headerH, 'F');
+        // Bloque Residente
         doc.setFillColor(...NAVY_DARK);
-        doc.rect(lMX + nameColW, ganttTopY, sectorColW, headerH, 'F');
+        doc.rect(lMX + nameColW, ganttTopY, resColW, headerH, 'F');
+        // Bloque Obra/Sector
+        doc.setFillColor(...NAVY_DARK);
+        doc.rect(lMX + nameColW + resColW, ganttTopY, sectorColW, headerH, 'F');
         doc.setTextColor(...WHITE);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
         doc.text('Actividad', lMX + 3, ganttTopY + 6);
-        doc.text('Obra/Sector', lMX + nameColW + 3, ganttTopY + 6);
+        doc.text('Residente', lMX + nameColW + 3, ganttTopY + 6);
+        doc.text('Obra/Sector', lMX + nameColW + resColW + 3, ganttTopY + 6);
 
         // Cabecera de días — SIEMPRE muestra fecha arriba + letra día abajo
         // Si cellW es chico, fonts se reducen pero ambos textos siempre visibles
@@ -2037,7 +2053,7 @@ async function exportPDF(){
           if(doc.getTextWidth(`[IMPR] ${desc}`) > maxDescW){
             // truncar bruto: dejar lo que quepa
             const factor = maxDescW / doc.getTextWidth(desc);
-            descShown = desc.slice(0, Math.max(10, Math.floor(desc.length * factor) - 1)) + '…';
+            descShown = desc.slice(0, Math.max(10, Math.floor(desc.length * factor) - 1)) + '...';
           }
           doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal');
           doc.setFontSize(7);
@@ -2045,27 +2061,39 @@ async function exportPDF(){
           const prefix = a.imprevista ? '[IMPR] ' : '';
           doc.text(prefix + descShown, lMX + 2, rowY + 4.8);
 
+          // Residente (columna nueva)
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(6.8);
+          doc.setTextColor(...NAVY);
+          const resName = a.residente || '(s/r)';
+          let resShown = resName;
+          if(doc.getTextWidth(resName) > resColW - 4){
+            const factor = (resColW - 4) / doc.getTextWidth(resName);
+            resShown = resName.slice(0, Math.max(6, Math.floor(resName.length * factor) - 1)) + '...';
+          }
+          doc.text(resShown, lMX + nameColW + 2, rowY + 4.8);
+
           // Obra/Sector
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(6.5);
           doc.setTextColor(...GRAY_TEXT);
-          const obraSec = (a.obra || '—') + (a.sector ? ` · ${a.sector}` : '');
+          const obraSec = (a.obra || '-') + (a.sector ? ` | ${a.sector}` : '');
           let obraShown = obraSec;
           if(doc.getTextWidth(obraSec) > sectorColW - 4){
             const factor = (sectorColW - 4) / doc.getTextWidth(obraSec);
-            obraShown = obraSec.slice(0, Math.max(8, Math.floor(obraSec.length * factor) - 1)) + '…';
+            obraShown = obraSec.slice(0, Math.max(6, Math.floor(obraSec.length * factor) - 1)) + '...';
           }
-          doc.text(obraShown, lMX + nameColW + 2, rowY + 4.8);
+          doc.text(obraShown, lMX + nameColW + resColW + 2, rowY + 4.8);
 
           // Bloques marcados (días con cumplimiento o domingos especiales)
           const isFail = _isFAIL(a);
           const isImp  = !!a.imprevista;
+          const isConfirmed = !!a.confirmada;
           const ini = _getFechaActividad(a);
           const fin = _getFechaFin(a) || ini;
           const iniIdx = ini ? dates.findIndex(d => d.toISOString().slice(0,10) === ini) : -1;
           const finIdx = fin ? dates.findIndex(d => d.toISOString().slice(0,10) === fin) : iniIdx;
           if(iniIdx >= 0){
-            // Pintar todos los días en el rango ini→fin con el color del estado
             const endIdx = finIdx >= 0 ? finIdx : iniIdx;
             for(let di = iniIdx; di <= endIdx; di++){
               const d = dates[di];
@@ -2074,12 +2102,27 @@ async function exportPDF(){
               if(isFail) color = isDom ? [153,27,27] : [220,38,38];
               else if(isImp) color = isDom ? [59,130,246] : [255,107,53];
               else color = isDom ? [59,130,246] : GOLD;
-              doc.setFillColor(...color);
               const bx = ganttX + di*cellW + 0.8;
               const by = rowY + 1.2;
               const bw = Math.max(0.5, cellW - 1.6);
               const bh = cellH - 2.4;
-              doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
+
+              if(isConfirmed){
+                // CONFIRMADA: bloque LLENO con color sólido (como ahora)
+                doc.setFillColor(...color);
+                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
+              } else {
+                // NO CONFIRMADA: bloque con fondo TENUE (25% color + 75% blanco)
+                // + borde sólido del color → distingue visualmente sin confundir
+                const tintR = Math.round(color[0] * 0.25 + 255 * 0.75);
+                const tintG = Math.round(color[1] * 0.25 + 255 * 0.75);
+                const tintB = Math.round(color[2] * 0.25 + 255 * 0.75);
+                doc.setFillColor(tintR, tintG, tintB);
+                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
+                doc.setDrawColor(...color);
+                doc.setLineWidth(0.4);
+                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'S');
+              }
             }
           }
         });
@@ -2089,8 +2132,9 @@ async function exportPDF(){
         doc.setLineWidth(0.2);
         doc.rect(lMX, ganttTopY, lpw - 2*lMX, headerH + partActs.length * cellH);
 
-        // Leyenda al pie
-        const legY = lph - lMB - 4;
+        // ─── Leyenda al pie (2 líneas): colores arriba, confirmacion abajo ───
+        const legY1 = lph - lMB - 7;  // primera línea: colores de estado
+        const legY2 = lph - lMB - 1;  // segunda línea: confirmacion
         const legendItems = [
           { color: GOLD,         label: 'Planificada / Cumplida' },
           { color: [255,107,53], label: 'Imprevista (no planificada)' },
@@ -2101,11 +2145,33 @@ async function exportPDF(){
         doc.setFontSize(7);
         legendItems.forEach(item => {
           doc.setFillColor(...item.color);
-          doc.roundedRect(legX, legY - 3, 3, 3, 0.5, 0.5, 'F');
+          doc.roundedRect(legX, legY1 - 3, 3, 3, 0.5, 0.5, 'F');
           doc.setTextColor(...GRAY_TEXT);
-          doc.text(item.label, legX + 4.5, legY);
-          legX += doc.getTextWidth(item.label) + 12;
+          doc.text(item.label, legX + 4.5, legY1);
+          legX += doc.getTextWidth(item.label) + 10;
         });
+
+        // Segunda línea: explicar visual confirmada vs no confirmada
+        doc.setFontSize(7);
+        let legX2 = lMX;
+        // Bloque LLENO de ejemplo
+        doc.setFillColor(...GOLD);
+        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'F');
+        doc.setTextColor(...GRAY_TEXT);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Bloque lleno = CONFIRMADA', legX2 + 6.5, legY2);
+        legX2 += 6.5 + doc.getTextWidth('Bloque lleno = CONFIRMADA') + 10;
+        // Bloque OUTLINE de ejemplo
+        const tintR = Math.round(GOLD[0] * 0.25 + 255 * 0.75);
+        const tintG = Math.round(GOLD[1] * 0.25 + 255 * 0.75);
+        const tintB = Math.round(GOLD[2] * 0.25 + 255 * 0.75);
+        doc.setFillColor(tintR, tintG, tintB);
+        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'F');
+        doc.setDrawColor(...GOLD);
+        doc.setLineWidth(0.4);
+        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'S');
+        doc.text('Bloque tenue + borde = NO CONFIRMADA (planificacion pendiente)', legX2 + 6.5, legY2);
+        doc.setFont('helvetica', 'normal');
 
         // Footer landscape
         doc.setDrawColor(...GRAY_BORD);
@@ -2114,7 +2180,7 @@ async function exportPDF(){
         doc.setTextColor(...GRAY);
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7.5);
-        doc.text('AXC Constructora — Reporte Global · Diagrama Gantt', lMX, lph - 4);
+        doc.text('AXC Constructora - Reporte Global | Diagrama Gantt', lMX, lph - 4);
         doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align: 'center' });
         doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align: 'right' });
       }
@@ -2220,11 +2286,11 @@ async function exportPDF(){
                 }
               },
               datalabels: window.ChartDataLabels ? {
-                color: '#ffffff',
-                // 22pt bold — porcentajes MUY visibles dentro de cada slice
-                font: { size: 22, weight: 'bold' },
-                textStrokeColor: 'rgba(0,0,0,.8)',
-                textStrokeWidth: 4,
+                color: '#1a1a1a',
+                // 28pt NEGRO bold con halo blanco grueso — máxima legibilidad sobre cualquier slice
+                font: { size: 28, weight: 'bold' },
+                textStrokeColor: '#ffffff',
+                textStrokeWidth: 5,
                 formatter: (v) => {
                   const pct = total > 0 ? Math.round((v/total)*100) : 0;
                   return pct >= 5 ? `${pct}%` : '';
@@ -2544,9 +2610,8 @@ async function exportPDF(){
         MX, MT + 18, { maxWidth: pageW - 2*MX }
       );
 
-      // Insertar el pie chart — TAMAÑO COMPACTO (90mm de alto)
-      // Se centra horizontalmente en la página
-      const pieH = 90;
+      // Insertar el pie chart — TAMAÑO MÁS COMPACTO (75mm de alto)
+      const pieH = 75;
       const pieW = pageW - 2*MX;
       try{
         doc.addImage(pieRazones.dataURL, 'JPEG', MX, MT + 26, pieW, pieH, undefined, 'MEDIUM');
