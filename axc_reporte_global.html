@@ -1509,7 +1509,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-8';
+    const VERSION   = 'global-pdf-9';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1940,9 +1940,9 @@ async function exportPDF(){
       const availW = lpw - 2*lMX - nameColW - sectorColW;
       const cellW = Math.min(14, availW / numDays); // sin mínimo: SIEMPRE entra
       const cellH = 7.5;
-      const showDayDate = cellW >= 6.5;
+      const showDayDate = true; // SIEMPRE mostrar fecha (ya no es opcional)
       const ganttX = lMX + nameColW + sectorColW;
-      const headerH = 8.5;
+      const headerH = 10; // 10mm: fecha arriba + letra día abajo
 
       // Filas por página: calcular según altura disponible
       const usableH = lph - lMT - lMB - headerH - 22; // 22mm para título + leyenda
@@ -1981,15 +1981,15 @@ async function exportPDF(){
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(13);
         doc.setTextColor(...NAVY);
-        doc.text(`Diagrama Gantt — Planificación Visual`, lMX, lMT + 4);
+        doc.text(`Diagrama Gantt - Planificacion Visual`, lMX, lMT + 4);
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
-        doc.text(`Período: ${fmtFecha(minDate)} → ${fmtFecha(maxDate)} · ${numDays} día(s) · ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
+        // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
 
         // ─── Cabecera de columnas ───
         const ganttTopY = lMT + 14;
-        // Bloque Actividad
         doc.setFillColor(...NAVY_DARK);
         doc.rect(lMX, ganttTopY, nameColW, headerH, 'F');
         doc.setFillColor(...NAVY_DARK);
@@ -1997,24 +1997,26 @@ async function exportPDF(){
         doc.setTextColor(...WHITE);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
-        doc.text('Actividad', lMX + 3, ganttTopY + 5.5);
-        doc.text('Obra/Sector', lMX + nameColW + 3, ganttTopY + 5.5);
+        doc.text('Actividad', lMX + 3, ganttTopY + 6);
+        doc.text('Obra/Sector', lMX + nameColW + 3, ganttTopY + 6);
 
-        // Cabecera de días
+        // Cabecera de días — SIEMPRE muestra fecha arriba + letra día abajo
+        // Si cellW es chico, fonts se reducen pero ambos textos siempre visibles
+        const dateFontSize = cellW < 5 ? 4.5 : cellW < 7 ? 5.5 : 6.5;
+        const dayFontSize  = cellW < 5 ? 6   : cellW < 7 ? 7   : 8.5;
         dates.forEach((d, i) => {
           const isDom = d.getDay() === 0;
           doc.setFillColor(...(isDom ? [59,130,246] : NAVY_DARK));
           doc.rect(ganttX + i*cellW, ganttTopY, cellW, headerH, 'F');
+          // FECHA arriba (siempre)
           doc.setTextColor(...WHITE);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(dateFontSize);
+          doc.text(`${d.getDate()}/${d.getMonth()+1}`, ganttX + i*cellW + cellW/2, ganttTopY + 3.2, { align: 'center' });
+          // LETRA día abajo (siempre)
           doc.setFont('helvetica', 'bold');
-          doc.setFontSize(cellW < 6.5 ? 6 : 7.5);
-          const letterY = showDayDate ? ganttTopY + 3.5 : ganttTopY + 5.5;
-          doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, letterY, { align: 'center' });
-          if(showDayDate){
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(5.5);
-            doc.text(`${d.getDate()}/${d.getMonth()+1}`, ganttX + i*cellW + cellW/2, ganttTopY + 7, { align: 'center' });
-          }
+          doc.setFontSize(dayFontSize);
+          doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, ganttTopY + 8, { align: 'center' });
         });
 
         // ─── Filas de la parte actual ───
@@ -2161,6 +2163,19 @@ async function exportPDF(){
       document.body.appendChild(wrap);
 
       try{
+        // Plugin fondo blanco (sino el canvas hereda fondo negro del wrap)
+        const whiteBgPlugin = {
+          id: 'pdfWhiteBgPie',
+          beforeDraw: (chart) => {
+            const c = chart.ctx;
+            c.save();
+            c.globalCompositeOperation = 'destination-over';
+            c.fillStyle = '#ffffff';
+            c.fillRect(0, 0, chart.width, chart.height);
+            c.restore();
+          }
+        };
+
         const tempChart = new Chart(canvas, {
           type: 'pie',
           data: {
@@ -2169,7 +2184,7 @@ async function exportPDF(){
               data: values,
               backgroundColor: palette.slice(0, values.length),
               borderColor: '#fff',
-              borderWidth: 2
+              borderWidth: 3
             }]
           },
           options: {
@@ -2177,14 +2192,15 @@ async function exportPDF(){
             maintainAspectRatio: false,
             animation: false,
             devicePixelRatio: SCALE,
+            layout: { padding: { top: 10, bottom: 10, left: 10, right: 10 } },
             plugins: {
               legend: {
                 position: 'right',
                 labels: {
                   color: '#1a1a1a',
-                  font: { size: 13, weight: 'bold' },
-                  boxWidth: 18,
-                  padding: 12,
+                  font: { size: 14, weight: 'bold' },
+                  boxWidth: 22,
+                  padding: 14,
                   generateLabels: (chart) => {
                     const data = chart.data;
                     return data.labels.map((label, i) => {
@@ -2193,20 +2209,22 @@ async function exportPDF(){
                       return {
                         text: `${label} — ${v} (${pct}%)`,
                         fillStyle: data.datasets[0].backgroundColor[i],
-                        strokeStyle: '#fff',
+                        strokeStyle: '#ffffff',
                         lineWidth: 2,
                         hidden: false,
-                        index: i
+                        index: i,
+                        fontColor: '#1a1a1a'
                       };
                     });
                   }
                 }
               },
               datalabels: window.ChartDataLabels ? {
-                color: '#fff',
-                font: { size: 16, weight: 'bold' },
-                textStrokeColor: 'rgba(0,0,0,.55)',
-                textStrokeWidth: 3,
+                color: '#ffffff',
+                // 22pt bold — porcentajes MUY visibles dentro de cada slice
+                font: { size: 22, weight: 'bold' },
+                textStrokeColor: 'rgba(0,0,0,.8)',
+                textStrokeWidth: 4,
                 formatter: (v) => {
                   const pct = total > 0 ? Math.round((v/total)*100) : 0;
                   return pct >= 5 ? `${pct}%` : '';
@@ -2216,7 +2234,7 @@ async function exportPDF(){
               } : false
             }
           },
-          plugins: window.ChartDataLabels ? [window.ChartDataLabels] : []
+          plugins: [whiteBgPlugin, ...(window.ChartDataLabels ? [window.ChartDataLabels] : [])]
         });
 
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -2521,35 +2539,44 @@ async function exportPDF(){
       doc.setFontSize(10);
       doc.setTextColor(...GRAY_TEXT);
       doc.text(
-        `Distribución porcentual de los motivos por los cuales no se cumplieron actividades del plan. ` +
-        `${pieRazones.count} actividad${pieRazones.count===1?'':'es'} con razón registrada (top 8 + Otras).`,
+        `Distribucion porcentual de los motivos por los cuales no se cumplieron actividades del plan. ` +
+        `${pieRazones.count} actividad${pieRazones.count===1?'':'es'} con razon registrada.`,
         MX, MT + 18, { maxWidth: pageW - 2*MX }
       );
 
-      // Insertar el pie chart — ocupa la mayor parte de la página
+      // Insertar el pie chart — TAMAÑO COMPACTO (90mm de alto)
+      // Se centra horizontalmente en la página
+      const pieH = 90;
+      const pieW = pageW - 2*MX;
       try{
-        doc.addImage(pieRazones.dataURL, 'JPEG', MX, MT + 28, pageW - 2*MX, 130, undefined, 'MEDIUM');
+        doc.addImage(pieRazones.dataURL, 'JPEG', MX, MT + 26, pieW, pieH, undefined, 'MEDIUM');
       } catch(e){
         console.warn('Error insertando pie razones:', e);
       }
 
-      // Bloque inferior: insight ejecutivo (top 3 razones)
+      // Bloque inferior: insight ejecutivo (sin emoji que Helvetica no renderiza)
+      const insightY = MT + 26 + pieH + 8;
       doc.setFillColor(248, 249, 251);
-      doc.setDrawColor(...GRAY_BORD);
-      doc.setLineWidth(0.3);
-      doc.roundedRect(MX, MT + 165, pageW - 2*MX, 30, 2, 2, 'FD');
+      doc.setDrawColor(...GOLD);
+      doc.setLineWidth(0.6);
+      doc.roundedRect(MX, insightY, pageW - 2*MX, 28, 2, 2, 'FD');
+      // Barra dorada izquierda como acento
+      doc.setFillColor(...GOLD);
+      doc.rect(MX, insightY, 3, 28, 'F');
+
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
+      doc.setFontSize(11);
       doc.setTextColor(...NAVY);
-      doc.text('💡 LECTURA EJECUTIVA', MX + 5, MT + 173);
+      doc.text('LECTURA EJECUTIVA', MX + 8, insightY + 8);
+
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9.5);
       doc.setTextColor(...GRAY_TEXT);
-      doc.text(
-        'Las razones más frecuentes representan los disparadores recurrentes de incumplimiento.\n' +
-        'Atacar las 2-3 principales reduce sistemáticamente la tasa de no cumple del plan.',
-        MX + 5, MT + 180, { maxWidth: pageW - 2*MX - 10 }
-      );
+      const insightLines = [
+        'Las razones mas frecuentes representan los disparadores recurrentes de incumplimiento.',
+        'Atacar las 2-3 principales reduce sistematicamente la tasa de no cumple del plan.'
+      ];
+      doc.text(insightLines, MX + 8, insightY + 15);
 
       drawFooter(curPage);
     }
