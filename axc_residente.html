@@ -376,6 +376,8 @@ select[title]:hover, input[title]:hover { cursor:help; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.0/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- Chart.js para Curva S (Plan vs Real vs Imprevistas) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -592,6 +594,23 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <div class="kpi kf"><div class="kpi-l">No cumplidas</div><div class="kpi-v" id="kv-fail">0</div></div>
     <div class="kpi kp"><div class="kpi-l">% Cumplimiento</div><div class="kpi-v" id="kv-pct">—</div></div>
     <div class="kpi ki" title="Actividades NO planificadas que surgieron en el período. No afectan el PPC."><div class="kpi-l">📌 Imprevistas</div><div class="kpi-v" id="kv-imp">0</div><div class="kpi-sub" id="kv-imp-sub">—</div></div>
+  </div>
+
+  <!-- Curva S: Plan acumulado vs Real cumplido vs Imprevistas -->
+  <div class="rpt-card" id="curvaS-card" style="margin-bottom:18px;padding:16px 20px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:14px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700;color:var(--text)">Curva S — Plan vs Real vs Imprevistas</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">Avance acumulado del período (% sobre el total planificado)</div>
+      </div>
+      <div id="curvaS-totales" style="font-size:11px;color:var(--text2);text-align:right;line-height:1.6"></div>
+    </div>
+    <div style="position:relative;height:280px">
+      <canvas id="curvaSChart"></canvas>
+    </div>
+    <div style="margin-top:8px;font-size:10.5px;color:var(--text3);line-height:1.5">
+      💡 Si <strong style="color:#3b82f6">Real</strong> queda debajo de <strong style="color:#888">Plan</strong>, hay atraso. Si <strong style="color:#FF6B35">Imprevistas</strong> crece mucho, indica exceso de trabajo no planificado.
+    </div>
   </div>
   <div class="rpt-card">
     <table>
@@ -2928,7 +2947,197 @@ function renderReport(){
       <td>${a.razon?`<span class="rtag">${a.razon}</span>`:'<span style="color:var(--text3)">—</span>'}</td>`;
     tbody.appendChild(tr);
   });
+
+  // Renderizar Curva S debajo de los KPIs (Plan vs Real vs Imprevistas)
+  try { _renderCurvaSResidente(); }
+  catch(e){ console.warn('No se pudo renderizar Curva S:', e); }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// CURVA S — Plan vs Real vs Imprevistas (acumulado)
+// ════════════════════════════════════════════════════════════════════
+// Modelo:
+//   Plan(d):     suma diaria de actividad-días planificados (a.days[i] = true)
+//                de actividades NO imprevistas
+//   Real(d):     suma diaria de actividad-días cumplidos (a.cumplimiento[i] = true)
+//                de actividades NO imprevistas
+//   Impr(d):     cantidad de imprevistas con fechaIni === d
+// Acumulamos por día, luego normalizamos a % sobre el total de Plan al final
+// del rango, y graficamos 3 líneas con Chart.js.
+// ════════════════════════════════════════════════════════════════════
+
+window._curvaSInstance = null;
+
+function _calcCurvaSResidente(){
+  const start = (typeof getStart === 'function') ? getStart() : null;
+  const end   = (typeof getFin   === 'function') ? getFin()   : null;
+  if(!start || !end) return null;
+
+  const dates = (typeof wDates === 'function') ? wDates(start, end) : [];
+  if(!dates.length) return null;
+
+  const n = dates.length;
+  const dailyPlan = new Array(n).fill(0);
+  const dailyReal = new Array(n).fill(0);
+  const dailyImpr = new Array(n).fill(0);
+
+  // ISO yyyy-mm-dd local para matchear con a.fechaIni de las imprevistas
+  const dateISO = dates.map(d => {
+    const y = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${y}-${mm}-${dd}`;
+  });
+
+  const actsVis = acts.filter(_passAllFilters);
+
+  actsVis.forEach(a => {
+    if(a.imprevista){
+      // Imprevista: ocupa solo el día de su fechaIni
+      const idx = dateISO.indexOf(a.fechaIni);
+      if(idx >= 0) dailyImpr[idx]++;
+    } else {
+      // Plan: barrer days[] y contar planificados + cumplidos
+      const days = Array.isArray(a.days) ? a.days : [];
+      const cump = Array.isArray(a.cumplimiento) ? a.cumplimiento : [];
+      days.forEach((isDay, i) => {
+        if(isDay && i < n){
+          dailyPlan[i]++;
+          // Real solo se cuenta si el cumplimiento es explícito true (✓)
+          if(cump[i] === true) dailyReal[i]++;
+        }
+      });
+    }
+  });
+
+  // Acumular y normalizar a %
+  const cumPlan = [], cumReal = [], cumImpr = [];
+  let p = 0, r = 0, im = 0;
+  for(let i = 0; i < n; i++){
+    p  += dailyPlan[i];
+    r  += dailyReal[i];
+    im += dailyImpr[i];
+    cumPlan.push(p);
+    cumReal.push(r);
+    cumImpr.push(im);
+  }
+  const totalPlan = p || 1; // evitar dividir por 0
+
+  return {
+    labels: dates.map(d => `${d.getDate()}/${d.getMonth()+1}`),
+    plan:   cumPlan.map(v => Math.round(v / totalPlan * 1000) / 10), // 1 decimal
+    real:   cumReal.map(v => Math.round(v / totalPlan * 1000) / 10),
+    imprev: cumImpr.map(v => Math.round(v / totalPlan * 1000) / 10),
+    totales: { plan: p, real: r, impr: im }
+  };
+}
+
+function _renderCurvaSResidente(){
+  const data = _calcCurvaSResidente();
+  const ctx = document.getElementById('curvaSChart');
+  if(!ctx || !data) return;
+  if(typeof Chart === 'undefined'){
+    console.warn('Chart.js no está cargado, no se puede renderizar Curva S');
+    return;
+  }
+
+  // Destruir instancia previa si existe
+  if(window._curvaSInstance){
+    try { window._curvaSInstance.destroy(); } catch(e){}
+    window._curvaSInstance = null;
+  }
+
+  // Resumen de totales en la cabecera del card
+  const tot = data.totales;
+  const totalesEl = document.getElementById('curvaS-totales');
+  if(totalesEl){
+    const cumplPct = tot.plan > 0 ? Math.round(tot.real / tot.plan * 100) : 0;
+    totalesEl.innerHTML = `
+      <div><strong style="color:#888">Plan</strong>: ${tot.plan} actividad-días</div>
+      <div><strong style="color:#3b82f6">Real</strong>: ${tot.real} (${cumplPct}% del plan)</div>
+      <div><strong style="color:#FF6B35">Imprevistas</strong>: ${tot.impr} actividad-días extras</div>
+    `;
+  }
+
+  window._curvaSInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.labels,
+      datasets: [
+        {
+          label: 'Plan acumulado',
+          data: data.plan,
+          borderColor: '#a0a0a0',
+          backgroundColor: 'rgba(160,160,160,.08)',
+          borderWidth: 2,
+          borderDash: [8, 4],
+          tension: 0.25,
+          pointRadius: 2.5,
+          pointHoverRadius: 5,
+          fill: false
+        },
+        {
+          label: 'Real cumplido',
+          data: data.real,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,.18)',
+          borderWidth: 3,
+          tension: 0.25,
+          pointRadius: 3,
+          pointHoverRadius: 6,
+          fill: true
+        },
+        {
+          label: 'Imprevistas (carga extra)',
+          data: data.imprev,
+          borderColor: '#FF6B35',
+          backgroundColor: 'rgba(255,107,53,.10)',
+          borderWidth: 2,
+          tension: 0.25,
+          pointRadius: 2.5,
+          pointHoverRadius: 5,
+          fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          align: 'end',
+          labels: { color: '#ddd', font: { size: 11 }, boxWidth: 14, padding: 12 }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(13,17,23,.95)',
+          borderColor: 'rgba(255,255,255,.15)',
+          borderWidth: 1,
+          titleColor: '#fff',
+          bodyColor: '#ddd',
+          padding: 10,
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y}%`
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: '% sobre plan total', color: '#999', font: { size: 11 } },
+          ticks: { color: '#bbb', callback: v => v + '%' },
+          grid: { color: 'rgba(255,255,255,.05)' }
+        },
+        x: {
+          ticks: { color: '#bbb', maxRotation: 0, autoSkipPadding: 10 },
+          grid: { color: 'rgba(255,255,255,.05)' }
+        }
+      }
+    }
+  });
+}
+
 
 function renderGantt(){
   const dates=wDates(getStart(),getFin());
@@ -3928,6 +4137,152 @@ function _drawDetalleImprevistos(doc){
 // ─── FIN FASE 3 (PDF) ───
 
 
+// ─── CURVA S EN PDF — Plan vs Real vs Imprevistas ───
+// Captura el chart de la pestaña Reporte usando toBase64Image (nativo Chart.js,
+// más nítido que html2canvas). Si el chart no está renderizado, lo renderiza
+// off-screen activando temporalmente la pestaña Reporte.
+async function _drawCurvaSEnPDF(doc){
+  // Asegurar que el chart esté renderizado
+  if(!window._curvaSInstance){
+    // Activar reporte temporalmente para renderizar
+    const pages = ['carga','reporte','gantt'];
+    let pagActiva = null;
+    pages.forEach(p => {
+      if(document.getElementById('page-'+p)?.classList.contains('active')) pagActiva = p;
+    });
+    try {
+      pages.forEach(p => {
+        document.getElementById('page-'+p)?.classList.remove('active');
+        document.getElementById('tab-'+p)?.classList.remove('active');
+      });
+      document.getElementById('page-reporte')?.classList.add('active');
+      // Pequeño delay para que el DOM aplique el layout antes del render
+      await new Promise(r => setTimeout(r, 100));
+      renderReport();
+      await new Promise(r => setTimeout(r, 200));
+    } catch(e) { console.warn('No se pudo activar Reporte:', e); }
+    finally {
+      // Restaurar la página que estaba activa
+      pages.forEach(p => {
+        document.getElementById('page-'+p)?.classList.remove('active');
+        document.getElementById('tab-'+p)?.classList.remove('active');
+      });
+      if(pagActiva){
+        document.getElementById('page-'+pagActiva)?.classList.add('active');
+        document.getElementById('tab-'+pagActiva)?.classList.add('active');
+      }
+    }
+  }
+  if(!window._curvaSInstance) return; // sin datos para graficar
+
+  // Capturar como imagen PNG con alta calidad (scale 2x)
+  let dataURL;
+  try {
+    dataURL = window._curvaSInstance.toBase64Image('image/png', 1.0);
+  } catch(e){
+    console.warn('No se pudo capturar Curva S:', e);
+    return;
+  }
+  if(!dataURL) return;
+
+  // Página A4 portrait
+  doc.addPage();
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+
+  // Título naranja con el mismo lenguaje visual del resto del PDF
+  const [orR, orG, orB] = [255, 107, 53];
+  const [navyR, navyG, navyB] = _hexToRgb(PDF_COLORS.navy);
+  doc.setTextColor(navyR, navyG, navyB);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('Curva S del Período', 20, 25);
+  // Línea dorada decorativa (consistente con otras páginas del PDF)
+  const [gr, gg, gb] = _hexToRgb(PDF_COLORS.gold);
+  doc.setDrawColor(gr, gg, gb);
+  doc.setLineWidth(0.8);
+  doc.line(20, 28, 75, 28);
+  doc.setLineWidth(0.1);
+
+  // Subtítulo
+  const [grr, grg, grb] = _hexToRgb(PDF_COLORS.gray);
+  doc.setTextColor(grr, grg, grb);
+  doc.setFont('helvetica','italic');
+  doc.setFontSize(9);
+  doc.text('Plan acumulado vs Real cumplido vs Imprevistas (% sobre el total planificado)',
+           20, 33);
+
+  // Insertar el chart capturado
+  // Canvas Chart.js es ~16:9. Para A4 portrait: pw=210mm, dejamos 20mm margen lateral
+  const imgW = pw - 40;        // 170mm de ancho
+  const imgH = imgW * 0.42;    // ~71mm de alto (ratio aproximado del chart)
+  const imgY = 40;
+  try {
+    doc.addImage(dataURL, 'PNG', 20, imgY, imgW, imgH);
+  } catch(e){
+    console.warn('Error agregando imagen del chart:', e);
+    doc.setTextColor(180, 0, 0);
+    doc.setFont('helvetica','italic');
+    doc.text('No se pudo renderizar la Curva S', pw/2, ph/2, {align:'center'});
+    return;
+  }
+
+  // Resumen de totales debajo del gráfico
+  const data = _calcCurvaSResidente();
+  if(data && data.totales){
+    const t = data.totales;
+    const cumplPct = t.plan > 0 ? Math.round(t.real / t.plan * 100) : 0;
+    const resumenY = imgY + imgH + 12;
+
+    // Caja navy con totales
+    doc.setFillColor(navyR, navyG, navyB);
+    doc.roundedRect(20, resumenY, imgW, 26, 2, 2, 'F');
+    // Acento dorado izquierdo
+    doc.setFillColor(gr, gg, gb);
+    doc.rect(20, resumenY, 1.5, 26, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(10);
+    doc.text('RESUMEN DEL PERIODO', 25, resumenY + 6);
+
+    // 3 columnas: Plan / Real / Imprevistas
+    const colW = (imgW - 10) / 3;
+    const metrics = [
+      { label: 'PLAN ACUMULADO', value: `${t.plan}`, sub: 'actividad-dias', color: [200, 200, 200] },
+      { label: 'REAL CUMPLIDO',  value: `${t.real}`, sub: `${cumplPct}% del plan`, color: [120, 180, 255] },
+      { label: 'IMPREVISTAS',    value: `${t.impr}`, sub: 'carga extra', color: [255, 140, 80] }
+    ];
+    metrics.forEach((m, i) => {
+      const xc = 25 + colW * (i + 0.5);
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(7);
+      doc.setTextColor(200, 200, 200);
+      doc.text(m.label, xc, resumenY + 12, {align:'center'});
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(14);
+      doc.setTextColor(...m.color);
+      doc.text(m.value, xc, resumenY + 19, {align:'center'});
+      doc.setFont('helvetica','italic');
+      doc.setFontSize(7);
+      doc.setTextColor(180, 180, 180);
+      doc.text(m.sub, xc, resumenY + 23, {align:'center'});
+    });
+
+    // Nota interpretativa al pie
+    const notaY = resumenY + 32;
+    doc.setTextColor(grr, grg, grb);
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(8);
+    doc.text('Lectura: si la curva Real queda debajo de Plan, hay atraso en la ejecucion.',
+             20, notaY);
+    doc.text('Una curva Imprevistas creciente indica exceso de trabajo no planificado.',
+             20, notaY + 4);
+  }
+}
+// ─── FIN CURVA S PDF ───
+
+
 // ─── FASE 6: Gantt apaisado vía html2canvas + paginación ───
 
 // Captura el contenedor #g-wrap como canvas. Activa temporalmente la página
@@ -4107,6 +4462,9 @@ async function exportPDF(){
     // ─── Página opcional: Detalle de Imprevistos (Fase 3) ───
     // Solo se agrega si hay imprevistas en el rango filtrado.
     _drawDetalleImprevistos(doc);
+
+    // ─── Página: Curva S — Plan vs Real vs Imprevistas (Opción A recomendada) ───
+    await _drawCurvaSEnPDF(doc);
 
     // ─── Páginas finales: Gantt apaisado (Fase 6) ───
     if(btn) btn.textContent = 'Capturando Gantt...';
