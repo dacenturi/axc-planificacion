@@ -4101,12 +4101,28 @@ function exportPDF(){
     doc.addPage('a4', 'landscape');
     drawHeader(2, 2);
 
-    // Dimensiones del Gantt
-    const nameColW = 80;
-    const sectorColW = 30;
+    // Dimensiones del Gantt — adaptativas según cantidad de días para que
+    // SIEMPRE entre en la página (antes el mínimo de 10mm/celda forzaba que
+    // el Gantt se saliera horizontalmente si había >15 días).
+    let nameColW, sectorColW;
+    if(numDays > 20){
+      nameColW = 55;
+      sectorColW = 20;
+    } else if(numDays > 14){
+      nameColW = 65;
+      sectorColW = 25;
+    } else {
+      nameColW = 80;
+      sectorColW = 30;
+    }
     const availW = pageW - 2*MX - nameColW - sectorColW;
-    const cellW = Math.max(10, Math.min(16, availW / numDays));
+    // SIN mínimo forzado: la celda se comprime lo necesario para entrar.
+    // El máximo se mantiene en 16mm para no estirar excesivamente con pocos días.
+    const cellW = Math.min(16, availW / numDays);
     const cellH = 8.5;
+    // Si la celda queda muy estrecha (<7mm), ocultamos el texto de fecha "27/4"
+    // y dejamos solo la letra del día (L/M/X) para que se siga leyendo.
+    const showDayDate = cellW >= 7;
     const ganttX = MX + nameColW + sectorColW;
     let ganttTopY = 30;
 
@@ -4146,11 +4162,17 @@ function exportPDF(){
       doc.rect(ganttX + i*cellW, ganttTopY, cellW, cellH, 'F');
       doc.setTextColor(...WHITE);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8);
-      doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, ganttTopY + 3.5, { align: 'center' });
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(6.5);
-      doc.text(fmts(d), ganttX + i*cellW + cellW/2, ganttTopY + 7, { align: 'center' });
+      // Tamaño del texto del día se ajusta si la celda es chica
+      doc.setFontSize(cellW < 7 ? 6.5 : 8);
+      // Si la celda es muy estrecha, centramos verticalmente (sin fecha abajo)
+      const letterY = showDayDate ? ganttTopY + 3.5 : ganttTopY + 5.5;
+      doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, letterY, { align: 'center' });
+      // Solo mostrar la fecha "27/4" si entra (cellW >= 7mm)
+      if(showDayDate){
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.text(fmts(d), ganttX + i*cellW + cellW/2, ganttTopY + 7, { align: 'center' });
+      }
     });
 
     // Líneas separadoras blancas en el header
@@ -4240,9 +4262,11 @@ function exportPDF(){
         const d = dates[di];
         if(!d) return;
         const isDom = d.getDay() === 0;
+        const isImp = !!a.imprevista;
         let color;
         if(isFail) color = isDom ? [153,27,27] : [220,38,38];
-        else       color = isDom ? [59,130,246] : GOLD;
+        else if(isImp) color = isDom ? [59,130,246] : [255,107,53]; // naranja para imprevistas
+        else           color = isDom ? [59,130,246] : GOLD;
         doc.setFillColor(...color);
         const bx = ganttX + di*cellW + 1.2;
         const by = rowY + 1.5;
@@ -4279,6 +4303,7 @@ function exportPDF(){
 
     const legendItems = [
       { color: GOLD,         label: 'Actividad planificada / cumplida' },
+      { color: [255,107,53], label: 'Imprevista (no planificada)' },
       { color: [220,38,38],  label: 'No cumple / Retrasado / En espera / Cancelado' },
       { color: [59,130,246], label: 'Sábado (día hábil reducido)' },
       { color: [153,27,27],  label: 'Sábado con incumplimiento' }
