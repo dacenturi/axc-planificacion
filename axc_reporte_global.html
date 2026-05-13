@@ -239,6 +239,8 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 <!-- jsPDF + autotable para export PDF del dashboard global -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+<!-- Plugin datalabels — usado SOLO en la captura HiRes para PDF (no en el dashboard web) -->
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 </head>
 <body>
 
@@ -1489,7 +1491,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-2';
+    const VERSION   = 'global-pdf-3';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1849,37 +1851,79 @@ async function exportPDF(){
       window._charts[c.id] && !(c.onlyCont && !isCont) && !(c.onlyRes && isCont)
     );
 
-    // ─── HELPER: Capturar chart en ALTA RESOLUCIÓN ───
-    // Renderiza el chart en un canvas off-screen de mayor tamaño con devicePixelRatio
-    // alto para obtener un PNG nítido al insertarlo en el PDF. No afecta el chart visible.
+    // ─── HELPER: Capturar chart en ALTA RESOLUCIÓN, con texto negro y datalabels ───
+    // Crea un chart temporal off-screen con:
+    //   • Resolución 3× del canvas (≈335 DPI a 180mm)
+    //   • TODOS los textos forzados a negro (legibles en PDF impreso)
+    //   • Fondo blanco explícito (en lugar del fondo oscuro del dashboard)
+    //   • Plugin datalabels mostrando los valores sobre cada barra/punto/sector
     async function captureChartHighRes(originalChart){
-      const SCALE = 3;          // factor de resolución (antes 2.5)
-      const TARGET_W = 2400;    // px - ancho del canvas offscreen (antes 1200) ≈ 315 DPI @ 180mm
-      const TARGET_H = 1100;    // px - alto del canvas offscreen (antes 700)  ≈ 400 DPI @ 70mm
+      const SCALE = 3;
+      const TARGET_W = 2400, TARGET_H = 1100;
+      const TEXT_BLACK = '#1a1a1a';     // negro suave (mejor antialias que #000)
+      const TEXT_DIM   = '#4b5563';     // gris oscuro para subejes
+      const GRID_LIGHT = '#e5e7eb';     // gris muy claro para grilla
+      const BG_WHITE   = '#ffffff';
 
-      // Contenedor invisible (off-screen) con dimensiones reales fijas para que
-      // Chart.js calcule layouts internos correctamente
       const wrap = document.createElement('div');
-      wrap.style.cssText = `position:fixed;left:-99999px;top:-99999px;width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px;background:#fff;pointer-events:none`;
+      wrap.style.cssText = `position:fixed;left:-99999px;top:-99999px;width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px;background:${BG_WHITE};pointer-events:none`;
       const canvas = document.createElement('canvas');
       canvas.width = TARGET_W;
       canvas.height = TARGET_H;
-      canvas.style.cssText = `width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px`;
+      canvas.style.cssText = `width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px;background:${BG_WHITE}`;
       wrap.appendChild(canvas);
       document.body.appendChild(wrap);
 
       try{
-        // Clonar config profundamente
         const cfgSrc = originalChart.config;
         const optsClone = JSON.parse(JSON.stringify(cfgSrc.options || {}));
 
-        // Ajustes obligatorios para captura
+        // ─── Ajustes base de captura ───
         optsClone.responsive = false;
         optsClone.maintainAspectRatio = false;
         optsClone.animation = false;
         optsClone.devicePixelRatio = SCALE;
-        // Escala suave de fonts (1.15 en vez de 1.35) — los textos se ven nítidos
-        // pero no desproporcionados respecto a barras/áreas
+
+        // ─── FORZAR TEXTO NEGRO en todos los componentes ───
+        optsClone.plugins = optsClone.plugins || {};
+        optsClone.plugins.legend = optsClone.plugins.legend || {};
+        optsClone.plugins.legend.labels = optsClone.plugins.legend.labels || {};
+        optsClone.plugins.legend.labels.color = TEXT_BLACK;
+        if(optsClone.plugins.legend.labels.font){
+          optsClone.plugins.legend.labels.font.weight = '600';
+        } else {
+          optsClone.plugins.legend.labels.font = { size: 11, weight: '600' };
+        }
+        if(optsClone.plugins.title){
+          optsClone.plugins.title.color = TEXT_BLACK;
+        }
+        if(optsClone.scales){
+          for(const k in optsClone.scales){
+            const sc = optsClone.scales[k];
+            if(!sc) continue;
+            sc.ticks = sc.ticks || {};
+            sc.ticks.color = TEXT_BLACK;
+            if(sc.ticks.font) sc.ticks.font.weight = '500';
+            else sc.ticks.font = { size: 11, weight: '500' };
+            sc.grid = sc.grid || {};
+            sc.grid.color = GRID_LIGHT;
+            if(sc.title){
+              sc.title.color = TEXT_DIM;
+              if(sc.title.font) sc.title.font.weight = '600';
+            }
+            // Para radial (gauge)
+            if(sc.pointLabels) sc.pointLabels.color = TEXT_BLACK;
+            if(sc.angleLines) sc.angleLines.color = GRID_LIGHT;
+          }
+        }
+
+        // Tooltip color text (no se ve en PDF pero por las dudas)
+        if(optsClone.plugins.tooltip){
+          optsClone.plugins.tooltip.titleColor = TEXT_BLACK;
+          optsClone.plugins.tooltip.bodyColor = TEXT_BLACK;
+        }
+
+        // Escala suave de fonts (mantener proporciones)
         function scaleFonts(node, depth = 0){
           if(!node || typeof node !== 'object' || depth > 10) return;
           for(const key in node){
@@ -1893,17 +1937,100 @@ async function exportPDF(){
         }
         scaleFonts(optsClone);
 
-        // Crear chart temporal con la MISMA data y mismos plugins (gauge plugin, etc.)
+        // ─── PLUGIN: Fondo blanco explícito ───
+        const whiteBgPlugin = {
+          id: 'pdfWhiteBg',
+          beforeDraw: (chart) => {
+            const c = chart.ctx;
+            c.save();
+            c.globalCompositeOperation = 'destination-over';
+            c.fillStyle = BG_WHITE;
+            c.fillRect(0, 0, chart.width, chart.height);
+            c.restore();
+          }
+        };
+
+        // ─── PLUGIN: Datalabels (valores sobre cada barra/punto/sector) ───
+        const chartType = cfgSrc.type;
+        if(window.ChartDataLabels){
+          optsClone.plugins.datalabels = {
+            color: TEXT_BLACK,
+            font: { size: 11, weight: 'bold' },
+            // Formatear según tipo de chart
+            formatter: (value, ctx) => {
+              if(value === null || value === undefined) return '';
+              // Donut/pie: mostrar valor + porcentaje
+              if(chartType === 'doughnut' || chartType === 'pie'){
+                const data = ctx.dataset.data || [];
+                const total = data.reduce((a,b) => a + (Number(b)||0), 0);
+                if(total === 0 || value === 0) return '';
+                const pct = Math.round((value/total) * 100);
+                if(pct < 4) return '';  // omitir slices muy chicos para no saturar
+                return `${value}\n${pct}%`;
+              }
+              // Barras y líneas: solo el valor
+              if(value === 0) return '';
+              // Si el valor es un % (entre 0-100 con sufijo %), agregarlo
+              if(ctx.dataset?.yAxisID === 'y1' || ctx.chart.scales?.y?.max === 100){
+                return Number(value).toFixed(0) + '%';
+              }
+              // Decimales solo si son significativos
+              return Number.isInteger(value) ? value : Number(value).toFixed(1);
+            },
+            // Posicionamiento según tipo
+            anchor: (ctx) => {
+              if(chartType === 'doughnut' || chartType === 'pie') return 'center';
+              if(chartType === 'line') return 'end';
+              if(chartType === 'bar'){
+                // Bar horizontal vs vertical: si indexAxis es 'y' es horizontal
+                return ctx.chart.options.indexAxis === 'y' ? 'end' : 'end';
+              }
+              return 'end';
+            },
+            align: (ctx) => {
+              if(chartType === 'doughnut' || chartType === 'pie') return 'center';
+              if(chartType === 'line') return 'top';
+              if(chartType === 'bar'){
+                return ctx.chart.options.indexAxis === 'y' ? 'right' : 'top';
+              }
+              return 'top';
+            },
+            offset: 3,
+            clip: false,
+            display: (ctx) => {
+              const v = ctx.dataset.data[ctx.dataIndex];
+              if(v === null || v === undefined) return false;
+              if(v === 0 && chartType !== 'doughnut' && chartType !== 'pie') return false;
+              // En stacked bars no mostrar segmentos pequeños
+              if(ctx.dataset?.stack && Math.abs(v) < 1) return false;
+              return true;
+            },
+            // Sombra blanca para legibilidad sobre cualquier fondo
+            textStrokeColor: '#ffffff',
+            textStrokeWidth: 2.5,
+            textShadowBlur: 0
+          };
+        }
+
+        // Plugins originales del chart (ej. plugin gauge) + plugins de captura
+        const pluginsCapture = [];
+        if(Array.isArray(cfgSrc.plugins)){
+          pluginsCapture.push(...cfgSrc.plugins);
+        }
+        pluginsCapture.push(whiteBgPlugin);
+        if(window.ChartDataLabels){
+          pluginsCapture.push(window.ChartDataLabels);
+        }
+
         const tempChart = new Chart(canvas, {
           type: cfgSrc.type,
           data: cfgSrc.data,
           options: optsClone,
-          plugins: cfgSrc.plugins || []
+          plugins: pluginsCapture
         });
 
-        // Esperar 2 RAFs para asegurar el primer render
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 60));
 
         const dataURL = canvas.toDataURL('image/png', 1.0);
         tempChart.destroy();
@@ -1917,11 +2044,11 @@ async function exportPDF(){
     }
 
     // ─── Renderizado de páginas de gráficos: 2 charts por página, tamaño compacto ───
-    // 70mm alto (antes 88) → más compacto, mayor densidad de píxeles (~315 DPI),
-    // permite poner el título y la imagen con más respiro y aspecto editorial.
+    // 55mm alto (antes 70) — más compacto y profesional. A 2400×1100 px → ~430 DPI.
+    // El título se sube a 12pt bold con underline dorado más gruesa para mayor presencia.
     const CHART_IMG_W = pageW - 2*MX;
-    const CHART_IMG_H = 70;
-    const CHART_BLOCK_H = CHART_IMG_H + 16; // título + imagen + aire entre charts
+    const CHART_IMG_H = 55;
+    const CHART_BLOCK_H = CHART_IMG_H + 22; // título + imagen + aire generoso
 
     for(let i = 0; i < chartsToPrint.length; i += 2){
       doc.addPage();
@@ -1938,27 +2065,26 @@ async function exportPDF(){
         const def = chartsToPrint[i + j];
         const inst = window._charts[def.id];
         if(!inst) continue;
-        // Capturar en ALTA resolución
         const dataURL = await captureChartHighRes(inst);
         if(!dataURL) continue;
         const yTop = MT + 16 + j * CHART_BLOCK_H;
-        // Título del chart
+        // Título del chart — 12pt bold con peso visual fuerte
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(10.5);
+        doc.setFontSize(12);
         doc.setTextColor(...NAVY);
         doc.text(def.title, MX, yTop);
-        // Línea decorativa bajo título
+        // Subrayado dorado más grueso (0.8 vs 0.4) y más ancho
         doc.setDrawColor(...GOLD);
-        doc.setLineWidth(0.4);
-        doc.line(MX, yTop + 1.5, MX + 50, yTop + 1.5);
-        // Insertar imagen sin re-compresión (FAST = compresión mínima, preserva nitidez)
+        doc.setLineWidth(0.8);
+        doc.line(MX, yTop + 2, MX + 60, yTop + 2);
+        // Insertar imagen — compresión NONE preserva máxima nitidez del PNG
         try{
-          doc.addImage(dataURL, 'PNG', MX, yTop + 4, CHART_IMG_W, CHART_IMG_H, undefined, 'FAST');
+          doc.addImage(dataURL, 'PNG', MX, yTop + 6, CHART_IMG_W, CHART_IMG_H, undefined, 'NONE');
         } catch(e){
           console.warn('Error insertando imagen chart', def.id, e);
           doc.setFontSize(9);
           doc.setTextColor(...GRAY);
-          doc.text('(No se pudo renderizar este gráfico)', MX, yTop + 60);
+          doc.text('(No se pudo renderizar este gráfico)', MX, yTop + 30);
         }
       }
       drawFooter(curPage);
