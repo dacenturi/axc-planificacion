@@ -1509,7 +1509,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-7';
+    const VERSION   = 'global-pdf-8';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1888,6 +1888,352 @@ async function exportPDF(){
     //   • TODOS los textos forzados a negro (legibles en PDF impreso)
     //   • Fondo blanco explícito (en lugar del fondo oscuro del dashboard)
     //   • Plugin datalabels mostrando los valores sobre cada barra/punto/sector
+    // ─── HELPER: Dibujar las páginas de Gantt en A4 LANDSCAPE ───
+    // Replica el patrón vectorial de los Gantt del residente/contratista.
+    // Si hay muchas actividades, se pagina ("Parte 1/2", "Parte 2/2"...).
+    async function drawGanttPages(doc, allActs, getNextPageNum){
+      const ganttActs = allActs.filter(a =>
+        _getFechaActividad(a) && Array.isArray(a.days) && a.days.some(d => d)
+      );
+      if(!ganttActs.length) return;
+
+      // Calcular rango global de fechas
+      let minDate = null, maxDate = null;
+      ganttActs.forEach(a => {
+        const ini = _getFechaActividad(a);
+        const fin = _getFechaFin(a) || ini;
+        if(ini && (!minDate || ini < minDate)) minDate = ini;
+        if(fin && (!maxDate || fin > maxDate)) maxDate = fin;
+      });
+      if(!minDate || !maxDate) return;
+
+      // Array de fechas diarias entre min/max
+      const dates = [];
+      const startD = new Date(minDate + 'T00:00:00');
+      const endD   = new Date(maxDate + 'T00:00:00');
+      for(let d = new Date(startD); d <= endD; d.setDate(d.getDate()+1)){
+        dates.push(new Date(d));
+      }
+      const numDays = dates.length;
+      if(numDays === 0) return;
+
+      // Ordenar por fecha de inicio
+      const sortedActs = ganttActs.slice().sort((a,b) => {
+        const fa = _getFechaActividad(a) || '9999';
+        const fb = _getFechaActividad(b) || '9999';
+        return fa.localeCompare(fb);
+      });
+
+      // ─── Setup PDF para landscape ───
+      const lpw = 297, lph = 210; // landscape A4
+      const lMX = 12;
+      const lMT = 30;
+      const lMB = 14;
+      const dayLetters = ['D','L','M','X','J','V','S'];
+
+      // Columnas adaptativas según numDays
+      let nameColW, sectorColW;
+      if(numDays > 35){ nameColW = 50; sectorColW = 18; }
+      else if(numDays > 22){ nameColW = 60; sectorColW = 22; }
+      else if(numDays > 14){ nameColW = 70; sectorColW = 28; }
+      else { nameColW = 80; sectorColW = 32; }
+      const availW = lpw - 2*lMX - nameColW - sectorColW;
+      const cellW = Math.min(14, availW / numDays); // sin mínimo: SIEMPRE entra
+      const cellH = 7.5;
+      const showDayDate = cellW >= 6.5;
+      const ganttX = lMX + nameColW + sectorColW;
+      const headerH = 8.5;
+
+      // Filas por página: calcular según altura disponible
+      const usableH = lph - lMT - lMB - headerH - 22; // 22mm para título + leyenda
+      const maxRowsPerPage = Math.floor(usableH / cellH);
+
+      const totalParts = Math.ceil(sortedActs.length / maxRowsPerPage);
+
+      for(let part = 0; part < totalParts; part++){
+        // Página landscape
+        doc.addPage('a4', 'landscape');
+        const pgNum = getNextPageNum();
+
+        // Header navy adaptado a landscape
+        doc.setFillColor(...NAVY);
+        doc.rect(0, 0, lpw, 22, 'F');
+        doc.setFillColor(...GOLD);
+        doc.rect(0, 22, lpw, 1.5, 'F');
+        try{
+          doc.addImage(AXC_LOGO_BASE64, 'JPEG', lMX, 6, 18, 6, undefined, 'FAST');
+        } catch(_){}
+        doc.setTextColor(...WHITE);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.text('AXC CONSTRUCTORA', lMX + 22, 11);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(...GOLD_LIGHT);
+        doc.text(`Diagrama Gantt${totalParts > 1 ? ` (parte ${part+1}/${totalParts})` : ''}`, lMX + 22, 16.5);
+        doc.setTextColor(...WHITE);
+        doc.setFontSize(8);
+        doc.text(`Página ${pgNum}`, lpw - lMX, 11, { align: 'right' });
+        doc.setTextColor(...GOLD_LIGHT);
+        doc.text(`App: ${appLabel}`, lpw - lMX, 16.5, { align: 'right' });
+
+        // Título principal del bloque Gantt
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.setTextColor(...NAVY);
+        doc.text(`Diagrama Gantt — Planificación Visual`, lMX, lMT + 4);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...GRAY_TEXT);
+        doc.text(`Período: ${fmtFecha(minDate)} → ${fmtFecha(maxDate)} · ${numDays} día(s) · ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
+
+        // ─── Cabecera de columnas ───
+        const ganttTopY = lMT + 14;
+        // Bloque Actividad
+        doc.setFillColor(...NAVY_DARK);
+        doc.rect(lMX, ganttTopY, nameColW, headerH, 'F');
+        doc.setFillColor(...NAVY_DARK);
+        doc.rect(lMX + nameColW, ganttTopY, sectorColW, headerH, 'F');
+        doc.setTextColor(...WHITE);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('Actividad', lMX + 3, ganttTopY + 5.5);
+        doc.text('Obra/Sector', lMX + nameColW + 3, ganttTopY + 5.5);
+
+        // Cabecera de días
+        dates.forEach((d, i) => {
+          const isDom = d.getDay() === 0;
+          doc.setFillColor(...(isDom ? [59,130,246] : NAVY_DARK));
+          doc.rect(ganttX + i*cellW, ganttTopY, cellW, headerH, 'F');
+          doc.setTextColor(...WHITE);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(cellW < 6.5 ? 6 : 7.5);
+          const letterY = showDayDate ? ganttTopY + 3.5 : ganttTopY + 5.5;
+          doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, letterY, { align: 'center' });
+          if(showDayDate){
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(5.5);
+            doc.text(`${d.getDate()}/${d.getMonth()+1}`, ganttX + i*cellW + cellW/2, ganttTopY + 7, { align: 'center' });
+          }
+        });
+
+        // ─── Filas de la parte actual ───
+        const partActs = sortedActs.slice(part * maxRowsPerPage, (part+1) * maxRowsPerPage);
+        const rowsStartY = ganttTopY + headerH;
+        partActs.forEach((a, rIdx) => {
+          const rowY = rowsStartY + rIdx * cellH;
+          // Alternar background suave
+          if(rIdx % 2 === 1){
+            doc.setFillColor(248, 249, 251);
+            doc.rect(lMX, rowY, lpw - 2*lMX, cellH, 'F');
+          }
+          // Texto descripción
+          const desc = a.descripcion || '(sin descripción)';
+          const maxDescW = nameColW - 6;
+          let descShown = desc;
+          // Truncar si excede el ancho disponible
+          if(doc.getTextWidth(`[IMPR] ${desc}`) > maxDescW){
+            // truncar bruto: dejar lo que quepa
+            const factor = maxDescW / doc.getTextWidth(desc);
+            descShown = desc.slice(0, Math.max(10, Math.floor(desc.length * factor) - 1)) + '…';
+          }
+          doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal');
+          doc.setFontSize(7);
+          doc.setTextColor(...(a.imprevista ? [255,107,53] : BLACK));
+          const prefix = a.imprevista ? '[IMPR] ' : '';
+          doc.text(prefix + descShown, lMX + 2, rowY + 4.8);
+
+          // Obra/Sector
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(6.5);
+          doc.setTextColor(...GRAY_TEXT);
+          const obraSec = (a.obra || '—') + (a.sector ? ` · ${a.sector}` : '');
+          let obraShown = obraSec;
+          if(doc.getTextWidth(obraSec) > sectorColW - 4){
+            const factor = (sectorColW - 4) / doc.getTextWidth(obraSec);
+            obraShown = obraSec.slice(0, Math.max(8, Math.floor(obraSec.length * factor) - 1)) + '…';
+          }
+          doc.text(obraShown, lMX + nameColW + 2, rowY + 4.8);
+
+          // Bloques marcados (días con cumplimiento o domingos especiales)
+          const isFail = _isFAIL(a);
+          const isImp  = !!a.imprevista;
+          const ini = _getFechaActividad(a);
+          const fin = _getFechaFin(a) || ini;
+          const iniIdx = ini ? dates.findIndex(d => d.toISOString().slice(0,10) === ini) : -1;
+          const finIdx = fin ? dates.findIndex(d => d.toISOString().slice(0,10) === fin) : iniIdx;
+          if(iniIdx >= 0){
+            // Pintar todos los días en el rango ini→fin con el color del estado
+            const endIdx = finIdx >= 0 ? finIdx : iniIdx;
+            for(let di = iniIdx; di <= endIdx; di++){
+              const d = dates[di];
+              const isDom = d.getDay() === 0;
+              let color;
+              if(isFail) color = isDom ? [153,27,27] : [220,38,38];
+              else if(isImp) color = isDom ? [59,130,246] : [255,107,53];
+              else color = isDom ? [59,130,246] : GOLD;
+              doc.setFillColor(...color);
+              const bx = ganttX + di*cellW + 0.8;
+              const by = rowY + 1.2;
+              const bw = Math.max(0.5, cellW - 1.6);
+              const bh = cellH - 2.4;
+              doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
+            }
+          }
+        });
+
+        // Borde general del Gantt
+        doc.setDrawColor(...GRAY_BORD);
+        doc.setLineWidth(0.2);
+        doc.rect(lMX, ganttTopY, lpw - 2*lMX, headerH + partActs.length * cellH);
+
+        // Leyenda al pie
+        const legY = lph - lMB - 4;
+        const legendItems = [
+          { color: GOLD,         label: 'Planificada / Cumplida' },
+          { color: [255,107,53], label: 'Imprevista (no planificada)' },
+          { color: [220,38,38],  label: 'No cumple / Retrasado' },
+          { color: [59,130,246], label: 'Domingo' }
+        ];
+        let legX = lMX;
+        doc.setFontSize(7);
+        legendItems.forEach(item => {
+          doc.setFillColor(...item.color);
+          doc.roundedRect(legX, legY - 3, 3, 3, 0.5, 0.5, 'F');
+          doc.setTextColor(...GRAY_TEXT);
+          doc.text(item.label, legX + 4.5, legY);
+          legX += doc.getTextWidth(item.label) + 12;
+        });
+
+        // Footer landscape
+        doc.setDrawColor(...GRAY_BORD);
+        doc.setLineWidth(0.2);
+        doc.line(lMX, lph - 8, lpw - lMX, lph - 8);
+        doc.setTextColor(...GRAY);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.text('AXC Constructora — Reporte Global · Diagrama Gantt', lMX, lph - 4);
+        doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align: 'center' });
+        doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align: 'right' });
+      }
+    }
+
+    // ─── HELPER: Construir y capturar PIE chart de razones de NO CUMPLE ───
+    // Crea un chart pie efímero off-screen con datalabels (porcentaje + razón),
+    // lo captura como JPEG HiRes y devuelve la dataURL. No afecta el dashboard.
+    async function buildAndCapturePieRazones(actsPlan){
+      // Filtrar actividades NO Cumple con razón registrada
+      const conRazon = actsPlan.filter(a => _isFAIL(a) && (a.razon||'').trim());
+      if(conRazon.length === 0) return { dataURL: null, total: 0 };
+      // Agrupar por razón
+      const map = new Map();
+      conRazon.forEach(a => {
+        const r = a.razon.trim();
+        map.set(r, (map.get(r)||0) + 1);
+      });
+      // Top 8 razones; el resto agrupado en "Otras"
+      const sorted = [...map.entries()].sort((a,b) => b[1]-a[1]);
+      const top = sorted.slice(0, 8);
+      const rest = sorted.slice(8);
+      if(rest.length){
+        const restTot = rest.reduce((s, [,n]) => s+n, 0);
+        top.push([`Otras (${rest.length})`, restTot]);
+      }
+      const labels = top.map(([r]) => r.length > 38 ? r.slice(0,36)+'…' : r);
+      const values = top.map(([,n]) => n);
+      const total = values.reduce((a,b) => a+b, 0);
+
+      // Paleta de 9 colores ejecutiva (rojo/naranja/ámbar para no-cumple)
+      const palette = [
+        '#dc2626', '#ea580c', '#f59e0b', '#eab308',
+        '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#9ca3af'
+      ];
+
+      // Canvas off-screen alta resolución
+      const TARGET_W = 1800, TARGET_H = 900, SCALE = 2.5;
+      const wrap = document.createElement('div');
+      wrap.style.cssText = `position:fixed;left:-99999px;top:-99999px;width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px;background:#fff;pointer-events:none`;
+      const canvas = document.createElement('canvas');
+      canvas.width = TARGET_W;
+      canvas.height = TARGET_H;
+      canvas.style.cssText = `width:${TARGET_W/SCALE}px;height:${TARGET_H/SCALE}px;background:#fff`;
+      wrap.appendChild(canvas);
+      document.body.appendChild(wrap);
+
+      try{
+        const tempChart = new Chart(canvas, {
+          type: 'pie',
+          data: {
+            labels,
+            datasets: [{
+              data: values,
+              backgroundColor: palette.slice(0, values.length),
+              borderColor: '#fff',
+              borderWidth: 2
+            }]
+          },
+          options: {
+            responsive: false,
+            maintainAspectRatio: false,
+            animation: false,
+            devicePixelRatio: SCALE,
+            plugins: {
+              legend: {
+                position: 'right',
+                labels: {
+                  color: '#1a1a1a',
+                  font: { size: 13, weight: 'bold' },
+                  boxWidth: 18,
+                  padding: 12,
+                  generateLabels: (chart) => {
+                    const data = chart.data;
+                    return data.labels.map((label, i) => {
+                      const v = data.datasets[0].data[i];
+                      const pct = total > 0 ? Math.round((v/total)*100) : 0;
+                      return {
+                        text: `${label} — ${v} (${pct}%)`,
+                        fillStyle: data.datasets[0].backgroundColor[i],
+                        strokeStyle: '#fff',
+                        lineWidth: 2,
+                        hidden: false,
+                        index: i
+                      };
+                    });
+                  }
+                }
+              },
+              datalabels: window.ChartDataLabels ? {
+                color: '#fff',
+                font: { size: 16, weight: 'bold' },
+                textStrokeColor: 'rgba(0,0,0,.55)',
+                textStrokeWidth: 3,
+                formatter: (v) => {
+                  const pct = total > 0 ? Math.round((v/total)*100) : 0;
+                  return pct >= 5 ? `${pct}%` : '';
+                },
+                anchor: 'center',
+                align: 'center'
+              } : false
+            }
+          },
+          plugins: window.ChartDataLabels ? [window.ChartDataLabels] : []
+        });
+
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await new Promise(r => setTimeout(r, 60));
+        const dataURL = canvas.toDataURL('image/jpeg', 0.93);
+        tempChart.destroy();
+        return { dataURL, total, count: conRazon.length };
+      } catch(e){
+        console.warn('Pie razones falló:', e);
+        return { dataURL: null, total: 0 };
+      } finally {
+        wrap.remove();
+      }
+    }
+
+
+    // ─── HELPER: Capturar chart en ALTA RESOLUCIÓN, con texto negro y datalabels ───
     async function captureChartHighRes(originalChart){
       const SCALE = 2.5;        // resolución × del canvas
       const TARGET_W = 1800;    // px - balanceado entre calidad y peso del PDF
@@ -2153,6 +2499,65 @@ async function exportPDF(){
       }
       drawFooter(curPage);
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // PÁGINA EXTRA: TORTA de Razones de No Cumplimiento
+    // ═══════════════════════════════════════════════════════════
+    const pieRazones = await buildAndCapturePieRazones(actsPlan);
+    if(pieRazones.dataURL){
+      doc.addPage();
+      curPage++;
+      drawHeader('Análisis de Razones', curPage);
+
+      doc.setTextColor(...NAVY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Razones de No Cumplimiento', MX, MT + 8);
+      doc.setDrawColor(...GOLD);
+      doc.setLineWidth(0.8);
+      doc.line(MX, MT + 10, MX + 80, MT + 10);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(...GRAY_TEXT);
+      doc.text(
+        `Distribución porcentual de los motivos por los cuales no se cumplieron actividades del plan. ` +
+        `${pieRazones.count} actividad${pieRazones.count===1?'':'es'} con razón registrada (top 8 + Otras).`,
+        MX, MT + 18, { maxWidth: pageW - 2*MX }
+      );
+
+      // Insertar el pie chart — ocupa la mayor parte de la página
+      try{
+        doc.addImage(pieRazones.dataURL, 'JPEG', MX, MT + 28, pageW - 2*MX, 130, undefined, 'MEDIUM');
+      } catch(e){
+        console.warn('Error insertando pie razones:', e);
+      }
+
+      // Bloque inferior: insight ejecutivo (top 3 razones)
+      doc.setFillColor(248, 249, 251);
+      doc.setDrawColor(...GRAY_BORD);
+      doc.setLineWidth(0.3);
+      doc.roundedRect(MX, MT + 165, pageW - 2*MX, 30, 2, 2, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(...NAVY);
+      doc.text('💡 LECTURA EJECUTIVA', MX + 5, MT + 173);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9.5);
+      doc.setTextColor(...GRAY_TEXT);
+      doc.text(
+        'Las razones más frecuentes representan los disparadores recurrentes de incumplimiento.\n' +
+        'Atacar las 2-3 principales reduce sistemáticamente la tasa de no cumple del plan.',
+        MX + 5, MT + 180, { maxWidth: pageW - 2*MX - 10 }
+      );
+
+      drawFooter(curPage);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PÁGINA EXTRA: DIAGRAMA DE GANTT (A4 landscape)
+    // ═══════════════════════════════════════════════════════════
+    await drawGanttPages(doc, acts, () => { curPage++; return curPage; });
 
     // ═══════════════════════════════════════════════════════════
     // PÁGINA N+1: ACTIVIDADES VENCIDAS
