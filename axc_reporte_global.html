@@ -1489,7 +1489,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-1';
+    const VERSION   = 'global-pdf-2';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1853,9 +1853,9 @@ async function exportPDF(){
     // Renderiza el chart en un canvas off-screen de mayor tamaño con devicePixelRatio
     // alto para obtener un PNG nítido al insertarlo en el PDF. No afecta el chart visible.
     async function captureChartHighRes(originalChart){
-      const SCALE = 2.5; // factor de resolución
-      const TARGET_W = 1200; // px - ancho del canvas offscreen
-      const TARGET_H = 700;  // px - alto del canvas offscreen
+      const SCALE = 3;          // factor de resolución (antes 2.5)
+      const TARGET_W = 2400;    // px - ancho del canvas offscreen (antes 1200) ≈ 315 DPI @ 180mm
+      const TARGET_H = 1100;    // px - alto del canvas offscreen (antes 700)  ≈ 400 DPI @ 70mm
 
       // Contenedor invisible (off-screen) con dimensiones reales fijas para que
       // Chart.js calcule layouts internos correctamente
@@ -1878,15 +1878,14 @@ async function exportPDF(){
         optsClone.maintainAspectRatio = false;
         optsClone.animation = false;
         optsClone.devicePixelRatio = SCALE;
-        // Para que los textos no se vean miniatura en el canvas grande, escalamos fonts
-        // recorriendo recursivamente la estructura de opciones
+        // Escala suave de fonts (1.15 en vez de 1.35) — los textos se ven nítidos
+        // pero no desproporcionados respecto a barras/áreas
         function scaleFonts(node, depth = 0){
           if(!node || typeof node !== 'object' || depth > 10) return;
           for(const key in node){
             const val = node[key];
             if(key === 'font' && val && typeof val === 'object'){
-              if(typeof val.size === 'number') val.size = Math.round(val.size * 1.35);
-              if(typeof val.lineHeight === 'number') val.lineHeight = val.lineHeight * 1.0;
+              if(typeof val.size === 'number') val.size = Math.round(val.size * 1.15);
             } else if(val && typeof val === 'object'){
               scaleFonts(val, depth + 1);
             }
@@ -1918,10 +1917,11 @@ async function exportPDF(){
     }
 
     // ─── Renderizado de páginas de gráficos: 2 charts por página, tamaño compacto ───
-    // Tamaño nuevo: 88mm alto × ancho completo. Más profesional y deja aire entre charts.
+    // 70mm alto (antes 88) → más compacto, mayor densidad de píxeles (~315 DPI),
+    // permite poner el título y la imagen con más respiro y aspecto editorial.
     const CHART_IMG_W = pageW - 2*MX;
-    const CHART_IMG_H = 88;  // antes 110; reducido para mayor densidad y elegancia
-    const CHART_BLOCK_H = CHART_IMG_H + 14; // espacio total que ocupa un chart (con título)
+    const CHART_IMG_H = 70;
+    const CHART_BLOCK_H = CHART_IMG_H + 16; // título + imagen + aire entre charts
 
     for(let i = 0; i < chartsToPrint.length; i += 2){
       doc.addPage();
@@ -1951,9 +1951,9 @@ async function exportPDF(){
         doc.setDrawColor(...GOLD);
         doc.setLineWidth(0.4);
         doc.line(MX, yTop + 1.5, MX + 50, yTop + 1.5);
-        // Insertar imagen (con compresión MEDIUM para balance entre nitidez y peso)
+        // Insertar imagen sin re-compresión (FAST = compresión mínima, preserva nitidez)
         try{
-          doc.addImage(dataURL, 'PNG', MX, yTop + 4, CHART_IMG_W, CHART_IMG_H, undefined, 'MEDIUM');
+          doc.addImage(dataURL, 'PNG', MX, yTop + 4, CHART_IMG_W, CHART_IMG_H, undefined, 'FAST');
         } catch(e){
           console.warn('Error insertando imagen chart', def.id, e);
           doc.setFontSize(9);
