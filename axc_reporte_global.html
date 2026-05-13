@@ -1491,7 +1491,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-3';
+    const VERSION   = 'global-pdf-4';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -1853,13 +1853,14 @@ async function exportPDF(){
 
     // ─── HELPER: Capturar chart en ALTA RESOLUCIÓN, con texto negro y datalabels ───
     // Crea un chart temporal off-screen con:
-    //   • Resolución 3× del canvas (≈335 DPI a 180mm)
+    //   • Resolución 2.5× del canvas (≈270 DPI a 180mm — calidad profesional)
     //   • TODOS los textos forzados a negro (legibles en PDF impreso)
     //   • Fondo blanco explícito (en lugar del fondo oscuro del dashboard)
     //   • Plugin datalabels mostrando los valores sobre cada barra/punto/sector
     async function captureChartHighRes(originalChart){
-      const SCALE = 3;
-      const TARGET_W = 2400, TARGET_H = 1100;
+      const SCALE = 2.5;        // resolución × del canvas
+      const TARGET_W = 1800;    // px - balanceado entre calidad y peso del PDF
+      const TARGET_H = 900;     // ratio cercano al de PDF (180×55 mm)
       const TEXT_BLACK = '#1a1a1a';     // negro suave (mejor antialias que #000)
       const TEXT_DIM   = '#4b5563';     // gris oscuro para subejes
       const GRID_LIGHT = '#e5e7eb';     // gris muy claro para grilla
@@ -2032,12 +2033,15 @@ async function exportPDF(){
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
         await new Promise(r => setTimeout(r, 60));
 
-        const dataURL = canvas.toDataURL('image/png', 1.0);
+        // JPEG con calidad 0.93 — peso ~80% menor que PNG, calidad visual igual.
+        // JPEG en lugar de PNG porque los charts no tienen transparencia y permite
+        // que el PDF total quede liviano (evita "Invalid string length" en V8).
+        const dataURL = canvas.toDataURL('image/jpeg', 0.93);
         tempChart.destroy();
         return dataURL;
       } catch(e){
         console.warn('Captura HiRes falló, usando fallback toBase64Image', e);
-        try{ return originalChart.toBase64Image('image/png', 1.0); } catch(_){ return null; }
+        try{ return originalChart.toBase64Image('image/jpeg', 0.93); } catch(_){ return null; }
       } finally {
         wrap.remove();
       }
@@ -2077,9 +2081,10 @@ async function exportPDF(){
         doc.setDrawColor(...GOLD);
         doc.setLineWidth(0.8);
         doc.line(MX, yTop + 2, MX + 60, yTop + 2);
-        // Insertar imagen — compresión NONE preserva máxima nitidez del PNG
+        // Insertar imagen JPEG con compresión MEDIUM — peso del PDF controlado,
+        // sin overflow de string en jsPDF/V8 (fix Invalid string length).
         try{
-          doc.addImage(dataURL, 'PNG', MX, yTop + 6, CHART_IMG_W, CHART_IMG_H, undefined, 'NONE');
+          doc.addImage(dataURL, 'JPEG', MX, yTop + 6, CHART_IMG_W, CHART_IMG_H, undefined, 'MEDIUM');
         } catch(e){
           console.warn('Error insertando imagen chart', def.id, e);
           doc.setFontSize(9);
