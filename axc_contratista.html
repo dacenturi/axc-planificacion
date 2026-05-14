@@ -456,6 +456,46 @@ select[title]:hover, input[title]:hover { cursor:help; }
 }
 .theme-sw-opt.active .sw-check{ opacity:1 }
 
+
+/* ════════════════════════════════════════════════════════════════════
+   PASSWORD MODAL — Cambiar contraseña del usuario logueado
+   ════════════════════════════════════════════════════════════════════ */
+.pwm-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(3px);
+  display:none;align-items:center;justify-content:center;z-index:1200;animation:pwmFade .15s ease}
+.pwm-bg.open{display:flex}
+@keyframes pwmFade{from{opacity:0}to{opacity:1}}
+.pwm{background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+  padding:22px 24px;max-width:420px;width:92%;box-shadow:0 12px 48px rgba(0,0,0,.5);
+  font-family:'Mulish',sans-serif}
+.pwm h3{margin:0 0 4px;color:var(--text);font-size:17px;font-weight:700}
+.pwm-sub{margin:0 0 18px;color:var(--text2);font-size:12.5px;line-height:1.5}
+.pwm label{display:block;margin-bottom:11px;color:var(--text2);font-size:11.5px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.pwm input[type=password]{width:100%;background:var(--bg);border:1px solid var(--border);
+  color:var(--text);border-radius:7px;padding:9px 11px;font-family:inherit;font-size:13.5px;
+  margin-top:5px;transition:border-color .15s;text-transform:none;letter-spacing:normal;font-weight:normal}
+.pwm input[type=password]:focus{outline:none;border-color:var(--accent)}
+.pwm-msg{font-size:12px;min-height:18px;margin:4px 0 12px;font-weight:600}
+.pwm-msg.err{color:var(--red)}
+.pwm-msg.ok{color:var(--green)}
+.pwm-actions{display:flex;gap:8px;justify-content:flex-end}
+.pwm-btn{font-family:inherit;font-size:13px;font-weight:700;border:none;border-radius:7px;
+  padding:8px 18px;cursor:pointer;transition:all .15s}
+.pwm-btn-cancel{background:transparent;color:var(--text2);border:1px solid var(--border)}
+.pwm-btn-cancel:hover{background:var(--bg3);color:var(--text)}
+.pwm-btn-ok{background:var(--accent);color:#000}
+.pwm-btn-ok:hover{background:var(--acc2)}
+.pwm-btn-ok:disabled{opacity:.5;cursor:not-allowed}
+:root[data-theme="light"] .pwm-btn-ok,
+:root[data-theme="warm"]  .pwm-btn-ok{color:#fff}
+
+/* Botón "Contraseña" en topbar — mismo look que portal-btn */
+.pwd-btn{font-family:'Mulish',sans-serif;font-size:11px;font-weight:700;
+  border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer;
+  background:transparent;color:var(--text2);transition:all .15s;margin-right:4px;
+  display:inline-flex;align-items:center;gap:4px}
+.pwd-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -515,6 +555,7 @@ select[title]:hover, input[title]:hover { cursor:help; }
     <div class="user-chip" id="user-chip" style="display:none;margin-left:8px">
       <div class="user-av" id="user-av">?</div>
       <div class="user-nm" id="user-nm"></div>
+      <button class="pwd-btn" onclick="axcOpenPwdModal()" title="Cambiar contraseña">🔑 Contraseña</button>
       <div class="theme-sw">
         <button class="theme-sw-btn" onclick="axcToggleThemePop(event)" title="Cambiar tema" aria-label="Cambiar tema">🎨</button>
         <div class="theme-sw-pop" id="theme-sw-pop">
@@ -4406,7 +4447,12 @@ function exportPDF(){
       doc.line(MX, rowY + cellH, pageW - MX, rowY + cellH);
 
       // Bloques del Gantt
-      // Convertir tildes (hábiles + domingos) a posiciones en `dates[]`
+      // Convertir tildes (hábiles + domingos) a posiciones en `dates[]`.
+      // Cada elemento de `marked` es { di, srcIdx } donde:
+      //   di     = índice de la columna del Gantt en `dates[]`
+      //   srcIdx = índice en a.days[] / a.cumplimiento[] para consultar el
+      //            estado por día. Es -1 si el día viene de a.domingos[]
+      //            (los domingos excepcionales no llevan cumplimiento por día).
       const isFail = failStates.includes(a.cumple || '');
       let marked;
       if(a.fechaIni){
@@ -4418,31 +4464,42 @@ function exportPDF(){
           if(!realDate) return;
           const realISO = _toISODate(realDate);
           const colIdx = datesISO.indexOf(realISO);
-          if(colIdx >= 0 && colIdx < numDays) marked.push(colIdx);
+          if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: i });
         });
-        // Domingos tildados
+        // Domingos tildados (sin estado por día)
         if(Array.isArray(a.domingos)){
           a.domingos.forEach(iso => {
             const colIdx = datesISO.indexOf(iso);
-            if(colIdx >= 0 && colIdx < numDays) marked.push(colIdx);
+            if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: -1 });
           });
         }
-        marked.sort((x,y)=>x-y);
-        // Deduplicar
-        marked = marked.filter((v,i,arr) => i===0 || v !== arr[i-1]);
+        marked.sort((x,y) => x.di - y.di);
+        // Deduplicar por di (mantiene el primero, que tiene srcIdx real si aplica)
+        marked = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
       } else {
-        marked = (a.days || []).map((v,i) => v ? i : -1).filter(i => i >= 0 && i < numDays);
+        marked = (a.days || [])
+          .map((v,i) => v ? { di: i, srcIdx: i } : null)
+          .filter(x => x && x.di >= 0 && x.di < numDays);
       }
 
-      marked.forEach(di => {
+      marked.forEach(({ di, srcIdx }) => {
         const d = dates[di];
         if(!d) return;
         const isDom = d.getDay() === 0;
         const isImp = !!a.imprevista;
+        // ── Estado POR DÍA (modelo v2.4): a.cumplimiento[srcIdx]
+        //    Prevalece sobre el estado global a.cumple para que actividades con
+        //    mix (algunos días cumple, otros no_cumple) muestren cada día con su
+        //    color correcto en el PDF.
+        const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+          ? a.cumplimiento[srcIdx]
+          : null;
         let color;
-        if(isFail) color = isDom ? [153,27,27] : [220,38,38];
-        else if(isImp) color = isDom ? [59,130,246] : [255,107,53]; // naranja para imprevistas
-        else           color = isDom ? [59,130,246] : GOLD;
+        if(cumpDia === 'no_cumple')      color = isDom ? [153,27,27]  : [220,38,38];   // rojo
+        else if(cumpDia === 'cumple')    color = isDom ? [59,130,246] : GOLD;          // dorado (planificado y cumplido)
+        else if(isFail)                  color = isDom ? [153,27,27]  : [220,38,38];   // fallback legacy: actividad entera en falla
+        else if(isImp)                   color = isDom ? [59,130,246] : [255,107,53];  // naranja imprevista
+        else                             color = isDom ? [59,130,246] : GOLD;          // planificado pendiente
         doc.setFillColor(...color);
         const bx = ganttX + di*cellW + 1.2;
         const by = rowY + 1.5;
@@ -5949,6 +6006,95 @@ document.addEventListener('keydown', (e) => {
   applyTheme(VALID.includes(saved) ? saved : 'dark');
 })();
 </script>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     PASSWORD MODAL — UI + lógica de cambio
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="pwm-bg" id="pwm-bg">
+  <div class="pwm" onclick="event.stopPropagation()">
+    <h3>🔑 Cambiar contraseña</h3>
+    <p class="pwm-sub">Ingresá tu contraseña actual y la nueva. Mínimo 8 caracteres.</p>
+    <label>Contraseña actual</label>
+    <input id="pwm-cur" type="password" autocomplete="current-password">
+    <div style="height:10px"></div>
+    <label>Nueva contraseña</label>
+    <input id="pwm-new" type="password" autocomplete="new-password" placeholder="Mínimo 8 caracteres">
+    <div style="height:10px"></div>
+    <label>Confirmar nueva</label>
+    <input id="pwm-cnf" type="password" autocomplete="new-password">
+    <div style="height:14px"></div>
+    <div class="pwm-msg" id="pwm-msg"></div>
+    <div class="pwm-actions">
+      <button class="pwm-btn pwm-btn-cancel" onclick="axcClosePwdModal()">Cancelar</button>
+      <button class="pwm-btn pwm-btn-ok" id="pwm-ok" onclick="axcSubmitNewPwd()">Cambiar</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  function $$(id){return document.getElementById(id);}
+  function setMsg(t, kind){
+    const el = $$('pwm-msg');
+    if(!el) return;
+    el.className = 'pwm-msg ' + (kind || '');
+    el.textContent = t || '';
+  }
+  window.axcOpenPwdModal = function(){
+    setMsg('');
+    ['pwm-cur','pwm-new','pwm-cnf'].forEach(id => { const el = $$(id); if(el) el.value = ''; });
+    $$('pwm-bg').classList.add('open');
+    setTimeout(() => { const el = $$('pwm-cur'); if(el) el.focus(); }, 60);
+  };
+  window.axcClosePwdModal = function(){
+    $$('pwm-bg').classList.remove('open');
+  };
+  window.axcSubmitNewPwd = async function(){
+    const cur = $$('pwm-cur').value;
+    const nw  = $$('pwm-new').value;
+    const cnf = $$('pwm-cnf').value;
+    if(!cur || !nw || !cnf){ setMsg('Completá los tres campos.', 'err'); return; }
+    if(nw.length < 8){ setMsg('La nueva debe tener al menos 8 caracteres.', 'err'); return; }
+    if(nw !== cnf){ setMsg('Las nuevas contraseñas no coinciden.', 'err'); return; }
+    if(nw === cur){ setMsg('La nueva debe ser distinta a la actual.', 'err'); return; }
+    const btn = $$('pwm-ok');
+    btn.disabled = true;
+    setMsg('Verificando contraseña actual...', '');
+    const SB = window._SB;
+    if(!SB){ setMsg('Cliente Supabase no inicializado.', 'err'); btn.disabled = false; return; }
+    const { data: { user } } = await SB.auth.getUser();
+    if(!user){ setMsg('Sesión expirada. Volvé a iniciar sesión.', 'err'); btn.disabled = false; return; }
+    const { error: errLogin } = await SB.auth.signInWithPassword({ email: user.email, password: cur });
+    if(errLogin){
+      setMsg('La contraseña actual es incorrecta.', 'err');
+      btn.disabled = false;
+      return;
+    }
+    setMsg('Cambiando...', '');
+    const { error: errUpd } = await SB.auth.updateUser({ password: nw });
+    if(errUpd){
+      setMsg('No se pudo cambiar: ' + (errUpd.message || 'error desconocido'), 'err');
+      btn.disabled = false;
+      return;
+    }
+    setMsg('✓ Contraseña cambiada con éxito.', 'ok');
+    setTimeout(() => { axcClosePwdModal(); btn.disabled = false; }, 1500);
+  };
+  // Cerrar con Escape
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape'){
+      const bg = $$('pwm-bg');
+      if(bg && bg.classList.contains('open')) axcClosePwdModal();
+    }
+  });
+  // Cerrar al hacer clic en el backdrop (fuera del modal)
+  document.addEventListener('click', function(e){
+    const bg = $$('pwm-bg');
+    if(bg && bg.classList.contains('open') && e.target === bg) axcClosePwdModal();
+  });
+})();
+</script>
+
 
 </body>
 </html>
