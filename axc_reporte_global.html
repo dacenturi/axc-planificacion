@@ -736,6 +736,36 @@ window._filters = {
   fechaHasta:   null
 };
 
+// ─── DEFAULT DATE RANGE: lunes de la semana actual → segundo sábado ──
+// El filtro arranca enfocado en la semana en curso + sábado de la siguiente.
+// Editable por el usuario; "Reset" vuelve a este default.
+function _fmtYMD(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function _getDefaultDateRange(){
+  const today = new Date();
+  const dow = today.getDay();                        // 0=dom, 1=lun, ..., 6=sab
+  const offset = (dow === 0) ? 6 : (dow - 1);        // distancia al lunes
+  const lunes = new Date(today);
+  lunes.setDate(today.getDate() - offset);
+  lunes.setHours(0, 0, 0, 0);
+  const segundoSabado = new Date(lunes);
+  segundoSabado.setDate(lunes.getDate() + 12);       // lun + 12 días = sábado de la semana siguiente
+  return { desde: _fmtYMD(lunes), hasta: _fmtYMD(segundoSabado) };
+}
+function _applyDefaultDateRange(){
+  const r = _getDefaultDateRange();
+  const inpD = document.getElementById('flt-fecha-desde');
+  const inpH = document.getElementById('flt-fecha-hasta');
+  if(inpD) inpD.value = r.desde;
+  if(inpH) inpH.value = r.hasta;
+  window._filters.fechaDesde = r.desde;
+  window._filters.fechaHasta = r.hasta;
+}
+
 // ─── Normalización robusta (evita bugs por mayúsculas/tildes/variantes) ──
 // Devuelve un valor canónico de los 9 posibles:
 //   '' (sin asignar) | 'cumple' | 'no' | 'En proceso' | 'Terminado' |
@@ -906,6 +936,10 @@ async function loadData(){
     _updateAppTabsCounts();
     _toggleContratistaCol(window._currentApp === 'contratista');
     _buildFilterOptions();
+    // Default de fechas (semana actual) si todavía no hay valor seleccionado
+    if(!window._filters.fechaDesde && !window._filters.fechaHasta){
+      _applyDefaultDateRange();
+    }
     applyFilters();
   } catch(e){
     console.error('Error cargando datos:', e);
@@ -1025,10 +1059,7 @@ function resetFilters(){
   window._filters.estado       = new Set(['Cumple','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']);
   window._filters.criticidad   = new Set(['Alta','Media','Baja','Sin asignar']);
   window._filters.tipo         = new Set(['Planificada','Imprevista']);
-  document.getElementById('flt-fecha-desde').value = '';
-  document.getElementById('flt-fecha-hasta').value = '';
-  window._filters.fechaDesde = null;
-  window._filters.fechaHasta = null;
+  _applyDefaultDateRange();
   applyFilters();
   _refreshFilterLabels();
   showToast('✓ Filtros restablecidos', 'ok');
@@ -1443,10 +1474,7 @@ function setApp(app){
   window._filters.estado       = new Set(['Cumple','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']);
   window._filters.criticidad   = new Set(['Alta','Media','Baja','Sin asignar']);
   window._filters.tipo         = new Set(['Planificada','Imprevista']);
-  document.getElementById('flt-fecha-desde').value = '';
-  document.getElementById('flt-fecha-hasta').value = '';
-  window._filters.fechaDesde = null;
-  window._filters.fechaHasta = null;
+  _applyDefaultDateRange();
   document.querySelectorAll('#list-estado input[type=checkbox], #list-criticidad input[type=checkbox]').forEach(c => c.checked = true);
 
   // Rebuild filtros y render
@@ -2353,14 +2381,14 @@ async function exportPDF(){
         optsClone.plugins.legend = optsClone.plugins.legend || {};
         optsClone.plugins.legend.labels = optsClone.plugins.legend.labels || {};
         optsClone.plugins.legend.labels.color = TEXT_BLACK;
-        // Leyenda: 14pt bold (antes 13pt)
-        optsClone.plugins.legend.labels.font = { size: 14, weight: 'bold' };
+        // Leyenda: 18pt bold (antes 14pt) — más legible en PDF
+        optsClone.plugins.legend.labels.font = { size: 18, weight: 'bold' };
         optsClone.plugins.legend.labels.padding = 12;
         optsClone.plugins.legend.labels.boxWidth = 18;
         if(optsClone.plugins.title){
           optsClone.plugins.title.color = TEXT_BLACK;
           optsClone.plugins.title.font = optsClone.plugins.title.font || {};
-          optsClone.plugins.title.font.size = 16;
+          optsClone.plugins.title.font.size = 22;
           optsClone.plugins.title.font.weight = 'bold';
         }
         if(optsClone.scales){
@@ -2369,8 +2397,9 @@ async function exportPDF(){
             if(!sc) continue;
             sc.ticks = sc.ticks || {};
             sc.ticks.color = TEXT_BLACK;
-            // Ticks: 14pt bold (antes 12pt) — los números de los ejes (0, 10, 20...) y labels eje Y
-            sc.ticks.font = { size: 14, weight: 'bold' };
+            // Ticks: 20pt bold (antes 14pt) — son los labels del eje Y (obras, residentes)
+            // y números del eje X. Eran lo más chico del chart en el PDF.
+            sc.ticks.font = { size: 20, weight: 'bold' };
             sc.ticks.padding = 6;
             sc.grid = sc.grid || {};
             sc.grid.color = GRID_LIGHT;
@@ -2381,13 +2410,13 @@ async function exportPDF(){
             if(sc.title){
               sc.title.color = TEXT_BLACK;
               sc.title.font = sc.title.font || {};
-              sc.title.font.size = 13;
+              sc.title.font.size = 16;
               sc.title.font.weight = 'bold';
             }
             // Para radial (gauge)
             if(sc.pointLabels){
               sc.pointLabels.color = TEXT_BLACK;
-              sc.pointLabels.font = { size: 14, weight: 'bold' };
+              sc.pointLabels.font = { size: 18, weight: 'bold' };
             }
             if(sc.angleLines) sc.angleLines.color = GRID_LIGHT;
           }
@@ -2400,7 +2429,7 @@ async function exportPDF(){
         }
 
         // Escala adicional: para fonts que no fueron seteados explícitamente arriba,
-        // multiplicamos el tamaño original ×1.5 con piso de 13pt. Garantiza que ningún
+        // multiplicamos el tamaño original ×1.7 con piso de 17pt. Garantiza que ningún
         // texto del chart quede pequeño en el PDF.
         function scaleFonts(node, depth = 0){
           if(!node || typeof node !== 'object' || depth > 10) return;
@@ -2408,7 +2437,7 @@ async function exportPDF(){
             const val = node[key];
             if(key === 'font' && val && typeof val === 'object'){
               if(typeof val.size === 'number'){
-                val.size = Math.max(13, Math.round(val.size * 1.5));
+                val.size = Math.max(17, Math.round(val.size * 1.7));
               }
               // Forzar bold si no está
               if(!val.weight) val.weight = '600';
@@ -2444,8 +2473,8 @@ async function exportPDF(){
         if(window.ChartDataLabels){
           optsClone.plugins.datalabels = {
             color: TEXT_BLACK,
-            // 16pt bold — número MUY prominente para reporte de gerencia
-            font: { size: 16, weight: 'bold' },
+            // 20pt bold (antes 16pt) — número MUY prominente para reporte de gerencia
+            font: { size: 20, weight: 'bold' },
             // Formatear según tipo de chart
             formatter: (value, ctx) => {
               if(value === null || value === undefined) return '';
