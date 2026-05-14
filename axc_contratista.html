@@ -4502,10 +4502,10 @@ function exportPDF(){
         // el Gantt web y la tabla de carga.
         if(esExtra)                      color = [59,130,246];                          // azul
         else if(cumpDia === 'no_cumple') color = [220,38,38];                            // rojo
-        else if(cumpDia === 'cumple')    color = GOLD;                                   // dorado (planificado y cumplido)
+        else if(cumpDia === 'cumple')    color = [34,197,94];                            // VERDE (cumplido tildado por residente)
         else if(isFail)                  color = [220,38,38];                            // fallback legacy
         else if(isImp)                   color = [255,107,53];                           // naranja imprevista
-        else                             color = GOLD;                                   // planificado pendiente
+        else                             color = GOLD;                                   // planificado pendiente (aún sin tildar cumple/no_cumple)
         doc.setFillColor(...color);
         const bx = ganttX + di*cellW + 1.2;
         const by = rowY + 1.5;
@@ -4541,10 +4541,11 @@ function exportPDF(){
     doc.text('Referencias de colores:', MX, legY);
 
     const legendItems = [
-      { color: GOLD,         label: 'Día planificado / cumplido' },
+      { color: GOLD,         label: 'Día planificado (pendiente)' },
+      { color: [34,197,94],  label: 'Día cumplido' },
       { color: [220,38,38],  label: 'Día no cumplido' },
-      { color: [255,107,53], label: 'Imprevista (no planificada)' },
-      { color: [59,130,246], label: 'Día extra trabajado (atraso / no planificado)' }
+      { color: [255,107,53], label: 'Imprevista' },
+      { color: [59,130,246], label: 'Día extra trabajado' }
     ];
     let lx = MX;
     const legChipY = legY + 2;
@@ -4652,9 +4653,151 @@ function exportPDF(){
       });
 
       drawFooter();
+      }
 
-      // Actualizar el "Página X de Y" en las primeras 2 páginas
-      // para reflejar que ahora son 3
+      // ═══════════════════════════════════════════════════════════
+      // PÁGINA FINAL — RESUMEN DEL PERÍODO (KPIs)
+      // Se genera SIEMPRE, haya o no comentarios.
+      // ═══════════════════════════════════════════════════════════
+      // Replica la lógica de renderReport(): separa imprevistas del plan
+      // y calcula total / cumplidas / no cumplidas / % / imprevistas.
+      doc.addPage();
+      drawHeader(99, 99); // se renumera abajo
+
+      const _okStatesRsm   = ['Cumple','Sí','En proceso','Terminado'];
+      const _failStatesRsm = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+      const _effRsm = (a) => _estadoEfectivoExport(a);
+
+      const actsPlan    = actsExport.filter(a => !a.imprevista);
+      const actsImpRsm  = actsExport.filter(a => !!a.imprevista);
+      const totalRsm    = actsPlan.length;
+      const okRsm       = actsPlan.filter(a => _okStatesRsm.includes(_effRsm(a))).length;
+      const failRsm     = actsPlan.filter(a => _failStatesRsm.includes(_effRsm(a))).length;
+      const asignRsm    = okRsm + failRsm;
+      const pctRsm      = asignRsm > 0 ? Math.round(okRsm / asignRsm * 100) : null;
+      const impTotalRsm = actsImpRsm.length;
+      const impOkRsm    = actsImpRsm.filter(a => {
+        const c = _effRsm(a);
+        return c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple' || c === 'Sí';
+      }).length;
+      const impCxlRsm   = actsImpRsm.filter(a => _effRsm(a) === 'Cancelado').length;
+      const impPendRsm  = impTotalRsm - impOkRsm - impCxlRsm;
+
+      // Título de la sección
+      doc.setTextColor(...NAVY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text('RESUMEN DEL PERÍODO', MX, 38);
+
+      // Subtítulo (rango de fechas)
+      doc.setTextColor(...GRAY_TEXT);
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(10);
+      const fIni = getStart() ? new Date(getStart()).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
+      const fFin = getFin()   ? new Date(getFin()).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'})   : '—';
+      doc.text(`Del ${fIni} al ${fFin}`, MX, 45);
+
+      // Línea separadora
+      doc.setDrawColor(...GOLD);
+      doc.setLineWidth(0.5);
+      doc.line(MX, 49, pageW - MX, 49);
+
+      // ── Grid de 5 KPI cards horizontales ─────────────────────────
+      const kpis = [
+        { label: 'TOTAL ACTIVIDADES', valor: String(totalRsm), color: [37,99,235],  sub: 'del plan' },
+        { label: 'CUMPLIDAS',         valor: String(okRsm),    color: [34,197,94],  sub: '' },
+        { label: 'NO CUMPLIDAS',      valor: String(failRsm),  color: [220,38,38],  sub: '' },
+        { label: '% CUMPLIMIENTO',    valor: pctRsm !== null ? pctRsm + '%' : '—', color: [240,165,0], sub: asignRsm > 0 ? `sobre ${asignRsm} asignadas` : '' },
+        { label: 'IMPREVISTAS',       valor: String(impTotalRsm), color: [255,107,53], sub: impTotalRsm > 0 ? `${impOkRsm} resueltas · ${impPendRsm} pendientes` : 'ninguna en el período' }
+      ];
+
+      const kpiTop   = 58;
+      const kpiGap   = 4;
+      const kpiW     = (pageW - 2*MX - 4*kpiGap) / 5;
+      const kpiH     = 36;
+      kpis.forEach((k, i) => {
+        const x = MX + i * (kpiW + kpiGap);
+        // Card blanca con borde
+        doc.setFillColor(...WHITE);
+        doc.setDrawColor(...GRAY_BORD);
+        doc.setLineWidth(0.3);
+        doc.roundedRect(x, kpiTop, kpiW, kpiH, 1.5, 1.5, 'FD');
+        // Acento color arriba (4mm de alto)
+        doc.setFillColor(...k.color);
+        doc.rect(x, kpiTop, kpiW, 1.6, 'F');
+        // Label
+        doc.setTextColor(...GRAY_TEXT);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.text(k.label, x + 4, kpiTop + 7);
+        // Valor grande
+        doc.setTextColor(...k.color);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(26);
+        doc.text(k.valor, x + 4, kpiTop + 21);
+        // Sub (si hay)
+        if(k.sub){
+          doc.setTextColor(...GRAY_TEXT);
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(7);
+          const subClip = doc.splitTextToSize(k.sub, kpiW - 8)[0];
+          doc.text(subClip, x + 4, kpiTop + 30);
+        }
+      });
+
+      // ── Tabla resumen por estado (debajo de los KPIs) ─────────────
+      const estCounts = {};
+      actsPlan.forEach(a => {
+        const e = _effRsm(a) || 'Sin asignar';
+        estCounts[e] = (estCounts[e] || 0) + 1;
+      });
+      const estRows = Object.keys(estCounts).sort().map(e => [e, String(estCounts[e])]);
+
+      const tableTop = kpiTop + kpiH + 12;
+      if(estRows.length > 0){
+        doc.setTextColor(...NAVY);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.text('Desglose por estado', MX, tableTop);
+
+        doc.autoTable({
+          startY: tableTop + 3,
+          head: [['Estado', 'Cantidad']],
+          body: estRows,
+          theme: 'grid',
+          margin: { left: MX, right: pageW - MX - 90 },
+          tableWidth: 90,
+          headStyles: {
+            fillColor: NAVY,
+            textColor: WHITE,
+            fontStyle: 'bold',
+            fontSize: 9,
+            halign: 'left'
+          },
+          bodyStyles: {
+            fontSize: 9,
+            cellPadding: 2.5,
+            textColor: BLACK
+          },
+          alternateRowStyles: { fillColor: GRAY_LIGHT },
+          columnStyles: {
+            1: { halign: 'center', cellWidth: 25, fontStyle: 'bold' }
+          }
+        });
+      }
+
+      // Nota al pie del resumen
+      const noteY = pageH - MB - 18;
+      doc.setTextColor(...GRAY_TEXT);
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(8);
+      const nota = 'Nota: las actividades imprevistas no se incluyen en el calculo del % de cumplimiento del plan.';
+      doc.text(nota, MX, noteY);
+
+      drawFooter();
+
+      // Actualizar el "Página X de Y" en todas las páginas para reflejar
+      // el total final (incluyendo la nueva página de resumen).
       const totalPages = doc.internal.getNumberOfPages();
       for(let p = 1; p <= totalPages; p++){
         doc.setPage(p);
@@ -4669,7 +4812,6 @@ function exportPDF(){
         doc.setFontSize(7.5);
         doc.text(`Emitido: ${fechaEmision}`, pageW - MX, 14, { align: 'right' });
       }
-    }
 
     // ═══════════════════════════════════════════════════════════
     // GUARDAR PDF
