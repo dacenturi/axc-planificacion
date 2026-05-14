@@ -4321,26 +4321,25 @@ function exportPDF(){
     // Dimensiones del Gantt — adaptativas según cantidad de días para que
     // SIEMPRE entre en la página (antes el mínimo de 10mm/celda forzaba que
     // el Gantt se saliera horizontalmente si había >15 días).
-    let nameColW, sectorColW;
+    // Una sola columna unificada para Actividad (con subtítulo Obra·Contratista·Sector).
+    let nameColW;
     if(numDays > 20){
-      nameColW = 55;
-      sectorColW = 20;
+      nameColW = 78;
     } else if(numDays > 14){
-      nameColW = 65;
-      sectorColW = 25;
+      nameColW = 92;
     } else {
-      nameColW = 80;
-      sectorColW = 30;
+      nameColW = 112;
     }
-    const availW = pageW - 2*MX - nameColW - sectorColW;
+    const sectorColW = 0; // mantenido por compatibilidad; columna sector ya integrada en nameColW
+    const availW = pageW - 2*MX - nameColW;
     // SIN mínimo forzado: la celda se comprime lo necesario para entrar.
     // El máximo se mantiene en 16mm para no estirar excesivamente con pocos días.
     const cellW = Math.min(16, availW / numDays);
-    const cellH = 8.5;
+    const cellH = 10; // sube de 8.5 a 10 para que entre la línea 2 (Obra·Contratista·Sector)
     // Si la celda queda muy estrecha (<7mm), ocultamos el texto de fecha "27/4"
     // y dejamos solo la letra del día (L/M/X) para que se siga leyendo.
     const showDayDate = cellW >= 7;
-    const ganttX = MX + nameColW + sectorColW;
+    const ganttX = MX + nameColW;
     let ganttTopY = 30;
 
     // Banda título
@@ -4362,14 +4361,13 @@ function exportPDF(){
 
     ganttTopY += 7;
 
-    // Header del Gantt: Actividad / Sector
+    // Header del Gantt: única columna Actividad (con sublínea Obra·Contratista·Sector)
     doc.setFillColor(...NAVY_DARK);
-    doc.rect(MX, ganttTopY, nameColW + sectorColW, cellH, 'F');
+    doc.rect(MX, ganttTopY, nameColW, cellH, 'F');
     doc.setTextColor(...WHITE);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
-    doc.text('Actividad', MX + 3, ganttTopY + 5.5);
-    doc.text('Sector', MX + nameColW + 3, ganttTopY + 5.5);
+    doc.text('Actividad', MX + 3, ganttTopY + 6);
 
     // Cabecera de días - el DOMINGO se diferencia con fondo azul
     const dayLetters = ['D','L','M','X','J','V','S']; // 0=Domingo..6=Sábado
@@ -4425,9 +4423,9 @@ function exportPDF(){
         doc.rect(MX, rowY, pageW - 2*MX, cellH, 'F');
       }
 
-      // Texto actividad
+      // Texto actividad (línea 1)
       doc.setTextColor(...BLACK);
-      doc.setFont('helvetica', 'normal');
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(8.5);
       let desc = a.descripcion || a.item || '(sin nombre)';
       const maxDescW = nameColW - 6;
@@ -4435,11 +4433,24 @@ function exportPDF(){
         desc = desc.slice(0, -1);
       }
       if(desc.length < (a.descripcion || a.item || '').length) desc += '…';
-      doc.text(desc, MX + 3, rowY + 5.5);
+      doc.text(desc, MX + 3, rowY + 4);
 
-      doc.setTextColor(...GRAY_TEXT);
-      doc.setFontSize(8);
-      doc.text(String(a.sector || '—'), MX + nameColW + 3, rowY + 5.5);
+      // Línea 2: contexto Obra · Contratista · Sector (texto más chico, gris)
+      const ctxParts = [];
+      if(a.obra_act)        ctxParts.push(a.obra_act);
+      if(a.contratista_act) ctxParts.push(a.contratista_act);
+      if(a.sector)          ctxParts.push(a.sector);
+      if(ctxParts.length){
+        doc.setTextColor(...GRAY_TEXT);
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.8);
+        let ctx = ctxParts.join(' · ');
+        while(doc.getTextWidth(ctx) > maxDescW && ctx.length > 4){
+          ctx = ctx.slice(0, -1);
+        }
+        if(ctx.length < ctxParts.join(' · ').length) ctx += '…';
+        doc.text(ctx, MX + 3, rowY + 8);
+      }
 
       // Borde inferior
       doc.setDrawColor(...GRAY_BORD);
@@ -4497,21 +4508,37 @@ function exportPDF(){
         const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
           ? a.cumplimiento[srcIdx]
           : null;
-        let color;
-        // PRIORIDAD 1: día extra (a.domingos[]) → SIEMPRE azul, consistente con
-        // el Gantt web y la tabla de carga.
-        if(esExtra)                      color = [59,130,246];                          // azul
-        else if(cumpDia === 'no_cumple') color = [220,38,38];                            // rojo
-        else if(cumpDia === 'cumple')    color = [34,197,94];                            // VERDE (cumplido tildado por residente)
-        else if(isFail)                  color = [220,38,38];                            // fallback legacy
-        else if(isImp)                   color = [255,107,53];                           // naranja imprevista
-        else                             color = GOLD;                                   // planificado pendiente (aún sin tildar cumple/no_cumple)
-        doc.setFillColor(...color);
+        // ¿Es un día planificado y aún sin tildar como cumple/no_cumple?
+        // En ese caso lo dibujamos con SOLO BORDE dorado (sin relleno) para
+        // comunicar visualmente "pendiente de cargar el dato".
+        const esPlanifPendiente = !esExtra
+          && cumpDia !== 'cumple'
+          && cumpDia !== 'no_cumple'
+          && !isFail
+          && !isImp;
+
         const bx = ganttX + di*cellW + 1.2;
         const by = rowY + 1.5;
         const bw = cellW - 2.4;
         const bh = cellH - 3;
-        doc.roundedRect(bx, by, bw, bh, 1, 1, 'F');
+
+        if(esPlanifPendiente){
+          // Solo borde dorado, fondo transparente → "falta cargar"
+          doc.setDrawColor(...GOLD);
+          doc.setLineWidth(0.8);
+          doc.roundedRect(bx, by, bw, bh, 1, 1, 'D');
+        } else {
+          // Bloque relleno con color según estado
+          let color;
+          if(esExtra)                      color = [59,130,246];                          // azul
+          else if(cumpDia === 'no_cumple') color = [220,38,38];                            // rojo
+          else if(cumpDia === 'cumple')    color = [34,197,94];                            // verde
+          else if(isFail)                  color = [220,38,38];                            // legacy
+          else if(isImp)                   color = [255,107,53];                           // naranja imprevista
+          else                             color = GOLD;                                   // fallback (no debería llegar acá)
+          doc.setFillColor(...color);
+          doc.roundedRect(bx, by, bw, bh, 1, 1, 'F');
+        }
       });
 
       rowY += cellH;
@@ -4541,7 +4568,7 @@ function exportPDF(){
     doc.text('Referencias de colores:', MX, legY);
 
     const legendItems = [
-      { color: GOLD,         label: 'Día planificado (pendiente)' },
+      { color: GOLD,         label: 'Día planificado (sin tildar aún)', outlined: true },
       { color: [34,197,94],  label: 'Día cumplido' },
       { color: [220,38,38],  label: 'Día no cumplido' },
       { color: [255,107,53], label: 'Imprevista' },
@@ -4552,8 +4579,15 @@ function exportPDF(){
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     legendItems.forEach(it => {
-      doc.setFillColor(...it.color);
-      doc.roundedRect(lx, legChipY, 8, 4.5, 1, 1, 'F');
+      if(it.outlined){
+        // Chip con solo borde (sin relleno) — coincide con el render del día pendiente
+        doc.setDrawColor(...it.color);
+        doc.setLineWidth(0.8);
+        doc.roundedRect(lx, legChipY, 8, 4.5, 1, 1, 'D');
+      } else {
+        doc.setFillColor(...it.color);
+        doc.roundedRect(lx, legChipY, 8, 4.5, 1, 1, 'F');
+      }
       doc.setTextColor(...BLACK);
       doc.text(it.label, lx + 10, legChipY + 3.3);
       lx += doc.getTextWidth(it.label) + 22;
