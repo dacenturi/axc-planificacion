@@ -3080,8 +3080,25 @@ function renderTable(){
 
     const bd=document.createElement('button');bd.className='btn btn-danger btn-sm';
     bd.style.cssText='width:28px;height:28px;padding:0;justify-content:center;font-size:13px';
-    bd.textContent='✕';bd.title='Eliminar';
-    bd.onclick=()=>{if(confirm('¿Eliminar actividad?')){acts.splice(idx,1);save();renderAll();}};
+    bd.textContent='✕';
+    // Regla: solo un usuario admin puede eliminar una actividad que ya está confirmada.
+    // El residente puede eliminar las suyas mientras NO estén confirmadas; una vez
+    // confirmada la planificación, solo admin la puede borrar.
+    const puedeEliminar = !a.confirmada || !!window._axcEsAdmin;
+    if(!puedeEliminar){
+      bd.title = '🔒 Bloqueado · solo un administrador puede eliminar actividades confirmadas';
+      bd.style.opacity = '0.35';
+      bd.style.cursor = 'not-allowed';
+    } else {
+      bd.title = 'Eliminar';
+    }
+    bd.onclick = () => {
+      if(!puedeEliminar){
+        showToast('🔒 No podés eliminar una actividad ya confirmada. Pedile a un administrador.', 'warn');
+        return;
+      }
+      if(confirm('¿Eliminar actividad?')){ acts.splice(idx,1); save(); renderAll(); }
+    };
     wActs.appendChild(bd);
     td.appendChild(wActs);
     tr.appendChild(td);
@@ -4101,22 +4118,15 @@ function exportPDF(){
     doc.rect(MX, curY, pageW - 2*MX, afterTableY - curY);
 
     // ═══════════════════════════════════════════════════════════
-    // SECCIÓN DE RIESGOS (2 columnas para compactar)
+    // SECCIÓN DE RIESGOS + FIRMA — con paginación automática
+    // Se mide PRIMERO la altura total necesaria. Si no entra en lo
+    // que queda de la página, se cierra el footer actual y se pasa
+    // a la siguiente hoja para que la firma quede nítida y la
+    // notificación se vea completa.
     // ═══════════════════════════════════════════════════════════
-    const riskTopY = afterTableY + 4;
     const riskTitleH = 6;
 
-    // Banda título
-    doc.setFillColor(...NAVY);
-    doc.rect(MX, riskTopY, pageW - 2*MX, riskTitleH, 'F');
-    doc.setFillColor(...GOLD);
-    doc.rect(MX, riskTopY, 1.5, riskTitleH, 'F');
-    doc.setTextColor(...WHITE);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.text('NOTIFICACIÓN DE RIESGOS ASOCIADOS AL TRABAJO', MX + 4, riskTopY + 4.2);
-
-    // Texto de riesgos en 2 columnas
+    // ─── Definición de textos ─────────────────────────────────
     const riskCol1 = [
       { txt: 'En relación con esta notificación de trabajo, se le informa que durante la ejecución de las actividades a desarrollar se encuentran diversos ', bold: false },
       { txt: 'Riesgos Potenciales', bold: true },
@@ -4143,13 +4153,16 @@ function exportPDF(){
     const colGap = 4;
     const colW = (pageW - 2*MX - 8 - colGap) / 2;
     const col1X = MX + 4;
-    const riskBodyY = riskTopY + riskTitleH;
     const col2X = col1X + colW + colGap;
 
-    // Función helper para renderizar texto con segmentos negrita/normal
-    function drawRichText(segments, x, y, maxW, lineH){
+    // ─── Helpers de medición y dibujo ─────────────────────────
+    // Tipografía ligeramente más generosa para mejorar legibilidad de la firma.
+    const RISK_FONT_SIZE = 7;
+    const lineH = 3.4;
+
+    function drawRichText(segments, x, y, maxW, lH){
       doc.setTextColor(...BLACK);
-      doc.setFontSize(6.3);
+      doc.setFontSize(RISK_FONT_SIZE);
       let cx = x;
       let cy = y;
       segments.forEach(seg => {
@@ -4159,7 +4172,7 @@ function exportPDF(){
           if(!w) return;
           const ww = doc.getTextWidth(w);
           if(cx + ww > x + maxW){
-            cy += lineH;
+            cy += lH;
             cx = x;
             if(/^\s+$/.test(w)) return;
           }
@@ -4169,13 +4182,11 @@ function exportPDF(){
       });
       return cy;
     }
-
-    // Función para renderizar bullets (label en negrita + descripción)
-    function drawBullets(bullets, x, y, maxW, lineH){
+    function drawBullets(bullets, x, y, maxW, lH){
       let cy = y;
       bullets.forEach(([lbl, desc]) => {
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(6.3);
+        doc.setFontSize(RISK_FONT_SIZE);
         doc.setTextColor(...BLACK);
         doc.text('•', x, cy);
         const segs = [];
@@ -4189,7 +4200,7 @@ function exportPDF(){
             if(!w) return;
             const ww = doc.getTextWidth(w);
             if(cx + ww > x + maxW){
-              cy += lineH;
+              cy += lH;
               cx = x + 3;
               if(/^\s+$/.test(w)) return;
             }
@@ -4197,16 +4208,12 @@ function exportPDF(){
             cx += ww;
           });
         });
-        cy += lineH;
+        cy += lH;
       });
       return cy;
     }
-
-    // ─── PASO 1: medir altura sin dibujar ───
-    // Usamos un canvas temporal del jsPDF para calcular Y sin imprimir realmente.
-    // Como las funciones dibujan directamente, hacemos un cálculo manual de líneas.
-    function measureRichText(segments, maxW, lineH){
-      doc.setFontSize(6.3);
+    function measureRichText(segments, maxW, lH){
+      doc.setFontSize(RISK_FONT_SIZE);
       let cx = 0, lines = 1;
       segments.forEach(seg => {
         doc.setFont('helvetica', seg.bold ? 'bold' : 'normal');
@@ -4214,18 +4221,14 @@ function exportPDF(){
         words.forEach(w => {
           if(!w) return;
           const ww = doc.getTextWidth(w);
-          if(cx + ww > maxW){
-            lines++;
-            cx = 0;
-            if(/^\s+$/.test(w)) return;
-          }
+          if(cx + ww > maxW){ lines++; cx = 0; if(/^\s+$/.test(w)) return; }
           cx += ww;
         });
       });
-      return lines * lineH;
+      return lines * lH;
     }
-    function measureBullets(bullets, maxW, lineH){
-      doc.setFontSize(6.3);
+    function measureBullets(bullets, maxW, lH){
+      doc.setFontSize(RISK_FONT_SIZE);
       let totalH = 0;
       bullets.forEach(([lbl, desc]) => {
         let cx = 3, lines = 1;
@@ -4238,21 +4241,16 @@ function exportPDF(){
           words.forEach(w => {
             if(!w) return;
             const ww = doc.getTextWidth(w);
-            if(cx + ww > maxW){
-              lines++;
-              cx = 3;
-              if(/^\s+$/.test(w)) return;
-            }
+            if(cx + ww > maxW){ lines++; cx = 3; if(/^\s+$/.test(w)) return; }
             cx += ww;
           });
         });
-        totalH += lines * lineH;
+        totalH += lines * lH;
       });
       return totalH;
     }
 
-    // Calcular altura total que necesitan ambas columnas
-    const lineH = 3.0;
+    // ─── Calcular altura del cuerpo de riesgos ────────────────
     const c1H = measureRichText(riskCol1, colW, lineH) + 2.5 + measureBullets(riskBullets1, colW, lineH);
     const introLinesArr = doc.splitTextToSize(riskCol2Intro, colW);
     const c2H = (introLinesArr.length * lineH) + 1.2
@@ -4261,9 +4259,39 @@ function exportPDF(){
                   { txt: riskDeclaracion[0], bold: true },
                   { txt: riskDeclaracion[1], bold: false }
                 ], colW, lineH);
-    const riskBodyH = Math.max(c1H, c2H) + 8;  // padding interno generoso
+    const riskBodyH = Math.max(c1H, c2H) + 8;
 
-    // ─── PASO 2: dibujar fondo y borde con altura calculada ───
+    // ─── Altura total necesaria (riesgos + gap + firma + margen footer) ──
+    const sigBoxH = 16;     // subir de 13 → 16 para que la firma respire
+    const gapFirma = 6;     // espacio entre cuerpo de riesgos y firma
+    const margenFooter = 8; // espacio mínimo antes del footer
+    const altoTotalNecesario = riskTitleH + riskBodyH + gapFirma + sigBoxH + margenFooter;
+
+    // ─── Decidir paginación ───────────────────────────────────
+    let riskTopY = afterTableY + 4;
+    const espacioDisp = pageH - MB - riskTopY;
+    let paginaRiesgosNueva = false;
+    if(altoTotalNecesario > espacioDisp){
+      // No entra: cerrar página actual con footer y pasar a la siguiente
+      drawFooter();
+      doc.addPage('a4', 'portrait');
+      drawHeader(99, 99); // los números se renumeran al final
+      riskTopY = 30; // por debajo del header
+      paginaRiesgosNueva = true;
+    }
+    const riskBodyY = riskTopY + riskTitleH;
+
+    // ─── Banda título ─────────────────────────────────────────
+    doc.setFillColor(...NAVY);
+    doc.rect(MX, riskTopY, pageW - 2*MX, riskTitleH, 'F');
+    doc.setFillColor(...GOLD);
+    doc.rect(MX, riskTopY, 1.5, riskTitleH, 'F');
+    doc.setTextColor(...WHITE);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('NOTIFICACIÓN DE RIESGOS ASOCIADOS AL TRABAJO', MX + 4, riskTopY + 4.2);
+
+    // ─── Fondo y borde del cuerpo ────────────────────────────
     doc.setFillColor(...GRAY_LIGHT);
     doc.rect(MX, riskBodyY, pageW - 2*MX, riskBodyH, 'F');
     doc.setDrawColor(...GRAY_BORD);
@@ -4272,15 +4300,15 @@ function exportPDF(){
     const sepX = MX + 4 + colW + colGap/2;
     doc.line(sepX, riskBodyY + 2, sepX, riskBodyY + riskBodyH - 1);
 
-    // ─── PASO 3: dibujar texto sobre el fondo ───
-    let c1y = riskBodyY + 3;
+    // ─── Texto sobre el fondo ────────────────────────────────
+    let c1y = riskBodyY + 3.5;
     c1y = drawRichText(riskCol1, col1X, c1y, colW, lineH);
     c1y += 2.5;
     c1y = drawBullets(riskBullets1, col1X, c1y, colW, lineH);
 
-    let c2y = riskBodyY + 3;
+    let c2y = riskBodyY + 3.5;
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.3);
+    doc.setFontSize(RISK_FONT_SIZE);
     doc.setTextColor(...BLACK);
     introLinesArr.forEach((ln, i) => doc.text(ln, col2X, c2y + i*lineH));
     c2y += introLinesArr.length * lineH + 1.2;
@@ -4293,37 +4321,32 @@ function exportPDF(){
     c2y = drawRichText(declSegs, col2X, c2y, colW, lineH);
 
     // ═══════════════════════════════════════════════════════════
-    // BLOQUE DE FIRMA
+    // BLOQUE DE FIRMA — posición fija después del cuerpo, sin clamp
     // ═══════════════════════════════════════════════════════════
-    const sigBoxH = 13;
-    // Calcular sigY asegurando margen con el footer (footer line está en pageH - MB - 2)
-    const sigY = Math.min(
-      riskBodyY + riskBodyH + 4,
-      pageH - MB - 6 - sigBoxH  // dejar 6mm de margen entre firma y línea de footer
-    );
+    const sigY = riskBodyY + riskBodyH + gapFirma;
     const sigColW = (pageW - 2*MX - 14) / 2;
 
-    [MX, MX + sigColW + 14].forEach((boxX, i) => {
+    [MX, MX + sigColW + 14].forEach((boxX) => {
       doc.setDrawColor(...GRAY_BORD);
       doc.setLineWidth(0.2);
       doc.setFillColor(...WHITE);
       doc.roundedRect(boxX, sigY, sigColW, sigBoxH, 1.5, 1.5, 'FD');
       doc.setDrawColor(...NAVY);
       doc.setLineWidth(0.3);
-      doc.line(boxX + 6, sigY + sigBoxH - 6, boxX + sigColW - 6, sigY + sigBoxH - 6);
+      doc.line(boxX + 6, sigY + sigBoxH - 7, boxX + sigColW - 6, sigY + sigBoxH - 7);
     });
 
     doc.setTextColor(...NAVY);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
-    doc.text('Firma del Contratista', MX + sigColW/2, sigY + sigBoxH - 2.5, { align: 'center' });
-    doc.text('Aclaración / C.I. N° / Fecha', MX + sigColW + 14 + sigColW/2, sigY + sigBoxH - 2.5, { align: 'center' });
+    doc.setFontSize(9);
+    doc.text('Firma del Contratista', MX + sigColW/2, sigY + sigBoxH - 3, { align: 'center' });
+    doc.text('Aclaración / C.I. N° / Fecha', MX + sigColW + 14 + sigColW/2, sigY + sigBoxH - 3, { align: 'center' });
 
     doc.setTextColor(...GRAY_TEXT);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.3);
-    doc.text('Nombre y firma de la persona autorizada', MX + sigColW/2, sigY + sigBoxH - 0.7, { align: 'center' });
-    doc.text('Cédula de identidad y fecha de recepción', MX + sigColW + 14 + sigColW/2, sigY + sigBoxH - 0.7, { align: 'center' });
+    doc.setFontSize(7);
+    doc.text('Nombre y firma de la persona autorizada', MX + sigColW/2, sigY + sigBoxH - 0.8, { align: 'center' });
+    doc.text('Cédula de identidad y fecha de recepción', MX + sigColW + 14 + sigColW/2, sigY + sigBoxH - 0.8, { align: 'center' });
 
     drawFooter();
 
