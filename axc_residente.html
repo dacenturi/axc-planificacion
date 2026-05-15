@@ -108,12 +108,37 @@ tr.row-imprevista td{
 .fg input:focus,.fg select:focus{border-color:var(--accent)}
 .fg select option{background:var(--bg3)}
 .table-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r)}
-.tbl-scroll{overflow-x:auto;width:100%;border-radius:var(--r);display:block}
+/* tbl-scroll: scroll en AMBOS ejes con max-height para que el sticky thead
+   funcione correctamente. Antes solo overflow-x rompía el sticky vertical
+   (limitación de CSS: overflow-x:auto + overflow-y:visible se computa como
+   overflow:auto, generando un scrolling context que atrapa el sticky). */
+.tbl-scroll{overflow:auto;width:100%;border-radius:var(--r);display:block;max-height:calc(100vh - 290px);min-height:340px}
 .row-add-btn{flex-shrink:0;width:22px;height:28px;background:rgba(240,165,0,.12);border:1px solid rgba(240,165,0,.25);border-radius:5px;color:var(--accent);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;line-height:1}
 .row-add-btn:hover{background:rgba(240,165,0,.28);border-color:var(--accent)}
 table{border-collapse:collapse;width:100%;table-layout:fixed}
 thead th{background:var(--bg3);font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;padding:10px 6px;border-bottom:1px solid var(--border);white-space:nowrap;text-align:center}
 thead th.thl{text-align:left;padding-left:12px}
+
+/* ── Sticky header de la tabla de Carga ─────────────────────────────
+   Las 2 filas del thead (grupos + fechas) quedan fijas al scrollear
+   dentro del wrapper .tbl-scroll. Mantiene siempre visibles las
+   columnas OBRA / CONTRATISTA / SECTOR / fechas / ESTADO mientras
+   se cargan datos. El scroll vertical ocurre dentro de .tbl-scroll
+   (con max-height), no del body. */
+#tbl thead th{
+  position:sticky;
+  z-index:100;                /* alto para tapar cualquier cell del tbody */
+  background:var(--bg3);      /* fondo opaco redundante para garantizar opacidad */
+  isolation:isolate;          /* nuevo stacking context: aísla del tbody */
+}
+#tbl thead tr#tr-groups th{ top:0 }          /* pegado al borde superior del wrapper */
+#tbl thead tr#tr-dates  th{ top:30px }       /* debajo de tr-groups (30px alto) */
+/* Sombra sutil bajo el header para diferenciarlo del contenido al scrollear */
+#tbl thead tr#tr-dates th{ box-shadow:0 1px 0 var(--border) }
+/* Base z-index bajo en las celdas del tbody para que NUNCA tapen el thead.
+   Sin esto, los chips .db.on/.cumple/.no-cumple con box-shadow pueden
+   superponerse visualmente al scrollear bajo el header sticky. */
+#tbl tbody td{ position:relative; z-index:0 }
 .tr-dates th{font-size:9px;letter-spacing:0;padding:6px 2px 8px;font-family:'DM Mono',monospace;color:var(--text3);background:var(--bg3);border-bottom:2px solid var(--border)}
 .tr-dates th.sat-hdr{color:var(--blue)}
 tbody tr{border-bottom:1px solid var(--border2);transition:background .1s}
@@ -1248,7 +1273,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.4-pdf-6';
+const _PDF_VERSION = 'v2.5-pdf-1';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -1555,7 +1580,10 @@ function buildDateHeaders(){
   wkCols.forEach(({wk:w,cols:c})=>{
     const th=document.createElement('th');
     th.colSpan=c;
-    th.style.cssText='background:rgba(240,165,0,.09);color:var(--acc3);border-left:2px solid rgba(240,165,0,.25);font-size:11px;letter-spacing:.8px;text-align:center;padding:10px 6px;border-bottom:1px solid var(--border);white-space:nowrap;';
+    // Background OPACO (var(--bg3)) + tinte dorado encima vía background-image.
+    // Sin la capa opaca, el thead sticky deja pasar visualmente las celdas
+    // del tbody (los chips verdes/dorados/azules con box-shadow).
+    th.style.cssText='background-color:var(--bg3);background-image:linear-gradient(rgba(240,165,0,.09),rgba(240,165,0,.09));color:var(--acc3);border-left:2px solid rgba(240,165,0,.25);font-size:11px;letter-spacing:.8px;text-align:center;padding:10px 6px;border-bottom:1px solid var(--border);white-space:nowrap;';
     th.textContent=w+'ª '+(c>=5?'SEMANA':'SEM.');
     grpRow.insertBefore(th,grpRef);
   });
@@ -1571,7 +1599,10 @@ function buildDateHeaders(){
     th.className='col-day'+(isDom?' dom-hdr':'');
     // Borde izquierdo: primera columna o lunes después de domingo
     const isWkStart = i===0 || (i>0 && dates[i-1].getDay()===0);
-    th.style.cssText=`width:26px;min-width:26px;text-align:center;${isDom?'background:rgba(88,166,255,.10);':''}`
+    // background-color opaco SIEMPRE (var(--bg3)) + tinte azul vía background-image
+    // SOLO para domingos. Esto evita que el thead sticky deje pasar visualmente
+    // las celdas del tbody que tienen box-shadow.
+    th.style.cssText=`width:26px;min-width:26px;text-align:center;background-color:var(--bg3);${isDom?'background-image:linear-gradient(rgba(88,166,255,.10),rgba(88,166,255,.10));':''}`
       +(isWkStart?'border-left:2px solid rgba(240,165,0,.25);':'');
     th.innerHTML=`<span style="font-size:8px;font-weight:700;display:block">${DL[i]}</span><span style="font-size:7px;opacity:.6">${fmts(d)}</span>`;
     tr.insertBefore(th,refNode);
@@ -2725,8 +2756,25 @@ function renderTable(){
     const bd=document.createElement('button');
     bd.className='btn btn-danger btn-sm';
     bd.style.cssText='width:26px;height:26px;padding:0;display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;flex-shrink:0';
-    bd.textContent='✕';bd.title='Eliminar';
-    bd.onclick=()=>{if(confirm('¿Eliminar actividad?')){acts.splice(idx,1);save();renderAll();}};
+    bd.textContent='✕';
+    // Regla: solo un usuario admin puede eliminar una actividad que ya está confirmada.
+    // El residente puede eliminar las suyas mientras NO estén confirmadas; una vez
+    // confirmada la planificación, solo admin la puede borrar.
+    const puedeEliminar = !a.confirmada || !!window._axcEsAdmin;
+    if(!puedeEliminar){
+      bd.title = '🔒 Bloqueado · solo un administrador puede eliminar actividades confirmadas';
+      bd.style.opacity = '0.35';
+      bd.style.cursor = 'not-allowed';
+    } else {
+      bd.title = 'Eliminar';
+    }
+    bd.onclick = () => {
+      if(!puedeEliminar){
+        showToast('🔒 No podés eliminar una actividad ya confirmada. Pedile a un administrador.', 'warn');
+        return;
+      }
+      if(confirm('¿Eliminar actividad?')){ acts.splice(idx,1); save(); renderAll(); }
+    };
     wActs.appendChild(bd);
     tr.appendChild(tdel);
 
@@ -3484,7 +3532,9 @@ function _calcKpisDelResidente(){
   // Defaults confirmados:
   //   - Imprevistas NO cuentan en PPC ni en días de atraso del plan original
   //   - Tienen su propia métrica reportada aparte
-  const actsVis = actsVisAll.filter(a => !a.imprevista);
+  // SOLO actividades CONFIRMADAS del plan original: las no confirmadas son
+  // borradores que no deben sumar al PPC ni a los conteos del reporte oficial.
+  const actsVis = actsVisAll.filter(a => !a.imprevista && !!a.confirmada);
   const actsImprev = actsVisAll.filter(a => !!a.imprevista);
 
   // ─── Métricas del PLAN ─────────────────────────────────────
@@ -3760,7 +3810,9 @@ function _fmtFechaCorta(iso){
 // (rango de fechas del header + filtros UI). Solo aparecen las actividades
 // con planificación dentro del período seleccionado.
 function _filasTablaDetallada(){
-  return acts.filter(_passAllFilters).map((a, idx) => {
+  // Solo CONFIRMADAS del plan original + TODAS las imprevistas (las imprevistas
+  // son una categoría aparte, ya ocurrieron y se reportan siempre).
+  return acts.filter(_passAllFilters).filter(a => !!a.confirmada || !!a.imprevista).map((a, idx) => {
     const estado = (a.cumple || '').trim() || '—';
     const descBase = (a.descripcion || a.item || '(sin descripción)').trim();
     // Prefijo [IMPR] para imprevistas — la fuente Helvetica de jsPDF no soporta
@@ -3802,12 +3854,12 @@ function _drawTablaDetallada(doc){
   doc.addPage();
   _drawSeccionTitulo(doc, 'Detalle de Actividades', 25);
 
-  // Subtítulo con conteo (respetando filtros)
+  // Subtítulo con conteo (respetando filtros + regla confirmada/imprevista)
   const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
   doc.setTextColor(grr,grg,grb);
   doc.setFont('helvetica','normal');
   doc.setFontSize(9);
-  const totalFiltrado = acts.filter(_passAllFilters).length;
+  const totalFiltrado = acts.filter(_passAllFilters).filter(a => !!a.confirmada || !!a.imprevista).length;
   doc.text(`${totalFiltrado} actividad${totalFiltrado===1?'':'es'} · ${_residenteActivoNombre()}`, 20, 32);
 
   const rows = _filasTablaDetallada();
@@ -4017,73 +4069,11 @@ function _drawDetalleImprevistos(doc){
 // ─── FIN FASE 3 (PDF) ───
 
 
-// ─── FASE 6: Gantt apaisado vía html2canvas + paginación ───
-
-// Captura el contenedor #g-wrap como canvas. Activa temporalmente la página
-// del Gantt si no estaba activa, y restaura el estado al terminar.
-// Devuelve un HTMLCanvasElement o null si no hay nada que capturar.
-async function _capturarGantt(){
-  const pages = ['carga','reporte','gantt'];
-  let pagActiva = null;
-  pages.forEach(p => {
-    if(document.getElementById('page-'+p)?.classList.contains('active')) pagActiva = p;
-  });
-
-  try {
-    // Activar página Gantt (oculta las demás)
-    pages.forEach(p => {
-      document.getElementById('page-'+p)?.classList.remove('active');
-      document.getElementById('tab-'+p)?.classList.remove('active');
-    });
-    document.getElementById('page-gantt')?.classList.add('active');
-    document.getElementById('tab-gantt')?.classList.add('active');
-
-    // Forzar renderizado
-    if(typeof renderGantt === 'function') renderGantt();
-
-    // Esperar al paint del navegador
-    await new Promise(r => setTimeout(r, 350));
-
-    if(typeof html2canvas !== 'function'){
-      console.warn('html2canvas no disponible');
-      return null;
-    }
-
-    const gWrap = document.getElementById('g-wrap');
-    if(!gWrap) return null;
-    const w = gWrap.scrollWidth, h = gWrap.scrollHeight;
-    if(w === 0 || h === 0) return null;
-    // Si el wrap está vacío (no se cargaron acts), no capturar
-    if(!gWrap.querySelector('.g-hdr')) return null;
-
-    const canvas = await html2canvas(gWrap, {
-      scale: 1.5,
-      backgroundColor: '#161b22',
-      width: w,
-      height: h,
-      windowWidth: w,
-      windowHeight: h,
-      logging: false,
-      useCORS: true,
-      scrollX: 0,
-      scrollY: 0
-    });
-    return canvas;
-  } catch(err) {
-    console.error('Error capturando Gantt:', err);
-    return null;
-  } finally {
-    // Restaurar página activa original
-    pages.forEach(p => {
-      document.getElementById('page-'+p)?.classList.remove('active');
-      document.getElementById('tab-'+p)?.classList.remove('active');
-    });
-    if(pagActiva){
-      document.getElementById('page-'+pagActiva)?.classList.add('active');
-      document.getElementById('tab-'+pagActiva)?.classList.add('active');
-    }
-  }
-}
+// ─── FASE 6 v2.5: Gantt VECTORIAL apaisado (reemplaza al raster html2canvas) ───
+// Dibuja un Gantt nítido directamente con jsPDF: numeración por círculo dorado,
+// celdas por día, colores por estado, leyenda final. Misma estética que el PDF
+// del Contratista. Filtra SOLO actividades confirmadas para mantener consistencia
+// con KPIs y tabla detallada.
 
 // Dibuja el header (título + sub) en una página landscape del PDF.
 function _drawGanttHeaderLandscape(doc, parteN, totalPartes){
@@ -4116,55 +4106,345 @@ function _drawGanttHeaderLandscape(doc, parteN, totalPartes){
   doc.text(sub, pw - 15, 14, {align:'right'});
 }
 
-// Inserta el canvas del Gantt en el PDF en páginas A4 landscape, paginando
-// verticalmente si la altura excede una página.
-function _dibujarGanttEnPDF(doc, canvas){
-  if(!canvas) return;
-  // A4 landscape: 297 × 210 mm
+// Genera el Gantt vectorial con paginación automática. Cada página A4 landscape
+// repite el header de columnas (fechas), las filas se distribuyen, y la leyenda
+// aparece en la última página.
+function _dibujarGanttVectorial(doc){
+  // ─── Filtrar actividades: SOLO confirmadas (no imprevistas, no borradores) ───
+  const actsAll = acts.filter(_passAllFilters).filter(a => !!a.confirmada && !a.imprevista);
+
+  // ─── Constantes de color (mismo paleta que el PDF del Contratista) ───
+  const NAVY      = [13, 27, 42];
+  const NAVY_DARK = [8, 18, 30];
+  const GOLD      = _hexToRgb(PDF_COLORS.gold);
+  const GOLD_LIGHT= [255, 215, 130];
+  const WHITE     = [255, 255, 255];
+  const BLACK     = [25, 35, 50];
+  const GRAY_LIGHT= [245, 245, 247];
+  const GRAY_BORD = [220, 220, 225];
+  const GRAY_TEXT = _hexToRgb(PDF_COLORS.gray);
+
+  // ─── Dimensiones de página ───
   const pageW = 297, pageH = 210;
-  const marginX = 15;
-  const yStart = 22;          // espacio para header
-  const footerReserve = 15;   // espacio para footer
-  const usableW = pageW - 2 * marginX;            // 267 mm
-  const usableH = pageH - yStart - footerReserve; // 173 mm
+  const MX = 15, MB = 18;
 
-  const cw = canvas.width, ch = canvas.height;
-  const totalH_mm = usableW * (ch / cw);
-
-  if(totalH_mm <= usableH){
-    // Cabe en una sola página landscape
+  // ─── Sin actividades confirmadas: página informativa ───
+  if(actsAll.length === 0){
     doc.addPage('a4', 'landscape');
     _drawGanttHeaderLandscape(doc);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    doc.addImage(dataUrl, 'JPEG', marginX, yStart, usableW, totalH_mm, undefined, 'FAST');
-  } else {
-    // Particionar en N páginas
-    const slicesNeeded = Math.ceil(totalH_mm / usableH);
-    const slicePxH = Math.floor(ch / slicesNeeded);
+    doc.setTextColor(...GRAY_TEXT);
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(12);
+    doc.text('Sin actividades confirmadas para mostrar en el Gantt.',
+             pageW / 2, pageH / 2, {align:'center'});
+    return;
+  }
 
-    for(let i = 0; i < slicesNeeded; i++){
-      const isLast = (i === slicesNeeded - 1);
-      const thisSlicePxH = isLast ? (ch - i * slicePxH) : slicePxH;
+  // ─── Calcular fechas del rango (incluyendo domingos tildados) ───
+  let dates, numDays;
+  try {
+    dates = wDates(getStart(), getFin());
+    numDays = dates.length;
+  } catch(e){
+    dates = []; numDays = 0;
+  }
+  if(numDays === 0){
+    doc.addPage('a4', 'landscape');
+    _drawGanttHeaderLandscape(doc);
+    doc.setTextColor(...GRAY_TEXT);
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(12);
+    doc.text('Sin rango de fechas válido para construir el Gantt.',
+             pageW / 2, pageH / 2, {align:'center'});
+    return;
+  }
 
-      const sliceCanvas = document.createElement('canvas');
-      sliceCanvas.width = cw;
-      sliceCanvas.height = thisSlicePxH;
-      const ctx = sliceCanvas.getContext('2d');
-      // Fondo dark por si el slice tiene áreas transparentes
-      ctx.fillStyle = '#161b22';
-      ctx.fillRect(0, 0, cw, thisSlicePxH);
-      ctx.drawImage(canvas, 0, -i * slicePxH);
+  // ─── Anchos adaptativos según cantidad de días ───
+  let nameColW;
+  if(numDays > 20)      nameColW = 78;
+  else if(numDays > 14) nameColW = 92;
+  else                  nameColW = 112;
+  const availW = pageW - 2*MX - nameColW;
+  const cellW = Math.min(16, availW / numDays);
+  const cellH = 10;
+  const showDayDate = cellW >= 7;
+  const ganttX = MX + nameColW;
 
-      const sliceMmH = usableW * (thisSlicePxH / cw);
+  // ─── Ordenar actividades por primer día tildado ───
+  const actsGantt = actsAll.slice().sort((a,b) => {
+    const ta = _firstDayIdx(a);
+    const tb = _firstDayIdx(b);
+    if(ta === Infinity && tb === Infinity) return 0;
+    if(ta === Infinity) return 1;
+    if(tb === Infinity) return -1;
+    return ta - tb;
+  });
 
-      doc.addPage('a4', 'landscape');
-      _drawGanttHeaderLandscape(doc, i + 1, slicesNeeded);
-      const dataUrl = sliceCanvas.toDataURL('image/jpeg', 0.85);
-      doc.addImage(dataUrl, 'JPEG', marginX, yStart, usableW, sliceMmH, undefined, 'FAST');
+  const failStates = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
+
+  // ─── Calcular paginación ───
+  // Header de página (~22mm) + banda título Gantt (7mm) + header columnas días (cellH)
+  // + filas (cellH cada una) + leyenda (~14mm en la última) + footer (MB)
+  const yHeaderEnd = 22;        // bajo el título "Diagrama Gantt"
+  const bandH = 7;              // banda navy "DIAGRAMA DE GANTT ..."
+  const colHdrH = cellH;        // header de columnas (días)
+  const legendH = 16;           // espacio para leyenda en última página
+  const usableForRows = (last) =>
+    pageH - yHeaderEnd - bandH - colHdrH - MB - (last ? legendH : 4);
+  // Aproximamos: la leyenda solo va en la última página, las anteriores tienen más espacio para filas.
+  const rowsPerPageNormal = Math.floor(usableForRows(false) / cellH);
+  const rowsPerPageLast   = Math.floor(usableForRows(true)  / cellH);
+
+  // Pre-calcular el plan de páginas
+  let totalPages = 1;
+  let remaining = actsGantt.length;
+  if(remaining > rowsPerPageLast){
+    // Más de 1 página: la última lleva leyenda (menos filas), las anteriores tienen rowsPerPageNormal
+    totalPages = 1 + Math.ceil((remaining - rowsPerPageLast) / rowsPerPageNormal);
+  }
+
+  // ─── Iterar páginas ───
+  let cursor = 0; // índice global en actsGantt
+  for(let p = 0; p < totalPages; p++){
+    const isLast = (p === totalPages - 1);
+    const rowsThisPage = isLast
+      ? Math.min(rowsPerPageLast, actsGantt.length - cursor)
+      : rowsPerPageNormal;
+
+    doc.addPage('a4', 'landscape');
+    _drawGanttHeaderLandscape(doc, p + 1, totalPages);
+
+    // ─── Banda título del Gantt ───
+    let ganttTopY = yHeaderEnd;
+    doc.setFillColor(...NAVY);
+    doc.rect(MX, ganttTopY, pageW - 2*MX, bandH, 'F');
+    doc.setFillColor(...GOLD);
+    doc.rect(MX, ganttTopY, 1.5, bandH, 'F');
+    doc.setTextColor(...WHITE);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('DIAGRAMA DE GANTT · PLANIFICACIÓN VISUAL', MX + 4, ganttTopY + 4.8);
+    doc.setTextColor(...GOLD_LIGHT);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    const habiles = dates.filter(d => d.getDay() !== 0).length;
+    const subt = `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${habiles} día(s) hábil(es) · solo confirmadas`;
+    doc.text(subt, pageW - MX - 3, ganttTopY + 4.8, { align: 'right' });
+
+    ganttTopY += bandH;
+
+    // ─── Header del Gantt: columna Actividad + columna por día ───
+    doc.setFillColor(...NAVY_DARK);
+    doc.rect(MX, ganttTopY, nameColW, cellH, 'F');
+    doc.setTextColor(...WHITE);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('Actividad', MX + 3, ganttTopY + 6);
+
+    const dayLetters = ['D','L','M','X','J','V','S'];
+    dates.forEach((d, i) => {
+      const isDom = d.getDay() === 0;
+      doc.setFillColor(...(isDom ? [59,130,246] : NAVY_DARK));
+      doc.rect(ganttX + i*cellW, ganttTopY, cellW, cellH, 'F');
+      doc.setTextColor(...WHITE);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(cellW < 7 ? 6.5 : 8);
+      const letterY = showDayDate ? ganttTopY + 3.5 : ganttTopY + 5.5;
+      doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, letterY, { align: 'center' });
+      if(showDayDate){
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.text(fmts(d), ganttX + i*cellW + cellW/2, ganttTopY + 7, { align: 'center' });
+      }
+    });
+
+    // Líneas separadoras blancas en el header
+    doc.setDrawColor(...WHITE);
+    doc.setLineWidth(0.1);
+    for(let i = 1; i < numDays; i++){
+      doc.line(ganttX + i*cellW, ganttTopY, ganttX + i*cellW, ganttTopY + cellH);
+    }
+    doc.line(MX + nameColW, ganttTopY, MX + nameColW, ganttTopY + cellH);
+    doc.line(ganttX, ganttTopY, ganttX, ganttTopY + cellH);
+
+    const ganttHdrTop = ganttTopY;
+    let rowY = ganttTopY + cellH;
+
+    // ─── Filas de esta página ───
+    for(let r = 0; r < rowsThisPage; r++){
+      const a = actsGantt[cursor];
+      const globalIdx = cursor; // numeración GLOBAL, no por página
+      cursor++;
+
+      // Alternancia
+      if(globalIdx % 2 === 0){
+        doc.setFillColor(...GRAY_LIGHT);
+        doc.rect(MX, rowY, pageW - 2*MX, cellH, 'F');
+      }
+
+      // Círculo dorado con N°
+      const numCx = MX + 4;
+      const numCy = rowY + cellH/2;
+      doc.setFillColor(...GOLD);
+      doc.circle(numCx, numCy, 2.2, 'F');
+      doc.setTextColor(...WHITE);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.text(String(globalIdx + 1), numCx, numCy + 0.9, { align: 'center' });
+
+      // Línea 1: nombre de la actividad
+      doc.setTextColor(...BLACK);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      let desc = a.descripcion || a.item || '(sin nombre)';
+      const maxDescW = nameColW - 12;
+      while(doc.getTextWidth(desc) > maxDescW && desc.length > 4){
+        desc = desc.slice(0, -1);
+      }
+      if(desc.length < (a.descripcion || a.item || '').length) desc += '…';
+      doc.text(desc, MX + 9, rowY + 4);
+
+      // Línea 2: contexto Obra · Sector (residente no tiene contratista por actividad)
+      const ctxParts = [];
+      const obraName = a.obra_row || (typeof obra !== 'undefined' && obra && obra.obra) || '';
+      if(obraName) ctxParts.push(obraName);
+      if(a.sector) ctxParts.push(a.sector);
+      if(ctxParts.length){
+        doc.setTextColor(...GRAY_TEXT);
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.8);
+        let ctx = ctxParts.join(' · ');
+        while(doc.getTextWidth(ctx) > maxDescW && ctx.length > 4){
+          ctx = ctx.slice(0, -1);
+        }
+        if(ctx.length < ctxParts.join(' · ').length) ctx += '…';
+        doc.text(ctx, MX + 9, rowY + 8);
+      }
+
+      // Borde inferior de fila
+      doc.setDrawColor(...GRAY_BORD);
+      doc.setLineWidth(0.1);
+      doc.line(MX, rowY + cellH, pageW - MX, rowY + cellH);
+
+      // Bloques del Gantt: marked = [{di, srcIdx}, ...]
+      // di = índice en dates[], srcIdx = índice en a.days[] (-1 si viene de a.domingos[])
+      const isFail = failStates.includes(a.cumple || '');
+      let marked;
+      if(a.fechaIni){
+        marked = [];
+        const datesISO = dates.map(d => _toISODate(d));
+        (a.days || []).forEach((v, i) => {
+          if(!v) return;
+          const realDate = actIdxToDate(a, i);
+          if(!realDate) return;
+          const realISO = _toISODate(realDate);
+          const colIdx = datesISO.indexOf(realISO);
+          if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: i });
+        });
+        if(Array.isArray(a.domingos)){
+          a.domingos.forEach(iso => {
+            const colIdx = datesISO.indexOf(iso);
+            if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: -1 });
+          });
+        }
+        marked.sort((x,y) => x.di - y.di);
+        marked = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
+      } else {
+        marked = (a.days || [])
+          .map((v,i) => v ? { di: i, srcIdx: i } : null)
+          .filter(x => x && x.di >= 0 && x.di < numDays);
+      }
+
+      marked.forEach(({ di, srcIdx }) => {
+        const d = dates[di];
+        if(!d) return;
+        const isImp = !!a.imprevista;
+        const esExtra = (srcIdx === -1);
+        const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+          ? a.cumplimiento[srcIdx]
+          : null;
+        const esPlanifPendiente = !esExtra
+          && cumpDia !== 'cumple'
+          && cumpDia !== 'no_cumple'
+          && !isFail
+          && !isImp;
+
+        const bx = ganttX + di*cellW + 1.2;
+        const by = rowY + 1.5;
+        const bw = cellW - 2.4;
+        const bh = cellH - 3;
+
+        if(esPlanifPendiente){
+          doc.setDrawColor(...GOLD);
+          doc.setLineWidth(0.8);
+          doc.roundedRect(bx, by, bw, bh, 1, 1, 'D');
+        } else {
+          let color;
+          if(esExtra)                      color = [59,130,246];   // azul
+          else if(cumpDia === 'no_cumple') color = [220,38,38];     // rojo
+          else if(cumpDia === 'cumple')    color = [34,197,94];     // verde
+          else if(isFail)                  color = [220,38,38];     // legacy fail
+          else if(isImp)                   color = [255,107,53];    // naranja imprevista
+          else                             color = GOLD;            // fallback
+          doc.setFillColor(...color);
+          doc.roundedRect(bx, by, bw, bh, 1, 1, 'F');
+        }
+      });
+
+      rowY += cellH;
+    }
+
+    // ─── Líneas verticales del Gantt ───
+    doc.setDrawColor(...GRAY_BORD);
+    doc.setLineWidth(0.08);
+    const ganttBotY = rowY;
+    for(let i = 1; i < numDays; i++){
+      doc.line(ganttX + i*cellW, ganttHdrTop, ganttX + i*cellW, ganttBotY);
+    }
+    doc.line(MX + nameColW, ganttHdrTop, MX + nameColW, ganttBotY);
+    doc.line(ganttX,         ganttHdrTop, ganttX,         ganttBotY);
+
+    // Borde exterior del Gantt
+    doc.setDrawColor(...NAVY);
+    doc.setLineWidth(0.4);
+    doc.rect(MX, ganttHdrTop, pageW - 2*MX, ganttBotY - ganttHdrTop);
+
+    // ─── Leyenda solo en la última página ───
+    if(isLast){
+      const legY = Math.min(ganttBotY + 8, pageH - MB - 10);
+      doc.setTextColor(...NAVY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.text('Referencias de colores:', MX, legY);
+
+      const legendItems = [
+        { color: GOLD,         label: 'Día planificado (sin tildar aún)', outlined: true },
+        { color: [34,197,94],  label: 'Día cumplido' },
+        { color: [220,38,38],  label: 'Día no cumplido' },
+        { color: [255,107,53], label: 'Imprevista' },
+        { color: [59,130,246], label: 'Día extra trabajado' }
+      ];
+      let lx = MX;
+      const legChipY = legY + 2;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      legendItems.forEach(it => {
+        if(it.outlined){
+          doc.setDrawColor(...it.color);
+          doc.setLineWidth(0.8);
+          doc.roundedRect(lx, legChipY, 8, 4.5, 1, 1, 'D');
+        } else {
+          doc.setFillColor(...it.color);
+          doc.roundedRect(lx, legChipY, 8, 4.5, 1, 1, 'F');
+        }
+        doc.setTextColor(...BLACK);
+        doc.text(it.label, lx + 10, legChipY + 3.3);
+        lx += doc.getTextWidth(it.label) + 22;
+      });
     }
   }
 }
-// ─── FIN FASE 6 ───
+// ─── FIN FASE 6 v2.5 ───
 
 
 // Función orquestadora de exportación a PDF.
@@ -4197,25 +4477,9 @@ async function exportPDF(){
     // Solo se agrega si hay imprevistas en el rango filtrado.
     _drawDetalleImprevistos(doc);
 
-    // ─── Páginas finales: Gantt apaisado (Fase 6) ───
-    if(btn) btn.textContent = 'Capturando Gantt...';
-    const ganttCanvas = await _capturarGantt();
-    if(btn) btn.textContent = 'Generando PDF...';
-    if(ganttCanvas){
-      _dibujarGanttEnPDF(doc, ganttCanvas);
-    } else {
-      // Sin Gantt: agregar una página con aviso para que el PDF deje constancia
-      doc.addPage('a4', 'landscape');
-      _drawGanttHeaderLandscape(doc);
-      const [grr,grg,grb] = _hexToRgb(PDF_COLORS.gray);
-      doc.setTextColor(grr,grg,grb);
-      doc.setFont('helvetica','italic');
-      doc.setFontSize(12);
-      doc.text('Sin diagrama Gantt disponible para este reporte.',
-               doc.internal.pageSize.getWidth() / 2,
-               doc.internal.pageSize.getHeight() / 2,
-               {align:'center'});
-    }
+    // ─── Páginas finales: Gantt VECTORIAL apaisado (v2.5 — reemplaza al raster) ───
+    if(btn) btn.textContent = 'Generando Gantt...';
+    _dibujarGanttVectorial(doc);
 
     // ─── Marca de agua "BORRADOR" en cada página (si aplica) ───
     const totalPages = doc.internal.getNumberOfPages();
