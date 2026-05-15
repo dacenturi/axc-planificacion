@@ -1273,7 +1273,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.5-pdf-1';
+const _PDF_VERSION = 'v2.5-pdf-2';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -4180,7 +4180,6 @@ function _dibujarGanttVectorial(doc){
     return ta - tb;
   });
 
-  const failStates = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
 
   // ─── Calcular paginación ───
   // Header de página (~22mm) + banda título Gantt (7mm) + header columnas días (cellH)
@@ -4328,7 +4327,6 @@ function _dibujarGanttVectorial(doc){
 
       // Bloques del Gantt: marked = [{di, srcIdx}, ...]
       // di = índice en dates[], srcIdx = índice en a.days[] (-1 si viene de a.domingos[])
-      const isFail = failStates.includes(a.cumple || '');
       let marked;
       if(a.fechaIni){
         marked = [];
@@ -4363,10 +4361,13 @@ function _dibujarGanttVectorial(doc){
         const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
           ? a.cumplimiento[srcIdx]
           : null;
+        // Un día es "planificado pendiente" cuando NO está tildado como cumple/no_cumple
+        // por día. El estado global de la actividad (En espera, Retrasado, etc.) NO debe
+        // forzar los días sin tildar a aparecer como "no cumplido": el día puede ser
+        // futuro / aún sin cargar, y la confirmación no implica fallo por día.
         const esPlanifPendiente = !esExtra
           && cumpDia !== 'cumple'
           && cumpDia !== 'no_cumple'
-          && !isFail
           && !isImp;
 
         const bx = ganttX + di*cellW + 1.2;
@@ -4380,12 +4381,11 @@ function _dibujarGanttVectorial(doc){
           doc.roundedRect(bx, by, bw, bh, 1, 1, 'D');
         } else {
           let color;
-          if(esExtra)                      color = [59,130,246];   // azul
-          else if(cumpDia === 'no_cumple') color = [220,38,38];     // rojo
-          else if(cumpDia === 'cumple')    color = [34,197,94];     // verde
-          else if(isFail)                  color = [220,38,38];     // legacy fail
-          else if(isImp)                   color = [255,107,53];    // naranja imprevista
-          else                             color = GOLD;            // fallback
+          if(esExtra)                      color = [59,130,246];   // azul (día extra)
+          else if(cumpDia === 'no_cumple') color = [220,38,38];     // rojo (día no cumplido)
+          else if(cumpDia === 'cumple')    color = [34,197,94];     // verde (día cumplido)
+          else if(isImp)                   color = [255,107,53];    // naranja (imprevista)
+          else                             color = GOLD;            // fallback (no debería llegar)
           doc.setFillColor(...color);
           doc.roundedRect(bx, by, bw, bh, 1, 1, 'F');
         }
