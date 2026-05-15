@@ -2616,8 +2616,20 @@ function renderTable(){
         'box-shadow:0 0 0 3px rgba(240,165,0,.25), 0 0 8px rgba(240,165,0,.35);'+
         'flex-shrink:0;margin-top:2px;position:relative;font-weight:700';
       bComAct.textContent = '💬';
-      const previewAct = a.comentario.length > 100 ? a.comentario.slice(0,98)+'…' : a.comentario;
-      bComAct.title = 'Tiene comentario:\n\n' + previewAct + '\n\n(Click para editar)';
+      // Preview del tooltip: la entrada MÁS RECIENTE del historial.
+      const _hist = _parseCommentHistorial(a.comentario);
+      const _n = _hist.length;
+      const _ultimo = _hist[0]; // primera = más reciente
+      let previewAct;
+      if(_ultimo){
+        const _head = `${_ultimo.author}${_ultimo.dateStr ? ' · ' + _ultimo.dateStr : ''}`;
+        const _body = _ultimo.body.length > 120 ? _ultimo.body.slice(0,118) + '…' : _ultimo.body;
+        const _counter = _n > 1 ? ` (1 de ${_n})` : '';
+        previewAct = `${_head}${_counter}\n${_body}`;
+      } else {
+        previewAct = a.comentario.length > 100 ? a.comentario.slice(0,98)+'…' : a.comentario;
+      }
+      bComAct.title = 'Tiene comentario:\n\n' + previewAct + '\n\n(Click para editar / agregar al historial)';
     } else {
       bComAct.style.cssText = 'width:24px;height:24px;padding:0;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;opacity:.65;flex-shrink:0;margin-top:2px';
       bComAct.textContent = '💬';
@@ -4704,13 +4716,18 @@ function exportPDF(){
       doc.setTextColor(...GOLD_LIGHT);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
-      doc.text(`${actsConComentario.length} actividad(es) con comentario`, pageW - MX - 3, coY + 4.8, { align: 'right' });
+      doc.text(`${actsConComentario.length} actividad(es) con comentario · más recientes arriba`, pageW - MX - 3, coY + 4.8, { align: 'right' });
       coY += 11;
 
-      // Cada comentario como una tarjeta
+      // Cada actividad como una tarjeta con su HISTORIAL completo dentro.
       const fullW = pageW - 2*MX;
+      const ACCENT_RGB = [240, 165, 0]; // dorado --accent
+
       actsConComentario.forEach(({ a, num }) => {
-        // Calcular alturas
+        const historial = _parseCommentHistorial(a.comentario);
+        if(historial.length === 0) return;
+
+        // Datos de la card
         const titleLine = `Actividad N° ${num} — ${a.descripcion || a.item || '(sin descripción)'}`;
         const ctxParts = [];
         if(a.obra_act) ctxParts.push(a.obra_act);
@@ -4719,13 +4736,21 @@ function exportPDF(){
         if(a.cumple) ctxParts.push('Estado: ' + a.cumple);
         const ctxLine = ctxParts.join('  ·  ');
 
-        // Wrap del comentario
+        // ── Pre-cálculo: medir altura total del card (header + historial) ──
+        // Header card: título(5) + ctx(4) = 9
+        // Cada entrada: header autor+fecha (5) + body lines * 4.2 + 3 gap = variable
         doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
-        const comentarioLines = doc.splitTextToSize(a.comentario.trim(), fullW - 12);
-        const cardH = 6.5 + 4 + (comentarioLines.length * 4.2) + 6;
+        let bodyH = 0;
+        const entriesMeasured = historial.map((e, eIdx) => {
+          const bLines = doc.splitTextToSize(e.body || '(vacío)', fullW - 14);
+          const eH = 5 /*head*/ + bLines.length * 4.2 + (eIdx < historial.length - 1 ? 3 /*sep*/ : 0);
+          bodyH += eH + 1;
+          return { lines: bLines, height: eH, entry: e };
+        });
+        const cardH = 11 /*header card*/ + bodyH + 4 /*padding inferior*/;
 
-        // Si no entra, agregar nueva página
+        // ── Si no entra, agregar nueva página ──
         if(coY + cardH > pageH - MB - 6){
           drawFooter();
           doc.addPage('a4', 'landscape');
@@ -4733,7 +4758,7 @@ function exportPDF(){
           coY = 30;
         }
 
-        // Card background
+        // ── Card background ──
         doc.setFillColor(...GRAY_LIGHT);
         doc.setDrawColor(...GRAY_BORD);
         doc.setLineWidth(0.2);
@@ -4742,14 +4767,14 @@ function exportPDF(){
         doc.setFillColor(...GOLD);
         doc.rect(MX, coY, 2, cardH, 'F');
 
-        // Título de la actividad
+        // ── Título de la actividad ──
         doc.setTextColor(...NAVY);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(10);
         const titleClipped = doc.splitTextToSize(titleLine, fullW - 12)[0];
         doc.text(titleClipped, MX + 6, coY + 5);
 
-        // Contexto (obra, contratista, sector)
+        // ── Contexto (obra, contratista, sector, estado) ──
         if(ctxLine){
           doc.setTextColor(...GRAY_TEXT);
           doc.setFont('helvetica', 'italic');
@@ -4758,12 +4783,46 @@ function exportPDF(){
           doc.text(ctxClipped, MX + 6, coY + 9);
         }
 
-        // Comentario (cuerpo)
-        doc.setTextColor(...BLACK);
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
-        comentarioLines.forEach((ln, i) => {
-          doc.text(ln, MX + 6, coY + 13.5 + i * 4.2);
+        // ── Entradas del historial ──
+        let entryY = coY + 13;
+        entriesMeasured.forEach(({ lines, entry }, eIdx) => {
+          // Header de la entrada (autor + fecha en dorado)
+          doc.setTextColor(...ACCENT_RGB);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          const head = entry.dateStr
+            ? `${entry.author}  ·  ${entry.dateStr}`
+            : entry.author;
+          doc.text(head, MX + 6, entryY + 3);
+
+          // Marca "(anterior)" para entradas no más recientes
+          if(eIdx > 0){
+            doc.setFont('helvetica', 'italic');
+            doc.setFontSize(7.5);
+            doc.setTextColor(...GRAY_TEXT);
+            const headW = doc.getTextWidth(head);
+            doc.text('  (anterior)', MX + 6 + headW, entryY + 3);
+          }
+
+          entryY += 5;
+
+          // Cuerpo de la entrada
+          doc.setTextColor(...BLACK);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          lines.forEach((ln, i) => {
+            doc.text(ln, MX + 8, entryY + i * 4.2 + 3);
+          });
+          entryY += lines.length * 4.2;
+
+          // Separador sutil entre entradas (excepto la última)
+          if(eIdx < entriesMeasured.length - 1){
+            entryY += 1.5;
+            doc.setDrawColor(...GRAY_BORD);
+            doc.setLineWidth(0.2);
+            doc.line(MX + 6, entryY, MX + fullW - 6, entryY);
+            entryY += 1.5;
+          }
         });
 
         coY += cardH + 3;
@@ -5510,6 +5569,62 @@ async function _loadActsFromSupabase(){
 // Estado: índice de la actividad que se está editando
 window._commentModalIdx = -1;
 
+// ─── Historial de comentarios ─────────────────────────────────
+// Cada comentario se guarda como un HISTORIAL encadenado. Cada entrada
+// tiene formato ASCII puro (compatible con jsPDF Helvetica):
+//
+//   [Nombre · DD/MM/AA HH:MM]
+//   <cuerpo de la entrada>
+//
+// Las entradas se separan con una línea en blanco. La MÁS RECIENTE va
+// arriba (primera del string). Así nunca se pierde el histórico cuando
+// otro usuario edita: cada save agrega una entrada nueva al inicio.
+
+function _makeCommentEntry(name, body){
+  const n = (name || '').toString().trim() || 'Usuario';
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2,'0');
+  const mm = String(now.getMonth()+1).padStart(2,'0');
+  const yy = String(now.getFullYear()).slice(-2);
+  const hh = String(now.getHours()).padStart(2,'0');
+  const mi = String(now.getMinutes()).padStart(2,'0');
+  return `[${n} · ${dd}/${mm}/${yy} ${hh}:${mi}]\n${(body || '').trim()}`;
+}
+
+function _appendToHistorial(existing, newEntry){
+  const ex = (existing || '').trim();
+  if(!ex) return newEntry;
+  return newEntry + '\n\n' + ex;
+}
+
+function _parseCommentHistorial(comentario){
+  const c = (comentario || '').trim();
+  if(!c) return [];
+  const re = /^\[(.+?) · ([\d/]+\s+[\d:]+)\]\r?\n/gm;
+  const matches = [...c.matchAll(re)];
+  if(matches.length > 0){
+    const out = [];
+    for(let i = 0; i < matches.length; i++){
+      const m = matches[i];
+      const startBody = m.index + m[0].length;
+      const endBody = (i < matches.length - 1) ? matches[i + 1].index : c.length;
+      out.push({
+        author: m[1].trim(),
+        dateStr: m[2].trim(),
+        body: c.slice(startBody, endBody).trim()
+      });
+    }
+    return out;
+  }
+  // Formato anterior "Xxx comenta (...):"
+  const legacy = c.match(/^(.+?) comenta(?:\s+\(([^)]+)\))?:\r?\n([\s\S]*)$/);
+  if(legacy){
+    return [{ author: legacy[1].trim(), dateStr: (legacy[2] || '').trim(), body: legacy[3].trim() }];
+  }
+  // Texto plano sin firma
+  return [{ author: '(sin firma)', dateStr: '', body: c }];
+}
+
 function openCommentModal(idx){
   if(idx < 0 || idx >= acts.length) return;
   window._commentModalIdx = idx;
@@ -5519,9 +5634,10 @@ function openCommentModal(idx){
   // cambios y decidir si disparar la notificación de WhatsApp.
   window._commentModalPrevious = a.comentario || '';
 
-  // Preparar textarea
+  // Preparar textarea — SIEMPRE vacío: la entrada nueva se AGREGA al historial,
+  // no reemplaza al anterior. El historial existente se muestra abajo del contexto.
   const ta = document.getElementById('comment-modal-textarea');
-  ta.value = a.comentario || '';
+  ta.value = '';
   _updateCommentCounter();
   ta.oninput = _updateCommentCounter;
 
@@ -5544,7 +5660,30 @@ function openCommentModal(idx){
   if(a.sector) partes.push(`<b>Sector:</b> ${a.sector}`);
   const desc = a.descripcion || a.item || '<i>(sin descripción)</i>';
   partes.push(`<b>Actividad:</b> ${desc}`);
-  ctx.innerHTML = partes.join(' &nbsp;·&nbsp; ');
+
+  // Mostrar resumen del historial existente debajo del contexto principal.
+  const histPrev = _parseCommentHistorial(a.comentario);
+  let histHTML = '';
+  if(histPrev.length > 0){
+    const totalTxt = histPrev.length === 1 ? '1 comentario previo' : `${histPrev.length} comentarios previos`;
+    histHTML = `
+      <div style="margin-top:8px;padding:8px 10px;background:rgba(240,165,0,.08);
+                  border:1px solid rgba(240,165,0,.25);border-radius:8px;
+                  font-size:12px;color:var(--text2);line-height:1.45">
+        <div style="color:var(--accent);font-weight:700;margin-bottom:4px">
+          📝 Historial · ${totalTxt} · más reciente arriba
+        </div>
+        <div style="white-space:pre-wrap;max-height:180px;overflow-y:auto;
+                    font-family:'Mulish',sans-serif">${
+          histPrev.map(e => {
+            const head = `<b>${e.author}</b>${e.dateStr ? ' · ' + e.dateStr : ''}`;
+            const body = (e.body || '').replace(/[<>]/g, ch => ({'<':'&lt;','>':'&gt;'}[ch]));
+            return head + '\n' + body;
+          }).join('\n\n')
+        }</div>
+      </div>`;
+  }
+  ctx.innerHTML = partes.join(' &nbsp;·&nbsp; ') + histHTML;
 
   // ── Mostrar/ocultar botón WhatsApp y aviso del destinatario ──
   // Solo admins pueden enviar WhatsApp. Para residentes, el botón verde
@@ -5647,7 +5786,7 @@ async function saveCommentModal(opts){
   const idx = window._commentModalIdx;
   if(idx < 0 || idx >= acts.length){ closeCommentModal(); return; }
   const ta = document.getElementById('comment-modal-textarea');
-  const nuevoComentario = (ta.value || '').trim();
+  const bodyTrim = (ta.value || '').trim();
   const previo = (window._commentModalPrevious || '').trim();
   const a = acts[idx];
 
@@ -5662,6 +5801,16 @@ async function saveCommentModal(opts){
     criticidad:  a.criticidad || ''
   };
 
+  // Agregar la nueva entrada al HISTORIAL existente (más reciente arriba).
+  // Si el body está vacío, no se agrega nada y se cierra el modal (no se borra
+  // el historial existente — para eso habría que vaciar manualmente la actividad).
+  let nuevoComentario = a.comentario || '';
+  if(bodyTrim){
+    const nombreUsuario = window._axcNombre || window._axcEmail || 'Usuario';
+    const nueva = _makeCommentEntry(nombreUsuario, bodyTrim);
+    nuevoComentario = _appendToHistorial(a.comentario, nueva);
+  }
+
   // Persistir cambio
   acts[idx].comentario = nuevoComentario;
   save();
@@ -5669,23 +5818,25 @@ async function saveCommentModal(opts){
   closeCommentModal();
 
   if(typeof showToast === 'function'){
-    showToast(nuevoComentario ? '✓ Comentario guardado' : '✓ Comentario eliminado', 'ok');
+    if(bodyTrim){
+      showToast('✓ Comentario agregado al historial', 'ok');
+    } else {
+      showToast('Modal cerrado (textarea vacío — no se agregó nada)', 'info');
+    }
   }
 
   // ════════════════════════════════════════════════════════════════
   // NOTIFICACIÓN POR WHATSAPP — solo si:
   //   1. El usuario apretó el botón "Guardar y enviar WhatsApp" (notify=true)
   //   2. El usuario logueado es admin
-  //   3. El comentario tiene contenido (no se borró)
+  //   3. La entrada nueva tiene contenido (bodyTrim no vacío)
   //   4. La actividad tiene un residente asignado
-  // Nota: ya NO requerimos que el comentario haya cambiado. Si el admin
-  // eligió "enviar WhatsApp" explícitamente, lo enviamos aunque sea el
-  // mismo texto (puede ser un re-envío deliberado).
+  // Nota: WhatsApp envía SOLO la entrada recién agregada, no todo el historial.
   // ════════════════════════════════════════════════════════════════
   try {
     if(!notify) return;
     if(!window._axcEsAdmin) return;
-    if(!nuevoComentario){
+    if(!bodyTrim){
       if(typeof showToast === 'function'){
         showToast('⚠ No se envía WhatsApp: el comentario está vacío', 'warn');
       }
@@ -5743,7 +5894,7 @@ async function saveCommentModal(opts){
     if(snapshot.criticidad)  lines.push(`*Criticidad:* ${snapshot.criticidad}`);
     lines.push('');
     lines.push('*Comentario:*');
-    lines.push(`"${nuevoComentario}"`);
+    lines.push(`"${bodyTrim}"`);
     lines.push('');
     lines.push(`_Cargado: ${fechaTxt}_`);
     lines.push(`_Por: ${remitente}_`);
