@@ -3957,17 +3957,32 @@ function exportPDF(){
     doc.setTextColor(...GOLD_LIGHT);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
-    // Si hay imprevistas, advertir en el subtítulo
-    const _nImprevHead = actsExport.filter(a => a.imprevista).length;
-    const _nPlan = actsExport.length - _nImprevHead;
-    const _subTxt = _nImprevHead > 0
-      ? `${_nPlan} planificada(s) + ${_nImprevHead} IMPR. no planificada(s)`
-      : `${actsExport.length} actividad(es) planificada(s)`;
+    // Subtítulo: muestra confirmadas (las que entran a la tabla) + nota de no confirmadas.
+    const _actsConf      = actsExport.filter(a => !!a.confirmada);
+    const _actsNoConf    = actsExport.length - _actsConf.length;
+    const _nImprConf     = _actsConf.filter(a => a.imprevista).length;
+    const _nPlanConf     = _actsConf.length - _nImprConf;
+    let _subTxt;
+    if(_actsConf.length === 0){
+      _subTxt = _actsNoConf > 0
+        ? `Sin actividades confirmadas · ${_actsNoConf} pendiente(s) de confirmar`
+        : 'Sin actividades en el período';
+    } else {
+      _subTxt = _nImprConf > 0
+        ? `${_nPlanConf} planificada(s) + ${_nImprConf} IMPR. (todas confirmadas)`
+        : `${_actsConf.length} actividad(es) confirmada(s)`;
+      if(_actsNoConf > 0) _subTxt += ` · ${_actsNoConf} sin confirmar (no incluida${_actsNoConf===1?'':'s'})`;
+    }
     doc.text(_subTxt, pageW - MX - 3, curY + 4.8, { align: 'right' });
     curY += titleH;
 
     // ── Construir filas de la tabla ──
-    const tableRows = actsExport.map((a, idx) => {
+    // Solo planificaciones CONFIRMADAS por el contratista.
+    // Una planificación está "confirmada" cuando el contratista valida el plan
+    // (a.confirmada === true). Las pendientes de confirmación no se incluyen
+    // ni en esta tabla ni en el resumen final.
+    const actsTablaConfirm = actsExport.filter(a => !!a.confirmada);
+    const tableRows = actsTablaConfirm.map((a, idx) => {
       const r = actDateRange(a);
       // Prefijo [IMPR] para imprevistas (Helvetica de jsPDF no soporta emojis Unicode)
       const descBase = (a.descripcion || a.item || '(sin nombre)');
@@ -4355,7 +4370,7 @@ function exportPDF(){
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     const gantSubt = numDays > 0
-      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${dates.filter(d => d.getDay()!==0).length} día(s) hábil(es)`
+      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${dates.filter(d => d.getDay()!==0).length} día(s) hábil(es) · solo confirmadas`
       : `Sin días hábiles definidos`;
     doc.text(gantSubt, pageW - MX - 3, ganttTopY + 4.8, { align: 'right' });
 
@@ -4400,7 +4415,9 @@ function exportPDF(){
     doc.line(ganttX, ganttTopY, ganttX, ganttTopY + cellH);
 
     // Ordenar actividades por fecha de inicio (considera tildes hábiles + domingos)
-    const actsGantt = actsExport.slice().sort((a,b) => {
+    // Solo planificaciones CONFIRMADAS (alineado con la tabla y el resumen).
+    const actsGanttConfirm = actsExport.filter(a => !!a.confirmada);
+    const actsGantt = actsGanttConfirm.slice().sort((a,b) => {
       const ta = _firstDayIdx(a);
       const tb = _firstDayIdx(b);
       if(ta === Infinity && tb === Infinity) return 0;
@@ -4702,8 +4719,11 @@ function exportPDF(){
       const _failStatesRsm = ['No Cumple','No','Cumplido con atraso','En espera','Retrasado','Cancelado'];
       const _effRsm = (a) => _estadoEfectivoExport(a);
 
-      const actsPlan    = actsExport.filter(a => !a.imprevista);
-      const actsImpRsm  = actsExport.filter(a => !!a.imprevista);
+      // Solo planificaciones CONFIRMADAS: alineado con la tabla "Tareas a ejecutar".
+      const actsConfRsm = actsExport.filter(a => !!a.confirmada);
+      const actsNoConfRsm = actsExport.length - actsConfRsm.length;
+      const actsPlan    = actsConfRsm.filter(a => !a.imprevista);
+      const actsImpRsm  = actsConfRsm.filter(a => !!a.imprevista);
       const totalRsm    = actsPlan.length;
       const okRsm       = actsPlan.filter(a => _okStatesRsm.includes(_effRsm(a))).length;
       const failRsm     = actsPlan.filter(a => _failStatesRsm.includes(_effRsm(a))).length;
@@ -4730,6 +4750,15 @@ function exportPDF(){
       const fIni = getStart() ? new Date(getStart()).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
       const fFin = getFin()   ? new Date(getFin()).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'})   : '—';
       doc.text(`Del ${fIni} al ${fFin}`, MX, 45);
+
+      // Nota: solo planificaciones confirmadas
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(...NAVY);
+      const subInfo = actsNoConfRsm > 0
+        ? `Solo planificaciones confirmadas (${actsConfRsm.length} de ${actsExport.length} · ${actsNoConfRsm} sin confirmar no contabilizada${actsNoConfRsm===1?'':'s'})`
+        : `Solo planificaciones confirmadas (${actsConfRsm.length} de ${actsExport.length})`;
+      doc.text(subInfo, pageW - MX, 45, { align: 'right' });
 
       // Línea separadora
       doc.setDrawColor(...GOLD);
