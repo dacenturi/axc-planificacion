@@ -1181,12 +1181,28 @@ async function _bootApp(user){
   // Configurar dropdown "Residente" según rol
   const selResidente = document.getElementById('inp-residente');
   if(!window._axcEsAdmin && window._axcResidente){
-    // Residente: precargar su nombre y deshabilitar el dropdown
+    // Residente: precargar su nombre y deshabilitar el dropdown.
+    // 🛡️ GUARDA CRÍTICA (incidente 16/05/2026): si la opción no existe todavía
+    // en el dropdown (porque la tabla `listas` aún no se cargó o no incluye
+    // este residente), CREARLA al vuelo antes de asignar el value. Sin esto,
+    // selResidente.value = '...' falla silenciosamente y el dropdown queda
+    // en la primera opción alfabética (ej. "Arq. Ana"), provocando que el
+    // próximo upsert reasigne TODAS las actividades del usuario a ese valor.
+    const yaExiste = Array.from(selResidente.options).some(o => o.value === window._axcResidente);
+    if(!yaExiste){
+      const opt = document.createElement('option');
+      opt.value = window._axcResidente;
+      opt.textContent = window._axcResidente;
+      selResidente.appendChild(opt);
+    }
     selResidente.value = window._axcResidente;
     selResidente.disabled = true;
     selResidente.style.opacity = '0.75';
     selResidente.style.cursor = 'not-allowed';
     selResidente.title = 'Asignación fija: ' + window._axcResidente;
+    // Ocultar el botón "+" de agregar residente si existe al lado
+    const addBtn = selResidente.parentElement?.querySelector('.abm-add-btn, [onclick*="residentes"]');
+    if(addBtn) addBtn.style.display = 'none';
   } else {
     // Admin: dropdown libre
     if(obraSnapshot.residente) selResidente.value = obraSnapshot.residente;
@@ -5216,9 +5232,50 @@ async function _syncActsToSupabase(){
     // Header values
     const hdrObra        = document.getElementById('inp-obra')?.value || '';
     const hdrContratista = document.getElementById('inp-contratista')?.value || '';
-    const hdrResidente   = document.getElementById('inp-residente')?.value || '';
+    let   hdrResidente   = document.getElementById('inp-residente')?.value || '';
     const hdrFechaIni    = document.getElementById('inp-fecha')?.value || null;
     const hdrFechaFin    = document.getElementById('inp-fecha-fin')?.value || null;
+
+    // 🛡️ GUARDA CRÍTICA (incidente Azucena → Ana, 16/05/2026):
+    // Si el usuario NO es admin y tiene residente asignado en su perfil,
+    // hdrResidente DEBE coincidir con _axcResidente. Si no coincide,
+    // ABORTAR el guardado para prevenir reasignación masiva accidental.
+    if(!window._axcEsAdmin && window._axcResidente){
+      if(hdrResidente !== window._axcResidente){
+        const msg = 'Guardado cancelado: el residente del header ("' + 
+                    (hdrResidente || '[vacío]') + 
+                    '") no coincide con tu perfil ("' + window._axcResidente + 
+                    '"). Recargá la página y volvé a intentar.';
+        console.error('GUARDA RESIDENTE (CONTRATISTA):', msg, {
+          hdrResidente,
+          perfilResidente: window._axcResidente,
+          uid: window._axcUid
+        });
+        _showSyncError(msg);
+        _setSyncStatus('error');
+        // Forzar el dropdown al valor correcto para evitar más intentos fallidos
+        const selFix = document.getElementById('inp-residente');
+        if(selFix){
+          const ya = Array.from(selFix.options).some(o => o.value === window._axcResidente);
+          if(!ya){
+            const opt = document.createElement('option');
+            opt.value = window._axcResidente;
+            opt.textContent = window._axcResidente;
+            selFix.appendChild(opt);
+          }
+          selFix.value = window._axcResidente;
+        }
+        return;
+      }
+    }
+
+    // Residente efectivo: para residentes no-admin, IGNORAR el dropdown y
+    // usar siempre el valor del perfil. Defensa en profundidad por si la
+    // guarda de arriba se omite en el futuro.
+    const residenteEfectivo = (!window._axcEsAdmin && window._axcResidente)
+      ? window._axcResidente
+      : hdrResidente;
+    hdrResidente = residenteEfectivo;
 
     // Mappers para cumplir con los CHECK constraints de la tabla:
     //   cumple:     '' | 'Sí' | 'No' | 'En proceso' | 'Terminado' |
