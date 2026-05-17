@@ -1082,19 +1082,17 @@ async function doLogin(){
 }
 
 async function doBackToPortal(){
-  // GUARDADO MANUAL (post-incidente 17/05): si hay cambios sin guardar,
-  // pedir confirmación al usuario en lugar de auto-guardar.
-  if(!_confirmDiscardChanges('volver al portal')) return;
-  // Navega al portal manteniendo la sesión activa (muestra el selector de apps)
-  window.location.href = 'index.html';
+  // Si hay cambios sin guardar, mostrar modal con 3 opciones (post-incidente 17/05)
+  await _handleActionWithUnsavedChanges('volver al portal', async () => {
+    window.location.href = 'index.html';
+  });
 }
 async function doLogout(){
-  // GUARDADO MANUAL (post-incidente 17/05): si hay cambios sin guardar,
-  // pedir confirmación al usuario en lugar de auto-guardar.
-  if(!_confirmDiscardChanges('cerrar sesión')) return;
-  // Cierra la sesión de Supabase y vuelve al portal (mostrará el login)
-  await _SB.auth.signOut();
-  window.location.href = 'index.html';
+  // Si hay cambios sin guardar, mostrar modal con 3 opciones (post-incidente 17/05)
+  await _handleActionWithUnsavedChanges('cerrar sesión', async () => {
+    await _SB.auth.signOut();
+    window.location.href = 'index.html';
+  });
 }
 async function doLogout_ORIG_UNUSED(){
   await _SB.auth.signOut();
@@ -1663,21 +1661,41 @@ async function onResidenteChange(){
     // aunque hayan sido creadas por el admin.)
   }
 
-  // ── GUARDADO MANUAL: si hay cambios sin guardar, advertir ──
+  // ── GUARDADO MANUAL: si hay cambios sin guardar, mostrar modal ──
   // (Modo defensivo post-incidente 17/05/2026)
   // Solo aplica si realmente está cambiando de residente (no en carga inicial).
   if(typeof _syncDirty !== 'undefined' && _syncDirty && window._ultimoResidenteCargado){
     const nuevoResid = document.getElementById('inp-residente').value;
     if(nuevoResid && nuevoResid !== window._ultimoResidenteCargado){
-      if(!_confirmDiscardChanges('cambiar de residente')){
-        // Usuario decidió quedarse: revertir el dropdown al residente anterior
-        document.getElementById('inp-residente').value = window._ultimoResidenteCargado;
+      const prevResid = window._ultimoResidenteCargado;
+      const choice = await _showSaveDialog('cambiar de residente');
+      if(choice === 'cancel'){
+        document.getElementById('inp-residente').value = prevResid;
         return;
       }
-      // Si llegó acá, descarta los cambios pendientes para evitar que se suban
-      // al residente equivocado al hacer click en "Guardar" después.
-      _syncDirty = false;
-      _setSyncStatus('saved');
+      if(choice === 'save'){
+        try{
+          await forceSave();
+          let waits = 0;
+          while(_syncInFlight && waits < 200){
+            await new Promise(r => setTimeout(r, 50));
+            waits++;
+          }
+          if(_syncDirty){
+            document.getElementById('inp-residente').value = prevResid;
+            if(typeof showToast === 'function') showToast('⚠️ No se pudieron guardar los cambios. Revisá el error.', 'warn');
+            return;
+          }
+        } catch(e){
+          console.error('Error en forceSave:', e);
+          document.getElementById('inp-residente').value = prevResid;
+          return;
+        }
+      }
+      if(choice === 'discard'){
+        _syncDirty = false;
+        _setSyncStatus('saved');
+      }
     }
   }
 
@@ -4984,11 +5002,114 @@ function _setSyncStatus(status){
 // Devuelve true si el usuario eligió continuar (descartar cambios)
 // o si no hay cambios pendientes. False si decide quedarse.
 function _confirmDiscardChanges(accion){
+  // (Función mantenida por compat — usar _showSaveDialog para nuevos flujos)
   if(!_syncDirty && !_syncInFlight) return true;
-  const msg = 'Tenés cambios sin guardar.\n\n' +
-              '• Apretá "Cancelar" para volver y guardar antes de ' + (accion || 'continuar') + '.\n' +
-              '• Apretá "Aceptar" para ' + (accion || 'continuar') + ' SIN guardar (los cambios se perderán).';
-  return window.confirm(msg);
+  return window.confirm('Tenés cambios sin guardar. ¿' + (accion || 'Continuar') + ' sin guardar?');
+}
+
+// ── Modal custom de confirmación al salir con cambios sin guardar ──
+// Devuelve una Promise que resuelve a: 'save' | 'discard' | 'cancel'
+function _showSaveDialog(accion){
+  return new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);z-index:99000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .15s ease';
+
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#0d1b2a;border:1.5px solid rgba(240,165,0,.55);border-radius:14px;padding:28px 28px 24px;max-width:480px;width:100%;font-family:Mulish,sans-serif;color:#e6edf3;box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03);animation:fadeIn .2s ease';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:14px';
+    const iconCircle = document.createElement('div');
+    iconCircle.style.cssText = 'width:42px;height:42px;border-radius:50%;background:rgba(240,165,0,.18);border:1.5px solid rgba(240,165,0,.6);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0';
+    iconCircle.textContent = '⚠';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:17px;font-weight:800;letter-spacing:.2px;color:#f0a500';
+    title.textContent = 'Tenés cambios sin guardar';
+    header.appendChild(iconCircle);
+    header.appendChild(title);
+
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:14px;line-height:1.5;color:#c9d1d9;margin-bottom:22px;font-weight:500';
+    msg.innerHTML = '¿Querés <strong style="color:#fff">guardar las modificaciones</strong> antes de ' + (accion || 'continuar') + '?';
+
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;flex-direction:column;gap:10px';
+
+    const btnSave = document.createElement('button');
+    btnSave.style.cssText = 'padding:12px 18px;border:1.5px solid rgba(63,185,80,.7);border-radius:10px;background:rgba(63,185,80,.18);color:#3fb950;font-family:Mulish,sans-serif;font-size:14px;font-weight:800;cursor:pointer;transition:all .15s;letter-spacing:.3px';
+    btnSave.innerHTML = '💾&nbsp;&nbsp;Guardar y ' + (accion || 'continuar');
+    btnSave.onmouseover = () => { btnSave.style.background = 'rgba(63,185,80,.28)'; btnSave.style.filter = 'brightness(1.1)'; };
+    btnSave.onmouseout  = () => { btnSave.style.background = 'rgba(63,185,80,.18)'; btnSave.style.filter = ''; };
+    btnSave.onclick = () => { document.body.removeChild(backdrop); resolve('save'); };
+
+    const btnDiscard = document.createElement('button');
+    btnDiscard.style.cssText = 'padding:12px 18px;border:1.5px solid rgba(248,81,73,.55);border-radius:10px;background:rgba(248,81,73,.12);color:#f85149;font-family:Mulish,sans-serif;font-size:14px;font-weight:800;cursor:pointer;transition:all .15s;letter-spacing:.3px';
+    btnDiscard.innerHTML = '⚠&nbsp;&nbsp;' + (accion ? accion.charAt(0).toUpperCase() + accion.slice(1) : 'Continuar') + ' SIN guardar';
+    btnDiscard.onmouseover = () => { btnDiscard.style.background = 'rgba(248,81,73,.22)'; btnDiscard.style.filter = 'brightness(1.1)'; };
+    btnDiscard.onmouseout  = () => { btnDiscard.style.background = 'rgba(248,81,73,.12)'; btnDiscard.style.filter = ''; };
+    btnDiscard.onclick = () => { document.body.removeChild(backdrop); resolve('discard'); };
+
+    const btnCancel = document.createElement('button');
+    btnCancel.style.cssText = 'padding:11px 18px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:transparent;color:#8b949e;font-family:Mulish,sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;margin-top:4px';
+    btnCancel.textContent = 'Volver a editar';
+    btnCancel.onmouseover = () => { btnCancel.style.background = 'rgba(255,255,255,.06)'; btnCancel.style.color = '#e6edf3'; };
+    btnCancel.onmouseout  = () => { btnCancel.style.background = 'transparent'; btnCancel.style.color = '#8b949e'; };
+    btnCancel.onclick = () => { document.body.removeChild(backdrop); resolve('cancel'); };
+
+    btns.appendChild(btnSave);
+    btns.appendChild(btnDiscard);
+    btns.appendChild(btnCancel);
+
+    card.appendChild(header);
+    card.appendChild(msg);
+    card.appendChild(btns);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+
+    const escHandler = (e) => {
+      if(e.key === 'Escape'){
+        document.removeEventListener('keydown', escHandler);
+        if(backdrop.parentNode) document.body.removeChild(backdrop);
+        resolve('cancel');
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+
+    setTimeout(() => btnSave.focus(), 50);
+  });
+}
+
+// ── Helper: maneja una acción que puede requerir guardar antes ──
+async function _handleActionWithUnsavedChanges(accion, onProceed){
+  if(!_syncDirty && !_syncInFlight){
+    await onProceed();
+    return;
+  }
+  const choice = await _showSaveDialog(accion);
+  if(choice === 'cancel') return;
+  if(choice === 'save'){
+    try{
+      await forceSave();
+      let waits = 0;
+      while(_syncInFlight && waits < 200){
+        await new Promise(r => setTimeout(r, 50));
+        waits++;
+      }
+      if(_syncDirty){
+        if(typeof showToast === 'function') showToast('⚠️ No se pudieron guardar los cambios. Revisá el error e intentá de nuevo.', 'warn');
+        return;
+      }
+    } catch(e){
+      console.error('Error en forceSave:', e);
+      if(typeof showToast === 'function') showToast('⚠️ Error al guardar: ' + (e.message || 'desconocido'), 'warn');
+      return;
+    }
+  }
+  if(choice === 'discard'){
+    _syncDirty = false;
+    _setSyncStatus('saved');
+  }
+  await onProceed();
 }
 
 // Guardado MANUAL forzado: cancela el debounce y sincroniza ahora.
