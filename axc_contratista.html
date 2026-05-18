@@ -832,49 +832,143 @@ function getABMList(key){
   catch(e){ return ABM_DEFAULTS[key].slice(); }
 }
 
-// ── saveABMList — guarda en Supabase Y actualiza caché ────────
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  saveABMList — VERSIÓN SEGURA POST-INCIDENTE 17/05/2026            ║
+// ║  ────────────────────────────────────────────────────────────────  ║
+// ║  Persiste cambios de listas (obras/contratistas/razones/sectores)  ║
+// ║  en Supabase con 3 capas de protección:                            ║
+// ║                                                                    ║
+// ║  1. DIFF QUIRÚRGICO: en lugar de DELETE-ALL + INSERT-ALL, solo     ║
+// ║     inserta lo nuevo y borra lo explícitamente quitado. Esto       ║
+// ║     evita que un cache stale borre entradas que no tendría que     ║
+// ║     borrar.                                                        ║
+// ║                                                                    ║
+// ║  2. VALIDACIÓN ANTI-BORRADO: antes de borrar una entrada, chequea  ║
+// ║     en `actividades` si hay filas que la referencian. Si las hay,  ║
+// ║     ABORTA el borrado y avisa al usuario.                          ║
+// ║                                                                    ║
+// ║  3. FUENTE DE VERDAD: usa el cache (_listasCache/_sectoresCache)   ║
+// ║     como referencia del estado actual. Si el cache no está cargado ║
+// ║     todavía, NO hace cambios destructivos en Supabase (solo cae    ║
+// ║     a localStorage como antes).                                    ║
+// ╚════════════════════════════════════════════════════════════════════╝
 async function saveABMList(key, arr){
   // Deduplicar siempre (por si la fuente pasa duplicados)
   arr = [...new Set(arr || [])];
-  if(_cacheLoaded){
-    const obraRef = (key === 'sectores') ? ((window._abmObraOverride) || getCurrentObra()) : '';
-    try {
-      // Borrar registros anteriores de este tipo/obra
-      if(key === 'sectores'){
-        await _SB.from('listas').delete()
-          .eq('tipo', 'sectores').eq('obra_ref', obraRef);
-        // Insertar nuevos
-        if(arr.length){
-          await _SB.from('listas').insert(
-            arr.map(v => ({ tipo:'sectores', valor:v, obra_ref:obraRef }))
-          );
-        }
-        // Actualizar caché
-        _sectoresCache[obraRef] = [...arr];
-      } else {
-        // Borrar solo los de obra_ref vacío (globales), no tocar sectores
-        await _SB.from('listas').delete().eq('tipo', key).eq('obra_ref', '');
-        if(arr.length){
-          await _SB.from('listas').insert(
-            arr.map(v => ({ tipo:key, valor:v, obra_ref:'' }))
-          );
-        }
-        // Actualizar caché
-        _listasCache[key] = [...arr];
-      }
-    } catch(e){
-      console.warn('Error guardando en Supabase, usando localStorage:', e);
-      localStorage.setItem('axc_abm_'+key, JSON.stringify(arr));
-    }
-  } else {
-    // Fallback localStorage
+
+  // Si el cache de Supabase no está cargado, solo escribe localStorage (modo offline)
+  if(!_cacheLoaded){
     if(key === 'sectores'){
       const obra = (window._abmObraOverride) || getCurrentObra();
       saveSectoresDeObra(obra, arr);
     } else {
       localStorage.setItem('axc_abm_'+key, JSON.stringify(arr));
     }
+    return;
   }
+
+  // ── Sectores: scope por obra ──
+  if(key === 'sectores'){
+    const obraRef = (window._abmObraOverride) || getCurrentObra();
+    const actual = (_sectoresCache[obraRef] || []).slice();
+    const aAgregar = arr.filter(v => !actual.includes(v));
+    const aBorrar  = actual.filter(v => !arr.includes(v));
+
+    if(aBorrar.length){
+      const bloqueados = await _validarBorradoSeguro('sectores', aBorrar, obraRef);
+      if(bloqueados.length){
+        const msg = '⚠ No se puede continuar: ' + bloqueados.map(b =>
+          '"' + b.valor + '" (' + b.uso + ' actividad' + (b.uso===1?'':'es') + ')'
+        ).join(', ') + ' está' + (bloqueados.length===1?'':'n') +
+          ' en uso. Reasigná las actividades primero.';
+        alert(msg);
+        return;
+      }
+    }
+
+    try {
+      if(aAgregar.length){
+        await _SB.from('listas').insert(aAgregar.map(v=>({tipo:'sectores',valor:v,obra_ref:obraRef})));
+      }
+      for(const v of aBorrar){
+        await _SB.from('listas').delete().eq('tipo','sectores').eq('valor',v).eq('obra_ref',obraRef);
+      }
+      _sectoresCache[obraRef] = [...arr];
+    } catch(e){
+      console.warn('Error guardando sectores en Supabase, usando localStorage:', e);
+      localStorage.setItem('axc_abm_sectores_'+obraRef, JSON.stringify(arr));
+    }
+    return;
+  }
+
+  // ── Obras, contratistas, razones: scope global ──
+  const actual = (_listasCache[key] || []).slice();
+  const aAgregar = arr.filter(v => !actual.includes(v));
+  const aBorrar  = actual.filter(v => !arr.includes(v));
+
+  if(!aAgregar.length && !aBorrar.length){
+    return; // sin cambios reales, no hacer nada
+  }
+
+  if(aBorrar.length){
+    const bloqueados = await _validarBorradoSeguro(key, aBorrar);
+    if(bloqueados.length){
+      const msg = '⚠ No se puede continuar: ' + bloqueados.map(b =>
+        '"' + b.valor + '" (' + b.uso + ' actividad' + (b.uso===1?'':'es') + ')'
+      ).join(', ') + ' está' + (bloqueados.length===1?'':'n') +
+        ' en uso. Reasigná las actividades primero.';
+      alert(msg);
+      return;
+    }
+  }
+
+  try {
+    if(aAgregar.length){
+      await _SB.from('listas').insert(aAgregar.map(v=>({tipo:key,valor:v,obra_ref:''})));
+    }
+    for(const v of aBorrar){
+      await _SB.from('listas').delete().eq('tipo',key).eq('valor',v);
+    }
+    _listasCache[key] = [...arr];
+  } catch(e){
+    console.warn('Error guardando en Supabase, usando localStorage:', e);
+    localStorage.setItem('axc_abm_'+key, JSON.stringify(arr));
+  }
+}
+
+// ── Helper: valida qué items NO se pueden borrar porque hay actividades activas ──
+// Devuelve un array de objetos { valor, uso } con los items que están bloqueados.
+// Si está todo libre, devuelve [].
+async function _validarBorradoSeguro(key, items, obraRef){
+  if(!items || !items.length) return [];
+  const bloqueados = [];
+  const col = (key === 'obras') ? 'obra'
+            : (key === 'contratistas') ? 'contratista'
+            : (key === 'razones') ? 'razon'
+            : (key === 'sectores') ? 'sector'
+            : null;
+  if(!col) return [];
+  for(const valor of items){
+    try {
+      let q = _SB.from('actividades').select('id', { count: 'exact', head: true }).eq(col, valor);
+      if(key === 'sectores' && obraRef){
+        q = q.eq('obra', obraRef);
+      }
+      const { count, error } = await q;
+      if(error){
+        console.warn('Error validando borrado de', valor, error);
+        bloqueados.push({ valor, uso: '?' });
+        continue;
+      }
+      if((count || 0) > 0){
+        bloqueados.push({ valor, uso: count });
+      }
+    } catch(e){
+      console.warn('Excepción validando borrado de', valor, e);
+      bloqueados.push({ valor, uso: '?' });
+    }
+  }
+  return bloqueados;
 }
 
 function getSectoresDeObra(obraName){
@@ -983,6 +1077,12 @@ function renderABMList(){
 }
 
 async function addABMItem(){
+  // Permiso: solo admin puede modificar la lista de residentes.
+  // Los residentes (no-admin) sí pueden agregar a obras/contratistas/sectores/razones.
+  if(_abmKey === 'residentes' && !window._axcEsAdmin){
+    alert('No tiene permiso para modificar la lista de residentes. Esta acción es exclusiva del administrador.');
+    return;
+  }
   const inp = document.getElementById('abm-input');
   const val = inp.value.trim();
   if(!val) return;
@@ -998,7 +1098,7 @@ async function addABMItem(){
   }
 }
 
-function delABMItem(idx){
+async function delABMItem(idx){
   // Permiso: solo administradores pueden eliminar elementos de las listas
   // compartidas (Obras, Contratistas, Sectores, Razones).
   if(!window._axcEsAdmin){
@@ -1007,9 +1107,21 @@ function delABMItem(idx){
   }
   const list = getABMList(_abmKey);
   const item = list[idx];
-  if(!confirm('¿Eliminar "'+item+'" de la lista?')) return;
+  if(!confirm('¿Eliminar "'+item+'" de la lista?\n\nNota: si tiene actividades activas, no se podrá borrar.')) return;
+  // Pre-validación: si tiene actividades activas, avisar acá mismo y no continuar
+  const bloqueados = await _validarBorradoSeguro(_abmKey, [item],
+    (_abmKey === 'sectores') ? ((window._abmObraOverride) || getCurrentObra()) : undefined);
+  if(bloqueados.length){
+    alert('⚠ No se puede eliminar "' + item + '": tiene ' + bloqueados[0].uso +
+          ' actividad' + (bloqueados[0].uso===1?'':'es') +
+          ' activa' + (bloqueados[0].uso===1?'':'s') +
+          '.\n\nReasigná las actividades a otra ' +
+          (_abmKey==='obras'?'obra':_abmKey==='contratistas'?'persona':_abmKey==='sectores'?'sección':'razón') +
+          ' antes de borrar.');
+    return;
+  }
   list.splice(idx,1);
-  saveABMList(_abmKey, list);
+  await saveABMList(_abmKey, list);
   renderABMList();
 }
 
