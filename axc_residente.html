@@ -489,8 +489,8 @@ select[title]:hover, input[title]:hover { cursor:help; }
   </div>
   <div class="nav-tabs">
     <button class="tab-btn active" onclick="showPage('carga')" id="tab-carga">📋 Carga</button>
-    <button class="tab-btn" onclick="showPage('reporte')" id="tab-reporte">📊 Reporte</button>
-    <button class="tab-btn" onclick="showPage('gantt')" id="tab-gantt">📅 Gantt</button>
+    <button class="tab-btn" onclick="_navProtegida('ver el reporte', 'reporte')" id="tab-reporte">📊 Reporte</button>
+    <button class="tab-btn" onclick="_navProtegida('ver el Gantt', 'gantt')" id="tab-gantt">📅 Gantt</button>
     <div class="user-chip" id="user-chip" style="display:none;margin-left:8px">
       <div class="user-av" id="user-av">?</div>
       <div class="user-nm" id="user-nm"></div>
@@ -507,8 +507,8 @@ select[title]:hover, input[title]:hover { cursor:help; }
   <div class="sec-head">
     <div class="sec-title">Planificación de Actividades para Residente <small id="sec-sub">Período de actividades</small></div>
     <div class="flex-row">
-      <button class="btn btn-secondary" onclick="exportXLSX()">📥 Exportar Excel</button>
-      <button id="btn-export-pdf" class="btn btn-secondary" onclick="exportPDF()">📄 Exportar PDF</button>
+      <button id="btn-export-xlsx" class="btn btn-secondary" onclick="_exportProtegido('exportar el Excel', 'xlsx')">📥 Exportar Excel</button>
+      <button id="btn-export-pdf" class="btn btn-secondary" onclick="_exportProtegido('exportar el PDF', 'pdf')">📄 Exportar PDF</button>
       <button id="btn-imprevisto" class="btn btn-imprevisto" onclick="openImprevistoModal()" title="Registrar una actividad NO planificada que surgió hoy">📌 ＋ Imprevisto</button>
       <button id="btn-nueva-actividad" class="btn btn-primary" onclick="addRow()">＋ Nueva actividad</button>
     </div>
@@ -3371,7 +3371,7 @@ function renderGantt(){
 
 function exportXLSX(){
   const SERVER = 'https://axc-excel-server.onrender.com/export';
-  const btn = document.querySelector('.btn-secondary[onclick="exportXLSX()"]');
+  const btn = document.getElementById('btn-export-xlsx');
 
   const res_val  = document.getElementById('inp-residente')?.value?.trim();
   const faltantes = [];
@@ -5350,23 +5350,63 @@ function _showSaveDialog(accion){
 //   - save: guarda y si OK ejecuta onProceed
 //   - discard: descarta cambios y ejecuta onProceed
 //   - cancel: no hace nada
-async function _handleActionWithUnsavedChanges(accion, onProceed){
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  _handleActionWithUnsavedChanges (post-incidente Azucena 18/05)    ║
+// ║  ────────────────────────────────────────────────────────────────  ║
+// ║  Wrapper de seguridad para cualquier acción que dependa del estado ║
+// ║  actual de `acts[]`. Resuelve dos problemas:                       ║
+// ║                                                                    ║
+// ║  1. BLUR FORZADO: si el usuario tiene foco en un textarea/input    ║
+// ║     y clickea directamente Exportar/Portal/Salir, el cambio en     ║
+// ║     curso podría no haberse propagado a acts[] todavía. Forzamos   ║
+// ║     blur + esperamos 60ms para que onchange se dispare.            ║
+// ║                                                                    ║
+// ║  2. PROTECCIÓN ANTE PÉRDIDA: si hay cambios sin guardar, mostramos ║
+// ║     el modal de 3 opciones (Guardar / Continuar sin guardar /      ║
+// ║     Volver a editar).                                              ║
+// ║                                                                    ║
+// ║  Parámetros:                                                       ║
+// ║    accion: string descriptiva (ej. "exportar el PDF")              ║
+// ║    onProceed: callback async a ejecutar si todo OK                 ║
+// ║    opts.keepDirtyOnDiscard:                                        ║
+// ║      - false (default): acciones que SALEN (Portal/Salir). Cuando ║
+// ║        el usuario elige "continuar sin guardar", reseteamos el     ║
+// ║        flag dirty porque la app se cierra/recarga.                 ║
+// ║      - true: acciones INTERNAS (PDF/Excel/Reporte/Gantt). Cuando  ║
+// ║        el usuario elige "continuar sin guardar", MANTENEMOS dirty  ║
+// ║        para que el botón GUARDAR siga avisándole que tiene cambios ║
+// ║        pendientes.                                                 ║
+// ╚════════════════════════════════════════════════════════════════════╝
+async function _handleActionWithUnsavedChanges(accion, onProceed, opts){
+  opts = opts || {};
+  const keepDirtyOnDiscard = !!opts.keepDirtyOnDiscard;
+
+  // PASO 1: Forzar blur del campo activo y esperar a que onchange propague.
+  // Esto previene perder el último cambio escrito si el usuario hace click
+  // directo en un botón sin haber salido del textarea/input.
+  const ae = document.activeElement;
+  if(ae && ae !== document.body && typeof ae.blur === 'function'){
+    ae.blur();
+    await new Promise(r => setTimeout(r, 60));
+  }
+
+  // PASO 2: ¿Hay cambios pendientes o sync en curso?
   if(!_syncDirty && !_syncInFlight){
     await onProceed();
     return;
   }
+
+  // PASO 3: Mostrar modal de 3 opciones
   const choice = await _showSaveDialog(accion);
   if(choice === 'cancel') return;
   if(choice === 'save'){
     try{
       await forceSave();
-      // Esperar a que termine el sync
       let waits = 0;
       while(_syncInFlight && waits < 200){
         await new Promise(r => setTimeout(r, 50));
         waits++;
       }
-      // Si todavía hay cambios pendientes o hubo error, NO navegar
       if(_syncDirty){
         if(typeof showToast === 'function') showToast('⚠️ No se pudieron guardar los cambios. Revisá el error e intentá de nuevo.', 'warn');
         return;
@@ -5377,12 +5417,41 @@ async function _handleActionWithUnsavedChanges(accion, onProceed){
       return;
     }
   }
-  if(choice === 'discard'){
-    // Descartar cambios pendientes localmente
+  if(choice === 'discard' && !keepDirtyOnDiscard){
+    // Acciones que SALEN: descartar dirty porque la app se cierra
     _syncDirty = false;
     _setSyncStatus('saved');
   }
+  // Si keepDirtyOnDiscard === true (acción interna como Export/Reporte/Gantt),
+  // dejamos _syncDirty intacto: el botón GUARDAR sigue avisando que hay
+  // cambios sin guardar, para que el usuario no se olvide después.
   await onProceed();
+}
+
+// ── Wrappers protegidos para navegación interna y export ──
+// (post-incidente Azucena 18/05/2026)
+// Estos wrappers garantizan que:
+//   1. El último cambio del usuario en un textarea/input se commitee a acts[]
+//      antes de seguir (vía blur() automático del helper).
+//   2. Si hay cambios sin guardar, se muestra el modal de 3 opciones para que
+//      el usuario decida (Guardar / Continuar sin guardar / Volver a editar).
+//
+// Uso keepDirtyOnDiscard:true porque estas acciones NO salen de la app.
+// Si el usuario elige "continuar sin guardar", queremos que el botón GUARDAR
+// siga avisándole en amarillo que tiene cambios pendientes después de exportar
+// / ver el reporte / ver el gantt.
+
+async function _navProtegida(accion, page){
+  await _handleActionWithUnsavedChanges(accion, async () => {
+    showPage(page);
+  }, { keepDirtyOnDiscard: true });
+}
+
+async function _exportProtegido(accion, formato){
+  await _handleActionWithUnsavedChanges(accion, async () => {
+    if(formato === 'pdf') await exportPDF();
+    else if(formato === 'xlsx') exportXLSX();
+  }, { keepDirtyOnDiscard: true });
 }
 
 // Indicador de estado de guardado: 'saved' | 'pending' | 'saving' | 'error'
