@@ -414,6 +414,45 @@ select[title]:hover, input[title]:hover { cursor:help; }
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   MODO SOLO-COMENTARIOS (admin viendo planificación de otro residente)
+   Bloquea visualmente y deshabilita TODA la edición excepto comentarios.
+   ════════════════════════════════════════════════════════════════════ */
+body.modo-solo-comentarios #page-carga input:not([type=hidden]),
+body.modo-solo-comentarios #page-carga textarea,
+body.modo-solo-comentarios #page-carga select,
+body.modo-solo-comentarios #page-carga button:not(.btn-comentario):not(.btn-secondary):not(.tab-btn):not(.portal-btn):not(.logout-btn):not(#btn-save):not(.dd-add-btn) {
+  pointer-events: none !important;
+  opacity: .55 !important;
+  cursor: not-allowed !important;
+}
+/* Permitir inputs del header (fechas inicio/fin, dropdown residente) */
+body.modo-solo-comentarios #page-carga .sec-head input,
+body.modo-solo-comentarios #page-carga .sec-head select,
+body.modo-solo-comentarios #page-carga .top-bar input,
+body.modo-solo-comentarios #page-carga .top-bar select,
+body.modo-solo-comentarios #page-carga #inp-residente,
+body.modo-solo-comentarios #page-carga #inp-fecha-ini,
+body.modo-solo-comentarios #page-carga #inp-fecha-fin {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: auto !important;
+}
+/* Ocultar botones de mutación de la grilla */
+body.modo-solo-comentarios #btn-nueva-actividad,
+body.modo-solo-comentarios #btn-imprevisto,
+body.modo-solo-comentarios .btn-del-row,
+body.modo-solo-comentarios .btn-confirmar-row,
+body.modo-solo-comentarios .btn-add-row-plus {
+  display: none !important;
+}
+/* El botón de comentarios SÍ debe seguir funcionando */
+body.modo-solo-comentarios .btn-comentario {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
    THEME SYSTEM — 3 paletas: Oscuro (default), Claro, Cálido
    ════════════════════════════════════════════════════════════════════ */
 :root[data-theme="light"]{
@@ -1795,6 +1834,10 @@ async function onResidenteChange(){
       ? window._axcResidente
       : document.getElementById('inp-residente').value;
     if(selResid && selResid !== window._ultimoResidenteCargado){
+      // ★ 19/05/2026 — Resetear el desbloqueo manual al cambiar de residente.
+      // El desbloqueo es por residente: si cambiás a otra persona, volvés a
+      // modo solo-comentarios por defecto y tenés que desbloquear de nuevo.
+      window._axcDesbloqueoForzado = false;
       window._ultimoResidenteCargado = selResid;
       try{
         const { data, error } = await _SB.from('actividades')
@@ -1869,6 +1912,11 @@ async function onResidenteChange(){
   }
 
   onObraChange();
+  // ★ 19/05/2026 — Refrescar modo solo-comentarios para admin que cambia
+  // de residente (también cubre el caso de la carga inicial).
+  if(typeof _refrescarModoSoloComentarios === 'function'){
+    try{ _refrescarModoSoloComentarios(); }catch(e){ console.warn('Modo solo-comentarios:', e); }
+  }
   renderAll();
 }
 
@@ -2400,6 +2448,8 @@ function renderTable(){
     // Botón Comentario — al lado del textarea (NO en columna acciones)
     // Cuando hay comentario, halo dorado más grande y borde reforzado.
     const bComAct = document.createElement('button');
+    bComAct.className = 'btn-comentario';  // Necesario para que CSS lo identifique
+                                            // en modo solo-comentarios (no se deshabilita)
     if(_tieneCom){
       bComAct.style.cssText = 'width:26px;height:26px;padding:0;border-radius:6px;'+
         'border:1.5px solid var(--accent);background:rgba(240,165,0,.30);color:var(--accent);'+
@@ -5060,6 +5110,48 @@ async function _syncActsToSupabase(){
       : hdrResidente;
     hdrResidente = residenteEfectivo;
 
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ MODO SOLO-COMENTARIOS (post-incidente 19/05/2026)                ║
+    // ║ ──────────────────────────────────────────────────────────────── ║
+    // ║ Cuando el admin está viendo OTRO residente, el guardado NO debe  ║
+    // ║ hacer upsert masivo ni DELETE-ALL. Solo debe actualizar el campo ║
+    // ║ `comentario` de las filas donde el admin agregó algo nuevo.      ║
+    // ║                                                                  ║
+    // ║ Esto protege al residente original: cualquier cambio que esté    ║
+    // ║ haciendo en paralelo (nuevas filas, edición de descripciones,    ║
+    // ║ tildado de días) NO se pisa por el guardado del admin.           ║
+    // ║                                                                  ║
+    // ║ La marca a._comentarioModificado la setea saveCommentModal()     ║
+    // ║ después de agregar una entrada al historial.                     ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    if(window._axcModoSoloComentarios){
+      const filasConComentarioNuevo = acts.filter(a => a._comentarioModificado && a._syncId);
+      console.log('[AXC] Guardado en modo solo-comentarios:', filasConComentarioNuevo.length, 'comentario(s)');
+      let updatesOK = 0;
+      for(const a of filasConComentarioNuevo){
+        try {
+          const { error: upErr } = await _SB.from('actividades')
+            .update({ comentario: a.comentario || '' })
+            .eq('id', a._syncId);
+          if(upErr){
+            console.error('Error actualizando comentario id=' + a._syncId + ':', upErr);
+            throw upErr;
+          }
+          a._comentarioModificado = false;
+          updatesOK++;
+        } catch(e){
+          throw e; // propaga al catch externo
+        }
+      }
+      _hideSyncError();
+      _syncDirty = false;
+      _setSyncStatus('saved');
+      if(typeof showToast === 'function' && updatesOK > 0){
+        showToast('✓ ' + updatesOK + ' comentario(s) guardado(s)', 'ok');
+      }
+      return; // NO continuar al upsert masivo + DELETE-ALL
+    }
+
     // Mappers para cumplir con los CHECK constraints de la tabla:
     //   cumple:     '' | 'Sí' | 'No' | 'En proceso' | 'Terminado' |
     //               'Cumplido con atraso' | 'En espera' | 'Retrasado' | 'Cancelado'
@@ -5454,6 +5546,195 @@ async function _exportProtegido(accion, formato){
   }, { keepDirtyOnDiscard: true });
 }
 
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  MODO SOLO-COMENTARIOS + DESBLOQUEO MANUAL (19/05/2026)            ║
+// ║  ────────────────────────────────────────────────────────────────  ║
+// ║  Cuando un admin entra a ver la planificación de OTRO residente,   ║
+// ║  el sistema entra en "modo solo-comentarios":                      ║
+// ║                                                                    ║
+// ║  • Toda la grilla queda en solo lectura                            ║
+// ║  • Botón "+ Comentar" en cada fila SIGUE activo                    ║
+// ║  • Banner naranja arriba con botón "🔓 Desbloquear edición"        ║
+// ║                                                                    ║
+// ║  Si el admin necesita editar (corrección, residente ausente, etc): ║
+// ║  • Aprieta "🔓 Desbloquear edición"                                ║
+// ║  • Sistema verifica timestamp de últimos cambios del residente     ║
+// ║  • Si modificó hace menos de 5 minutos → BLOQUEA el desbloqueo     ║
+// ║  • Si está libre → grilla queda editable, banner cambia a ROJO     ║
+// ║  • El desbloqueo NO persiste: al cambiar de residente, vuelve a    ║
+// ║    modo solo-comentarios automáticamente                           ║
+// ╚════════════════════════════════════════════════════════════════════╝
+
+// Margen en minutos para considerar a un residente "activo" (no permitir
+// desbloqueo si modificó hace menos de este tiempo)
+const _DESBLOQUEO_VENTANA_MIN = 5;
+
+// Flag que indica si el admin desbloqueó manualmente la edición sobre el
+// residente actualmente seleccionado. Se resetea automáticamente cuando
+// cambia el dropdown de residente.
+window._axcDesbloqueoForzado = false;
+
+// Calcula si el modo solo-comentarios debe estar activo dado el residente
+// actualmente seleccionado en el dropdown del header.
+function _calcularModoSoloComentarios(residenteSeleccionado){
+  if(!window._axcEsAdmin) return false;
+  if(!residenteSeleccionado) return false;
+  // Admin con desbloqueo manual activo: edición habilitada (NO solo-comentarios)
+  if(window._axcDesbloqueoForzado) return false;
+  // Admin sin residente propio (ej. dacenturi): SIEMPRE solo-comentarios por defecto
+  if(!window._axcResidente) return true;
+  // Admin con residente propio: solo-comentarios solo si ve a OTRO
+  return residenteSeleccionado !== window._axcResidente;
+}
+
+// Aplica el modo a la UI: deshabilita inputs, oculta botones de edición,
+// muestra banner correspondiente (naranja=solo-comentarios o rojo=desbloqueado).
+function _aplicarModoSoloComentarios(){
+  const modo = !!window._axcModoSoloComentarios;
+  const desbloqueado = !!window._axcDesbloqueoForzado;
+  document.body.classList.toggle('modo-solo-comentarios', modo);
+
+  // Quitar banner viejo si existe (vamos a recrearlo según el estado)
+  let banner = document.getElementById('banner-solo-comentarios');
+  if(banner && banner.parentNode) banner.parentNode.removeChild(banner);
+
+  // Solo mostramos banner si somos admin viendo otro residente, sea en modo
+  // solo-comentarios o desbloqueado. Si es residente común, no hay banner.
+  const residenteEnDropdown = document.getElementById('inp-residente')?.value || '';
+  const esAdminEnAjeno = window._axcEsAdmin && residenteEnDropdown &&
+                          residenteEnDropdown !== window._axcResidente;
+
+  if(esAdminEnAjeno){
+    banner = document.createElement('div');
+    banner.id = 'banner-solo-comentarios';
+    if(modo){
+      // Banner NARANJA — solo-comentarios
+      banner.style.cssText = 'background:linear-gradient(90deg,rgba(240,165,0,.20),rgba(240,165,0,.10));border:1.5px solid rgba(240,165,0,.55);border-radius:10px;padding:12px 18px;margin:0 0 14px;display:flex;align-items:center;gap:12px;font-family:Mulish,sans-serif';
+      banner.innerHTML =
+        '<div style="font-size:24px;line-height:1">👁️</div>' +
+        '<div style="flex:1;font-size:13px;line-height:1.5;color:#e6edf3">' +
+          '<div style="font-weight:800;color:#f0a500;margin-bottom:2px;letter-spacing:.2px">Modo solo-comentarios — ' + (residenteEnDropdown || 'planificación ajena') + '</div>' +
+          '<div style="color:#c9d1d9">Estás viendo la planificación como administrador. Para proteger el trabajo del residente, la edición está deshabilitada. Sí podés <strong style="color:#f0a500">agregar comentarios</strong> con el botón <span style="display:inline-block;border:1px solid var(--accent);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--accent);font-weight:700">💬</span>.</div>' +
+        '</div>' +
+        '<button id="btn-desbloquear-edicion" onclick="_intentarDesbloqueo()" style="flex-shrink:0;padding:8px 16px;border:1.5px solid rgba(240,165,0,.65);border-radius:8px;background:rgba(240,165,0,.15);color:#f0a500;font-family:Mulish,sans-serif;font-size:12px;font-weight:800;cursor:pointer;letter-spacing:.3px;transition:all .15s" onmouseover="this.style.background=\'rgba(240,165,0,.28)\'" onmouseout="this.style.background=\'rgba(240,165,0,.15)\'">🔓 Desbloquear edición</button>';
+    } else if(desbloqueado){
+      // Banner ROJO — desbloqueado (zona peligrosa)
+      banner.style.cssText = 'background:linear-gradient(90deg,rgba(248,81,73,.20),rgba(248,81,73,.10));border:1.5px solid rgba(248,81,73,.70);border-radius:10px;padding:12px 18px;margin:0 0 14px;display:flex;align-items:center;gap:12px;font-family:Mulish,sans-serif;animation:savePulse 2.4s ease-in-out infinite';
+      banner.innerHTML =
+        '<div style="font-size:24px;line-height:1">🔓</div>' +
+        '<div style="flex:1;font-size:13px;line-height:1.5;color:#e6edf3">' +
+          '<div style="font-weight:800;color:#f85149;margin-bottom:2px;letter-spacing:.2px">Modo edición desbloqueado — ' + (residenteEnDropdown || 'planificación ajena') + '</div>' +
+          '<div style="color:#c9d1d9"><strong style="color:#f85149">Atención:</strong> estás editando una planificación ajena. Si el residente está trabajando en este momento, tus cambios pueden pisar los suyos. Trabajá con cuidado y volvé a bloquear cuando termines.</div>' +
+        '</div>' +
+        '<button id="btn-volver-bloqueado" onclick="_volverASoloComentarios()" style="flex-shrink:0;padding:8px 16px;border:1.5px solid rgba(248,81,73,.65);border-radius:8px;background:rgba(248,81,73,.15);color:#f85149;font-family:Mulish,sans-serif;font-size:12px;font-weight:800;cursor:pointer;letter-spacing:.3px;transition:all .15s" onmouseover="this.style.background=\'rgba(248,81,73,.28)\'" onmouseout="this.style.background=\'rgba(248,81,73,.15)\'">🔒 Volver a solo lectura</button>';
+    }
+    const pageCarga = document.getElementById('page-carga');
+    const secHead = pageCarga ? pageCarga.querySelector('.sec-head') : null;
+    if(secHead && secHead.parentNode && (modo || desbloqueado)){
+      secHead.parentNode.insertBefore(banner, secHead.nextSibling);
+    }
+  }
+
+  // Re-renderizar la tabla aplica los disabled/hidden correspondientes
+  if(typeof renderTable === 'function'){
+    try{ renderTable(); }catch(e){ console.warn('renderTable falló al cambiar modo:', e); }
+  }
+}
+
+// Intenta desbloquear la edición. Verifica si el residente tuvo actividad
+// reciente; si la tuvo, bloquea el desbloqueo y muestra mensaje.
+async function _intentarDesbloqueo(){
+  const sel = document.getElementById('inp-residente');
+  const residenteName = sel ? sel.value : '';
+  if(!residenteName){
+    alert('No hay un residente seleccionado para desbloquear.');
+    return;
+  }
+  const btn = document.getElementById('btn-desbloquear-edicion');
+  if(btn){ btn.disabled = true; btn.textContent = 'Verificando…'; }
+
+  try {
+    // Consultar la última modificación de actividades de ese residente
+    const { data, error } = await _SB.from('actividades')
+      .select('updated_at')
+      .eq('app', APP_NAME)
+      .eq('residente', residenteName)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if(error){
+      console.error('Error consultando última actividad:', error);
+      alert('No se pudo verificar el estado del residente. Reintentá en un momento.');
+      return;
+    }
+
+    if(data && data.length > 0 && data[0].updated_at){
+      const ultMod = new Date(data[0].updated_at);
+      const ahora = new Date();
+      const diffMin = (ahora - ultMod) / 60000;
+      if(diffMin < _DESBLOQUEO_VENTANA_MIN){
+        const minTxt = diffMin < 1 ? 'menos de 1 minuto' : 'hace ' + Math.floor(diffMin) + ' minuto(s)';
+        alert(
+          '⚠ No se puede desbloquear ahora.\n\n' +
+          residenteName + ' modificó la planificación ' + minTxt + '. ' +
+          'Probablemente está trabajando en este momento.\n\n' +
+          'Esperá al menos ' + _DESBLOQUEO_VENTANA_MIN + ' minutos sin actividad y volvé a intentar.\n\n' +
+          'Si estás seguro que no está trabajando (por ejemplo, te avisó por WhatsApp que ya cerró), ' +
+          'esperá unos minutos para que el sistema lo considere "libre".'
+        );
+        return;
+      }
+    }
+
+    // Pedir confirmación final
+    const ok = confirm(
+      '¿Confirmás desbloquear la edición de la planificación de ' + residenteName + '?\n\n' +
+      'A partir de ahora podrás editar como si fueras el dueño:\n' +
+      '• Modificar descripciones, fechas, estados\n' +
+      '• Agregar o eliminar actividades\n' +
+      '• Cambiar criticidad, razones, etc.\n\n' +
+      '⚠ IMPORTANTE: si ' + residenteName + ' empieza a trabajar mientras vos editás, sus cambios podrían perderse al guardar.\n\n' +
+      'Apretá Cancelar para seguir en modo solo-comentarios.'
+    );
+    if(!ok) return;
+
+    // Activar desbloqueo
+    window._axcDesbloqueoForzado = true;
+    _refrescarModoSoloComentarios();
+    if(typeof showToast === 'function') showToast('🔓 Edición desbloqueada para ' + residenteName, 'warn');
+    console.log('[AXC] Desbloqueo activado para residente:', residenteName);
+
+  } catch(e){
+    console.error('Excepción en _intentarDesbloqueo:', e);
+    alert('Error al intentar desbloquear: ' + (e.message || 'desconocido'));
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = '🔓 Desbloquear edición'; }
+  }
+}
+
+// Volver al modo solo-comentarios manualmente desde el banner rojo
+function _volverASoloComentarios(){
+  // Si hay cambios sin guardar, advertir
+  if(_syncDirty){
+    const ok = confirm(
+      'Tenés cambios sin guardar.\n\n' +
+      'Si volvés a modo solo lectura ahora, esos cambios quedan pendientes en memoria pero no podrás guardarlos sin volver a desbloquear.\n\n' +
+      '¿Continuar?'
+    );
+    if(!ok) return;
+  }
+  window._axcDesbloqueoForzado = false;
+  _refrescarModoSoloComentarios();
+  if(typeof showToast === 'function') showToast('🔒 Volviste al modo solo lectura', 'info');
+}
+
+function _refrescarModoSoloComentarios(){
+  const sel = document.getElementById('inp-residente');
+  const residente = sel ? sel.value : '';
+  window._axcModoSoloComentarios = _calcularModoSoloComentarios(residente);
+  _aplicarModoSoloComentarios();
+}
+
 // Indicador de estado de guardado: 'saved' | 'pending' | 'saving' | 'error'
 let _syncDirty = false;
 function _setSyncStatus(status){
@@ -5797,6 +6078,13 @@ async function saveCommentModal(opts){
   }
 
   acts[idx].comentario = nuevoComentario;
+  // ★ MARCA para el guardado quirúrgico en modo solo-comentarios (19/05/2026) ★
+  // Si el admin está viendo OTRO residente, _syncActsToSupabase usa esta
+  // marca para hacer .update() solo del campo `comentario`, evitando upsert
+  // masivo o DELETE-ALL que podría pisar el trabajo del residente real.
+  if(bodyTrim){
+    acts[idx]._comentarioModificado = true;
+  }
   save();
   renderTable();
   closeCommentModal();
