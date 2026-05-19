@@ -345,6 +345,41 @@ select[title]:hover, input[title]:hover { cursor:help; }
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   MODO SOLO-COMENTARIOS (admin viendo planificación de otro residente)
+   ════════════════════════════════════════════════════════════════════ */
+body.modo-solo-comentarios #page-carga input:not([type=hidden]),
+body.modo-solo-comentarios #page-carga textarea,
+body.modo-solo-comentarios #page-carga select,
+body.modo-solo-comentarios #page-carga button:not(.btn-comentario):not(.btn-secondary):not(.tab-btn):not(.portal-btn):not(.logout-btn):not(#btn-save):not(.dd-add-btn) {
+  pointer-events: none !important;
+  opacity: .55 !important;
+  cursor: not-allowed !important;
+}
+body.modo-solo-comentarios #page-carga .sec-head input,
+body.modo-solo-comentarios #page-carga .sec-head select,
+body.modo-solo-comentarios #page-carga .top-bar input,
+body.modo-solo-comentarios #page-carga .top-bar select,
+body.modo-solo-comentarios #page-carga #inp-residente,
+body.modo-solo-comentarios #page-carga #inp-fecha,
+body.modo-solo-comentarios #page-carga #inp-fecha-fin {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: auto !important;
+}
+body.modo-solo-comentarios #btn-nueva-actividad,
+body.modo-solo-comentarios #btn-imprevisto,
+body.modo-solo-comentarios .btn-del-row,
+body.modo-solo-comentarios .btn-confirmar-row,
+body.modo-solo-comentarios .btn-add-row-plus {
+  display: none !important;
+}
+body.modo-solo-comentarios .btn-comentario {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
    THEME SYSTEM — 3 paletas: Oscuro (default), Claro, Cálido
    ──────────────────────────────────────────────────────────────────
    El tema oscuro está en :root (líneas iniciales del style).
@@ -759,12 +794,39 @@ async function cargarListasDesdeSupabase(){
     Object.keys(tmpListas).forEach(k => _listasCache[k] = [...tmpListas[k]]);
     Object.keys(tmpSectores).forEach(o => _sectoresCache[o] = [...tmpSectores[o]]);
 
-    // Si había duplicados en la DB, limpiarlos de forma persistente
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ NEUTRALIZADO 19/05/2026 — Auto-limpieza de duplicados DESACTIVADA║
+    // ║ ──────────────────────────────────────────────────────────────── ║
+    // ║ Esta función hacía DELETE-ALL + INSERT-ALL del cache cuando      ║
+    // ║ detectaba duplicados en listas. Es el mismo patrón peligroso que ║
+    // ║ causó pérdida de obras (Casa Denis Alcaráz, Oficina, etc.) en    ║
+    // ║ el incidente del 16-18 de mayo: si el cache estaba parcial por   ║
+    // ║ red lenta o RLS, se borraban entradas reales y se reinsertaba    ║
+    // ║ solo lo que estaba en memoria.                                   ║
+    // ║                                                                  ║
+    // ║ Si en el futuro aparecen duplicados reales en `listas`, deben    ║
+    // ║ resolverse desde Supabase con SQL controlado, NO automáticamente ║
+    // ║ desde el frontend. La función queda definida más abajo solo por  ║
+    // ║ trazabilidad histórica; no debe llamarse.                        ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    /*
     const totalDedup = Object.values(_listasCache).reduce((s,a)=>s+a.length,0) +
                        Object.values(_sectoresCache).reduce((s,a)=>s+a.length,0);
     if(totalDedup < data.length){
       console.log(`[AXC] Detectados ${data.length - totalDedup} duplicados en tabla listas — limpiando Supabase...`);
       _limpiarDuplicadosSupabase().catch(e => console.warn('Cleanup falló:', e));
+    }
+    */
+    // Si el dedup en memoria detecta diferencia con lo recibido, solo lo registramos
+    // (sin tocar la base). El admin puede investigar manualmente desde Supabase.
+    const _totalDedupMemoria = Object.values(_listasCache).reduce((s,a)=>s+a.length,0) +
+                               Object.values(_sectoresCache).reduce((s,a)=>s+a.length,0);
+    if(_totalDedupMemoria < data.length){
+      console.warn(
+        '[AXC] AVISO: la tabla listas tiene ' + (data.length - _totalDedupMemoria) +
+        ' duplicado(s). El cache de memoria los ignora correctamente. ' +
+        'Si querés limpiarlos definitivamente, revisalos con SQL en Supabase.'
+      );
     }
 
     _cacheLoaded = true;
@@ -775,7 +837,23 @@ async function cargarListasDesdeSupabase(){
 }
 
 // ── Limpieza one-shot: re-escribe listas deduplicadas en Supabase ─────
+// ⚠️ FUNCIÓN NEUTRALIZADA 19/05/2026 ⚠️
+// Esta función hace DELETE-ALL + INSERT-ALL del cache, que es el patrón
+// peligroso que causó la pérdida de obras (Casa Denis Alcaráz, Oficina, etc.)
+// en el incidente del 16-18 de mayo. La función NO se llama automáticamente
+// más, pero queda definida por trazabilidad histórica. Si alguien la invoca
+// (consola del navegador, código futuro), el guard la detiene de inmediato.
+// Para limpiar duplicados reales, usar SQL controlado en Supabase.
 async function _limpiarDuplicadosSupabase(){
+  console.error(
+    '[AXC] ⛔ _limpiarDuplicadosSupabase() está DESACTIVADA por seguridad. ' +
+    'Si necesitás limpiar duplicados en la tabla `listas`, hacelo con SQL ' +
+    'controlado en Supabase, validando previamente que ninguna entrada en ' +
+    'uso por `actividades` quede borrada. Esta función puede causar pérdida ' +
+    'de datos masiva si el cache está parcial.'
+  );
+  return; // ABORT: no ejecutar el cuerpo destructivo
+  /* CUERPO ORIGINAL DESACTIVADO (preservado por trazabilidad):
   try {
     // Listas globales (obras, contratistas, residentes, razones)
     for(const tipo of Object.keys(_listasCache)){
@@ -802,6 +880,7 @@ async function _limpiarDuplicadosSupabase(){
   } catch(e){
     console.warn('[AXC] Error limpiando duplicados:', e);
   }
+  */
 }
 
 // ── Fallback a localStorage si Supabase falla ─────────────────
@@ -1829,6 +1908,9 @@ async function onResidenteChange(){
     const esAjeno = selResid && window._axcResidente !== selResid;
 
     if(selResid && selResid !== window._ultimoResidenteCargado){
+      // ★ 19/05/2026 — Resetear desbloqueo manual al cambiar de residente.
+      // El desbloqueo es por residente: cada cambio requiere re-desbloqueo.
+      window._axcDesbloqueoForzado = false;
       window._ultimoResidenteCargado = selResid;
       try{
         const { data, error } = await _SB.from('actividades')
@@ -1939,6 +2021,10 @@ async function onResidenteChange(){
   }
 
   onObraChange();
+  // ★ 19/05/2026 — Refrescar modo solo-comentarios al cambiar de residente
+  if(typeof _refrescarModoSoloComentarios === 'function'){
+    try{ _refrescarModoSoloComentarios(); }catch(e){ console.warn('Modo solo-comentarios:', e); }
+  }
   renderAll();
 }
 
@@ -2641,6 +2727,7 @@ function renderTable(){
     // Cuando hay comentario, lo resaltamos con halo más grande y un punto
     // indicador en la esquina (más visible que solo el shadow sutil).
     const bComAct = document.createElement('button');
+    bComAct.className = 'btn-comentario';  // Necesario para CSS del modo solo-comentarios
     const tieneComentarioAct = _tieneCom;
     if(tieneComentarioAct){
       bComAct.style.cssText = 'width:26px;height:26px;padding:0;border-radius:6px;'+
@@ -5273,6 +5360,158 @@ async function _exportProtegido(accion, formato){
   }, { keepDirtyOnDiscard: true });
 }
 
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  MODO SOLO-COMENTARIOS + DESBLOQUEO MANUAL (19/05/2026)            ║
+// ║  Cuando un admin entra a ver la planificación de OTRO residente,   ║
+// ║  toda la grilla queda en solo lectura. Si necesita editar, aprieta ║
+// ║  "Desbloquear edición" — el sistema verifica si el residente tuvo  ║
+// ║  actividad reciente (5 min) y solo desbloquea si está libre.       ║
+// ╚════════════════════════════════════════════════════════════════════╝
+
+const _DESBLOQUEO_VENTANA_MIN = 5;
+window._axcDesbloqueoForzado = false;
+
+function _calcularModoSoloComentarios(residenteSeleccionado){
+  if(!window._axcEsAdmin) return false;
+  if(!residenteSeleccionado) return false;
+  if(window._axcDesbloqueoForzado) return false;
+  if(!window._axcResidente) return true;
+  return residenteSeleccionado !== window._axcResidente;
+}
+
+function _aplicarModoSoloComentarios(){
+  const modo = !!window._axcModoSoloComentarios;
+  const desbloqueado = !!window._axcDesbloqueoForzado;
+  document.body.classList.toggle('modo-solo-comentarios', modo);
+
+  let banner = document.getElementById('banner-solo-comentarios');
+  if(banner && banner.parentNode) banner.parentNode.removeChild(banner);
+
+  const residenteEnDropdown = document.getElementById('inp-residente')?.value || '';
+  const esAdminEnAjeno = window._axcEsAdmin && residenteEnDropdown &&
+                          residenteEnDropdown !== window._axcResidente;
+
+  if(esAdminEnAjeno){
+    banner = document.createElement('div');
+    banner.id = 'banner-solo-comentarios';
+    if(modo){
+      banner.style.cssText = 'background:linear-gradient(90deg,rgba(240,165,0,.20),rgba(240,165,0,.10));border:1.5px solid rgba(240,165,0,.55);border-radius:10px;padding:12px 18px;margin:0 0 14px;display:flex;align-items:center;gap:12px;font-family:Mulish,sans-serif';
+      banner.innerHTML =
+        '<div style="font-size:24px;line-height:1">👁️</div>' +
+        '<div style="flex:1;font-size:13px;line-height:1.5;color:#e6edf3">' +
+          '<div style="font-weight:800;color:#f0a500;margin-bottom:2px;letter-spacing:.2px">Modo solo-comentarios — ' + (residenteEnDropdown || 'planificación ajena') + '</div>' +
+          '<div style="color:#c9d1d9">Estás viendo la planificación como administrador. Para proteger el trabajo del residente, la edición está deshabilitada. Sí podés <strong style="color:#f0a500">agregar comentarios</strong> con el botón <span style="display:inline-block;border:1px solid var(--accent);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--accent);font-weight:700">💬</span>.</div>' +
+        '</div>' +
+        '<button id="btn-desbloquear-edicion" onclick="_intentarDesbloqueo()" style="flex-shrink:0;padding:8px 16px;border:1.5px solid rgba(240,165,0,.65);border-radius:8px;background:rgba(240,165,0,.15);color:#f0a500;font-family:Mulish,sans-serif;font-size:12px;font-weight:800;cursor:pointer;letter-spacing:.3px;transition:all .15s" onmouseover="this.style.background=\'rgba(240,165,0,.28)\'" onmouseout="this.style.background=\'rgba(240,165,0,.15)\'">🔓 Desbloquear edición</button>';
+    } else if(desbloqueado){
+      banner.style.cssText = 'background:linear-gradient(90deg,rgba(248,81,73,.20),rgba(248,81,73,.10));border:1.5px solid rgba(248,81,73,.70);border-radius:10px;padding:12px 18px;margin:0 0 14px;display:flex;align-items:center;gap:12px;font-family:Mulish,sans-serif;animation:savePulse 2.4s ease-in-out infinite';
+      banner.innerHTML =
+        '<div style="font-size:24px;line-height:1">🔓</div>' +
+        '<div style="flex:1;font-size:13px;line-height:1.5;color:#e6edf3">' +
+          '<div style="font-weight:800;color:#f85149;margin-bottom:2px;letter-spacing:.2px">Modo edición desbloqueado — ' + (residenteEnDropdown || 'planificación ajena') + '</div>' +
+          '<div style="color:#c9d1d9"><strong style="color:#f85149">Atención:</strong> estás editando una planificación ajena. Si el residente está trabajando en este momento, tus cambios pueden pisar los suyos. Trabajá con cuidado y volvé a bloquear cuando termines.</div>' +
+        '</div>' +
+        '<button id="btn-volver-bloqueado" onclick="_volverASoloComentarios()" style="flex-shrink:0;padding:8px 16px;border:1.5px solid rgba(248,81,73,.65);border-radius:8px;background:rgba(248,81,73,.15);color:#f85149;font-family:Mulish,sans-serif;font-size:12px;font-weight:800;cursor:pointer;letter-spacing:.3px;transition:all .15s" onmouseover="this.style.background=\'rgba(248,81,73,.28)\'" onmouseout="this.style.background=\'rgba(248,81,73,.15)\'">🔒 Volver a solo lectura</button>';
+    }
+    const pageCarga = document.getElementById('page-carga');
+    const secHead = pageCarga ? pageCarga.querySelector('.sec-head') : null;
+    if(secHead && secHead.parentNode && (modo || desbloqueado)){
+      secHead.parentNode.insertBefore(banner, secHead.nextSibling);
+    }
+  }
+
+  if(typeof renderTable === 'function'){
+    try{ renderTable(); }catch(e){ console.warn('renderTable falló al cambiar modo:', e); }
+  }
+}
+
+async function _intentarDesbloqueo(){
+  const sel = document.getElementById('inp-residente');
+  const residenteName = sel ? sel.value : '';
+  if(!residenteName){
+    alert('No hay un residente seleccionado para desbloquear.');
+    return;
+  }
+  const btn = document.getElementById('btn-desbloquear-edicion');
+  if(btn){ btn.disabled = true; btn.textContent = 'Verificando…'; }
+
+  try {
+    const { data, error } = await _SB.from('actividades')
+      .select('updated_at')
+      .eq('app', APP_NAME)
+      .eq('residente', residenteName)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if(error){
+      console.error('Error consultando última actividad:', error);
+      alert('No se pudo verificar el estado del residente. Reintentá en un momento.');
+      return;
+    }
+
+    if(data && data.length > 0 && data[0].updated_at){
+      const ultMod = new Date(data[0].updated_at);
+      const ahora = new Date();
+      const diffMin = (ahora - ultMod) / 60000;
+      if(diffMin < _DESBLOQUEO_VENTANA_MIN){
+        const minTxt = diffMin < 1 ? 'menos de 1 minuto' : 'hace ' + Math.floor(diffMin) + ' minuto(s)';
+        alert(
+          '⚠ No se puede desbloquear ahora.\n\n' +
+          residenteName + ' modificó la planificación ' + minTxt + '. ' +
+          'Probablemente está trabajando en este momento.\n\n' +
+          'Esperá al menos ' + _DESBLOQUEO_VENTANA_MIN + ' minutos sin actividad y volvé a intentar.\n\n' +
+          'Si estás seguro que no está trabajando (por ejemplo, te avisó por WhatsApp que ya cerró), ' +
+          'esperá unos minutos para que el sistema lo considere "libre".'
+        );
+        return;
+      }
+    }
+
+    const ok = confirm(
+      '¿Confirmás desbloquear la edición de la planificación de ' + residenteName + '?\n\n' +
+      'A partir de ahora podrás editar como si fueras el dueño:\n' +
+      '• Modificar descripciones, fechas, estados\n' +
+      '• Agregar o eliminar actividades\n' +
+      '• Cambiar criticidad, razones, etc.\n\n' +
+      '⚠ IMPORTANTE: si ' + residenteName + ' empieza a trabajar mientras vos editás, sus cambios podrían perderse al guardar.\n\n' +
+      'Apretá Cancelar para seguir en modo solo-comentarios.'
+    );
+    if(!ok) return;
+
+    window._axcDesbloqueoForzado = true;
+    _refrescarModoSoloComentarios();
+    if(typeof showToast === 'function') showToast('🔓 Edición desbloqueada para ' + residenteName, 'warn');
+    console.log('[AXC] Desbloqueo activado para residente:', residenteName);
+
+  } catch(e){
+    console.error('Excepción en _intentarDesbloqueo:', e);
+    alert('Error al intentar desbloquear: ' + (e.message || 'desconocido'));
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = '🔓 Desbloquear edición'; }
+  }
+}
+
+function _volverASoloComentarios(){
+  if(_syncDirty){
+    const ok = confirm(
+      'Tenés cambios sin guardar.\n\n' +
+      'Si volvés a modo solo lectura ahora, esos cambios quedan pendientes en memoria pero no podrás guardarlos sin volver a desbloquear.\n\n' +
+      '¿Continuar?'
+    );
+    if(!ok) return;
+  }
+  window._axcDesbloqueoForzado = false;
+  _refrescarModoSoloComentarios();
+  if(typeof showToast === 'function') showToast('🔒 Volviste al modo solo lectura', 'info');
+}
+
+function _refrescarModoSoloComentarios(){
+  const sel = document.getElementById('inp-residente');
+  const residente = sel ? sel.value : '';
+  window._axcModoSoloComentarios = _calcularModoSoloComentarios(residente);
+  _aplicarModoSoloComentarios();
+}
+
 // Guardado MANUAL forzado: cancela el debounce y sincroniza ahora.
 // También se usa internamente antes de navegar al portal o cerrar sesión.
 async function forceSave(){
@@ -5595,6 +5834,40 @@ async function _syncActsToSupabase(){
       ? window._axcResidente
       : hdrResidente;
     hdrResidente = residenteEfectivo;
+
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ MODO SOLO-COMENTARIOS (post-incidente 19/05/2026)                ║
+    // ║ Cuando admin ve OTRO residente, NO hacer upsert masivo ni        ║
+    // ║ DELETE-ALL. Solo .update() quirúrgico del campo `comentario`     ║
+    // ║ de las filas donde el admin agregó algo nuevo.                   ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    if(window._axcModoSoloComentarios){
+      const filasConComentarioNuevo = acts.filter(a => a._comentarioModificado && a._syncId);
+      console.log('[AXC] Guardado en modo solo-comentarios:', filasConComentarioNuevo.length, 'comentario(s)');
+      let updatesOK = 0;
+      for(const a of filasConComentarioNuevo){
+        try {
+          const { error: upErr } = await _SB.from('actividades')
+            .update({ comentario: a.comentario || '' })
+            .eq('id', a._syncId);
+          if(upErr){
+            console.error('Error actualizando comentario id=' + a._syncId + ':', upErr);
+            throw upErr;
+          }
+          a._comentarioModificado = false;
+          updatesOK++;
+        } catch(e){
+          throw e;
+        }
+      }
+      _hideSyncError();
+      _syncDirty = false;
+      _setSyncStatus('saved');
+      if(typeof showToast === 'function' && updatesOK > 0){
+        showToast('✓ ' + updatesOK + ' comentario(s) guardado(s)', 'ok');
+      }
+      return; // NO continuar al upsert masivo
+    }
 
     // Mappers para cumplir con los CHECK constraints de la tabla:
     //   cumple:     '' | 'Sí' | 'No' | 'En proceso' | 'Terminado' |
@@ -6070,6 +6343,10 @@ async function saveCommentModal(opts){
 
   // Persistir cambio
   acts[idx].comentario = nuevoComentario;
+  // ★ MARCA para el guardado quirúrgico en modo solo-comentarios (19/05/2026) ★
+  if(bodyTrim){
+    acts[idx]._comentarioModificado = true;
+  }
   save();
   renderTable();
   closeCommentModal();
