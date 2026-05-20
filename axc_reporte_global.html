@@ -587,8 +587,8 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
         <div id="gantt-content"></div>
         <div class="gantt-note" style="margin-top:12px;padding:10px 12px;background:rgba(88,166,255,.08);border-left:3px solid #58a6ff;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5">
           <strong style="color:#58a6ff">ℹ Sobre la lectura del Gantt:</strong>
-          los días verdes/rojos muestran únicamente el cumplimiento tildado día por día sobre actividades <strong>confirmadas</strong>.
-          Para ver el cumplimiento general de actividades (incluyendo las del modelo anterior sin tildado día a día), consultá los KPIs de arriba.
+          este diagrama muestra <strong>únicamente las actividades con planificación confirmada</strong> (🔒).
+          Los días verdes/rojos reflejan el cumplimiento tildado día por día. Las actividades sin confirmar no aparecen acá porque su planificación aún puede modificarse — para verlas, consultá la pestaña Tabla o los KPIs de arriba.
         </div>
       </div>
     </div>
@@ -1415,16 +1415,28 @@ function _esc(s){
 // ════════════════════════════════════════════════════════════
 function renderGantt(){
   const cont = document.getElementById('gantt-content');
-  // Filtramos las que tengan al menos un día tildado en a.days (planificación real)
-  // o algún domingo trabajado en a.domingos.
+  // ★ REGLA 20/05/2026 ★ El Gantt SOLO muestra actividades con planificación
+  // confirmada (a.confirmada === true). Razones:
+  //   • Solo las confirmadas pueden tener cumplimiento[] tildado día por día
+  //   • Las no confirmadas son planificaciones tentativas (pueden cambiar)
+  //   • Esto resuelve la confusión KPIs vs Gantt: KPIs cuentan todo el plan,
+  //     Gantt solo lo confirmado para reflejar cumplimiento real.
+  const totalEnFiltro = window._filteredActs.length;
   const acts = window._filteredActs.filter(a =>
+    a.confirmada &&
     a.fecha_inicio && (
       (Array.isArray(a.days) && a.days.some(d => d)) ||
       (Array.isArray(a.domingos) && a.domingos.length > 0)
     )
   );
   if(!acts.length){
-    cont.innerHTML = '<div class="empty"><span class="empty-ico">📅</span>No hay actividades con fechas para mostrar en Gantt.</div>';
+    cont.innerHTML = '<div class="empty"><span class="empty-ico">📅</span>' +
+      'No hay actividades <strong>confirmadas</strong> en el filtro actual.' +
+      (totalEnFiltro > 0
+        ? '<br><span style="font-size:11px;opacity:.75">Hay ' + totalEnFiltro + ' actividad(es) en el filtro, pero ninguna tiene planificación confirmada todavía (🔒). Confirmá las planificaciones desde la app para que aparezcan acá.</span>'
+        : ''
+      ) +
+      '</div>';
     return;
   }
 
@@ -2056,7 +2068,10 @@ async function exportPDF(){
     // Replica el patrón vectorial de los Gantt del residente/contratista.
     // Si hay muchas actividades, se pagina ("Parte 1/2", "Parte 2/2"...).
     async function drawGanttPages(doc, allActs, getNextPageNum){
+      // ★ REGLA 20/05/2026 ★ Solo actividades con planificación confirmada.
+      // Las no confirmadas son tentativas y no se exportan al Gantt PDF.
       const ganttActs = allActs.filter(a =>
+        a.confirmada &&
         _getFechaActividad(a) && Array.isArray(a.days) && a.days.some(d => d)
       );
       if(!ganttActs.length) return;
@@ -2160,7 +2175,7 @@ async function exportPDF(){
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
         // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
-        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'} confirmada${sortedActs.length===1?'':'s'}`, lMX, lMT + 9);
 
         // ─── Cabecera de columnas ───
         const ganttTopY = lMT + 14;
@@ -2377,16 +2392,15 @@ async function exportPDF(){
         doc.setFont('helvetica', 'normal');
 
         // ─── Nota explicativa debajo de la leyenda (20/05/2026) ───
-        // Aclara que el Gantt muestra solo cumplimiento día-por-día sobre
-        // actividades confirmadas, mientras que los KPIs del Dashboard
-        // pueden contar actividades con estado global. Evita confusión
-        // cuando los números no coinciden visualmente.
+        // Aclara que el Gantt muestra solo actividades CONFIRMADAS para
+        // reflejar cumplimiento real. Las no confirmadas no aparecen
+        // porque su planificación aún puede modificarse.
         const noteY = lph - lMB - 1;
         doc.setFont('helvetica', 'italic');
         doc.setFontSize(6.5);
         doc.setTextColor(...GRAY);
         doc.text(
-          'Nota: los días verdes/rojos solo reflejan cumplimiento tildado día por día sobre actividades confirmadas. Para el cumplimiento general de actividades, consultar los KPIs del Dashboard.',
+          'Nota: el Gantt muestra unicamente actividades con planificacion confirmada. Las no confirmadas no aparecen porque su planificacion aun puede cambiar. Para el detalle completo, consultar Tabla o KPIs.',
           lMX, noteY
         );
         doc.setFont('helvetica', 'normal');
