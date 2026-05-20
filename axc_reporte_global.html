@@ -144,6 +144,12 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 .g-blk:hover{filter:brightness(1.15)}
 .g-blk.ok{background:var(--green)}
 .g-blk.bad{background:var(--red)}
+/* ── Nuevos colores estandarizados (idénticos al contratista) ── */
+.g-blk.cumple   {background:#22c55e}       /* verde - día cumplido */
+.g-blk.no-cumple{background:#dc2626}       /* rojo - día no cumplido */
+.g-blk.imprev   {background:#ff6b35}       /* naranja - imprevista */
+.g-blk.dom      {background:#3b82f6}       /* azul - día extra/domingo trabajado */
+.g-blk.pendiente{background:transparent;border:2px solid #f0a500;box-shadow:none}  /* borde dorado - planificado sin tildar */
 
 /* Leyenda del Gantt */
 .gantt-legend{display:flex;gap:18px;margin-bottom:14px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;flex-wrap:wrap;font-size:11px}
@@ -152,6 +158,12 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 .gl-box.ok{background:var(--green)}
 .gl-box.bad{background:var(--red)}
 .gl-box.pend{background:rgba(139,148,158,.65)}
+/* Nuevos colores leyenda (estándar contratista) */
+.gl-box.cumple   {background:#22c55e}
+.gl-box.no-cumple{background:#dc2626}
+.gl-box.imprev   {background:#ff6b35}
+.gl-box.dom      {background:#3b82f6}
+.gl-box.pendiente{background:transparent;border:2px solid #f0a500}
 
 /* Loader */
 .loader{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;color:var(--text2)}
@@ -566,9 +578,11 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
     <div id="view-gantt" style="display:none">
       <div class="gantt-card">
         <div class="gantt-legend">
-          <span class="gl-item"><span class="gl-box ok"></span>Cumple</span>
-          <span class="gl-item"><span class="gl-box bad"></span>No Cumple</span>
-          <span class="gl-item"><span class="gl-box pend"></span>Sin asignar / Pendiente</span>
+          <span class="gl-item"><span class="gl-box pendiente"></span>Día planificado (sin tildar)</span>
+          <span class="gl-item"><span class="gl-box cumple"></span>Día cumplido</span>
+          <span class="gl-item"><span class="gl-box no-cumple"></span>Día no cumplido</span>
+          <span class="gl-item"><span class="gl-box imprev"></span>Imprevista</span>
+          <span class="gl-item"><span class="gl-box dom"></span>Día extra trabajado</span>
         </div>
         <div id="gantt-content"></div>
       </div>
@@ -1396,36 +1410,61 @@ function _esc(s){
 // ════════════════════════════════════════════════════════════
 function renderGantt(){
   const cont = document.getElementById('gantt-content');
-  const acts = window._filteredActs.filter(a => a.fecha_inicio && Array.isArray(a.days) && a.days.some(d => d));
+  // Filtramos las que tengan al menos un día tildado en a.days (planificación real)
+  // o algún domingo trabajado en a.domingos.
+  const acts = window._filteredActs.filter(a =>
+    a.fecha_inicio && (
+      (Array.isArray(a.days) && a.days.some(d => d)) ||
+      (Array.isArray(a.domingos) && a.domingos.length > 0)
+    )
+  );
   if(!acts.length){
     cont.innerHTML = '<div class="empty"><span class="empty-ico">📅</span>No hay actividades con fechas para mostrar en Gantt.</div>';
     return;
   }
 
-  // Calcular rango global de fechas
-  let minDate = null, maxDate = null;
+  // ─── Calcular rango global de fechas considerando días tildados Y domingos ───
+  // Helper local: convierte índice i de a.days[] a fecha ISO real.
+  const _idxToISO = (a, i) => {
+    if(!a.fecha_inicio) return null;
+    try {
+      const b = new Date(a.fecha_inicio + 'T00:00:00');
+      b.setDate(b.getDate() + i);
+      return b.toISOString().slice(0,10);
+    } catch(e){ return null; }
+  };
+
+  let minISO = null, maxISO = null;
+  const _bump = iso => {
+    if(!iso) return;
+    if(!minISO || iso < minISO) minISO = iso;
+    if(!maxISO || iso > maxISO) maxISO = iso;
+  };
   acts.forEach(a => {
-    const ini = _getFechaActividad(a);
-    const fin = _getFechaFin(a);
-    if(ini && (!minDate || ini < minDate)) minDate = ini;
-    if(fin && (!maxDate || fin > maxDate)) maxDate = fin;
+    if(Array.isArray(a.days)){
+      a.days.forEach((v,i) => { if(v) _bump(_idxToISO(a, i)); });
+    }
+    if(Array.isArray(a.domingos)){
+      a.domingos.forEach(iso => _bump(iso));
+    }
   });
-  if(!minDate || !maxDate){
+  if(!minISO || !maxISO){
     cont.innerHTML = '<div class="empty">Sin rango de fechas calculable.</div>';
     return;
   }
 
-  // Generar array de fechas diarias entre minDate y maxDate
+  // Array de fechas diarias entre min y max
   const dates = [];
-  const start = new Date(minDate + 'T00:00:00');
-  const end = new Date(maxDate + 'T00:00:00');
+  const start = new Date(minISO + 'T00:00:00');
+  const end   = new Date(maxISO + 'T00:00:00');
   for(let d = new Date(start); d <= end; d.setDate(d.getDate()+1)){
     dates.push(new Date(d));
   }
+  const datesISO = dates.map(d => d.toISOString().slice(0,10));
   const CELL = 32;
   const DAYS_LBL = ['D','L','M','X','J','V','S'];
 
-  // Header
+  // ─── Header ───
   let html = `<div class="g-hdr"><div class="g-lhdr">Actividad / Residente</div><div class="g-dhdr-wrap">`;
   dates.forEach(d => {
     const isSat = d.getDay() === 6;
@@ -1435,22 +1474,46 @@ function renderGantt(){
   });
   html += `</div></div>`;
 
-  // Rows (ordenadas por fecha de inicio)
+  // ─── Rows (ordenadas por fecha de inicio) ───
   const sorted = acts.slice().sort((a,b) => {
     const fa = _getFechaActividad(a) || '9999';
     const fb = _getFechaActividad(b) || '9999';
     return fa.localeCompare(fb);
   });
+
+  // BLOQUE_W: ancho de cada bloque diario (un poco menos que CELL para no pegarse)
+  const BLOQUE_W = CELL - 6;
+  const BLOQUE_OFFSET = 3;
+
   sorted.forEach(a => {
-    const ini = _getFechaActividad(a);
-    const fin = _getFechaFin(a);
     const isFail = _isFAIL(a);
-    const isOk   = _isOK(a);
-    const iniIdx = ini ? dates.findIndex(d => d.toISOString().slice(0,10) === ini) : -1;
-    const finIdx = fin ? dates.findIndex(d => d.toISOString().slice(0,10) === fin) : iniIdx;
-    if(iniIdx < 0) return;
-    const width = Math.max(1, (finIdx - iniIdx + 1)) * CELL - 4;
-    const left  = iniIdx * CELL + 2;
+    const isImp  = !!a.imprevista;
+
+    // Construir array `marked` con elementos { di, srcIdx }
+    //   di     = índice de la columna del Gantt en `dates[]`
+    //   srcIdx = índice en a.days[] / a.cumplimiento[] (-1 si es domingo extra)
+    const marked = [];
+    if(Array.isArray(a.days)){
+      a.days.forEach((v,i) => {
+        if(!v) return;
+        const realISO = _idxToISO(a, i);
+        if(!realISO) return;
+        const colIdx = datesISO.indexOf(realISO);
+        if(colIdx >= 0) marked.push({ di: colIdx, srcIdx: i });
+      });
+    }
+    if(Array.isArray(a.domingos)){
+      a.domingos.forEach(iso => {
+        const colIdx = datesISO.indexOf(iso);
+        if(colIdx >= 0) marked.push({ di: colIdx, srcIdx: -1 });
+      });
+    }
+    marked.sort((x,y) => x.di - y.di);
+    // Deduplicar por di (preferir el primero con srcIdx real)
+    const dedup = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
+
+    if(!dedup.length) return; // no hay nada que dibujar
+
     const ticks = dates.map((d,i) => `<div class="g-tick" style="left:${i*CELL}px"></div>`).join('');
     const desc = a.descripcion || '(sin descripción)';
     const shortDesc = desc.length > 42 ? desc.slice(0,41) + '…' : desc;
@@ -1458,12 +1521,40 @@ function renderGantt(){
       ? [a.residente, a.obra, a.contratista]
       : [a.residente, a.obra];
     const subInfo = subFields.filter(Boolean).join(' · ');
-    const barClass = isOk ? 'ok' : isFail ? 'bad' : '';
+
+    // Construir los bloques uno por día tildado
+    const blocks = dedup.map(({ di, srcIdx }) => {
+      const esExtra = (srcIdx === -1);
+      const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+        ? a.cumplimiento[srcIdx]
+        : null;
+      // ¿Día planificado y sin tildar todavía como cumple/no_cumple?
+      const esPlanifPendiente = !esExtra
+        && cumpDia !== 'cumple'
+        && cumpDia !== 'no_cumple'
+        && !isFail
+        && !isImp;
+
+      let cls = '';
+      if(esPlanifPendiente)             cls = 'pendiente';
+      else if(esExtra)                  cls = 'dom';
+      else if(cumpDia === 'no_cumple')  cls = 'no-cumple';
+      else if(cumpDia === 'cumple')     cls = 'cumple';
+      else if(isFail)                   cls = 'no-cumple'; // legacy
+      else if(isImp)                    cls = 'imprev';
+      else                              cls = 'pendiente'; // fallback defensivo
+
+      const left = di * CELL + BLOQUE_OFFSET;
+      const d = dates[di];
+      const fechaTxt = d ? `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}` : '';
+      return `<div class="g-blk ${cls}" style="left:${left}px;width:${BLOQUE_W}px" title="${_esc(desc)} · ${fechaTxt}"></div>`;
+    }).join('');
+
     html += `<div class="g-row">
       <div class="g-lbl"><strong>${_esc(shortDesc)}</strong><small>${_esc(subInfo)}</small></div>
       <div class="g-bars-wrap" style="min-width:${dates.length*CELL}px">
         ${ticks}
-        <div class="g-blk ${barClass}" style="left:${left}px;width:${width}px" title="${_esc(desc)} · ${_fmtDate(ini)} → ${_fmtDate(fin)}"></div>
+        ${blocks}
       </div>
     </div>`;
   });
@@ -2146,46 +2237,87 @@ async function exportPDF(){
           }
           doc.text(obraShown, lMX + nameColW + resColW + 2, rowY + 4.8);
 
-          // Bloques marcados (días con cumplimiento o domingos especiales)
+          // ╔═══════════════════════════════════════════════════════════╗
+          // ║ Bloques marcados (rendering DÍA POR DÍA, estándar          ║
+          // ║ contratista — actualizado 20/05/2026).                     ║
+          // ║                                                            ║
+          // ║ Para cada día tildado en a.days[] y cada domingo en        ║
+          // ║ a.domingos[], dibuja un bloque independiente coloreado     ║
+          // ║ según a.cumplimiento[srcIdx]:                              ║
+          // ║   • cumple    → verde                                      ║
+          // ║   • no_cumple → rojo                                       ║
+          // ║   • null/pendiente → solo BORDE dorado (falta cargar)      ║
+          // ║   • imprevista (a.imprevista=true) → naranja               ║
+          // ║   • domingo trabajado (srcIdx=-1) → azul                   ║
+          // ╚═══════════════════════════════════════════════════════════╝
           const isFail = _isFAIL(a);
           const isImp  = !!a.imprevista;
-          const isConfirmed = !!a.confirmada;
-          const ini = _getFechaActividad(a);
-          const fin = _getFechaFin(a) || ini;
-          const iniIdx = ini ? dates.findIndex(d => d.toISOString().slice(0,10) === ini) : -1;
-          const finIdx = fin ? dates.findIndex(d => d.toISOString().slice(0,10) === fin) : iniIdx;
-          if(iniIdx >= 0){
-            const endIdx = finIdx >= 0 ? finIdx : iniIdx;
-            for(let di = iniIdx; di <= endIdx; di++){
-              const d = dates[di];
-              const isDom = d.getDay() === 0;
-              let color;
-              if(isFail) color = isDom ? [153,27,27] : [220,38,38];
-              else if(isImp) color = isDom ? [59,130,246] : [255,107,53];
-              else color = isDom ? [59,130,246] : GOLD;
-              const bx = ganttX + di*cellW + 0.8;
-              const by = rowY + 1.2;
-              const bw = Math.max(0.5, cellW - 1.6);
-              const bh = cellH - 2.4;
 
-              if(isConfirmed){
-                // CONFIRMADA: bloque LLENO con color sólido (como ahora)
-                doc.setFillColor(...color);
-                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
-              } else {
-                // NO CONFIRMADA: bloque con fondo TENUE (25% color + 75% blanco)
-                // + borde sólido del color → distingue visualmente sin confundir
-                const tintR = Math.round(color[0] * 0.25 + 255 * 0.75);
-                const tintG = Math.round(color[1] * 0.25 + 255 * 0.75);
-                const tintB = Math.round(color[2] * 0.25 + 255 * 0.75);
-                doc.setFillColor(tintR, tintG, tintB);
-                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
-                doc.setDrawColor(...color);
-                doc.setLineWidth(0.4);
-                doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'S');
-              }
-            }
+          // Helper local: índice de a.days[] → fecha ISO real
+          const _idxToISO = (act, i) => {
+            if(!act.fecha_inicio) return null;
+            try {
+              const b = new Date(act.fecha_inicio + 'T00:00:00');
+              b.setDate(b.getDate() + i);
+              return b.toISOString().slice(0,10);
+            } catch(e){ return null; }
+          };
+          const _datesISO = dates.map(d => d.toISOString().slice(0,10));
+
+          // Construir array `marked` con { di, srcIdx }
+          const marked = [];
+          if(Array.isArray(a.days)){
+            a.days.forEach((v,i) => {
+              if(!v) return;
+              const realISO = _idxToISO(a, i);
+              if(!realISO) return;
+              const colIdx = _datesISO.indexOf(realISO);
+              if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: i });
+            });
           }
+          if(Array.isArray(a.domingos)){
+            a.domingos.forEach(iso => {
+              const colIdx = _datesISO.indexOf(iso);
+              if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: -1 });
+            });
+          }
+          marked.sort((x,y) => x.di - y.di);
+          const dedupMarked = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
+
+          dedupMarked.forEach(({ di, srcIdx }) => {
+            const esExtra = (srcIdx === -1);
+            const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+              ? a.cumplimiento[srcIdx]
+              : null;
+            const esPlanifPendiente = !esExtra
+              && cumpDia !== 'cumple'
+              && cumpDia !== 'no_cumple'
+              && !isFail
+              && !isImp;
+
+            const bx = ganttX + di*cellW + 0.8;
+            const by = rowY + 1.2;
+            const bw = Math.max(0.5, cellW - 1.6);
+            const bh = cellH - 2.4;
+
+            if(esPlanifPendiente){
+              // Solo borde dorado, fondo transparente → "falta cargar dato"
+              doc.setDrawColor(...GOLD);
+              doc.setLineWidth(0.6);
+              doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'D');
+            } else {
+              // Bloque relleno con color según estado
+              let color;
+              if(esExtra)                      color = [59,130,246];   // azul
+              else if(cumpDia === 'no_cumple') color = [220,38,38];    // rojo
+              else if(cumpDia === 'cumple')    color = [34,197,94];    // verde
+              else if(isFail)                  color = [220,38,38];    // legacy fail
+              else if(isImp)                   color = [255,107,53];   // naranja imprevista
+              else                             color = GOLD;            // fallback defensivo
+              doc.setFillColor(...color);
+              doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
+            }
+          });
         });
 
         // Borde general del Gantt
@@ -2193,45 +2325,35 @@ async function exportPDF(){
         doc.setLineWidth(0.2);
         doc.rect(lMX, ganttTopY, lpw - 2*lMX, headerH + partActs.length * cellH);
 
-        // ─── Leyenda al pie (2 líneas): colores arriba, confirmacion abajo ───
-        const legY1 = lph - lMB - 7;  // primera línea: colores de estado
-        const legY2 = lph - lMB - 1;  // segunda línea: confirmacion
-        const legendItems = [
-          { color: GOLD,         label: 'Planificada / Cumplida' },
-          { color: [255,107,53], label: 'Imprevista (no planificada)' },
-          { color: [220,38,38],  label: 'No cumple / Retrasado' },
-          { color: [59,130,246], label: 'Domingo' }
-        ];
+        // ─── Leyenda al pie (estándar contratista, 20/05/2026) ───
+        // Una sola línea con los 5 estados estandarizados:
+        // borde dorado (pendiente) + verde (cumplido) + rojo (no cumplido)
+        // + naranja (imprevista) + azul (extra trabajado).
+        const legY1 = lph - lMB - 1;
+        doc.setFontSize(7.5);
         let legX = lMX;
-        doc.setFontSize(7);
+        // 1) Día planificado sin tildar (solo borde dorado)
+        doc.setDrawColor(...GOLD);
+        doc.setLineWidth(0.6);
+        doc.roundedRect(legX, legY1 - 3, 4, 3, 0.5, 0.5, 'D');
+        doc.setTextColor(...GRAY_TEXT);
+        doc.text('Día planificado (sin tildar aún)', legX + 5.5, legY1);
+        legX += 5.5 + doc.getTextWidth('Día planificado (sin tildar aún)') + 10;
+
+        // 2-5) Bloques rellenos con su color
+        const legendItems = [
+          { color: [34,197,94],  label: 'Día cumplido' },
+          { color: [220,38,38],  label: 'Día no cumplido' },
+          { color: [255,107,53], label: 'Imprevista' },
+          { color: [59,130,246], label: 'Día extra trabajado' }
+        ];
         legendItems.forEach(item => {
           doc.setFillColor(...item.color);
-          doc.roundedRect(legX, legY1 - 3, 3, 3, 0.5, 0.5, 'F');
+          doc.roundedRect(legX, legY1 - 3, 4, 3, 0.5, 0.5, 'F');
           doc.setTextColor(...GRAY_TEXT);
-          doc.text(item.label, legX + 4.5, legY1);
-          legX += doc.getTextWidth(item.label) + 10;
+          doc.text(item.label, legX + 5.5, legY1);
+          legX += 5.5 + doc.getTextWidth(item.label) + 10;
         });
-
-        // Segunda línea: explicar visual confirmada vs no confirmada
-        doc.setFontSize(7);
-        let legX2 = lMX;
-        // Bloque LLENO de ejemplo
-        doc.setFillColor(...GOLD);
-        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'F');
-        doc.setTextColor(...GRAY_TEXT);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Bloque lleno = CONFIRMADA', legX2 + 6.5, legY2);
-        legX2 += 6.5 + doc.getTextWidth('Bloque lleno = CONFIRMADA') + 10;
-        // Bloque OUTLINE de ejemplo
-        const tintR = Math.round(GOLD[0] * 0.25 + 255 * 0.75);
-        const tintG = Math.round(GOLD[1] * 0.25 + 255 * 0.75);
-        const tintB = Math.round(GOLD[2] * 0.25 + 255 * 0.75);
-        doc.setFillColor(tintR, tintG, tintB);
-        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'F');
-        doc.setDrawColor(...GOLD);
-        doc.setLineWidth(0.4);
-        doc.roundedRect(legX2, legY2 - 3, 5, 3, 0.5, 0.5, 'S');
-        doc.text('Bloque tenue + borde = NO CONFIRMADA (planificacion pendiente)', legX2 + 6.5, legY2);
         doc.setFont('helvetica', 'normal');
 
         // Footer landscape
