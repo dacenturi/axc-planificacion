@@ -1165,6 +1165,44 @@ function _matchesFilter(value, filter){
   return filter.has(value || '');
 }
 
+// ★ 20/05/2026 ★ Devuelve true si la actividad tiene AL MENOS UN día tildado
+// (hábil en a.days[] o domingo en a.domingos[]) que cae dentro del rango
+// [fechaDesde, fechaHasta]. Si los parámetros son null, no se aplica esa cota.
+//
+// Esta es la lógica correcta del filtro de fechas del reporte: "mostrar
+// actividades activas en el rango", no "actividades que comenzaron en el
+// rango". Una actividad de varias semanas debe aparecer en cualquier
+// filtro de fechas que toque alguno de sus días planificados.
+function _hasIntersectionWithRange(a, fechaDesde, fechaHasta){
+  if(!a.fecha_inicio) return false;
+  const inRange = iso =>
+    (!fechaDesde || iso >= fechaDesde) &&
+    (!fechaHasta || iso <= fechaHasta);
+
+  // 1) Días hábiles tildados en a.days[]
+  if(Array.isArray(a.days) && a.days.length){
+    try {
+      const base = new Date(a.fecha_inicio + 'T00:00:00');
+      for(let i = 0; i < a.days.length; i++){
+        if(!a.days[i]) continue;
+        const d = new Date(base);
+        d.setDate(d.getDate() + i);
+        const iso = d.toISOString().slice(0, 10);
+        if(inRange(iso)) return true;
+      }
+    } catch(e) { /* fecha mal formada — sigue al chequeo de domingos */ }
+  }
+
+  // 2) Domingos trabajados en a.domingos[]
+  if(Array.isArray(a.domingos)){
+    for(const iso of a.domingos){
+      if(inRange(iso)) return true;
+    }
+  }
+
+  return false;
+}
+
 // Devuelve la fecha de inicio efectiva de una actividad (como 'YYYY-MM-DD')
 function _getFechaActividad(a){
   // Si hay días marcados en la grilla, la fecha efectiva es fecha_inicio + offset del primer día marcado.
@@ -1219,11 +1257,14 @@ function applyFilters(){
       if(!f.tipo.has(tLabel)) continue;
     }
 
-    // Rango fechas
-    const fechaA = _getFechaActividad(a);
-    if(f.fechaDesde && fechaA && fechaA < f.fechaDesde) continue;
-    if(f.fechaHasta && fechaA && fechaA > f.fechaHasta) continue;
-    if((f.fechaDesde || f.fechaHasta) && !fechaA) continue; // Si filtra por fechas y la fila no tiene, excluir
+    // ★ 20/05/2026 ★ Rango fechas: incluir si AL MENOS UN día tildado
+    // (hábil o domingo) cae dentro del rango. Antes se usaba sólo
+    // _getFechaActividad (primer día tildado) lo que excluía actividades
+    // de larga duración con días tildados dentro del rango pero fecha de
+    // inicio anterior. Ver _hasIntersectionWithRange para detalle.
+    if(f.fechaDesde || f.fechaHasta){
+      if(!_hasIntersectionWithRange(a, f.fechaDesde, f.fechaHasta)) continue;
+    }
 
     out.push(a);
   }
