@@ -585,6 +585,11 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
           <span class="gl-item"><span class="gl-box dom"></span>Día extra trabajado</span>
         </div>
         <div id="gantt-content"></div>
+        <div class="gantt-note" style="margin-top:12px;padding:10px 12px;background:rgba(88,166,255,.08);border-left:3px solid #58a6ff;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5">
+          <strong style="color:#58a6ff">ℹ Sobre la lectura del Gantt:</strong>
+          los días verdes/rojos muestran únicamente el cumplimiento tildado día por día sobre actividades <strong>confirmadas</strong>.
+          Para ver el cumplimiento general de actividades (incluyendo las del modelo anterior sin tildado día a día), consultá los KPIs de arriba.
+        </div>
       </div>
     </div>
 
@@ -1485,6 +1490,11 @@ function renderGantt(){
   const BLOQUE_W = CELL - 6;
   const BLOQUE_OFFSET = 3;
 
+  // Contador para numerar filas del Gantt (1, 2, 3...).
+  // Usamos un contador externo (no idx del forEach) porque las filas sin
+  // tildados se saltan con `return` y no queremos huecos en la numeración.
+  let rowNumber = 0;
+
   sorted.forEach(a => {
     const isFail = _isFAIL(a);
     const isImp  = !!a.imprevista;
@@ -1553,7 +1563,7 @@ function renderGantt(){
     }).join('');
 
     html += `<div class="g-row">
-      <div class="g-lbl"><strong>${_esc(shortDesc)}</strong><small>${_esc(subInfo)}</small></div>
+      <div class="g-lbl"><strong>${++rowNumber}. ${_esc(shortDesc)}</strong><small>${_esc(subInfo)}</small></div>
       <div class="g-bars-wrap" style="min-width:${dates.length*CELL}px">
         ${ticks}
         ${blocks}
@@ -2099,7 +2109,7 @@ async function exportPDF(){
       const headerH = 10;
 
       // Filas por página: calcular según altura disponible
-      const usableH = lph - lMT - lMB - headerH - 22; // 22mm para título + leyenda
+      const usableH = lph - lMT - lMB - headerH - 27; // 27mm para título + leyenda + nota
       const maxRowsPerPage = Math.floor(usableH / cellH);
 
       // RE-ORDENAR: por residente alfabético, luego por fecha de inicio
@@ -2191,29 +2201,34 @@ async function exportPDF(){
 
         // ─── Filas de la parte actual ───
         const partActs = sortedActs.slice(part * maxRowsPerPage, (part+1) * maxRowsPerPage);
+        // Número global de la primera fila de esta parte (1-indexado).
+        // Mantiene continuidad de numeración entre páginas/partes del Gantt.
+        const rowNumOffset = part * maxRowsPerPage;
         const rowsStartY = ganttTopY + headerH;
         partActs.forEach((a, rIdx) => {
           const rowY = rowsStartY + rIdx * cellH;
+          const numeroFila = rowNumOffset + rIdx + 1;  // 1, 2, 3, ...
           // Alternar background suave
           if(rIdx % 2 === 1){
             doc.setFillColor(248, 249, 251);
             doc.rect(lMX, rowY, lpw - 2*lMX, cellH, 'F');
           }
-          // Texto descripción
+          // Texto descripción con número de fila como prefijo
           const desc = a.descripcion || '(sin descripción)';
           const maxDescW = nameColW - 6;
+          const numPrefix = numeroFila + '. ';
+          const imprPrefix = a.imprevista ? '[IMPR] ' : '';
           let descShown = desc;
-          // Truncar si excede el ancho disponible
-          if(doc.getTextWidth(`[IMPR] ${desc}`) > maxDescW){
-            // truncar bruto: dejar lo que quepa
-            const factor = maxDescW / doc.getTextWidth(desc);
-            descShown = desc.slice(0, Math.max(10, Math.floor(desc.length * factor) - 1)) + '...';
+          // Truncar considerando el espacio que ocupan los prefijos
+          if(doc.getTextWidth(numPrefix + imprPrefix + desc) > maxDescW){
+            const espacioParaTexto = maxDescW - doc.getTextWidth(numPrefix + imprPrefix);
+            const factor = espacioParaTexto / doc.getTextWidth(desc);
+            descShown = desc.slice(0, Math.max(8, Math.floor(desc.length * factor) - 1)) + '...';
           }
           doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal');
           doc.setFontSize(7);
           doc.setTextColor(...(a.imprevista ? [255,107,53] : BLACK));
-          const prefix = a.imprevista ? '[IMPR] ' : '';
-          doc.text(prefix + descShown, lMX + 2, rowY + 4.8);
+          doc.text(numPrefix + imprPrefix + descShown, lMX + 2, rowY + 4.8);
 
           // Residente (columna nueva)
           doc.setFont('helvetica', 'bold');
@@ -2334,7 +2349,7 @@ async function exportPDF(){
         // Una sola línea con los 5 estados estandarizados:
         // borde dorado (pendiente) + verde (cumplido) + rojo (no cumplido)
         // + naranja (imprevista) + azul (extra trabajado).
-        const legY1 = lph - lMB - 1;
+        const legY1 = lph - lMB - 5;
         doc.setFontSize(7.5);
         let legX = lMX;
         // 1) Día planificado sin tildar (solo borde dorado)
@@ -2359,6 +2374,21 @@ async function exportPDF(){
           doc.text(item.label, legX + 5.5, legY1);
           legX += 5.5 + doc.getTextWidth(item.label) + 10;
         });
+        doc.setFont('helvetica', 'normal');
+
+        // ─── Nota explicativa debajo de la leyenda (20/05/2026) ───
+        // Aclara que el Gantt muestra solo cumplimiento día-por-día sobre
+        // actividades confirmadas, mientras que los KPIs del Dashboard
+        // pueden contar actividades con estado global. Evita confusión
+        // cuando los números no coinciden visualmente.
+        const noteY = lph - lMB - 1;
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.5);
+        doc.setTextColor(...GRAY);
+        doc.text(
+          'Nota: los días verdes/rojos solo reflejan cumplimiento tildado día por día sobre actividades confirmadas. Para el cumplimiento general de actividades, consultar los KPIs del Dashboard.',
+          lMX, noteY
+        );
         doc.setFont('helvetica', 'normal');
 
         // Footer landscape
