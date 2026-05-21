@@ -2931,8 +2931,11 @@ function renderTable(){
     _colorSel(_estadoEfectivo);
     se.onchange=()=>{
       acts[idx].cumple = se.value;
-      // Si el estado no requiere razón, limpiarla
-      if(!_estadosConRazon.includes(se.value)) acts[idx].razon = '';
+      // Si el estado no requiere razón, limpiarla.
+      // FIX 21/05/2026 razón: NO borrar la razón si la actividad tiene días
+      // en rojo (no_cumple), porque en ese caso la razón sigue siendo válida.
+      const _rojos = (_contadoresActividad(acts[idx]).R > 0);
+      if(!_estadosConRazon.includes(se.value) && !_rojos) acts[idx].razon = '';
       // Si el estado no muestra días, limpiar
       if(!_estadosConDias.includes(se.value)) acts[idx].dias_atraso = 0;
       save();
@@ -2945,7 +2948,12 @@ function renderTable(){
 
     // Razones del estado (evalúa contra estado EFECTIVO)
     const tr2=document.createElement('td');tr2.style.padding='4px 5px';
-    const _requiereRazon = _estadosConRazon.includes(_estadoEfectivo);
+    // FIX 21/05/2026 razón: mostrar el selector de razón SIEMPRE que haya al
+    // menos un día marcado en rojo (no_cumple), además de los estados que ya
+    // la requerían. Antes, si el estado calculado caía en 'Cumplido con atraso'
+    // o 'En proceso', un día rojo no disparaba el campo de razón.
+    const _hayDiaRojo = (_contadoresActividad(a).R > 0);
+    const _requiereRazon = _hayDiaRojo || _estadosConRazon.includes(_estadoEfectivo);
     if(_requiereRazon){
       const wRaz=document.createElement('div');wRaz.style.cssText='display:flex;align-items:center;gap:3px';
       const sr=document.createElement('select');sr.className='sel-r';sr.style.flex='1';
@@ -3765,18 +3773,15 @@ function exportXLSX(){
     return;
   }
 
-  // ── Aplicar los 3 filtros (Obra/Contratista/Sector) ──
-  const anyFilter = (window._filtroObras instanceof Set) ||
-                    (window._filtroContratistas instanceof Set) ||
-                    (window._filtroSectores instanceof Set);
-  let actsExport = acts.slice();
-  let filtroAplicado = false;
-  if(anyFilter){
-    actsExport = acts.filter(_passAllFilters);
-    if(actsExport.length !== acts.length){
-      filtroAplicado = true;
-      showToast(`📥 Exportando ${actsExport.length} de ${acts.length} filas (filtro aplicado)`, 'ok');
-    }
+  // ── Aplicar filtros (Obra/Contratista/Sector/Estado + RANGO DE FECHA) ──
+  // FIX 21/05/2026 pdf-fecha: aplicar SIEMPRE _passAllFilters al exportar,
+  // porque incluye el filtro de fecha del header. Antes el Excel exportaba
+  // TODO el plan ignorando el rango seleccionado. Ahora coincide con el PDF
+  // y con el residente (que ya tenían este arreglo).
+  const actsExport = acts.filter(_passAllFilters);
+  let filtroAplicado = (actsExport.length !== acts.length);
+  if(filtroAplicado){
+    showToast(`📥 Exportando ${actsExport.length} de ${acts.length} filas (según filtro de fechas y otros)`, 'ok');
   }
 
   // Preparar datos
@@ -3875,16 +3880,16 @@ function exportPDF(){
     return;
   }
 
-  // ── Aplicar filtros (Obra/Contratista/Sector) ──
-  const anyFilter = (window._filtroObras instanceof Set) ||
-                    (window._filtroContratistas instanceof Set) ||
-                    (window._filtroSectores instanceof Set);
-  let actsExport = acts.slice();
-  if(anyFilter){
-    actsExport = acts.filter(_passAllFilters);
-    if(actsExport.length !== acts.length){
-      showToast(`📄 Exportando ${actsExport.length} de ${acts.length} actividades (filtro aplicado)`, 'ok');
-    }
+  // ── Aplicar filtros (Obra/Contratista/Sector/Estado + RANGO DE FECHA) ──
+  // FIX 21/05/2026 pdf-fecha: aplicar SIEMPRE _passAllFilters al exportar,
+  // porque incluye el filtro de fecha del header. Antes solo se aplicaba si
+  // había un filtro de obra/contratista/sector activo, por lo que el PDF podía
+  // incluir actividades confirmadas fuera del rango del Gantt → aparecían
+  // listadas pero con los días vacíos. Ahora la selección coincide con el
+  // rango que dibuja el Gantt (getStart..getFin).
+  const actsExport = acts.filter(_passAllFilters);
+  if(actsExport.length !== acts.length){
+    showToast(`📄 Exportando ${actsExport.length} de ${acts.length} actividades (filtro/rango aplicado)`, 'ok');
   }
   if(!actsExport.length){ showToast('⚠️ No hay actividades visibles para exportar', 'warn'); return; }
 
