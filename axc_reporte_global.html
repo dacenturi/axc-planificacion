@@ -1393,8 +1393,8 @@ function renderTable(){
   const showCont = window._currentApp === 'contratista';
   const hideStyle = showCont ? '' : 'display:none';
   const rows = acts.map((a, i) => {
-    const fechaIni = _getFechaActividad(a) || a.fecha_inicio || '—';
-    const fechaFin = _getFechaFin(a) || a.fecha_fin || '—';
+    const fechaIni = _getFechaIniClip(a) || '—';
+    const fechaFin = _getFechaFinClip(a) || '—';
     const estado = _estadoLabel(a);
     const crit = _criticidadLabel(a);
     // Estado: chip con los 9 estados soportados (legacy + nuevos)
@@ -1435,6 +1435,59 @@ function _getFechaFin(a){
     }
   }
   return null;
+}
+
+// ★ 21/05/2026 ★ Devuelve TODOS los días planificados (tildados en la grilla
+// hábil + domingos trabajados) como ISO 'YYYY-MM-DD', opcionalmente recortados
+// al rango [desde, hasta]. Base común de _getFechaIniClip / _getFechaFinClip.
+function _diasPlanificados(a, desde, hasta){
+  if(!a.fecha_inicio) return [];
+  const dias = [];
+  const inRange = iso =>
+    (!desde || iso >= desde) &&
+    (!hasta || iso <= hasta);
+  // Días hábiles tildados en a.days[]
+  if(Array.isArray(a.days)){
+    try{
+      const base = new Date(a.fecha_inicio + 'T00:00:00');
+      for(let i = 0; i < a.days.length; i++){
+        if(!a.days[i]) continue;
+        const d = new Date(base);
+        d.setDate(d.getDate() + i);
+        const iso = d.toISOString().slice(0,10);
+        if(inRange(iso)) dias.push(iso);
+      }
+    } catch(e){ /* fecha mal formada */ }
+  }
+  // Domingos trabajados
+  if(Array.isArray(a.domingos)){
+    for(const iso of a.domingos){
+      if(typeof iso === 'string' && inRange(iso)) dias.push(iso);
+    }
+  }
+  dias.sort();
+  return dias;
+}
+
+// Fecha de INICIO recortada al filtro de fechas activo (Opción B).
+// Si no hay filtro de fechas, equivale a _getFechaActividad (plan completo).
+function _getFechaIniClip(a){
+  const f = window._filters || {};
+  const dias = _diasPlanificados(a, f.fechaDesde, f.fechaHasta);
+  if(dias.length) return dias[0];
+  // Fallback: sin días tildados en rango → primer día efectivo del plan
+  return _getFechaActividad(a) || a.fecha_inicio || null;
+}
+
+// Fecha de FIN recortada al filtro de fechas activo (Opción B).
+// La fecha fin sigue siendo el último día TILDADO en la grilla, pero acotado
+// al filtro: el último día tildado que cae dentro del rango.
+function _getFechaFinClip(a){
+  const f = window._filters || {};
+  const dias = _diasPlanificados(a, f.fechaDesde, f.fechaHasta);
+  if(dias.length) return dias[dias.length - 1];
+  // Fallback: sin días tildados en rango → último día del plan
+  return _getFechaFin(a) || a.fecha_fin || null;
 }
 
 function _fmtDate(d){
@@ -1736,7 +1789,7 @@ async function exportPDF(){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-10';
+    const VERSION   = 'global-pdf-11';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2982,9 +3035,8 @@ async function exportPDF(){
         ? ['Residente', 'Obra', 'Contratista', 'Actividad', 'Fecha Fin', 'Días', 'Crit.']
         : ['Residente', 'Obra', 'Actividad', 'Fecha Fin', 'Días', 'Crit.'];
       const rows = vencidas.slice(0, 80).map(v => {
-        const desc = (v.descripcion || '').length > 50 ? v.descripcion.slice(0,48) + '…' : (v.descripcion || '');
         const prefix = v.imprevista ? '[IMPR] ' : '';
-        const fullDesc = prefix + desc;
+        const fullDesc = prefix + (v.descripcion || '');
         return isCont
           ? [v.residente||'—', v.obra||'—', v.contratista||'—', fullDesc, fmtFecha(v.fechaFin), v.diasAtraso + 'd', v.criticidad || '—']
           : [v.residente||'—', v.obra||'—', fullDesc, fmtFecha(v.fechaFin), v.diasAtraso + 'd', v.criticidad || '—'];
@@ -2996,8 +3048,12 @@ async function exportPDF(){
         body: rows,
         theme: 'striped',
         headStyles: { fillColor: RED, textColor: WHITE, fontStyle: 'bold', fontSize: 8.5 },
-        bodyStyles: { fontSize: 8, textColor: GRAY_TEXT },
+        bodyStyles: { fontSize: 8, textColor: GRAY_TEXT, valign: 'top', overflow: 'linebreak' },
         alternateRowStyles: { fillColor: GRAY_LIGHT },
+        // 'Actividad' con wrap; las cortas con ancho fijo.
+        columnStyles: isCont
+          ? { 3: { cellWidth: 'auto', overflow: 'linebreak' }, 4: { cellWidth: 18 }, 5: { cellWidth: 12, halign: 'center' }, 6: { cellWidth: 14 } }
+          : { 2: { cellWidth: 'auto', overflow: 'linebreak' }, 3: { cellWidth: 18 }, 4: { cellWidth: 12, halign: 'center' }, 5: { cellWidth: 14 } },
         margin: { left: MX, right: MX },
         didParseCell: (data) => {
           if(data.row.section === 'body'){
@@ -3070,25 +3126,41 @@ async function exportPDF(){
     doc.text(`${acts.length} actividad${acts.length===1?'':'es'} filtrada${acts.length===1?'':'s'}${acts.length > 200 ? ' (mostrando las primeras 200)' : ''}`, MX, MT + 12);
 
     const detHead = isCont
-      ? ['#', 'Residente', 'Obra', 'Contratista', 'Actividad', 'Estado', 'Crit.']
-      : ['#', 'Residente', 'Obra', 'Sector', 'Actividad', 'Estado', 'Crit.'];
+      ? ['#', 'Residente', 'Obra', 'Contratista', 'Actividad', 'Estado', 'Razón', 'Atraso', 'Crit.']
+      : ['#', 'Residente', 'Obra', 'Sector', 'Actividad', 'Estado', 'Razón', 'Atraso', 'Crit.'];
     const detRows = acts.slice(0, 200).map((a, i) => {
-      const desc = (a.descripcion || '—').length > 45 ? a.descripcion.slice(0,43) + '…' : (a.descripcion || '—');
+      // Descripción COMPLETA — autoTable hace el word-wrap y ajusta el alto de fila.
       const prefix = a.imprevista ? '[IMPR] ' : '';
-      const fullDesc = prefix + desc;
+      const fullDesc = prefix + (a.descripcion || '—');
+      // Razón de no cumplimiento (solo aplica cuando no cumple / retrasado)
+      const razon = a.razon || '—';
+      // Días de atraso: mostrar 'Nd' solo si hay valor > 0, sino '—'
+      const dias = (Number(a.dias_atraso) || 0) > 0 ? (Number(a.dias_atraso) + 'd') : '—';
       return isCont
-        ? [i+1, a.residente||'—', a.obra||'—', a.contratista||'—', fullDesc, _estadoLabel(a), _criticidadLabel(a)]
-        : [i+1, a.residente||'—', a.obra||'—', a.sector||'—', fullDesc, _estadoLabel(a), _criticidadLabel(a)];
+        ? [i+1, a.residente||'—', a.obra||'—', a.contratista||'—', fullDesc, _estadoLabel(a), razon, dias, _criticidadLabel(a)]
+        : [i+1, a.residente||'—', a.obra||'—', a.sector||'—', fullDesc, _estadoLabel(a), razon, dias, _criticidadLabel(a)];
     });
     doc.autoTable({
       startY: MT + 18,
       head: [detHead],
       body: detRows,
       theme: 'striped',
-      headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: 8.5 },
-      bodyStyles: { fontSize: 7.5, textColor: GRAY_TEXT, cellPadding: 1.8 },
+      headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: 7.5 },
+      bodyStyles: { fontSize: 7, textColor: GRAY_TEXT, cellPadding: 1.6, valign: 'top', overflow: 'linebreak' },
       alternateRowStyles: { fillColor: GRAY_LIGHT },
-      columnStyles: { 0: { halign: 'center', cellWidth: 8 } },
+      // Anchos fijos en columnas cortas; 'Actividad' absorbe el resto y hace wrap.
+      // Ancho útil A4 portrait ≈ 182mm (210 − 2×14). Suma fijos = 134 → Actividad ≈ 48mm.
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 7 },   // #
+        1: { cellWidth: 20 },                      // Residente
+        2: { cellWidth: 18 },                      // Obra
+        3: { cellWidth: 20 },                      // Contratista / Sector
+        4: { cellWidth: 'auto', overflow: 'linebreak' }, // Actividad (completa, con wrap)
+        5: { cellWidth: 19 },                      // Estado
+        6: { cellWidth: 26, overflow: 'linebreak' }, // Razón (con wrap)
+        7: { cellWidth: 11, halign: 'center' },    // Atraso
+        8: { cellWidth: 13 }                       // Crit.
+      },
       margin: { left: MX, right: MX },
       didParseCell: (data) => {
         if(data.row.section === 'body' && data.row.index < acts.length){
