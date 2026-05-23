@@ -3462,6 +3462,99 @@ function _pctLabel(pct){
   return 'Óptimo';
 }
 
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  SISTEMA DE ESTILO DEL DASHBOARD (mejora visual — 23/05/2026)     ║
+// ║  Helpers compartidos para dar un look moderno y coherente a todos ║
+// ║  los gráficos: gradientes, tooltips ricos y animaciones suaves.   ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+// Cache de gradientes por (canvas + color) para no recrearlos en cada frame.
+const _gradCache = new WeakMap();
+
+// Convierte 'rgba(r,g,b,a)' o '#hex' a [r,g,b].
+function _toRGB(color){
+  if(!color) return [139,148,158];
+  if(color[0] === '#'){
+    const h = color.slice(1);
+    const n = h.length === 3
+      ? h.split('').map(c => parseInt(c+c,16))
+      : [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+    return n;
+  }
+  const m = color.match(/rgba?\(([^)]+)\)/);
+  if(m){
+    const p = m[1].split(',').map(s => parseFloat(s.trim()));
+    return [p[0], p[1], p[2]];
+  }
+  return [139,148,158];
+}
+
+// Crea un gradiente lineal a partir de un color base. `horizontal=true` para
+// barras horizontales (indexAxis 'y'), false para verticales o áreas.
+// El gradiente va de una versión más oscura/transparente a una más viva.
+function _dashGradient(ctx, area, colorBase, horizontal){
+  if(!area) return colorBase; // aún sin layout: fallback a color sólido
+  const [r,g,b] = _toRGB(colorBase);
+  const grad = horizontal
+    ? ctx.createLinearGradient(area.left, 0, area.right, 0)
+    : ctx.createLinearGradient(0, area.bottom, 0, area.top);
+  grad.addColorStop(0,   `rgba(${r},${g},${b},0.45)`);
+  grad.addColorStop(0.6, `rgba(${r},${g},${b},0.85)`);
+  grad.addColorStop(1,   `rgba(${r},${g},${b},1)`);
+  return grad;
+}
+
+// Devuelve un backgroundColor que Chart.js evalúa por barra, generando el
+// gradiente cuando el área del chart ya está disponible.
+function _dashBarBG(colorOrFn, horizontal){
+  return (context) => {
+    const { chart, dataIndex } = context;
+    const { ctx, chartArea } = chart;
+    const base = typeof colorOrFn === 'function' ? colorOrFn(dataIndex) : colorOrFn;
+    return _dashGradient(ctx, chartArea, base, horizontal);
+  };
+}
+
+// Gradiente de área para gráficos de línea: del color (arriba, semi) a
+// transparente (abajo). Da el efecto de "relleno difuminado" bajo la curva.
+function _dashAreaBG(colorBase){
+  return (context) => {
+    const { chart } = context;
+    const { ctx, chartArea } = chart;
+    if(!chartArea) return 'rgba(0,0,0,0)';
+    const [r,g,b] = _toRGB(colorBase);
+    const grad = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    grad.addColorStop(0,   `rgba(${r},${g},${b},0.35)`);
+    grad.addColorStop(0.5, `rgba(${r},${g},${b},0.12)`);
+    grad.addColorStop(1,   `rgba(${r},${g},${b},0)`);
+    return grad;
+  };
+}
+
+// Config de tooltip moderno y coherente para todos los gráficos.
+const _DASH_TOOLTIP = {
+  backgroundColor: 'rgba(13,17,23,0.95)',
+  borderColor: 'rgba(240,165,0,0.35)',
+  borderWidth: 1,
+  titleColor: '#f0a500',
+  titleFont: { family: 'Syne, sans-serif', weight: '700', size: 12 },
+  bodyColor: '#e6edf3',
+  bodyFont: { family: 'Inter, sans-serif', size: 12 },
+  padding: 12,
+  cornerRadius: 8,
+  displayColors: true,
+  boxPadding: 4
+};
+
+// Animación de entrada suave y escalonada para barras.
+const _DASH_ANIM = {
+  duration: 750,
+  easing: 'easeOutQuart',
+  delay: (ctx) => (ctx.type === 'data' && ctx.mode === 'default')
+    ? ctx.dataIndex * 40
+    : 0
+};
+
 // Agrupa el array `acts` por `field` y calcula pct cumplimiento de cada grupo.
 // Devuelve array [{ key, total, ok, fail, pct }] ordenado de menor a mayor pct.
 function _pctByField(acts, field){
@@ -3607,18 +3700,28 @@ function renderGauge(acts){
     data: {
       datasets: [{
         data: [safePct, 100 - safePct],
-        backgroundColor: [color, 'rgba(48,54,61,0.6)'],
+        backgroundColor: [
+          // Gradiente sobre el arco de progreso para darle profundidad
+          (context) => {
+            const { chart } = context;
+            const { ctx: c, chartArea } = chart;
+            if(context.dataIndex !== 0) return 'rgba(48,54,61,0.5)';
+            return _dashGradient(c, chartArea, color, true);
+          },
+          'rgba(48,54,61,0.5)'
+        ],
         borderWidth: 0,
         circumference: 180,
         rotation: 270,
-        cutout: '78%'
+        cutout: '76%',
+        borderRadius: [{ outerEnd: 6, innerEnd: 6 }, 0]
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      animation: { animateRotate: true, duration: 900 }
+      plugins: { legend: { display: false }, tooltip: { enabled: false }, datalabels: { display: false } },
+      animation: { animateRotate: true, duration: 1100, easing: 'easeOutQuart' }
     }
   });
 }
@@ -3646,30 +3749,39 @@ function renderChartObra(acts){
 
   window._charts.obra = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: '% Cumplimiento',
         data: values,
-        backgroundColor: colors,
-        borderRadius: 4,
+        backgroundColor: _dashBarBG((i) => colors[i], true),
+        borderRadius: 6,
         barThickness: 'flex',
-        maxBarThickness: 30
+        maxBarThickness: 28
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => {
               const d = data[ctx.dataIndex];
               return ` ${d.pct}% · ${d.ok} cumple / ${d.total} total`;
             }
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v + '%'
         }
       },
       scales: {
@@ -3712,30 +3824,39 @@ function renderChartResidente(acts){
 
   window._charts.residente = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: '% Cumplimiento',
         data: values,
-        backgroundColor: colors,
-        borderRadius: 4,
+        backgroundColor: _dashBarBG((i) => colors[i], true),
+        borderRadius: 6,
         barThickness: 'flex',
-        maxBarThickness: 30
+        maxBarThickness: 28
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => {
               const d = sorted[ctx.dataIndex];
               return ` ${d.pct}% · ${d.ok} cumple / ${d.total} total`;
             }
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v + '%'
         }
       },
       scales: {
@@ -3816,22 +3937,27 @@ function renderChartTiempo(acts){
         label: '% Cumplimiento',
         data: values,
         borderColor: DASH_COLORS.accent,
-        backgroundColor: DASH_COLORS.accentL,
+        backgroundColor: _dashAreaBG(DASH_COLORS.accent),
         fill: true,
-        tension: 0.3,
+        tension: 0.4,
+        borderWidth: 2.5,
         pointRadius: 5,
         pointBackgroundColor: values.map(_colorByPct),
-        pointBorderColor: '#000',
-        pointBorderWidth: 1,
-        pointHoverRadius: 7
+        pointBorderColor: '#0d1117',
+        pointBorderWidth: 2,
+        pointHoverRadius: 8,
+        pointHoverBorderWidth: 2
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: { duration: 900, easing: 'easeOutQuart' },
+      interaction: { intersect: false, mode: 'index' },
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => {
               const n = totals[ctx.dataIndex];
@@ -3953,9 +4079,10 @@ function renderChartCurvaS(acts){
           type: 'bar',
           label: 'Cumple (día)',
           data: daily_cumple,
-          backgroundColor: 'rgba(34,197,94,0.45)',
-          borderColor: 'rgba(34,197,94,0.85)',
+          backgroundColor: 'rgba(34,197,94,0.55)',
+          borderColor: 'rgba(34,197,94,0.9)',
           borderWidth: 1,
+          borderRadius: 4,
           yAxisID: 'yDaily',
           order: 2
         },
@@ -3963,9 +4090,10 @@ function renderChartCurvaS(acts){
           type: 'bar',
           label: 'No cumple (día)',
           data: daily_nocumple,
-          backgroundColor: 'rgba(239,68,68,0.45)',
-          borderColor: 'rgba(239,68,68,0.85)',
+          backgroundColor: 'rgba(239,68,68,0.55)',
+          borderColor: 'rgba(239,68,68,0.9)',
           borderWidth: 1,
+          borderRadius: 4,
           yAxisID: 'yDaily',
           order: 2
         },
@@ -3981,8 +4109,8 @@ function renderChartCurvaS(acts){
           pointRadius: 3,
           pointHoverRadius: 6,
           pointBackgroundColor: '#22C55E',
-          pointBorderColor: '#000',
-          pointBorderWidth: 1,
+          pointBorderColor: '#0d1117',
+          pointBorderWidth: 1.5,
           yAxisID: 'yCum',
           order: 1
         },
@@ -3998,8 +4126,8 @@ function renderChartCurvaS(acts){
           pointRadius: 3,
           pointHoverRadius: 6,
           pointBackgroundColor: '#EF4444',
-          pointBorderColor: '#000',
-          pointBorderWidth: 1,
+          pointBorderColor: '#0d1117',
+          pointBorderWidth: 1.5,
           yAxisID: 'yCum',
           order: 1
         }
@@ -4008,13 +4136,15 @@ function renderChartCurvaS(acts){
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: { duration: 850, easing: 'easeOutQuart' },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: {
           position: 'top',
-          labels: { color: DASH_COLORS.text, font: { size: 11 }, usePointStyle: true, padding: 12 }
+          labels: { color: DASH_COLORS.text, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle', padding: 12 }
         },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => {
               const v = ctx.parsed.y;
@@ -4071,29 +4201,38 @@ function renderChartContratista(acts){
 
   window._charts.contratista = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: '% Cumplimiento',
         data: values,
-        backgroundColor: colors,
-        borderRadius: 4,
-        maxBarThickness: 30
+        backgroundColor: _dashBarBG((i) => colors[i], true),
+        borderRadius: 6,
+        maxBarThickness: 28
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => {
               const d = data[ctx.dataIndex];
               return ` ${d.pct}% · ${d.ok} cumple / ${d.total} total`;
             }
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v + '%'
         }
       },
       scales: {
@@ -4142,26 +4281,35 @@ function renderChartRazones(acts){
 
   window._charts.razones = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: 'Cantidad',
         data: values,
-        backgroundColor: DASH_COLORS.red,
-        borderRadius: 4,
-        maxBarThickness: 28
+        backgroundColor: _dashBarBG(DASH_COLORS.red, true),
+        borderRadius: 6,
+        maxBarThickness: 26
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => ` ${ctx.parsed.x} actividad${ctx.parsed.x===1?'':'es'}`
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v
         }
       },
       scales: {
@@ -4217,33 +4365,35 @@ function renderChartCriticidad(acts){
         {
           label: '✓ Cumple',
           data: niveles.map(n => buckets[n].ok),
-          backgroundColor: DASH_COLORS.green,
-          borderRadius: 4
+          backgroundColor: _dashBarBG(DASH_COLORS.green, false),
+          borderRadius: 5
         },
         {
           label: '✗ No Cumple',
           data: niveles.map(n => buckets[n].fail),
-          backgroundColor: DASH_COLORS.red,
-          borderRadius: 4
+          backgroundColor: _dashBarBG(DASH_COLORS.red, false),
+          borderRadius: 5
         },
         {
           label: '— Sin asignar',
           data: niveles.map(n => buckets[n].na),
           backgroundColor: 'rgba(139,148,158,0.4)',
-          borderRadius: 4
+          borderRadius: 5
         }
       ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: {
           display: true,
           position: 'bottom',
-          labels: { color: DASH_COLORS.text2, font: { size: 11 }, boxWidth: 12 }
+          labels: { color: DASH_COLORS.text2, font: { size: 11 }, boxWidth: 12, usePointStyle: true, pointStyle: 'circle' }
         },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y} actividad${ctx.parsed.y===1?'':'es'}`
           }
@@ -4294,26 +4444,35 @@ function renderChartSector(acts){
 
   window._charts.sector = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: 'Cantidad',
         data: values,
-        backgroundColor: DASH_COLORS.blue,
-        borderRadius: 4,
-        maxBarThickness: 28
+        backgroundColor: _dashBarBG(DASH_COLORS.blue, true),
+        borderRadius: 6,
+        maxBarThickness: 26
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: (ctx) => ` ${ctx.parsed.x} actividad${ctx.parsed.x===1?'':'es'}`
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v
         }
       },
       scales: {
@@ -4367,23 +4526,27 @@ function renderChartEstados(acts){
         data: entries.map(e => e.count),
         backgroundColor: entries.map(e => e.color),
         borderColor: '#0d1117',
-        borderWidth: 2
+        borderWidth: 2,
+        hoverOffset: 8,
+        hoverBorderColor: '#0d1117'
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      cutout: '60%',
+      cutout: '62%',
+      animation: { animateRotate: true, animateScale: true, duration: 850, easing: 'easeOutQuart' },
       plugins: {
         legend: {
           position: 'right',
-          labels: { color: DASH_COLORS.text, font: { size: 11 }, padding: 8, boxWidth: 12 }
+          labels: { color: DASH_COLORS.text, font: { size: 11 }, padding: 8, boxWidth: 12, usePointStyle: true, pointStyle: 'circle' }
         },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
             label: ctx => {
               const v = ctx.parsed;
               const pct = total ? Math.round(v / total * 100) : 0;
-              return `${ctx.label}: ${v} (${pct}%)`;
+              return ` ${ctx.label}: ${v} (${pct}%)`;
             }
           }
         }
@@ -4423,25 +4586,34 @@ function renderChartAtrasoObra(acts){
 
   window._charts.atrasoObra = new Chart(canvas.getContext('2d'), {
     type: 'bar',
+    plugins: window.ChartDataLabels ? [window.ChartDataLabels] : [],
     data: {
       labels,
       datasets: [{
         label: 'Días de atraso acumulados',
         data: values,
-        backgroundColor: DASH_COLORS.red,
-        borderRadius: 4,
-        maxBarThickness: 28
+        backgroundColor: _dashBarBG(DASH_COLORS.red, true),
+        borderRadius: 6,
+        maxBarThickness: 26
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true, maintainAspectRatio: false,
+      animation: _DASH_ANIM,
       plugins: {
         legend: { display: false },
         tooltip: {
+          ..._DASH_TOOLTIP,
           callbacks: {
-            label: ctx => `${ctx.parsed.x} día${ctx.parsed.x === 1 ? '' : 's'} acumulado${ctx.parsed.x === 1 ? '' : 's'}`
+            label: ctx => ` ${ctx.parsed.x} día${ctx.parsed.x === 1 ? '' : 's'} acumulado${ctx.parsed.x === 1 ? '' : 's'}`
           }
+        },
+        datalabels: {
+          anchor: 'end', align: 'end', clamp: true,
+          color: DASH_COLORS.text2,
+          font: { size: 10, weight: '700', family: 'Inter, sans-serif' },
+          formatter: (v) => v
         }
       },
       scales: {
