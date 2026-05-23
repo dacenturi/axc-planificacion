@@ -561,6 +561,8 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
                 <th>Actividad</th>
                 <th class="sortable" onclick="sortBy('inicio')" style="width:80px">Inicio <span id="s-inicio"></span></th>
                 <th style="width:80px">Fin</th>
+                <th style="width:78px" title="Cantidad de días planificados (tildados en la grilla)">Duración <span style="color:var(--text3);font-weight:400">(días)</span></th>
+                <th style="width:72px" title="Cantidad de días de atraso">Días atraso</th>
                 <th style="width:90px">Estado</th>
                 <th>Razón</th>
                 <th style="width:82px">Criticidad</th>
@@ -577,6 +579,20 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
     <!-- GANTT -->
     <div id="view-gantt" style="display:none">
       <div class="gantt-card">
+        <div class="gantt-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+          <span style="font-size:12px;font-weight:700;color:var(--text2);letter-spacing:.3px">Ordenar por:</span>
+          <select id="ganttSortField" onchange="setGanttSort()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer">
+            <option value="fecha">📅 Fecha de inicio</option>
+            <option value="residente">🧑‍🔧 Residente</option>
+            <option value="obra">🏗 Obra</option>
+            <option value="contratista">👷 Contratista</option>
+            <option value="actividad">📋 Actividad</option>
+          </select>
+          <button id="ganttSortDir" type="button" onclick="toggleGanttSortDir()" title="Cambiar dirección del orden"
+                  style="background:var(--bg3);color:var(--text2);border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:5px">
+            <span id="ganttSortDirIcon">↑</span><span id="ganttSortDirLabel">Asc</span>
+          </button>
+        </div>
         <div class="gantt-legend">
           <span class="gl-item"><span class="gl-box pendiente"></span>Día planificado (sin tildar)</span>
           <span class="gl-item"><span class="gl-box cumple"></span>Día cumplido</span>
@@ -1387,7 +1403,7 @@ function renderTable(){
   const tbody = document.getElementById('tbody');
   const acts = window._filteredActs;
   if(!acts.length){
-    tbody.innerHTML = '<tr><td colspan="11" class="empty"><span class="empty-ico">📋</span>No hay actividades que coincidan con los filtros.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" class="empty"><span class="empty-ico">📋</span>No hay actividades que coincidan con los filtros.</td></tr>';
     return;
   }
   const showCont = window._currentApp === 'contratista';
@@ -1397,6 +1413,16 @@ function renderTable(){
     const fechaFin = _getFechaFinClip(a) || '—';
     const estado = _estadoLabel(a);
     const crit = _criticidadLabel(a);
+    // ★ 23/05/2026 ★ Duración y días de atraso (Opción C).
+    //   duracion   = días planificados tildados en la grilla (a.days[]),
+    //                SIN sumar el atraso.
+    //   diasAtraso = a.dias_atraso, mostrado aparte en su propia columna.
+    const duracion    = Array.isArray(a.days) ? a.days.filter(Boolean).length : 0;
+    const diasAtraso  = Number.isFinite(a.dias_atraso) && a.dias_atraso > 0 ? a.dias_atraso : 0;
+    const duracionTxt = duracion > 0 ? duracion : '—';
+    const atrasoTxt   = diasAtraso > 0
+      ? `<span style="color:#f0a500;font-weight:700">${diasAtraso}</span>`
+      : '<span style="color:var(--text3)">—</span>';
     // Estado: chip con los 9 estados soportados (legacy + nuevos)
     const estadoChip = _estadoChipHtml(estado);
     const critChip = crit === 'Sin asignar' ? `<span class="chip">—</span>`
@@ -1415,6 +1441,8 @@ function renderTable(){
       <td>${impBadge}${_esc(a.descripcion)||'—'}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">${_fmtDate(fechaIni)}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">${_fmtDate(fechaFin)}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:12px;color:var(--text);text-align:center;font-weight:700">${duracionTxt}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:12px;text-align:center">${atrasoTxt}</td>
       <td>${estadoChip}</td>
       <td style="font-size:11px;color:var(--text2)">${_esc(a.razon)||'—'}</td>
       <td>${critChip}</td>
@@ -1536,6 +1564,58 @@ function _esc(s){
 // ════════════════════════════════════════════════════════════
 // GANTT
 // ════════════════════════════════════════════════════════════
+
+// ─── Orden configurable del Gantt (23/05/2026) ───
+// Estado del orden: campo + dirección. Persiste durante la sesión.
+let _ganttSortField = 'fecha';   // fecha | residente | obra | contratista | actividad
+let _ganttSortDir   = 'asc';     // asc | desc
+
+// Cambia el campo de orden (llamado desde el <select>) y re-renderiza.
+function setGanttSort(){
+  const sel = document.getElementById('ganttSortField');
+  if(sel) _ganttSortField = sel.value;
+  renderGantt();
+}
+
+// Alterna ascendente/descendente y re-renderiza.
+function toggleGanttSortDir(){
+  _ganttSortDir = (_ganttSortDir === 'asc') ? 'desc' : 'asc';
+  const icon  = document.getElementById('ganttSortDirIcon');
+  const label = document.getElementById('ganttSortDirLabel');
+  if(icon)  icon.textContent  = (_ganttSortDir === 'asc') ? '↑' : '↓';
+  if(label) label.textContent = (_ganttSortDir === 'asc') ? 'Asc' : 'Desc';
+  renderGantt();
+}
+
+// Devuelve una copia ordenada de `acts` según el campo y dirección actuales.
+// Para 'fecha' usa la fecha de inicio efectiva; para los demás, comparación
+// alfabética del campo (case-insensitive). Empate → desempata por fecha.
+function _sortGanttActs(acts){
+  const dir = (_ganttSortDir === 'desc') ? -1 : 1;
+  const field = _ganttSortField;
+  const keyOf = (a) => {
+    switch(field){
+      case 'residente':   return (a.residente || '').toLowerCase();
+      case 'obra':        return (a.obra || '').toLowerCase();
+      case 'contratista': return (a.contratista || '').toLowerCase();
+      case 'actividad':   return (a.descripcion || a.item || '').toLowerCase();
+      case 'fecha':
+      default:            return _getFechaActividad(a) || '9999-12-31';
+    }
+  };
+  return acts.slice().sort((a, b) => {
+    const ka = keyOf(a), kb = keyOf(b);
+    let cmp = (ka < kb) ? -1 : (ka > kb) ? 1 : 0;
+    // Desempate estable por fecha de inicio (siempre ascendente)
+    if(cmp === 0 && field !== 'fecha'){
+      const fa = _getFechaActividad(a) || '9999-12-31';
+      const fb = _getFechaActividad(b) || '9999-12-31';
+      cmp = (fa < fb) ? -1 : (fa > fb) ? 1 : 0;
+    }
+    return cmp * dir;
+  });
+}
+
 function renderGantt(){
   const cont = document.getElementById('gantt-content');
   // ★ REGLA 20/05/2026 ★ El Gantt SOLO muestra actividades con planificación
@@ -1624,12 +1704,8 @@ function renderGantt(){
   });
   html += `</div></div>`;
 
-  // ─── Rows (ordenadas por fecha de inicio) ───
-  const sorted = acts.slice().sort((a,b) => {
-    const fa = _getFechaActividad(a) || '9999';
-    const fb = _getFechaActividad(b) || '9999';
-    return fa.localeCompare(fb);
-  });
+  // ─── Rows (orden configurable vía selector — 23/05/2026) ───
+  const sorted = _sortGanttActs(acts);
 
   // BLOQUE_W: ancho de cada bloque diario (un poco menos que CELL para no pegarse)
   const BLOQUE_W = CELL - 6;
