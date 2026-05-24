@@ -694,6 +694,13 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
           <div id="empty-curvas" class="chart-empty" style="display:none">Sin actividades confirmadas con marcas de cumplimiento todavía</div>
         </div>
 
+        <!-- 4C. Curva S — Avance físico: Planificado vs Realizado vs Imprevisto -->
+        <div class="dash-card dash-card-wide">
+          <div class="dash-card-title">📈 Curva S — Avance físico (Planificado vs Realizado vs Imprevisto)<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: el avance del proyecto comparando lo planeado con lo ejecutado, más el trabajo imprevisto.&#10;&#10;Tres líneas acumuladas por día (respetan el filtro de fechas):&#10;• Planificado: días-actividad planificados (tildados en la grilla) de todo el plan — la línea base.&#10;• Realizado: días-actividad efectivamente cumplidos (marca ✓) del plan.&#10;• Imprevisto: días-actividad de las actividades imprevistas.&#10;&#10;Lectura: si Realizado va por debajo de Planificado, el proyecto está atrasado respecto al plan. La brecha entre ambas líneas es el atraso acumulado. La línea Imprevisto muestra cuánto trabajo extra no planeado surgió.">ⓘ</button></div>
+          <div class="chart-wrap tall" id="wrap-curva-avance"><canvas id="chartCurvaAvance"></canvas></div>
+          <div id="empty-curva-avance" class="chart-empty" style="display:none">Sin datos de planificación para mostrar el avance</div>
+        </div>
+
         <!-- 5. Cumplimiento por Contratista -->
         <div class="dash-card" id="card-contratista">
           <div class="dash-card-title">🏗 Cumplimiento por Contratista<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: cumplimiento porcentual agrupado por Contratista.&#10;&#10;Cálculo: para cada Contratista, Cumple ÷ (Cumple + No Cumple) × 100.&#10;Actividades sin estado no suman.&#10;&#10;Útil para comparar performance entre contratistas contratados. Orden: menor % primero (problemas arriba).">ⓘ</button></div>
@@ -2333,6 +2340,7 @@ async function exportPDF(){
       { id: 'residente',   title: 'Desempeño por Residente' },
       { id: 'tiempo',      title: 'Cumplimiento en el Tiempo (semanal)' },
       { id: 'curvas',      title: 'Curva S — Cumple vs No Cumple' },
+      { id: 'curvaAvance', title: 'Curva S — Avance físico (Plan/Real/Imprev)' },
       { id: 'contratista', title: 'Cumplimiento por Contratista',  onlyCont: true },
       { id: 'razones',     title: 'Razones de No Cumplimiento' },
       { id: 'criticidad',  title: 'Criticidad vs Cumplimiento' },
@@ -3777,6 +3785,9 @@ function renderDashboard(){
   renderChartTiempo(actsPlan);
   // 4B. Curva S — cumple vs no cumple — solo plan
   renderChartCurvaS(actsPlan);
+  // 4C. Curva S — Avance físico (Plan/Real/Imprev) — usa acts completo
+  // (necesita las imprevistas para su propia serie; separa internamente)
+  renderChartCurvaAvance(acts);
   // 5. Cumplimiento por Contratista (solo en Contratista) — solo plan
   if(isCont) renderChartContratista(actsPlan);
   else _destroyChart('contratista');
@@ -4367,6 +4378,196 @@ function renderChartCurvaS(acts){
           ticks: { color: DASH_COLORS.text2, font: { size: 10 }, precision: 0 },
           grid: { drawOnChartArea: false },
           beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+// ─── 4C. Curva S — Avance físico: Planificado vs Realizado vs Imprevisto ──
+// (24/05/2026) Tres curvas acumuladas por día, respetando el filtro de fechas:
+//   Planificado = días-actividad planificados (days[]=true) de NO imprevistas
+//                 (línea base: todo el plan, confirmadas + no confirmadas)
+//   Realizado   = días-actividad cumplidos (cumplimiento[i]='cumple') del plan
+//   Imprevisto  = días-actividad planificados (days[]=true) de imprevistas
+function renderChartCurvaAvance(acts){
+  const canvas = document.getElementById('chartCurvaAvance');
+  const empty  = document.getElementById('empty-curva-avance');
+  const wrap   = document.getElementById('wrap-curva-avance');
+  if(!canvas) return;
+
+  _destroyChart('curvaAvance');
+
+  const plan   = acts.filter(a => !a.imprevista && Array.isArray(a.days) && a.fecha_inicio);
+  const imprev = acts.filter(a =>  a.imprevista && Array.isArray(a.days) && a.fecha_inicio);
+
+  // Recolecta {iso, tipo} para cada día-actividad relevante.
+  // tipo: 'plan' (planificado), 'real' (cumplido del plan), 'imp' (imprevisto)
+  const _isoDe = (fechaIni, offset) => {
+    const d = new Date(fechaIni + 'T00:00:00');
+    if(isNaN(d.getTime())) return null;
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().slice(0,10);
+  };
+
+  let minDate = null, maxDate = null;
+  const marcas = []; // { iso, plan:0/1, real:0/1, imp:0/1 }
+  // Plan: cada día tildado suma a Planificado; si está cumplido, suma a Realizado
+  plan.forEach(a => {
+    const cumpl = Array.isArray(a.cumplimiento) ? a.cumplimiento : [];
+    a.days.forEach((tildado, i) => {
+      if(!tildado) return;
+      const iso = _isoDe(a.fecha_inicio, i);
+      if(!iso) return;
+      const real = cumpl[i] === 'cumple' ? 1 : 0;
+      marcas.push({ iso, plan:1, real, imp:0 });
+      if(!minDate || iso < minDate) minDate = iso;
+      if(!maxDate || iso > maxDate) maxDate = iso;
+    });
+  });
+  // Imprevisto: cada día tildado de una imprevista suma a Imprevisto
+  imprev.forEach(a => {
+    a.days.forEach((tildado, i) => {
+      if(!tildado) return;
+      const iso = _isoDe(a.fecha_inicio, i);
+      if(!iso) return;
+      marcas.push({ iso, plan:0, real:0, imp:1 });
+      if(!minDate || iso < minDate) minDate = iso;
+      if(!maxDate || iso > maxDate) maxDate = iso;
+    });
+  });
+
+  if(!minDate || !maxDate){
+    if(wrap)  wrap.style.display  = 'none';
+    if(empty) empty.style.display = 'block';
+    return;
+  }
+
+  // Alinear al filtro de fechas activo (igual que la otra Curva S y el Gantt)
+  if(window._filters.fechaDesde && window._filters.fechaDesde > minDate) minDate = window._filters.fechaDesde;
+  if(window._filters.fechaHasta && window._filters.fechaHasta < maxDate) maxDate = window._filters.fechaHasta;
+  if(minDate > maxDate){
+    if(wrap)  wrap.style.display  = 'none';
+    if(empty) empty.style.display = 'block';
+    return;
+  }
+  if(wrap)  wrap.style.display  = 'block';
+  if(empty) empty.style.display = 'none';
+
+  // Eje de fechas diario
+  const dates = [];
+  for(let d = new Date(minDate + 'T00:00:00'); d <= new Date(maxDate + 'T00:00:00'); d.setDate(d.getDate()+1)){
+    dates.push(new Date(d));
+  }
+  const isoIndex = dates.map(d => d.toISOString().slice(0,10));
+  const n = dates.length;
+
+  const dPlan = new Array(n).fill(0);
+  const dReal = new Array(n).fill(0);
+  const dImp  = new Array(n).fill(0);
+  marcas.forEach(m => {
+    const idx = isoIndex.indexOf(m.iso);
+    if(idx < 0) return; // fuera del rango filtrado
+    dPlan[idx] += m.plan;
+    dReal[idx] += m.real;
+    dImp[idx]  += m.imp;
+  });
+
+  // Acumulados
+  const cumPlan = [], cumReal = [], cumImp = [];
+  let rP = 0, rR = 0, rI = 0;
+  for(let i = 0; i < n; i++){
+    rP += dPlan[i]; rR += dReal[i]; rI += dImp[i];
+    cumPlan.push(rP); cumReal.push(rR); cumImp.push(rI);
+  }
+
+  const labels = dates.map(d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`);
+
+  window._charts.curvaAvance = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Planificado (acum.)',
+          data: cumPlan,
+          borderColor: '#58a6ff',
+          backgroundColor: _dashAreaBG('#58a6ff'),
+          fill: true,
+          tension: 0.35,
+          borderWidth: 2.5,
+          borderDash: [6,3],
+          pointRadius: 2.5,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#58a6ff',
+          pointBorderColor: '#0d1117',
+          pointBorderWidth: 1.5
+        },
+        {
+          label: 'Realizado (acum.)',
+          data: cumReal,
+          borderColor: '#3fb950',
+          backgroundColor: 'rgba(63,185,80,0.10)',
+          fill: false,
+          tension: 0.35,
+          borderWidth: 3,
+          pointRadius: 2.5,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#3fb950',
+          pointBorderColor: '#0d1117',
+          pointBorderWidth: 1.5
+        },
+        {
+          label: 'Imprevisto (acum.)',
+          data: cumImp,
+          borderColor: '#f0a500',
+          backgroundColor: 'rgba(240,165,0,0.08)',
+          fill: false,
+          tension: 0.35,
+          borderWidth: 2.5,
+          pointRadius: 2.5,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#f0a500',
+          pointBorderColor: '#0d1117',
+          pointBorderWidth: 1.5
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 850, easing: 'easeOutQuart' },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: DASH_COLORS.text, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle', padding: 12 }
+        },
+        tooltip: {
+          ..._DASH_TOOLTIP,
+          callbacks: {
+            label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y}`,
+            afterBody: (items) => {
+              // Mostrar la brecha Planificado − Realizado (atraso acumulado)
+              const i = items[0].dataIndex;
+              const brecha = cumPlan[i] - cumReal[i];
+              if(brecha > 0) return `\nAtraso acumulado: ${brecha} día${brecha===1?'':'s'}-actividad`;
+              if(brecha < 0) return `\nAdelanto: ${-brecha} día${-brecha===1?'':'s'}-actividad`;
+              return '\nAl día con el plan';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: DASH_COLORS.text2, font: { size: 10 } },
+          grid: { color: DASH_COLORS.border }
+        },
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Días-actividad acumulados', color: DASH_COLORS.text2, font: { size: 10 } },
+          ticks: { color: DASH_COLORS.text2, precision: 0 },
+          grid: { color: DASH_COLORS.border }
         }
       }
     }
