@@ -860,15 +860,20 @@ function _normalizeCumple(v){
 }
 
 // ─── Listas canónicas de clasificación ───────────────────────────
+// ★ 24/05/2026 ★ Estas listas usan la nomenclatura CANÓNICA que devuelve
+// _estadoLabel() (que internamente calcula el estado para confirmadas).
+// Antes _isOK/_isFAIL leían a.cumple crudo, lo que daba inconsistencia con
+// la app de origen (una confirmada "Terminado" con a.cumple vacío no
+// contaba como cumple). Ahora todo pasa por _estadoLabel → consistente.
 // Estados que cuentan como CUMPLIDO para el % cumplimiento
-const _OK_STATES   = ['cumple', 'Terminado', 'Cumplido con atraso'];
+const _OK_STATES   = ['Cumple', 'Terminado', 'Cumplido con atraso'];
 // Estados que cuentan como NO CUMPLIDO
-const _FAIL_STATES = ['no', 'Retrasado', 'Cancelado'];
+const _FAIL_STATES = ['No Cumple', 'Retrasado', 'Cancelado'];
 // Estados que típicamente acumulan días de atraso
 const _ATRASO_STATES = ['Cumplido con atraso', 'Retrasado'];
-// Helpers
-function _isOK(a){   return _OK_STATES.includes(a.cumple || ''); }
-function _isFAIL(a){ return _FAIL_STATES.includes(a.cumple || ''); }
+// Helpers — clasifican según el estado EFECTIVO (calculado para confirmadas)
+function _isOK(a){   return _OK_STATES.includes(_estadoLabel(a)); }
+function _isFAIL(a){ return _FAIL_STATES.includes(_estadoLabel(a)); }
 // Etiqueta visible para cada estado
 const _ESTADO_LABEL = {
   ''                    : '— Sin asignar —',
@@ -1238,11 +1243,80 @@ function _getFechaActividad(a){
   return a.fecha_inicio;
 }
 
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  CÁLCULO DE ESTADO AUTOMÁTICO (24/05/2026)                         ║
+// ║  Réplica de calcularEstadoAuto() de la app contratista/residente, ║
+// ║  adaptada a los nombres de campo del reporte global (fecha_fin via ║
+// ║  _getFechaFin). Razón: antes el reporte global leía a.cumple crudo ║
+// ║  y mostraba "Sin asignar" para actividades confirmadas en curso,   ║
+// ║  mientras la app de origen mostraba "En proceso" (calculado en     ║
+// ║  vivo). Esto unifica el estado mostrado en ambas vistas.           ║
+// ╚══════════════════════════════════════════════════════════════════╝
+const ESTADOS_MANUALES = ['En espera', 'Cancelado'];
+
+// Contadores día por día de una actividad (igual que la app de origen):
+//   D = días planificados (tildados)   V = verdes (cumple)
+//   R = rojos (no_cumple)              A = azules (domingos extra)
+//   P = pendientes sin marcar (D - V - R)
+function _contadoresActividad(act){
+  const D = (act.days || []).filter(v => !!v).length;
+  const cumpl = Array.isArray(act.cumplimiento) ? act.cumplimiento : [];
+  let V = 0, R = 0;
+  (act.days || []).forEach((v, i) => {
+    if(!v) return;
+    if(cumpl[i] === 'cumple')         V++;
+    else if(cumpl[i] === 'no_cumple') R++;
+  });
+  const A = Array.isArray(act.domingos) ? act.domingos.length : 0;
+  const P = D - V - R;
+  return { D, V, R, A, P };
+}
+
+// Calcula el estado AUTO de una actividad. Misma lógica que la app de origen.
+// Devuelve 'Sin asignar' | 'En proceso' | 'Terminado' | 'Cumplido con atraso'
+// | 'Retrasado' | 'En espera' | 'Cancelado'.
+function _calcularEstadoAuto(act){
+  if(!act) return 'Sin asignar';
+  if(!act.confirmada) return 'Sin asignar';                 // no confirmada
+  const cumpleActual = (act.cumple || '').trim();
+  if(ESTADOS_MANUALES.includes(cumpleActual)) return cumpleActual; // manual gana
+
+  const { D, V, R, A, P } = _contadoresActividad(act);
+  if(D === 0) return 'Sin asignar';
+
+  // ¿Pasó la fecha fin?
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const finISO = _getFechaFin(act);
+  let pasoFechaFin = false;
+  if(finISO){
+    try {
+      const fin = new Date(finISO + 'T23:59:59');
+      pasoFechaFin = hoy > fin;
+    } catch(e){ pasoFechaFin = false; }
+  }
+
+  if(A >= 1) return 'Cumplido con atraso';     // trabajó días extra
+  if(V === D) return 'Terminado';              // todos verdes
+  if(pasoFechaFin){
+    if(R > 0 && V > 0) return 'Cumplido con atraso';
+    if(R > 0 && V === 0) return 'Retrasado';
+    if(P > 0) return 'Retrasado';
+  }
+  if(V >= 1) return 'En proceso';
+  if(R >= 1 && V === 0) return 'Retrasado';
+  return 'En proceso';                         // recién confirmada
+}
+
 function _estadoLabel(a){
+  // ★ 24/05/2026 ★ Para actividades CONFIRMADAS, calcular el estado en vivo
+  // (igual que la app de origen) en vez de leer a.cumple crudo. Esto evita
+  // que una actividad confirmada y en curso aparezca como "Sin asignar"
+  // cuando la app contratista/residente la muestra como "En proceso".
+  if(a.confirmada){
+    return _calcularEstadoAuto(a);
+  }
+  // No confirmada → leer el campo crudo (estado legacy / manual).
   const c = a.cumple || '';
-  // Devuelve un valor canónico (sin emoji) que coincide con los valores
-  // del Set del filtro de Estado: ['Cumple','En proceso','Terminado',
-  // 'Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar'].
   if(!c)                  return 'Sin asignar';
   if(c === 'cumple')      return 'Cumple';
   if(c === 'no')          return 'No Cumple';
@@ -3723,7 +3797,7 @@ function renderKPIStrip(acts){
   const asign = ok + fail;
 
   // Días de atraso: solo de actividades en estados que aplican y con dias_atraso > 0
-  const atrasoActs = acts.filter(a => _ATRASO_STATES.includes(a.cumple||'') && (a.dias_atraso||0) > 0);
+  const atrasoActs = acts.filter(a => _ATRASO_STATES.includes(_estadoLabel(a)) && (a.dias_atraso||0) > 0);
   const atrasoTotal = atrasoActs.reduce((s,a) => s + (a.dias_atraso||0), 0);
   const atrasoProm  = atrasoActs.length ? (atrasoTotal / atrasoActs.length) : 0;
 
@@ -4635,7 +4709,7 @@ function renderChartEstados(acts){
 function renderChartAtrasoObra(acts){
   const map = new Map();
   for(const a of acts){
-    if(!_ATRASO_STATES.includes(a.cumple||'')) continue;
+    if(!_ATRASO_STATES.includes(_estadoLabel(a))) continue;
     const dias = a.dias_atraso || 0;
     if(dias <= 0) continue;
     const k = (a.obra || '—').trim() || '—';
