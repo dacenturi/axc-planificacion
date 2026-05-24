@@ -682,7 +682,7 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 
         <!-- 4. Cumplimiento en el tiempo -->
         <div class="dash-card dash-card-wide">
-          <div class="dash-card-title">📈 Cumplimiento en el tiempo (semanal)<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: evolución semanal del % de cumplimiento.&#10;&#10;Cálculo: cada actividad se asigna a la semana de su fecha inicio (o fecha planificada). Por semana: Cumple ÷ (Cumple + No Cumple) × 100.&#10;&#10;Semanas sin actividades con estado definido no aparecen. Cada punto muestra el total de actividades evaluadas.&#10;&#10;Sirve para detectar tendencias: mejora sostenida, caídas puntuales o estancamiento.">ⓘ</button></div>
+          <div class="dash-card-title">📈 Cumplimiento en el tiempo (semanal)<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: evolución semanal real del % de cumplimiento.&#10;&#10;Cálculo: cada marca diaria ✓/✗ de las actividades confirmadas se asigna a la semana de SU fecha (respetando el filtro de fechas). Por semana: marcas ✓ ÷ (✓ + ✗) × 100.&#10;&#10;Cada punto muestra cuántos días fueron evaluados esa semana. Semanas sin marcas no aparecen.&#10;&#10;Sirve para detectar tendencias: mejora sostenida, caídas puntuales o estancamiento del cumplimiento real a lo largo del tiempo.">ⓘ</button></div>
           <div class="chart-wrap tall" id="wrap-tiempo"><canvas id="chartTiempo"></canvas></div>
           <div id="empty-tiempo" class="chart-empty" style="display:none">Sin datos con fechas</div>
         </div>
@@ -877,8 +877,11 @@ function _isFAIL(a){ return _FAIL_STATES.includes(_estadoLabel(a)); }
 // Etiqueta visible para cada estado
 const _ESTADO_LABEL = {
   ''                    : '— Sin asignar —',
+  'Sin asignar'         : '— Sin asignar —',
   'cumple'              : '✓ Cumple',
+  'Cumple'              : '✓ Cumple',
   'no'                  : '✗ No cumple',
+  'No Cumple'           : '✗ No cumple',
   'En proceso'          : '⏳ En proceso',
   'Terminado'           : '✓ Terminado',
   'Cumplido con atraso' : '⚠ Cumplido con atraso',
@@ -889,8 +892,11 @@ const _ESTADO_LABEL = {
 // Color por estado para el gráfico de distribución
 const _ESTADO_COLOR = {
   ''                    : 'rgba(139,148,158,0.55)',
+  'Sin asignar'         : 'rgba(139,148,158,0.55)',
   'cumple'              : '#3fb950',
+  'Cumple'              : '#3fb950',
   'no'                  : '#f85149',
+  'No Cumple'           : '#f85149',
   'En proceso'          : '#58a6ff',
   'Terminado'           : '#3fb950',
   'Cumplido con atraso' : '#f0a500',
@@ -4042,15 +4048,34 @@ function _getWeekKey(dateStr){
 
 function renderChartTiempo(acts){
   const map = new Map();
+  // ★ 24/05/2026 — Opción B ★ Medir el cumplimiento por semana según las
+  // MARCAS reales de cada día (no por la semana de inicio de la actividad).
+  // Cada marca cumple/no_cumple se asigna a la semana de SU fecha y se
+  // respeta el filtro de rango de fechas. Así el gráfico refleja la
+  // evolución temporal real del cumplimiento (lo que el título promete).
+  const _desde = window._filters.fechaDesde;
+  const _hasta = window._filters.fechaHasta;
   for(const a of acts){
-    const fa = _getFechaActividad(a);
-    if(!fa) continue;
-    const wk = _getWeekKey(fa);
-    if(!wk) continue;
-    if(!map.has(wk)) map.set(wk, { ok:0, fail:0 });
-    const e = map.get(wk);
-    if(_isOK(a)) e.ok++;
-    else if(_isFAIL(a)) e.fail++;
+    if(!a.confirmada || !Array.isArray(a.cumplimiento) || !Array.isArray(a.days) || !a.fecha_inicio) continue;
+    const base = new Date(a.fecha_inicio + 'T00:00:00');
+    if(isNaN(base.getTime())) continue;
+    a.days.forEach((planned, i) => {
+      if(!planned) return;
+      const c = a.cumplimiento[i];
+      if(c !== 'cumple' && c !== 'no_cumple') return;
+      const d = new Date(base);
+      d.setDate(d.getDate() + i);
+      const iso = d.toISOString().slice(0,10);
+      // Respetar el filtro de fechas activo
+      if(_desde && iso < _desde) return;
+      if(_hasta && iso > _hasta) return;
+      const wk = _getWeekKey(iso);
+      if(!wk) return;
+      if(!map.has(wk)) map.set(wk, { ok:0, fail:0 });
+      const e = map.get(wk);
+      if(c === 'cumple') e.ok++;
+      else                e.fail++;
+    });
   }
 
   const canvas = document.getElementById('chartTiempo');
@@ -4111,7 +4136,7 @@ function renderChartTiempo(acts){
           callbacks: {
             label: (ctx) => {
               const n = totals[ctx.dataIndex];
-              return ` ${ctx.parsed.y}% (${n} actividad${n===1?'':'es'})`;
+              return ` ${ctx.parsed.y}% (${n} día${n===1?'':'s'} evaluado${n===1?'':'s'})`;
             }
           }
         }
@@ -4166,6 +4191,22 @@ function renderChartCurvaS(acts){
   });
 
   if(!minDate || !maxDate){
+    if(wrap)  wrap.style.display  = 'none';
+    if(empty) empty.style.display = 'block';
+    return;
+  }
+
+  // ★ 24/05/2026 ★ Alinear el rango al filtro de fechas activo (igual que el
+  // Gantt). Si el usuario filtró un sub-rango, la curva se recorta a ese
+  // rango: las marcas fuera quedan excluidas (colIdx = -1) y el acumulado
+  // refleja el avance DENTRO del período filtrado.
+  if(window._filters.fechaDesde && window._filters.fechaDesde > minDate){
+    minDate = window._filters.fechaDesde;
+  }
+  if(window._filters.fechaHasta && window._filters.fechaHasta < maxDate){
+    maxDate = window._filters.fechaHasta;
+  }
+  if(minDate > maxDate){
     if(wrap)  wrap.style.display  = 'none';
     if(empty) empty.style.display = 'block';
     return;
@@ -4402,10 +4443,13 @@ function renderChartContratista(acts){
 
 // ─── 6. Razones de No Cumplimiento ────────────────
 function renderChartRazones(acts){
-  // Contar cada razón solo para actividades 'No Cumple'
+  // ★ 24/05/2026 ★ Contar razones de TODAS las actividades que NO cumplen
+  // según el estado efectivo (Retrasado, Cancelado, No Cumple legacy), no
+  // solo las que tienen el valor legacy a.cumple='no'. Antes este gráfico
+  // ignoraba las confirmadas que no cumplían (estado calculado).
   const map = new Map();
   for(const a of acts){
-    if(a.cumple !== 'no') continue;
+    if(!_isFAIL(a)) continue;
     const r = (a.razon || '').trim() || '— Sin razón —';
     map.set(r, (map.get(r) || 0) + 1);
   }
@@ -4643,9 +4687,12 @@ function renderChartSector(acts){
 // ─── 7B. Distribución por Estado (donut) ──────────
 // Agrupa por estado canónico y muestra dona con cantidad + %
 function renderChartEstados(acts){
+  // ★ 24/05/2026 ★ Agrupar por el estado EFECTIVO (calculado para
+  // confirmadas vía _estadoLabel), no por a.cumple crudo. Antes las
+  // confirmadas en curso caían como "Sin asignar" en vez de "En proceso".
   const counts = {};
   for(const a of acts){
-    const k = a.cumple || '';
+    const k = _estadoLabel(a);
     counts[k] = (counts[k] || 0) + 1;
   }
   const entries = Object.keys(counts)
