@@ -696,7 +696,7 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 
         <!-- 4C. Curva S — Avance físico: Planificado vs Realizado vs Imprevisto -->
         <div class="dash-card dash-card-wide">
-          <div class="dash-card-title">📈 Curva S — Avance físico (Planificado vs Realizado vs Imprevisto)<button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: el avance del proyecto comparando lo planeado con lo ejecutado, más el trabajo imprevisto.&#10;&#10;Tres líneas acumuladas por día (respetan el filtro de fechas):&#10;• Planificado: días-actividad planificados (tildados en la grilla) de todo el plan — la línea base.&#10;• Realizado: días-actividad efectivamente cumplidos (marca ✓) del plan.&#10;• Imprevisto: días-actividad de las actividades imprevistas.&#10;&#10;Lectura: si Realizado va por debajo de Planificado, el proyecto está atrasado respecto al plan. La brecha entre ambas líneas es el atraso acumulado. La línea Imprevisto muestra cuánto trabajo extra no planeado surgió.">ⓘ</button></div>
+          <div class="dash-card-title">📈 Curva S — Avance físico (Planificado vs Realizado vs Imprevisto) <span id="avance-badge" style="display:none;font-size:12px;font-weight:700;padding:2px 10px;border-radius:10px;margin-left:6px;vertical-align:middle"></span><button type="button" class="info-icon" tabindex="0" aria-label="Explicación del cálculo" data-tip="Qué mide: el avance del proyecto comparando lo planeado con lo ejecutado, más el trabajo imprevisto.&#10;&#10;Tres líneas acumuladas por día (respetan el filtro de fechas):&#10;• Planificado: días-actividad planificados (tildados en la grilla) de todo el plan — la línea base.&#10;• Realizado: días-actividad efectivamente cumplidos (marca ✓) del plan.&#10;• Imprevisto: días-actividad de las actividades imprevistas.&#10;&#10;Avance = Realizado ÷ Planificado. La unidad es días-actividad (una tarea de 5 días suma 5), no cantidad de tareas.&#10;&#10;Lectura: si Realizado va por debajo de Planificado, el proyecto está atrasado respecto al plan. La brecha entre ambas líneas es el atraso acumulado.">ⓘ</button></div>
           <div class="chart-wrap tall" id="wrap-curva-avance"><canvas id="chartCurvaAvance"></canvas></div>
           <div id="empty-curva-avance" class="chart-empty" style="display:none">Sin datos de planificación para mostrar el avance</div>
         </div>
@@ -4483,6 +4483,27 @@ function renderChartCurvaAvance(acts){
 
   const labels = dates.map(d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`);
 
+  // ★ Avance global = Realizado ÷ Planificado (último acumulado). Badge en el título.
+  const planFinal = cumPlan[n-1] || 0;
+  const realFinal = cumReal[n-1] || 0;
+  const avanceGlobal = planFinal > 0 ? Math.round(realFinal / planFinal * 100) : null;
+  const badge = document.getElementById('avance-badge');
+  if(badge){
+    if(avanceGlobal === null){
+      badge.style.display = 'none';
+    } else {
+      badge.style.display = 'inline-block';
+      badge.textContent = `Avance ${avanceGlobal}%`;
+      // Color según el avance (mismo criterio que el gauge)
+      const col = avanceGlobal >= 85 ? DASH_COLORS.green
+                : avanceGlobal >= 70 ? DASH_COLORS.accent
+                : DASH_COLORS.red;
+      badge.style.color = col;
+      badge.style.background = 'rgba(255,255,255,0.06)';
+      badge.style.border = '1px solid ' + col;
+    }
+  }
+
   window._charts.curvaAvance = new Chart(canvas.getContext('2d'), {
     type: 'line',
     data: {
@@ -4548,12 +4569,16 @@ function renderChartCurvaAvance(acts){
           callbacks: {
             label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y}`,
             afterBody: (items) => {
-              // Mostrar la brecha Planificado − Realizado (atraso acumulado)
+              // Avance a esa fecha (Realizado ÷ Planificado) + brecha
               const i = items[0].dataIndex;
-              const brecha = cumPlan[i] - cumReal[i];
-              if(brecha > 0) return `\nAtraso acumulado: ${brecha} día${brecha===1?'':'s'}-actividad`;
-              if(brecha < 0) return `\nAdelanto: ${-brecha} día${-brecha===1?'':'s'}-actividad`;
-              return '\nAl día con el plan';
+              const p = cumPlan[i], r = cumReal[i];
+              const avance = p > 0 ? Math.round(r / p * 100) : 0;
+              const brecha = p - r;
+              let txt = `\nAvance: ${avance}%  (${r}/${p} días-actividad)`;
+              if(brecha > 0)       txt += `\nAtraso acumulado: ${brecha} día${brecha===1?'':'s'}-actividad`;
+              else if(brecha < 0)  txt += `\nAdelanto: ${-brecha} día${-brecha===1?'':'s'}-actividad`;
+              else                 txt += '\nAl día con el plan';
+              return txt;
             }
           }
         }
