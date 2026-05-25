@@ -1047,7 +1047,40 @@ function _getActsForCurrentApp(){
 
 // Llena los dropdowns de filtros con valores distintos encontrados en los datos
 // DE LA APP ACTIVA (no de todas las apps).
-function _buildFilterOptions(){
+// ★ 25/05/2026 ★ Captura la selección actual de los filtros dinámicos para
+// preservarla al cambiar de app (Contratista ↔ Residente). Por campo devuelve:
+//   • null  → estaban TODOS marcados (o el filtro está oculto/sin datos):
+//             se preserva "todos" en la nueva app (incluidas opciones nuevas).
+//   • array → selección parcial: se marcan EXACTAMENTE esos valores en la
+//             nueva app (los que existan); el resto queda desmarcado.
+function _capturarSeleccionFiltros(){
+  const keys = ['residentes','obras','contratistas','sectores','razones'];
+  const sel = {};
+  keys.forEach(key => {
+    const listEl = document.getElementById('list-' + key);
+    if(!listEl){ sel[key] = null; return; }
+    const all = Array.from(listEl.querySelectorAll('input[type=checkbox]'));
+    const marcados = all.filter(cb => cb.checked).map(cb => cb.value);
+    sel[key] = (all.length === 0 || marcados.length === all.length) ? null : marcados;
+  });
+  return sel;
+}
+
+// Recalcula window._filters[key] de los campos dinámicos según los checkboxes
+// actuales (null si están todos marcados, Set si es un subconjunto). Misma
+// regla que onFilterChange.
+function _recalcularFiltrosDesdeCheckboxes(){
+  const keys = ['residentes','obras','contratistas','sectores','razones'];
+  keys.forEach(key => {
+    const listEl = document.getElementById('list-' + key);
+    if(!listEl){ window._filters[key] = null; return; }
+    const all     = Array.from(listEl.querySelectorAll('input[type=checkbox]'));
+    const marcados = all.filter(cb => cb.checked).map(cb => cb.value);
+    window._filters[key] = (all.length > 0 && marcados.length === all.length) ? null : new Set(marcados);
+  });
+}
+
+function _buildFilterOptions(preservar){
   const fields = ['residente','obra','contratista','sector','razon'];
   const pluralMap = {residente:'residentes', obra:'obras', contratista:'contratistas', sector:'sectores', razon:'razones'};
   const actsApp = _getActsForCurrentApp();
@@ -1059,18 +1092,27 @@ function _buildFilterOptions(){
     )).sort();
     const listEl = document.getElementById('list-' + key);
     if(!listEl) return;
+    // ★ Preservar selección: sel undefined → carga inicial (todos marcados);
+    // sel null → preservar "todos"; sel array → marcar solo esos valores.
+    const sel = preservar ? preservar[key] : undefined;
     listEl.innerHTML = values.map(v => {
       const safe = v.replace(/"/g,'&quot;');
-      return `<label class="filter-dd-item"><input type="checkbox" value="${safe}" checked onchange="onFilterChange('${key}', this)"><span>${v}</span></label>`;
+      const chk = (sel === undefined || sel === null || sel.includes(v)) ? 'checked' : '';
+      return `<label class="filter-dd-item"><input type="checkbox" value="${safe}" ${chk} onchange="onFilterChange('${key}', this)"><span>${v}</span></label>`;
     }).join('') || '<div style="font-size:11px;color:var(--text2);padding:6px;text-align:center">Sin datos</div>';
   });
 
-  // Inicializar sets de filtros como "todos"
-  window._filters.residentes   = null;
-  window._filters.obras        = null;
-  window._filters.contratistas = null;
-  window._filters.sectores     = null;
-  window._filters.razones      = null;
+  if(preservar){
+    // Recalcular los filtros según lo que quedó marcado (preserva la selección)
+    _recalcularFiltrosDesdeCheckboxes();
+  } else {
+    // Carga inicial: todos los filtros en "todos" (null)
+    window._filters.residentes   = null;
+    window._filters.obras        = null;
+    window._filters.contratistas = null;
+    window._filters.sectores     = null;
+    window._filters.razones      = null;
+  }
   _refreshFilterLabels();
 }
 
@@ -1901,6 +1943,12 @@ function setTab(tab){
 // Cambia de App (Contratista / Residente) y refresca todo.
 function setApp(app){
   if(window._currentApp === app) return;
+
+  // ★ 25/05/2026 ★ Capturar la selección de filtros ANTES de cambiar, para
+  // preservarla en la nueva vista (pedido: mantener filtros al cambiar
+  // Contratista ↔ Residente).
+  const _seleccionPrevia = _capturarSeleccionFiltros();
+
   window._currentApp = app;
 
   // Estado visual de los tabs
@@ -1914,20 +1962,12 @@ function setApp(app){
   // Mostrar/ocultar columna Contratista en la tabla (en app Residente no aplica)
   _toggleContratistaCol(app==='contratista');
 
-  // Reset de filtros al cambiar de app (porque obras/contratistas/sectores son distintos)
-  window._filters.residentes   = null;
-  window._filters.obras        = null;
-  window._filters.contratistas = null;
-  window._filters.sectores     = null;
-  window._filters.razones      = null;
-  window._filters.estado       = new Set(['Cumple','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']);
-  window._filters.criticidad   = new Set(['Alta','Media','Baja','Sin asignar']);
-  window._filters.tipo         = new Set(['Planificada','Imprevista']);
-  _applyDefaultDateRange();
-  document.querySelectorAll('#list-estado input[type=checkbox], #list-criticidad input[type=checkbox]').forEach(c => c.checked = true);
-
-  // Rebuild filtros y render
-  _buildFilterOptions();
+  // ★ Ya NO se resetean los filtros: Estado, Criticidad, Tipo y Rango de
+  // fechas se conservan tal cual (sus valores valen para ambas apps).
+  // Los filtros dinámicos (Residentes, Obra, Sector, Razón, Contratista) se
+  // reconstruyen preservando la selección previa; las opciones que no existan
+  // en la nueva app simplemente no aparecen (quedan "destildadas").
+  _buildFilterOptions(_seleccionPrevia);
   applyFilters();
 }
 
