@@ -1207,24 +1207,52 @@ function _matchesFilter(value, filter){
 // actividades activas en el rango", no "actividades que comenzaron en el
 // rango". Una actividad de varias semanas debe aparecer en cualquier
 // filtro de fechas que toque alguno de sus días planificados.
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  MAPEO ÍNDICE → FECHA (25/05/2026) — CORRECCIÓN DE INTEGRIDAD       ║
+// ║  Convierte un índice de days[] a su fecha real, replicando EXACTO   ║
+// ║  el mapeo de la app de origen (residente/contratista):             ║
+// ║   • Actividades NUEVAS (con fecha_inicio Y fecha_fin): mapeo HÁBIL  ║
+// ║     — el índice i es el i-ésimo día hábil; se SALTAN los domingos.  ║
+// ║   • Actividades LEGACY (sin fecha_fin): mapeo CALENDARIO.           ║
+// ║  Antes el reporte global usaba siempre calendario, corriendo las    ║
+// ║  fechas de toda actividad multi-semana (un día por cada domingo     ║
+// ║  cruzado) y haciendo aparecer días hábiles como domingos.          ║
+// ╚══════════════════════════════════════════════════════════════════╝
+function _idxAFecha(act, idx){
+  if(!act || !act.fecha_inicio || idx < 0) return null;
+  const base = new Date(act.fecha_inicio + 'T00:00:00');
+  if(isNaN(base.getTime())) return null;
+  if(!act.fecha_fin){                          // LEGACY → calendario
+    base.setDate(base.getDate() + idx);
+    return base;
+  }
+  if(base.getDay() === 0) base.setDate(base.getDate() + 1);  // _nextHabil
+  let counter = 0;                             // NUEVA → hábil (salta domingos)
+  while(counter < idx){
+    base.setDate(base.getDate() + 1);
+    if(base.getDay() !== 0) counter++;
+  }
+  return base;
+}
+// Igual que _idxAFecha pero devuelve ISO 'YYYY-MM-DD' (o null).
+function _idxAISO(act, idx){
+  const d = _idxAFecha(act, idx);
+  return d ? d.toISOString().slice(0,10) : null;
+}
+
 function _hasIntersectionWithRange(a, fechaDesde, fechaHasta){
   if(!a.fecha_inicio) return false;
   const inRange = iso =>
     (!fechaDesde || iso >= fechaDesde) &&
     (!fechaHasta || iso <= fechaHasta);
 
-  // 1) Días hábiles tildados en a.days[]
+  // 1) Días tildados en a.days[] — usar mapeo hábil/legacy (_idxAISO)
   if(Array.isArray(a.days) && a.days.length){
-    try {
-      const base = new Date(a.fecha_inicio + 'T00:00:00');
-      for(let i = 0; i < a.days.length; i++){
-        if(!a.days[i]) continue;
-        const d = new Date(base);
-        d.setDate(d.getDate() + i);
-        const iso = d.toISOString().slice(0, 10);
-        if(inRange(iso)) return true;
-      }
-    } catch(e) { /* fecha mal formada — sigue al chequeo de domingos */ }
+    for(let i = 0; i < a.days.length; i++){
+      if(!a.days[i]) continue;
+      const iso = _idxAISO(a, i);
+      if(iso && inRange(iso)) return true;
+    }
   }
 
   // 2) Domingos trabajados en a.domingos[]
@@ -1245,11 +1273,7 @@ function _getFechaActividad(a){
   if(Array.isArray(a.days)){
     for(let i=0;i<a.days.length;i++){
       if(a.days[i]){
-        try{
-          const base = new Date(a.fecha_inicio + 'T00:00:00');
-          base.setDate(base.getDate() + i);
-          return base.toISOString().slice(0,10);
-        } catch(e){ return a.fecha_inicio; }
+        return _idxAISO(a, i) || a.fecha_inicio;
       }
     }
   }
@@ -1542,11 +1566,7 @@ function _getFechaFin(a){
   if(!a.fecha_inicio || !Array.isArray(a.days)) return null;
   for(let i = a.days.length-1; i >= 0; i--){
     if(a.days[i]){
-      try{
-        const base = new Date(a.fecha_inicio + 'T00:00:00');
-        base.setDate(base.getDate() + i);
-        return base.toISOString().slice(0,10);
-      } catch(e){ return null; }
+      return _idxAISO(a, i);
     }
   }
   return null;
@@ -1561,18 +1581,13 @@ function _diasPlanificados(a, desde, hasta){
   const inRange = iso =>
     (!desde || iso >= desde) &&
     (!hasta || iso <= hasta);
-  // Días hábiles tildados en a.days[]
+  // Días tildados en a.days[] — mapeo hábil/legacy (_idxAISO)
   if(Array.isArray(a.days)){
-    try{
-      const base = new Date(a.fecha_inicio + 'T00:00:00');
-      for(let i = 0; i < a.days.length; i++){
-        if(!a.days[i]) continue;
-        const d = new Date(base);
-        d.setDate(d.getDate() + i);
-        const iso = d.toISOString().slice(0,10);
-        if(inRange(iso)) dias.push(iso);
-      }
-    } catch(e){ /* fecha mal formada */ }
+    for(let i = 0; i < a.days.length; i++){
+      if(!a.days[i]) continue;
+      const iso = _idxAISO(a, i);
+      if(iso && inRange(iso)) dias.push(iso);
+    }
   }
   // Domingos trabajados
   if(Array.isArray(a.domingos)){
@@ -1617,15 +1632,10 @@ function _getFechaFinClip(a){
 function _diasSinTildar(a, limiteStr){
   if(!a.fecha_inicio || !Array.isArray(a.days)) return [];
   const pendientes = [];
-  let base;
-  try { base = new Date(a.fecha_inicio + 'T00:00:00'); }
-  catch(e){ return []; }
-  if(isNaN(base.getTime())) return [];
   for(let i = 0; i < a.days.length; i++){
     if(!a.days[i]) continue;                       // 1) debe estar planificado
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0,10);
+    const iso = _idxAISO(a, i);
+    if(!iso) continue;
     if(iso >= limiteStr) continue;                 // 2) debe ser anterior al límite
     const c = Array.isArray(a.cumplimiento) ? a.cumplimiento[i] : null;
     if(c === 'cumple' || c === 'no_cumple') continue; // 3) NO debe estar tildado
@@ -1732,14 +1742,9 @@ function renderGantt(){
 
   // ─── Calcular rango global de fechas considerando días tildados Y domingos ───
   // Helper local: convierte índice i de a.days[] a fecha ISO real.
-  const _idxToISO = (a, i) => {
-    if(!a.fecha_inicio) return null;
-    try {
-      const b = new Date(a.fecha_inicio + 'T00:00:00');
-      b.setDate(b.getDate() + i);
-      return b.toISOString().slice(0,10);
-    } catch(e){ return null; }
-  };
+  // ★ 25/05/2026 ★ Usa el mapeo hábil/legacy centralizado (_idxAISO) para
+  // alinear las fechas con la app de origen (residente/contratista).
+  const _idxToISO = (a, i) => _idxAISO(a, i);
 
   let minISO = null, maxISO = null;
   const _bump = iso => {
@@ -2593,14 +2598,8 @@ async function exportPDF(){
           const isImp  = !!a.imprevista;
 
           // Helper local: índice de a.days[] → fecha ISO real
-          const _idxToISO = (act, i) => {
-            if(!act.fecha_inicio) return null;
-            try {
-              const b = new Date(act.fecha_inicio + 'T00:00:00');
-              b.setDate(b.getDate() + i);
-              return b.toISOString().slice(0,10);
-            } catch(e){ return null; }
-          };
+          // ★ 25/05/2026 ★ Mapeo hábil/legacy centralizado (_idxAISO).
+          const _idxToISO = (act, i) => _idxAISO(act, i);
           const _datesISO = dates.map(d => d.toISOString().slice(0,10));
 
           // Construir array `marked` con { di, srcIdx }
@@ -4073,15 +4072,12 @@ function renderChartTiempo(acts){
   const _hasta = window._filters.fechaHasta;
   for(const a of acts){
     if(!a.confirmada || !Array.isArray(a.cumplimiento) || !Array.isArray(a.days) || !a.fecha_inicio) continue;
-    const base = new Date(a.fecha_inicio + 'T00:00:00');
-    if(isNaN(base.getTime())) continue;
     a.days.forEach((planned, i) => {
       if(!planned) return;
       const c = a.cumplimiento[i];
       if(c !== 'cumple' && c !== 'no_cumple') return;
-      const d = new Date(base);
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().slice(0,10);
+      const iso = _idxAISO(a, i);
+      if(!iso) return;
       // Respetar el filtro de fechas activo
       if(_desde && iso < _desde) return;
       if(_hasta && iso > _hasta) return;
@@ -4192,15 +4188,12 @@ function renderChartCurvaS(acts){
   let minDate = null, maxDate = null;
   actsConfirmadas.forEach(a => {
     if(!a.fecha_inicio) return;
-    const base = new Date(a.fecha_inicio + 'T00:00:00');
-    if(isNaN(base.getTime())) return;
     a.days.forEach((planned, i) => {
       if(!planned) return;
       const c = a.cumplimiento[i];
       if(c !== 'cumple' && c !== 'no_cumple') return;
-      const d = new Date(base);
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().slice(0,10);
+      const iso = _idxAISO(a, i);
+      if(!iso) return;
       if(!minDate || iso < minDate) minDate = iso;
       if(!maxDate || iso > maxDate) maxDate = iso;
     });
@@ -4245,15 +4238,12 @@ function renderChartCurvaS(acts){
 
   actsConfirmadas.forEach(a => {
     if(!a.fecha_inicio) return;
-    const base = new Date(a.fecha_inicio + 'T00:00:00');
-    if(isNaN(base.getTime())) return;
     a.days.forEach((planned, i) => {
       if(!planned) return;
       const c = a.cumplimiento[i];
       if(c !== 'cumple' && c !== 'no_cumple') return;
-      const d = new Date(base);
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().slice(0,10);
+      const iso = _idxAISO(a, i);
+      if(!iso) return;
       const colIdx = isoIndex.indexOf(iso);
       if(colIdx < 0) return;
       if(c === 'cumple') daily_cumple[colIdx]++;
@@ -4403,12 +4393,7 @@ function renderChartCurvaAvance(acts){
 
   // Recolecta {iso, tipo} para cada día-actividad relevante.
   // tipo: 'plan' (planificado), 'real' (cumplido del plan), 'imp' (imprevisto)
-  const _isoDe = (fechaIni, offset) => {
-    const d = new Date(fechaIni + 'T00:00:00');
-    if(isNaN(d.getTime())) return null;
-    d.setDate(d.getDate() + offset);
-    return d.toISOString().slice(0,10);
-  };
+  // ★ 25/05/2026 ★ Usa el mapeo hábil/legacy centralizado (_idxAISO).
 
   let minDate = null, maxDate = null;
   const marcas = []; // { iso, plan:0/1, real:0/1, imp:0/1 }
@@ -4417,7 +4402,7 @@ function renderChartCurvaAvance(acts){
     const cumpl = Array.isArray(a.cumplimiento) ? a.cumplimiento : [];
     a.days.forEach((tildado, i) => {
       if(!tildado) return;
-      const iso = _isoDe(a.fecha_inicio, i);
+      const iso = _idxAISO(a, i);
       if(!iso) return;
       const real = cumpl[i] === 'cumple' ? 1 : 0;
       marcas.push({ iso, plan:1, real, imp:0 });
@@ -4429,7 +4414,7 @@ function renderChartCurvaAvance(acts){
   imprev.forEach(a => {
     a.days.forEach((tildado, i) => {
       if(!tildado) return;
-      const iso = _isoDe(a.fecha_inicio, i);
+      const iso = _idxAISO(a, i);
       if(!iso) return;
       marcas.push({ iso, plan:0, real:0, imp:1 });
       if(!minDate || iso < minDate) minDate = iso;
