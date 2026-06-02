@@ -5181,7 +5181,7 @@ async function loadCatalogPage(reset=false){
     try{
       const {data,error} = await sb
         .from('productos_catalogo')
-        .select('id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por')
+        .select('id, nombre, precio_referencia, url_imagen, url_producto')
         .in('id', ids);
       if(error) throw error;
       wizard.catalog.items = data || [];
@@ -5194,20 +5194,38 @@ async function loadCatalogPage(reset=false){
   }
 
   try{
-    let q = sb.from('productos_catalogo')
-      .select('id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por', {count:'exact'})
-      .eq('activo', true);
+    // SELECT con las columnas nuevas (marca, unidad_medida, creado_por).
+    // Si la BD aún no tiene esas columnas, hacemos fallback al SELECT viejo.
+    const NEW_COLS = 'id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por';
+    const OLD_COLS = 'id, nombre, precio_referencia, url_imagen, url_producto';
 
-    const query = wizard.catalog.query.trim();
-    if(query.length >= 2){
-      const safe = query.replace(/[%_]/g, c => '\\'+c);
-      q = q.ilike('nombre', '%'+safe+'%');
+    function buildQuery(cols){
+      let q = sb.from('productos_catalogo')
+        .select(cols, {count:'exact'})
+        .eq('activo', true);
+      const query = wizard.catalog.query.trim();
+      if(query.length >= 2){
+        const safe = query.replace(/[%_]/g, c => '\\'+c);
+        q = q.ilike('nombre', '%'+safe+'%');
+      }
+      return q.order('id', {ascending:true})
+              .range(wizard.catalog.offset, wizard.catalog.offset + PAGE_SIZE - 1);
     }
 
-    q = q.order('id', {ascending:true})
-         .range(wizard.catalog.offset, wizard.catalog.offset + PAGE_SIZE - 1);
+    let {data, error, count} = await buildQuery(NEW_COLS);
 
-    const {data,error,count} = await q;
+    // Si el error indica columna inexistente, retry con el SELECT viejo
+    if(error){
+      const msg = String(error.message || error.code || '').toLowerCase();
+      const isMissingColumn = msg.includes('column') && (msg.includes('does not exist') || msg.includes('no existe') || msg.includes('marca') || msg.includes('unidad_medida') || msg.includes('creado_por'));
+      if(isMissingColumn){
+        console.warn('Columnas nuevas no existen en la BD. Usando SELECT viejo. Ejecutá el SQL de la guía para habilitar todas las features.');
+        const fallback = await buildQuery(OLD_COLS);
+        data = fallback.data;
+        error = fallback.error;
+        count = fallback.count;
+      }
+    }
     if(error) throw error;
     if(seq !== wizard.catalog.searchSeq) return;
 
@@ -5216,6 +5234,7 @@ async function loadCatalogPage(reset=false){
     wizard.catalog.hasMore = page.length === PAGE_SIZE;
     wizard.catalog.offset += page.length;
 
+    const query = wizard.catalog.query.trim();
     if(query.length >= 2){
       document.getElementById('catMetaInfo').textContent = (count!=null ? count.toLocaleString('es-PY')+' resultado'+(count===1?'':'s') : '');
     } else {
@@ -5225,6 +5244,17 @@ async function loadCatalogPage(reset=false){
     renderCatalog(false);
   }catch(e){
     console.warn('Error cargando catálogo:', e);
+    // CRÍTICO: actualizar la UI para que no quede colgada en "Cargando productos..."
+    const wrap = document.getElementById('catResults');
+    if(wrap){
+      wrap.innerHTML = `<div class="cat-empty" style="padding:30px 20px">
+        <div style="font-size:42px;opacity:.4;margin-bottom:12px">⚠️</div>
+        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px">No se pudo cargar el catálogo</div>
+        <div style="font-size:12.5px;color:var(--text-soft);margin-bottom:8px">${escapeHtml(e.message||'Error desconocido')}</div>
+        <button class="btn-loadmore" onclick="wizard.catalog.offset=0;wizard.catalog.items=[];loadCatalogPage(true)" style="margin-top:10px">Reintentar</button>
+      </div>`;
+      document.getElementById('catLoadmoreWrap').style.display = 'none';
+    }
     showToast('Error al buscar productos: '+(e.message||e), 'error');
   }
   wizard.catalog.loading = false;
@@ -5365,7 +5395,7 @@ function loadRecents(){
   }
 
   sb.from('productos_catalogo')
-    .select('id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por')
+    .select('id, nombre, precio_referencia, url_imagen, url_producto')
     .in('id', wizard.recentIds)
     .then(({data,error}) => {
       if(error){console.warn(error); return;}
@@ -5396,7 +5426,7 @@ function openProductModal(productId){
   if(!prod) prod = wizard.recentItems.find(p => p.id === productId);
   if(!prod){
     sb.from('productos_catalogo')
-      .select('id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por')
+      .select('id, nombre, precio_referencia, url_imagen, url_producto')
       .eq('id', productId)
       .maybeSingle()
       .then(({data})=>{ if(data) fillAndOpenModal(data); });
