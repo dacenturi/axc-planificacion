@@ -9936,5 +9936,236 @@ function injectRecipeStyles(){
 }
 
 </script>
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   MÓDULO PRESUPUESTO DE MATERIALES · Sub-paso B (pantalla)
+   Bloque autocontenido. Para quitarlo: borrá este bloque.
+   No toca el flujo de OC. Ver: todos · Editar límites: solo admin.
+   ────────────────────────────────────────────────────────────────── */
+
+/* ★ INTERRUPTOR: true para mostrar el botón "Presupuestos". false = oculto. */
+const PRESUPUESTO_ENABLED = true;
+
+const budgetUI = { inited:false, pp:'', rows:[], _pps:[] };
+
+function _pmEsc(s){
+  return String(s==null?'':s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+function _pmIsAdmin(){
+  try{ return !!(state && state.profile && state.profile.rol === 'admin'); }catch(e){ return false; }
+}
+function _pmSem(limite, ejec){
+  const lim = Number(limite)||0, e = Number(ejec)||0, saldo = lim - e;
+  if(lim <= 0) return { c:'#9aa3af', t:'sin límite' };
+  if(saldo <= 0) return { c:'#c0392b', t:'sobregiro' };
+  if(saldo/lim <= 0.15) return { c:'#C8A028', t:'queda poco' };
+  return { c:'#1e8e5a', t:'ok' };
+}
+
+function initBudgetUI(){
+  if(!PRESUPUESTO_ENABLED || budgetUI.inited) return;
+  const anchor = document.getElementById('btnNuevaOC');
+  if(!anchor || !anchor.parentNode) return;
+  budgetUI.inited = true;
+  injectBudgetStyles();
+
+  const btn = document.createElement('button');
+  btn.id = 'pmOpenBtn';
+  btn.className = 'pm-navbtn';
+  btn.type = 'button';
+  btn.innerHTML = '<span style="font-size:15px">📊</span><span>Presupuestos</span>';
+  anchor.parentNode.insertBefore(btn, anchor);
+  btn.addEventListener('click', openBudget);
+
+  const ov = document.createElement('div');
+  ov.id = 'pmOverlay';
+  ov.className = 'pm-overlay';
+  ov.style.display = 'none';
+  ov.innerHTML =
+    '<div class="pm-modal">' +
+      '<div class="pm-head"><div><div class="pm-title">Presupuesto de materiales</div>' +
+      '<div class="pm-sub">Límite por material, ejecutado y saldo disponible</div></div>' +
+      '<button class="pm-close" id="pmClose" aria-label="Cerrar">×</button></div>' +
+      '<div class="pm-controls">' +
+        '<input list="pmPPList" id="pmPP" class="pm-input" placeholder="Elegí o escribí un presupuesto (ej. PP43)">' +
+        '<datalist id="pmPPList"></datalist>' +
+        '<button id="pmVer" class="pm-btn" type="button">Ver</button>' +
+      '</div>' +
+      '<div id="pmBody" class="pm-body"></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  document.getElementById('pmClose').addEventListener('click', closeBudget);
+  ov.addEventListener('click', function(e){ if(e.target === ov) closeBudget(); });
+  document.getElementById('pmVer').addEventListener('click', function(){ loadBudgetRows(document.getElementById('pmPP').value.trim()); });
+  document.getElementById('pmPP').addEventListener('keydown', function(e){ if(e.key === 'Enter') loadBudgetRows(e.target.value.trim()); });
+  document.getElementById('pmPP').addEventListener('change', function(e){ loadBudgetRows(e.target.value.trim()); });
+}
+
+async function openBudget(){
+  document.getElementById('pmOverlay').style.display = 'flex';
+  await loadBudgetPPList();
+  const inp = document.getElementById('pmPP');
+  if(budgetUI._pps.length && !inp.value){ inp.value = budgetUI._pps[0]; loadBudgetRows(budgetUI._pps[0]); }
+  else if(inp.value){ loadBudgetRows(inp.value.trim()); }
+  else { document.getElementById('pmBody').innerHTML = '<div class="pm-empty">Elegí o escribí un presupuesto para ver sus materiales.</div>'; }
+}
+
+function closeBudget(){ document.getElementById('pmOverlay').style.display = 'none'; }
+
+async function loadBudgetPPList(){
+  try{
+    const { data, error } = await sb.from('presupuesto_materiales').select('presupuesto');
+    if(error) throw error;
+    const set = [];
+    (data || []).forEach(function(r){ if(set.indexOf(r.presupuesto) < 0) set.push(r.presupuesto); });
+    set.sort();
+    budgetUI._pps = set;
+    document.getElementById('pmPPList').innerHTML = set.map(function(p){ return '<option value="'+_pmEsc(p)+'">'; }).join('');
+  }catch(e){ console.warn('loadBudgetPPList', e); }
+}
+
+async function loadBudgetRows(pp){
+  pp = (pp || '').trim();
+  const body = document.getElementById('pmBody');
+  if(!pp){ body.innerHTML = '<div class="pm-empty">Escribí un presupuesto.</div>'; return; }
+  budgetUI.pp = pp;
+  body.innerHTML = '<div class="pm-empty">Cargando…</div>';
+  try{
+    const { data, error } = await sb.from('presupuesto_materiales').select('*').eq('presupuesto', pp).order('limite', { ascending:false });
+    if(error) throw error;
+    budgetUI.rows = data || [];
+    renderBudgetTable();
+  }catch(e){ console.warn('loadBudgetRows', e); body.innerHTML = '<div class="pm-empty">Error al cargar.</div>'; }
+}
+
+function renderBudgetTable(){
+  const admin = _pmIsAdmin();
+  const rows = budgetUI.rows;
+  const body = document.getElementById('pmBody');
+  let trs = '';
+  if(!rows.length){
+    trs = '<tr><td colspan="'+(admin?6:5)+'" class="pm-empty2">Este presupuesto todavía no tiene materiales.'+(admin?' Agregá uno abajo.':'')+'</td></tr>';
+  } else {
+    rows.forEach(function(r){
+      const sem = _pmSem(r.limite, r.ejecutado);
+      const saldo = (Number(r.limite)||0) - (Number(r.ejecutado)||0);
+      const limCell = admin
+        ? '<input type="number" class="pm-lim" data-id="'+r.id+'" value="'+(Number(r.limite)||0)+'" step="1" min="0">'
+        : (Number(r.limite)||0).toLocaleString('es-PY');
+      trs +=
+        '<tr>' +
+          '<td><span class="pm-dot" style="background:'+sem.c+'" title="'+sem.t+'"></span>'+_pmEsc(r.material)+'</td>' +
+          '<td>'+_pmEsc(r.unidad||'')+'</td>' +
+          '<td class="pm-num">'+limCell+'</td>' +
+          '<td class="pm-num">'+(Number(r.ejecutado)||0).toLocaleString('es-PY')+'</td>' +
+          '<td class="pm-num pm-saldo" style="color:'+(saldo<0?'#c0392b':'#1F3864')+'">'+saldo.toLocaleString('es-PY')+'</td>' +
+          (admin ? '<td class="pm-num"><button class="pm-del" data-id="'+r.id+'" title="Quitar" type="button">×</button></td>' : '') +
+        '</tr>';
+    });
+  }
+  let html =
+    '<div class="pm-ppline">Presupuesto <b>'+_pmEsc(budgetUI.pp)+'</b>'+(admin ? '' : ' · solo lectura')+'</div>' +
+    '<div class="pm-tablewrap"><table class="pm-table"><thead><tr>' +
+      '<th>Material</th><th>Unidad</th><th class="pm-num">Límite</th><th class="pm-num">Ejecutado</th><th class="pm-num">Saldo</th>'+(admin?'<th></th>':'') +
+    '</tr></thead><tbody>'+trs+'</tbody></table></div>';
+  if(admin){
+    html +=
+      '<div class="pm-addrow">' +
+        '<input id="pmNewMat" class="pm-input" placeholder="Material (ej. cemento)">' +
+        '<input id="pmNewUni" class="pm-input" style="max-width:140px" placeholder="Unidad">' +
+        '<input id="pmNewLim" class="pm-input" type="number" style="max-width:110px" placeholder="Límite">' +
+        '<button id="pmAdd" class="pm-btn" type="button">Agregar material</button>' +
+      '</div>';
+  }
+  body.innerHTML = html;
+
+  if(admin){
+    body.querySelectorAll('.pm-lim').forEach(function(inp){ inp.addEventListener('change', function(){ saveLimite(inp.dataset.id, inp.value); }); });
+    body.querySelectorAll('.pm-del').forEach(function(b){ b.addEventListener('click', function(){ deleteMaterial(b.dataset.id); }); });
+    const addBtn = document.getElementById('pmAdd');
+    if(addBtn) addBtn.addEventListener('click', addMaterial);
+  }
+}
+
+async function saveLimite(id, value){
+  const lim = Number(value) || 0;
+  try{
+    const { error } = await sb.from('presupuesto_materiales').update({ limite: lim, origen:'manual', updated_at: new Date().toISOString() }).eq('id', id);
+    if(error) throw error;
+    const row = budgetUI.rows.find(function(r){ return String(r.id) === String(id); });
+    if(row){ row.limite = lim; row.origen = 'manual'; }
+    renderBudgetTable();
+    showToast('Límite actualizado', 'success');
+  }catch(e){ console.warn('saveLimite', e); showToast('No se pudo guardar el límite', 'error'); }
+}
+
+async function addMaterial(){
+  const mat = (document.getElementById('pmNewMat').value || '').trim();
+  const uni = (document.getElementById('pmNewUni').value || '').trim();
+  const lim = Number(document.getElementById('pmNewLim').value) || 0;
+  if(!mat){ showToast('Escribí el nombre del material', 'error'); return; }
+  try{
+    const { error } = await sb.from('presupuesto_materiales').insert({ presupuesto: budgetUI.pp, material: mat, unidad: uni, limite: lim, ejecutado: 0, origen:'manual' });
+    if(error) throw error;
+    showToast('Material agregado', 'success');
+    await loadBudgetPPList();
+    loadBudgetRows(budgetUI.pp);
+  }catch(e){ console.warn('addMaterial', e); showToast('No se pudo agregar (¿material repetido en este presupuesto?)', 'error'); }
+}
+
+async function deleteMaterial(id){
+  if(!confirm('¿Quitar este material del presupuesto?')) return;
+  try{
+    const { error } = await sb.from('presupuesto_materiales').delete().eq('id', id);
+    if(error) throw error;
+    showToast('Material quitado', 'success');
+    loadBudgetRows(budgetUI.pp);
+  }catch(e){ console.warn('deleteMaterial', e); showToast('No se pudo quitar', 'error'); }
+}
+
+function injectBudgetStyles(){
+  if(document.getElementById('pmStyles')) return;
+  const st = document.createElement('style');
+  st.id = 'pmStyles';
+  st.textContent = [
+    '.pm-navbtn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid #1F3864;color:#1F3864;font-weight:600;font-size:14px;padding:9px 15px;border-radius:9px;cursor:pointer;margin-right:10px}',
+    '.pm-navbtn:hover{background:#eef2f8}',
+    '.pm-overlay{position:fixed;inset:0;background:rgba(20,30,55,.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}',
+    '.pm-modal{background:#fff;border-radius:14px;width:100%;max-width:780px;max-height:86vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.3)}',
+    '.pm-head{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid #eef1f5;background:#1F3864;border-radius:14px 14px 0 0}',
+    '.pm-title{font-size:18px;font-weight:700;color:#fff}',
+    '.pm-sub{font-size:12px;color:#c9d4e8;margin-top:2px}',
+    '.pm-close{background:transparent;border:none;color:#fff;font-size:26px;line-height:1;cursor:pointer;padding:0 4px}',
+    '.pm-controls{display:flex;gap:10px;padding:16px 22px 6px}',
+    '.pm-input{padding:9px 11px;border:1px solid #d8dde6;border-radius:8px;font-size:14px;box-sizing:border-box}',
+    '.pm-controls .pm-input{flex:1}',
+    '.pm-btn{background:#C8A028;border:none;color:#1F3864;font-weight:700;font-size:14px;padding:9px 16px;border-radius:8px;cursor:pointer}',
+    '.pm-btn:hover{filter:brightness(.96)}',
+    '.pm-body{padding:8px 22px 22px}',
+    '.pm-ppline{font-size:13px;color:#5a6677;margin:8px 0 10px}',
+    '.pm-ppline b{color:#1F3864}',
+    '.pm-tablewrap{overflow:auto}',
+    '.pm-table{width:100%;border-collapse:collapse;font-size:14px}',
+    '.pm-table th{text-align:left;font-size:12px;color:#5a6677;font-weight:600;padding:8px;border-bottom:2px solid #eef1f5}',
+    '.pm-table td{padding:8px;border-bottom:1px solid #eef1f5}',
+    '.pm-num{text-align:right;font-variant-numeric:tabular-nums}',
+    '.pm-saldo{font-weight:700}',
+    '.pm-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle}',
+    '.pm-lim{width:96px;padding:5px 7px;border:1px solid #d8dde6;border-radius:6px;text-align:right;font-size:13px}',
+    '.pm-del{background:transparent;border:none;color:#b94a48;font-size:18px;line-height:1;cursor:pointer;padding:0 4px}',
+    '.pm-addrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center}',
+    '.pm-addrow .pm-input{flex:1;min-width:140px}',
+    '.pm-empty,.pm-empty2{padding:18px;text-align:center;color:#8893a5;font-size:14px}',
+    '.pm-empty{background:#f7f9fc;border-radius:8px;margin-top:8px}'
+  ].join('\n');
+  document.head.appendChild(st);
+}
+
+try{ initBudgetUI(); }catch(e){ console.warn('budget init:', e); }
+
+</script>
 </body>
 </html>
