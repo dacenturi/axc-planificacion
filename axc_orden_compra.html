@@ -9946,7 +9946,7 @@ function injectRecipeStyles(){
 /* ★ INTERRUPTOR: true para mostrar el botón "Presupuestos". false = oculto. */
 const PRESUPUESTO_ENABLED = true;
 
-const budgetUI = { inited:false, pp:'', rows:[], _pps:[] };
+const budgetUI = { inited:false, pp:'', rows:[], _pps:[], plan:[], recetas:null };
 
 function _pmEsc(s){
   return String(s==null?'':s).replace(/[&<>"]/g, function(c){
@@ -10078,6 +10078,17 @@ function renderBudgetTable(){
         '<input id="pmNewUni" class="pm-input" style="max-width:140px" placeholder="Unidad">' +
         '<input id="pmNewLim" class="pm-input" type="number" style="max-width:110px" placeholder="Límite">' +
         '<button id="pmAdd" class="pm-btn" type="button">Agregar material</button>' +
+      '</div>' +
+      '<div class="pm-planbox">' +
+        '<div class="pm-plantitle">Calcular límites desde recetas</div>' +
+        '<div class="pm-planhint">Cargá las actividades del presupuesto y sus M². La app suma los materiales de cada receta y completa los límites de ' + _pmEsc(budgetUI.pp) + '.</div>' +
+        '<div class="pm-planadd">' +
+          '<select id="pmPlanReceta" class="pm-input"><option value="">Cargando recetas…</option></select>' +
+          '<input id="pmPlanM2" class="pm-input" type="number" min="0" step="0.01" style="max-width:120px" placeholder="M²">' +
+          '<button id="pmPlanAddBtn" class="pm-btn2" type="button">+ Actividad</button>' +
+        '</div>' +
+        '<div id="pmPlanList"></div>' +
+        '<button id="pmPlanCalc" class="pm-btn" type="button" style="margin-top:10px">Calcular y guardar límites</button>' +
       '</div>';
   }
   body.innerHTML = html;
@@ -10087,6 +10098,12 @@ function renderBudgetTable(){
     body.querySelectorAll('.pm-del').forEach(function(b){ b.addEventListener('click', function(){ deleteMaterial(b.dataset.id); }); });
     const addBtn = document.getElementById('pmAdd');
     if(addBtn) addBtn.addEventListener('click', addMaterial);
+    const planAddBtn = document.getElementById('pmPlanAddBtn');
+    if(planAddBtn) planAddBtn.addEventListener('click', planAdd);
+    const planCalcBtn = document.getElementById('pmPlanCalc');
+    if(planCalcBtn) planCalcBtn.addEventListener('click', planCalc);
+    loadBudgetRecetas();
+    renderPlanList();
   }
 }
 
@@ -10126,6 +10143,89 @@ async function deleteMaterial(id){
   }catch(e){ console.warn('deleteMaterial', e); showToast('No se pudo quitar', 'error'); }
 }
 
+function _pmQty(c1, c2, m2){
+  const a = Number(c1)||0, b = Number(c2)||0, mm = Number(m2)||0;
+  return b > 0 ? Math.max(0, Math.ceil(a*mm/b)) : 0;
+}
+
+async function loadBudgetRecetas(){
+  const sel = document.getElementById('pmPlanReceta');
+  if(!sel) return;
+  if(budgetUI.recetas){ fillPlanSelect(); return; }
+  try{
+    const { data, error } = await sb.from('recetas').select('id,nombre,unidad').eq('activo', true).order('nombre');
+    if(error) throw error;
+    budgetUI.recetas = data || [];
+    fillPlanSelect();
+  }catch(e){ console.warn('loadBudgetRecetas', e); sel.innerHTML = '<option value="">Error al cargar recetas</option>'; }
+}
+
+function fillPlanSelect(){
+  const sel = document.getElementById('pmPlanReceta');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">— Elegí una actividad —</option>' +
+    (budgetUI.recetas||[]).map(function(r){ return '<option value="'+r.id+'">'+_pmEsc(r.nombre)+' ('+_pmEsc(r.unidad)+')</option>'; }).join('');
+}
+
+function planAdd(){
+  const sel = document.getElementById('pmPlanReceta');
+  const m2El = document.getElementById('pmPlanM2');
+  const id = sel ? sel.value : '';
+  const m2 = m2El ? (Number(m2El.value)||0) : 0;
+  if(!id){ showToast('Elegí una actividad', 'error'); return; }
+  if(m2 <= 0){ showToast('Ingresá los M²', 'error'); return; }
+  const rec = (budgetUI.recetas||[]).find(function(r){ return String(r.id) === String(id); });
+  budgetUI.plan.push({ receta_id: id, nombre: rec?rec.nombre:'', unidad: rec?rec.unidad:'', m2: m2 });
+  if(m2El) m2El.value = '';
+  renderPlanList();
+}
+
+function planRemove(i){
+  budgetUI.plan.splice(i, 1);
+  renderPlanList();
+}
+
+function renderPlanList(){
+  const box = document.getElementById('pmPlanList');
+  if(!box) return;
+  if(!budgetUI.plan.length){ box.innerHTML = '<div class="pm-planempty">Sin actividades en el plan todavía.</div>'; return; }
+  box.innerHTML = budgetUI.plan.map(function(l, i){
+    return '<div class="pm-planitem"><span>'+_pmEsc(l.nombre)+'</span><span class="pm-planm2">'+l.m2+' '+_pmEsc(l.unidad)+'</span><button class="pm-planx" type="button" data-i="'+i+'">×</button></div>';
+  }).join('');
+  box.querySelectorAll('.pm-planx').forEach(function(b){ b.addEventListener('click', function(){ planRemove(Number(b.dataset.i)); }); });
+}
+
+async function planCalc(){
+  if(!budgetUI.pp){ showToast('Elegí un presupuesto arriba', 'error'); return; }
+  if(!budgetUI.plan.length){ showToast('Agregá al menos una actividad al plan', 'error'); return; }
+  try{
+    const acc = {};
+    for(let n=0; n<budgetUI.plan.length; n++){
+      const line = budgetUI.plan[n];
+      const { data, error } = await sb.from('receta_items').select('material,unidad,coef1,coef2').eq('receta_id', line.receta_id);
+      if(error) throw error;
+      (data||[]).forEach(function(it){
+        const q = _pmQty(it.coef1, it.coef2, line.m2);
+        const key = (it.material||'').trim().toLowerCase();
+        if(!acc[key]) acc[key] = { material: (it.material||'').trim(), unidad: it.unidad||'', qty: 0 };
+        acc[key].qty += q;
+      });
+    }
+    const existMap = {};
+    (budgetUI.rows||[]).forEach(function(r){ existMap[(r.material||'').trim().toLowerCase()] = r.material; });
+    const payload = Object.keys(acc).map(function(k){
+      return { presupuesto: budgetUI.pp, material: existMap[k] || acc[k].material, unidad: acc[k].unidad, limite: acc[k].qty, origen: 'plan' };
+    });
+    if(!payload.length){ showToast('Las recetas elegidas no tienen materiales', 'error'); return; }
+    const { error } = await sb.from('presupuesto_materiales').upsert(payload, { onConflict: 'presupuesto,material' });
+    if(error) throw error;
+    showToast(payload.length + ' límite(s) calculados y guardados', 'success');
+    budgetUI.plan = [];
+    await loadBudgetPPList();
+    loadBudgetRows(budgetUI.pp);
+  }catch(e){ console.warn('planCalc', e); showToast('No se pudieron calcular los límites', 'error'); }
+}
+
 function injectBudgetStyles(){
   if(document.getElementById('pmStyles')) return;
   const st = document.createElement('style');
@@ -10159,7 +10259,17 @@ function injectBudgetStyles(){
     '.pm-addrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center}',
     '.pm-addrow .pm-input{flex:1;min-width:140px}',
     '.pm-empty,.pm-empty2{padding:18px;text-align:center;color:#8893a5;font-size:14px}',
-    '.pm-empty{background:#f7f9fc;border-radius:8px;margin-top:8px}'
+    '.pm-empty{background:#f7f9fc;border-radius:8px;margin-top:8px}',
+    '.pm-planbox{margin-top:18px;padding:14px;border:1px dashed #c9b36a;border-radius:10px;background:#fcfaf2}',
+    '.pm-plantitle{font-size:14px;font-weight:700;color:#1F3864;margin-bottom:3px}',
+    '.pm-planhint{font-size:12px;color:#7a8290;margin-bottom:10px}',
+    '.pm-planadd{display:flex;gap:8px;flex-wrap:wrap;align-items:center}',
+    '.pm-planadd .pm-input{flex:1;min-width:160px}',
+    '.pm-btn2{background:#1F3864;border:none;color:#fff;font-weight:600;font-size:13px;padding:9px 14px;border-radius:8px;cursor:pointer}',
+    '.pm-planempty{font-size:12px;color:#9aa3af;padding:8px 2px}',
+    '.pm-planitem{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #eee6cf;font-size:13px}',
+    '.pm-planm2{margin-left:auto;color:#1F3864;font-weight:600;font-variant-numeric:tabular-nums}',
+    '.pm-planx{background:transparent;border:none;color:#b94a48;font-size:16px;cursor:pointer;padding:0 4px}'
   ].join('\n');
   document.head.appendChild(st);
 }
