@@ -994,7 +994,7 @@ async function _validarBorradoSeguro(key, items, obraRef){
   if(!col) return [];
   for(const valor of items){
     try {
-      let q = _SB.from('actividades').select('id', { count: 'exact', head: true }).eq(col, valor);
+      let q = _SB.from('actividades').select('id', { count: 'exact', head: true }).eq(col, valor).is('eliminado_en', null);
       if(key === 'sectores' && obraRef){
         q = q.eq('obra', obraRef);
       }
@@ -1879,6 +1879,7 @@ async function onResidenteChange(){
           .select('*')
           .eq('app', APP_NAME)
           .eq('residente', selResid)
+          .is('eliminado_en', null)
           .order('orden', { ascending: true });
         if(error) throw error;
         const fromDBCumple = v => {
@@ -3236,7 +3237,27 @@ function renderTable(){
         showToast('🔒 No podés eliminar una actividad ya confirmada. Pedile a un administrador.', 'warn');
         return;
       }
-      if(confirm('¿Eliminar actividad?')){ acts.splice(idx,1); save(); renderAll(); }
+      if(confirm('¿Eliminar actividad?')){
+        // ★ SOFT-DELETE (02/06/2026) ★ No se borra la fila de la base: se marca
+        // como eliminada (eliminado_en / eliminado_por). Queda fuera de la vista
+        // y de las cargas, pero es 100% recuperable. Si la fila es nueva y aún no
+        // tiene _syncId, solo se quita de memoria (no hay nada que marcar en la base).
+        if(a._syncId){
+          try{
+            const { error: delErr } = await _SB.from('actividades')
+              .update({ eliminado_en: new Date().toISOString(), eliminado_por: window._axcUid || null })
+              .eq('id', a._syncId);
+            if(delErr) throw delErr;
+          }catch(e){
+            console.error('Soft-delete falló:', e);
+            showToast('❌ No se pudo eliminar: ' + ((e && e.message) || 'error de conexión'), 'warn');
+            return; // No la quitamos de pantalla si no se pudo marcar en la base
+          }
+        }
+        acts.splice(idx,1);
+        renderAll();
+        showToast('🗑️ Actividad eliminada', 'ok');
+      }
     };
     wActs.appendChild(bd);
     td.appendChild(wActs);
@@ -5130,9 +5151,12 @@ function exportPDF(){
 // Diseño:
 // - Cada actividad tiene un `_syncId` (uuid) que la identifica en la
 //   tabla `actividades` de Supabase.
-// - save() encola una sincronización con debounce de 500ms.
-// - _syncActsToSupabase() hace upsert del array completo y borra las
-//   filas de Supabase que ya no están en el array local.
+// - save() SOLO marca cambios pendientes. La subida a la nube ocurre
+//   únicamente al apretar "Guardar" (forceSave); el autosave está DESHABILITADO.
+// - _syncActsToSupabase() hace SOLO upsert del array local. NO borra filas.
+//   (El borrado masivo fue eliminado el 21/05/2026.) El borrado de una
+//   actividad puntual es SOFT-DELETE vía el botón X (marca eliminado_en;
+//   recuperable, nunca destruye la fila).
 // - Si la sincronización falla, se muestra un banner rojo persistente.
 
 let _syncTimer = null;
@@ -5838,7 +5862,7 @@ async function _syncActsToSupabase(){
 }
 
 // Reemplaza el save() que antes escribía a localStorage.
-// Ahora escribe a Supabase con debounce de 500ms.
+// Ahora marca cambios pendientes; la subida es manual (forceSave). Autosave OFF.
 function save(){
   if(!window._axcUid) return;
   // GUARDADO MANUAL (modo defensivo - 17/05/2026, post-incidente bug dropdown)
@@ -5879,6 +5903,7 @@ async function _loadActsFromSupabase(){
       .select('*')
       .eq('user_id', window._axcUid)
       .eq('app', APP_NAME)
+      .is('eliminado_en', null)
       .order('orden', { ascending: true });
     if(error) throw error;
     _hideSyncError();
