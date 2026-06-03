@@ -5111,6 +5111,7 @@ function openWizard(){
   if(wizard.autosaveTimer) clearInterval(wizard.autosaveTimer);
   wizard.autosaveTimer = setInterval(saveDraft, 30000);
   setTimeout(()=>document.getElementById('catSearch').focus(), 200);
+  try{ if(typeof recipeOnWizardOpen === 'function') recipeOnWizardOpen(); }catch(e){ console.warn('recipe init:', e); }
 }
 
 function closeWizard(force=false){
@@ -9534,6 +9535,368 @@ window.addEventListener('beforeunload', ()=>{
     if(realtime.notifChannel) sb.removeChannel(realtime.notifChannel);
   }catch{}
 });
+</script>
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   MÓDULO COMPRA POR RECETA · Fase 1 · bloque autocontenido y aislado
+   Para QUITARLO: borrá este bloque entero. No toca el modo "Por materiales".
+   ────────────────────────────────────────────────────────────────── */
+
+/* ★ INTERRUPTOR: poné true para activar el modo "Por receta".
+   En false, la app se comporta exactamente igual que hoy. */
+const RECETAS_ENABLED = false;
+
+const recipeUI = { inited:false, mode:'materiales', recetas:null, current:null, m2:0 };
+let _rcSearchSeq = 0;
+
+function _rcEsc(s){
+  return String(s==null?'':s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+
+function recipeOnWizardOpen(){
+  if(!RECETAS_ENABLED) return;
+  initRecipeUI();
+  setRecipeMode('materiales');
+}
+
+function initRecipeUI(){
+  if(!RECETAS_ENABLED || recipeUI.inited) return;
+  const step1 = document.getElementById('step1Content');
+  if(!step1) return;
+  recipeUI.inited = true;
+  injectRecipeStyles();
+
+  const bar = document.createElement('div');
+  bar.id = 'recipeToggleBar';
+  bar.style.cssText = 'display:flex;gap:8px;margin-bottom:14px';
+  bar.innerHTML =
+    '<button type="button" id="rcTabMat" class="rc-tab rc-on">Por materiales</button>' +
+    '<button type="button" id="rcTabRec" class="rc-tab">Por receta</button>';
+  step1.insertBefore(bar, step1.firstChild);
+
+  const panel = document.createElement('div');
+  panel.id = 'recipeMode';
+  panel.style.display = 'none';
+  panel.innerHTML = recipePanelHTML();
+  step1.appendChild(panel);
+
+  document.getElementById('rcTabMat').addEventListener('click', function(){ setRecipeMode('materiales'); });
+  document.getElementById('rcTabRec').addEventListener('click', function(){ setRecipeMode('receta'); });
+  document.getElementById('rcReceta').addEventListener('change', onRecetaChange);
+  document.getElementById('rcM2').addEventListener('input', recalcRecipe);
+  document.getElementById('rcAdd').addEventListener('click', addRecipeToCart);
+}
+
+function _rcMatEls(){
+  const step1 = document.getElementById('step1Content');
+  if(!step1) return [];
+  return [step1.querySelector('.cat-toolbar'),
+          document.getElementById('catResults'),
+          document.getElementById('catLoadmoreWrap')].filter(Boolean);
+}
+
+function setRecipeMode(mode){
+  if(!recipeUI.inited) return;
+  recipeUI.mode = mode;
+  const matEls = _rcMatEls();
+  const panel = document.getElementById('recipeMode');
+  const tabMat = document.getElementById('rcTabMat');
+  const tabRec = document.getElementById('rcTabRec');
+  if(mode === 'receta'){
+    matEls.forEach(function(el){ if(el.dataset.rcPrev===undefined) el.dataset.rcPrev = el.style.display; el.style.display = 'none'; });
+    if(panel) panel.style.display = '';
+    if(tabRec) tabRec.classList.add('rc-on');
+    if(tabMat) tabMat.classList.remove('rc-on');
+    if(!recipeUI.recetas) loadRecetas();
+  } else {
+    matEls.forEach(function(el){ el.style.display = (el.dataset.rcPrev!==undefined ? el.dataset.rcPrev : ''); });
+    if(panel) panel.style.display = 'none';
+    if(tabMat) tabMat.classList.add('rc-on');
+    if(tabRec) tabRec.classList.remove('rc-on');
+  }
+}
+
+function recipePanelHTML(){
+  return '' +
+  '<div class="rc-controls">' +
+    '<div class="rc-fld"><label>Actividad (receta)</label>' +
+      '<select id="rcReceta"><option value="">Cargando recetas…</option></select></div>' +
+    '<div class="rc-fld"><label>Cantidad a ejecutar</label>' +
+      '<div class="rc-m2row"><input type="number" id="rcM2" min="0" step="0.01" value="0">' +
+      '<span id="rcUnidad" class="rc-unit">—</span></div></div>' +
+  '</div>' +
+  '<div id="rcTableWrap"><div class="rc-empty">Elegí una receta para ver sus materiales.</div></div>' +
+  '<div class="rc-foot">' +
+    '<div class="rc-note">El presupuesto se elige en el paso “Detalles”, como siempre.</div>' +
+    '<button type="button" id="rcAdd" class="rc-addbtn" disabled>Agregar al carrito</button>' +
+  '</div>';
+}
+
+async function loadRecetas(){
+  const sel = document.getElementById('rcReceta');
+  try{
+    const { data, error } = await sb.from('recetas').select('id,nombre,unidad').eq('activo', true).order('nombre');
+    if(error) throw error;
+    recipeUI.recetas = data || [];
+    sel.innerHTML = '<option value="">— Elegí una actividad —</option>' +
+      recipeUI.recetas.map(function(r){ return '<option value="'+r.id+'">'+_rcEsc(r.nombre)+' ('+_rcEsc(r.unidad)+')</option>'; }).join('');
+  }catch(e){
+    console.warn('Error cargando recetas:', e);
+    sel.innerHTML = '<option value="">Error al cargar recetas</option>';
+    showToast('No se pudieron cargar las recetas', 'error');
+  }
+}
+
+async function onRecetaChange(){
+  const id = document.getElementById('rcReceta').value;
+  const wrap = document.getElementById('rcTableWrap');
+  if(!id){
+    recipeUI.current = null;
+    document.getElementById('rcUnidad').textContent = '—';
+    wrap.innerHTML = '<div class="rc-empty">Elegí una receta para ver sus materiales.</div>';
+    updateAddBtn();
+    return;
+  }
+  const rec = (recipeUI.recetas || []).find(function(r){ return String(r.id) === String(id); });
+  document.getElementById('rcUnidad').textContent = rec ? rec.unidad : '';
+  wrap.innerHTML = '<div class="rc-empty">Cargando materiales…</div>';
+  try{
+    const { data, error } = await sb.from('receta_items').select('*').eq('receta_id', id).order('orden');
+    if(error) throw error;
+    recipeUI.current = {
+      id: id,
+      nombre: rec ? rec.nombre : '',
+      unidad: rec ? rec.unidad : '',
+      items: (data || []).map(function(it){ it._link = null; return it; })
+    };
+    await hydrateLinks();
+    renderRecipeTable();
+  }catch(e){
+    console.warn('Error cargando items receta:', e);
+    wrap.innerHTML = '<div class="rc-empty">Error al cargar los materiales.</div>';
+    showToast('No se pudieron cargar los materiales', 'error');
+  }
+}
+
+async function hydrateLinks(){
+  const cur = recipeUI.current;
+  if(!cur) return;
+  const ids = cur.items.filter(function(i){ return i.producto_id; }).map(function(i){ return i.producto_id; });
+  if(!ids.length) return;
+  try{
+    const { data, error } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids);
+    if(error) throw error;
+    const map = {};
+    (data || []).forEach(function(p){ map[p.id] = p; });
+    cur.items.forEach(function(i){ if(i.producto_id && map[i.producto_id]) i._link = map[i.producto_id]; });
+  }catch(e){ console.warn('hydrateLinks', e); }
+}
+
+function recipeQty(it, m2){
+  const c1 = Number(it.coef1) || 0;
+  const c2 = Number(it.coef2) || 0;
+  const bruta = c1 * m2;
+  return c2 > 0 ? Math.max(0, Math.ceil(bruta / c2)) : 0;
+}
+
+function renderRecipeTable(){
+  const cur = recipeUI.current;
+  if(!cur) return;
+  const m2 = Number(document.getElementById('rcM2').value) || 0;
+  recipeUI.m2 = m2;
+  let rows = '';
+  cur.items.forEach(function(it, idx){
+    const qty = recipeQty(it, m2);
+    const linked = it._link;
+    const prodCell = linked
+      ? '<span class="rc-linked">'+_rcEsc(linked.nombre)+'<br><span class="rc-price">'+fmtMoney(Number(linked.precio_referencia)||0)+'</span></span> <button type="button" class="rc-relink" data-idx="'+idx+'">cambiar</button>'
+      : '<button type="button" class="rc-linkbtn" data-idx="'+idx+'">Vincular producto</button>';
+    rows +=
+      '<tr id="rcDataRow'+idx+'">' +
+        '<td>'+_rcEsc(it.material)+'</td>' +
+        '<td>'+_rcEsc(it.unidad||'')+'</td>' +
+        '<td class="rc-num"><input class="rc-cin rc-c1" data-idx="'+idx+'" type="number" step="0.0001" value="'+it.coef1+'"></td>' +
+        '<td class="rc-num"><input class="rc-cin rc-c2" data-idx="'+idx+'" type="number" step="0.0001" value="'+it.coef2+'"></td>' +
+        '<td class="rc-num rc-qty">'+qty.toLocaleString('es-PY')+'</td>' +
+        '<td class="rc-prod">'+prodCell+'</td>' +
+      '</tr>' +
+      '<tr class="rc-linkrow" id="rcLinkRow'+idx+'" style="display:none"><td colspan="6">' +
+        '<div class="rc-linkbox"><input type="text" class="rc-search" data-idx="'+idx+'" placeholder="Buscar producto del catálogo…">' +
+        '<div class="rc-results" id="rcResults'+idx+'"></div></div></td></tr>';
+  });
+  document.getElementById('rcTableWrap').innerHTML =
+    '<table class="rc-table"><thead><tr>' +
+      '<th>Material</th><th>Unidad</th><th class="rc-num">coef 1</th><th class="rc-num">coef 2</th>' +
+      '<th class="rc-num">A comprar</th><th>Producto del catálogo</th>' +
+    '</tr></thead><tbody>'+rows+'</tbody></table>';
+
+  document.querySelectorAll('#rcTableWrap .rc-c1, #rcTableWrap .rc-c2').forEach(function(inp){
+    inp.addEventListener('input', onCoefInput);
+  });
+  document.querySelectorAll('#rcTableWrap .rc-linkbtn, #rcTableWrap .rc-relink').forEach(function(b){
+    b.addEventListener('click', function(){ toggleLinkRow(Number(b.dataset.idx)); });
+  });
+  document.querySelectorAll('#rcTableWrap .rc-search').forEach(function(s){
+    s.addEventListener('input', function(){ searchProductFor(Number(s.dataset.idx), s.value); });
+  });
+  updateAddBtn();
+}
+
+function onCoefInput(e){
+  const idx = Number(e.target.dataset.idx);
+  const it = recipeUI.current.items[idx];
+  if(e.target.classList.contains('rc-c1')) it.coef1 = e.target.value;
+  else it.coef2 = e.target.value;
+  const m2 = Number(document.getElementById('rcM2').value) || 0;
+  const row = document.getElementById('rcDataRow'+idx);
+  if(row){ const cell = row.querySelector('.rc-qty'); if(cell) cell.textContent = recipeQty(it, m2).toLocaleString('es-PY'); }
+}
+
+function recalcRecipe(){
+  const cur = recipeUI.current;
+  if(!cur) { updateAddBtn(); return; }
+  const m2 = Number(document.getElementById('rcM2').value) || 0;
+  recipeUI.m2 = m2;
+  cur.items.forEach(function(it, idx){
+    const row = document.getElementById('rcDataRow'+idx);
+    if(row){ const cell = row.querySelector('.rc-qty'); if(cell) cell.textContent = recipeQty(it, m2).toLocaleString('es-PY'); }
+  });
+  updateAddBtn();
+}
+
+function toggleLinkRow(idx){
+  const row = document.getElementById('rcLinkRow'+idx);
+  if(!row) return;
+  const show = (row.style.display === 'none');
+  row.style.display = show ? '' : 'none';
+  if(show){ const s = row.querySelector('.rc-search'); if(s) s.focus(); }
+}
+
+async function searchProductFor(idx, q){
+  const box = document.getElementById('rcResults'+idx);
+  q = (q || '').trim();
+  if(q.length < 2){ box.innerHTML = '<div class="rc-hint">Escribí al menos 2 letras…</div>'; return; }
+  const seq = ++_rcSearchSeq;
+  box.innerHTML = '<div class="rc-hint">Buscando…</div>';
+  try{
+    const { data, error } = await sb.from('productos_catalogo')
+      .select('id,nombre,precio_referencia').eq('activo', true).ilike('nombre', '%'+q+'%').limit(6);
+    if(error) throw error;
+    if(seq !== _rcSearchSeq) return;
+    if(!data || !data.length){ box.innerHTML = '<div class="rc-hint">Sin resultados.</div>'; return; }
+    box.innerHTML = data.map(function(p){
+      return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+'</span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
+    }).join('');
+    box.querySelectorAll('.rc-result').forEach(function(r){
+      r.addEventListener('click', function(){
+        const p = data.find(function(x){ return String(x.id) === String(r.dataset.pid); });
+        if(p) linkProduct(idx, p);
+      });
+    });
+  }catch(e){ console.warn('searchProductFor', e); box.innerHTML = '<div class="rc-hint">Error al buscar.</div>'; }
+}
+
+async function linkProduct(idx, p){
+  const it = recipeUI.current.items[idx];
+  it.producto_id = p.id;
+  it._link = p;
+  try{ await sb.from('receta_items').update({ producto_id: p.id }).eq('id', it.id); }
+  catch(e){ console.warn('No se pudo guardar el vínculo:', e); }
+  renderRecipeTable();
+  showToast('Producto vinculado', 'success');
+}
+
+function updateAddBtn(){
+  const btn = document.getElementById('rcAdd');
+  if(!btn) return;
+  const cur = recipeUI.current;
+  const m2 = Number(document.getElementById('rcM2').value) || 0;
+  const allLinked = cur && cur.items.length && cur.items.every(function(i){ return i.producto_id && i._link; });
+  const ok = !!(cur && m2 > 0 && allLinked);
+  btn.disabled = !ok;
+  if(!cur) btn.textContent = 'Agregar al carrito';
+  else if(m2 <= 0) btn.textContent = 'Ingresá los M²';
+  else if(!allLinked) btn.textContent = 'Vinculá todos los materiales';
+  else btn.textContent = 'Agregar '+cur.items.length+' material(es) al carrito';
+}
+
+function addRecipeToCart(){
+  const cur = recipeUI.current;
+  const m2 = Number(document.getElementById('rcM2').value) || 0;
+  if(!cur || m2 <= 0){ showToast('Elegí una receta e ingresá los M²', 'error'); return; }
+  const unlinked = cur.items.filter(function(i){ return !(i.producto_id && i._link); });
+  if(unlinked.length){ showToast('Vinculá todos los materiales a un producto', 'error'); return; }
+  let added = 0;
+  cur.items.forEach(function(it){
+    const qty = recipeQty(it, m2);
+    if(qty <= 0) return;
+    const prec = Number(it._link.precio_referencia) || 0;
+    const pid = it.producto_id;
+    const ci = wizard.cart.findIndex(function(c){ return c.producto_id === pid; });
+    if(ci >= 0){
+      const nuevaCant = Number(wizard.cart[ci].cantidad || 0) + qty;
+      const pu = Number(wizard.cart[ci].precio_unit || prec) || 0;
+      wizard.cart[ci].cantidad = nuevaCant;
+      wizard.cart[ci].subtotal = Math.round(nuevaCant * pu * 100) / 100;
+    } else {
+      wizard.cart.push({
+        producto_id: pid,
+        producto_nombre: it._link.nombre,
+        url_imagen: '',
+        cantidad: qty,
+        precio_unit: prec,
+        subtotal: Math.round(qty * prec * 100) / 100
+      });
+    }
+    added++;
+  });
+  renderCart();
+  saveDraft();
+  showToast(added + ' material(es) agregados al carrito', 'success');
+  setRecipeMode('materiales');
+}
+
+function injectRecipeStyles(){
+  if(document.getElementById('rcStyles')) return;
+  const st = document.createElement('style');
+  st.id = 'rcStyles';
+  st.textContent = [
+    '.rc-tab{padding:8px 16px;border-radius:8px;font-size:14px;cursor:pointer;background:#fff;border:1px solid #d8dde6;color:#5a6677;font-weight:600}',
+    '.rc-tab.rc-on{background:#1F3864;border-color:#1F3864;color:#fff}',
+    '.rc-controls{display:grid;grid-template-columns:1fr 220px;gap:14px;margin-bottom:14px}',
+    '@media(max-width:640px){.rc-controls{grid-template-columns:1fr}}',
+    '.rc-fld label{display:block;font-size:12px;color:#5a6677;margin-bottom:4px;font-weight:600}',
+    '.rc-fld select,.rc-fld input{width:100%;padding:9px 10px;border:1px solid #d8dde6;border-radius:8px;font-size:14px;box-sizing:border-box}',
+    '.rc-m2row{display:flex;gap:8px;align-items:center}',
+    '.rc-m2row input{flex:1}',
+    '.rc-unit{font-size:13px;color:#5a6677;font-weight:600;min-width:34px}',
+    '.rc-table{width:100%;border-collapse:collapse;font-size:14px}',
+    '.rc-table th{text-align:left;font-size:12px;color:#5a6677;font-weight:600;padding:8px;border-bottom:2px solid #eef1f5}',
+    '.rc-table td{padding:8px;border-bottom:1px solid #eef1f5;vertical-align:top}',
+    '.rc-num{text-align:right}',
+    '.rc-cin{width:74px;padding:5px 6px;border:1px solid #d8dde6;border-radius:6px;text-align:right;font-size:13px}',
+    '.rc-qty{font-weight:700;color:#1F3864}',
+    '.rc-linkbtn,.rc-relink{font-size:12px;padding:5px 9px;border:1px solid #C8A028;background:#fff;color:#8a6d10;border-radius:6px;cursor:pointer;font-weight:600}',
+    '.rc-relink{border-color:#d8dde6;color:#5a6677}',
+    '.rc-linked{font-size:13px}',
+    '.rc-price{color:#1F3864;font-weight:700}',
+    '.rc-linkbox{background:#f7f9fc;border:1px solid #e3e8f0;border-radius:8px;padding:8px}',
+    '.rc-search{width:100%;padding:8px;border:1px solid #d8dde6;border-radius:6px;font-size:13px;box-sizing:border-box}',
+    '.rc-results{margin-top:6px}',
+    '.rc-result{display:flex;justify-content:space-between;gap:10px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:13px}',
+    '.rc-result:hover{background:#eef3fb}',
+    '.rc-hint{font-size:12px;color:#8893a5;padding:6px 4px}',
+    '.rc-empty{padding:18px;text-align:center;color:#8893a5;font-size:14px;background:#f7f9fc;border-radius:8px}',
+    '.rc-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #eef1f5;flex-wrap:wrap}',
+    '.rc-note{font-size:12px;color:#8893a5}',
+    '.rc-addbtn{padding:10px 18px;border-radius:8px;border:none;background:#C8A028;color:#1F3864;font-weight:700;font-size:14px;cursor:pointer}',
+    '.rc-addbtn:disabled{background:#e7e2cf;color:#a59b78;cursor:not-allowed}'
+  ].join('\n');
+  document.head.appendChild(st);
+}
+
 </script>
 </body>
 </html>
