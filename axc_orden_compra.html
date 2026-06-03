@@ -9544,7 +9544,7 @@ window.addEventListener('beforeunload', ()=>{
 
 /* ★ INTERRUPTOR: poné true para activar el modo "Por receta".
    En false, la app se comporta exactamente igual que hoy. */
-const RECETAS_ENABLED = true;
+const RECETAS_ENABLED = false;
 
 const recipeUI = { inited:false, mode:'materiales', recetas:null, current:null, m2:0 };
 let _rcSearchSeq = 0;
@@ -9558,7 +9558,23 @@ function _rcEsc(s){
 function recipeOnWizardOpen(){
   if(!RECETAS_ENABLED) return;
   initRecipeUI();
+  resetRecipePanel();
   setRecipeMode('materiales');
+}
+
+function resetRecipePanel(){
+  if(!recipeUI.inited) return;
+  recipeUI.current = null;
+  recipeUI.m2 = 0;
+  const sel = document.getElementById('rcReceta');
+  if(sel) sel.value = '';
+  const m2 = document.getElementById('rcM2');
+  if(m2) m2.value = '';
+  const u = document.getElementById('rcUnidad');
+  if(u) u.textContent = '—';
+  const wrap = document.getElementById('rcTableWrap');
+  if(wrap) wrap.innerHTML = '<div class="rc-empty">Elegí una receta para ver sus materiales.</div>';
+  updateAddBtn();
 }
 
 function initRecipeUI(){
@@ -9781,14 +9797,18 @@ async function searchProductFor(idx, q){
   const seq = ++_rcSearchSeq;
   box.innerHTML = '<div class="rc-hint">Buscando…</div>';
   try{
+    const safe = q.replace(/[%_]/g, function(c){ return '\\'+c; });
+    const LIMIT = 50;
     const { data, error } = await sb.from('productos_catalogo')
-      .select('id,nombre,precio_referencia').eq('activo', true).ilike('nombre', '%'+q+'%').limit(6);
+      .select('id,nombre,precio_referencia').eq('activo', true).ilike('nombre', '%'+safe+'%').order('nombre').limit(LIMIT);
     if(error) throw error;
     if(seq !== _rcSearchSeq) return;
     if(!data || !data.length){ box.innerHTML = '<div class="rc-hint">Sin resultados.</div>'; return; }
-    box.innerHTML = data.map(function(p){
+    let _html = data.map(function(p){
       return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+'</span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
     }).join('');
+    if(data.length >= LIMIT){ _html += '<div class="rc-hint">Mostrando los primeros '+LIMIT+'. Escribí más letras para afinar.</div>'; }
+    box.innerHTML = _html;
     box.querySelectorAll('.rc-result').forEach(function(r){
       r.addEventListener('click', function(){
         const p = data.find(function(x){ return String(x.id) === String(r.dataset.pid); });
@@ -9884,7 +9904,7 @@ function injectRecipeStyles(){
     '.rc-price{color:#1F3864;font-weight:700}',
     '.rc-linkbox{background:#f7f9fc;border:1px solid #e3e8f0;border-radius:8px;padding:8px}',
     '.rc-search{width:100%;padding:8px;border:1px solid #d8dde6;border-radius:6px;font-size:13px;box-sizing:border-box}',
-    '.rc-results{margin-top:6px}',
+    '.rc-results{margin-top:6px;max-height:280px;overflow:auto}',
     '.rc-result{display:flex;justify-content:space-between;gap:10px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:13px}',
     '.rc-result:hover{background:#eef3fb}',
     '.rc-hint{font-size:12px;color:#8893a5;padding:6px 4px}',
