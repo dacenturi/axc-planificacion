@@ -9944,9 +9944,9 @@ function injectRecipeStyles(){
    ────────────────────────────────────────────────────────────────── */
 
 /* ★ INTERRUPTOR: true para mostrar el botón "Presupuestos". false = oculto. */
-const PRESUPUESTO_ENABLED = true;
+const PRESUPUESTO_ENABLED = false; // gestión movida al módulo axc_presupuestos.html
 
-const budgetUI = { inited:false, pp:'', rows:[], _pps:[], plan:[], recetas:null };
+const budgetUI = { inited:false, pp:'', rows:[], _pps:[], plan:[], recetas:null, _recItemsCache:{} };
 
 function _pmEsc(s){
   return String(s==null?'':s).replace(/[&<>"]/g, function(c){
@@ -10167,7 +10167,7 @@ function fillPlanSelect(){
     (budgetUI.recetas||[]).map(function(r){ return '<option value="'+r.id+'">'+_pmEsc(r.nombre)+' ('+_pmEsc(r.unidad)+')</option>'; }).join('');
 }
 
-function planAdd(){
+async function planAdd(){
   const sel = document.getElementById('pmPlanReceta');
   const m2El = document.getElementById('pmPlanM2');
   const id = sel ? sel.value : '';
@@ -10175,7 +10175,16 @@ function planAdd(){
   if(!id){ showToast('Elegí una actividad', 'error'); return; }
   if(m2 <= 0){ showToast('Ingresá los M²', 'error'); return; }
   const rec = (budgetUI.recetas||[]).find(function(r){ return String(r.id) === String(id); });
-  budgetUI.plan.push({ receta_id: id, nombre: rec?rec.nombre:'', unidad: rec?rec.unidad:'', m2: m2 });
+  let items = budgetUI._recItemsCache[id];
+  if(!items){
+    try{
+      const { data, error } = await sb.from('receta_items').select('material,unidad,coef1,coef2').eq('receta_id', id).order('orden');
+      if(error) throw error;
+      items = data || [];
+      budgetUI._recItemsCache[id] = items;
+    }catch(e){ console.warn('planAdd items', e); showToast('No se pudieron cargar los materiales de la receta', 'error'); return; }
+  }
+  budgetUI.plan.push({ receta_id: id, nombre: rec?rec.nombre:'', unidad: rec?rec.unidad:'', m2: m2, items: items });
   if(m2El) m2El.value = '';
   renderPlanList();
 }
@@ -10185,38 +10194,63 @@ function planRemove(i){
   renderPlanList();
 }
 
+function _pmPlanTotal(){
+  const total = {};
+  budgetUI.plan.forEach(function(l){
+    (l.items||[]).forEach(function(it){
+      const q = _pmQty(it.coef1, it.coef2, l.m2);
+      const key = (it.material||'').trim().toLowerCase();
+      if(!total[key]) total[key] = { material: (it.material||'').trim(), unidad: it.unidad||'', qty: 0 };
+      total[key].qty += q;
+    });
+  });
+  return total;
+}
+
 function renderPlanList(){
   const box = document.getElementById('pmPlanList');
   if(!box) return;
   if(!budgetUI.plan.length){ box.innerHTML = '<div class="pm-planempty">Sin actividades en el plan todavía.</div>'; return; }
-  box.innerHTML = budgetUI.plan.map(function(l, i){
-    return '<div class="pm-planitem"><span>'+_pmEsc(l.nombre)+'</span><span class="pm-planm2">'+l.m2+' '+_pmEsc(l.unidad)+'</span><button class="pm-planx" type="button" data-i="'+i+'">×</button></div>';
-  }).join('');
+  let html = '';
+  budgetUI.plan.forEach(function(l, i){
+    let det = '';
+    (l.items||[]).forEach(function(it){
+      const q = _pmQty(it.coef1, it.coef2, l.m2);
+      det += '<div class="pm-plandrow"><span>'+_pmEsc(it.material)+'</span><span>'+q.toLocaleString('es-PY')+' '+_pmEsc(it.unidad||'')+'</span></div>';
+    });
+    if(!det) det = '<div class="pm-plandrow"><span>Sin materiales en la receta</span><span></span></div>';
+    html +=
+      '<div class="pm-planitem">' +
+        '<div class="pm-planhdr"><span class="pm-plannm">'+_pmEsc(l.nombre)+'</span>' +
+        '<span class="pm-planm2">'+l.m2+' '+_pmEsc(l.unidad)+'</span>' +
+        '<button class="pm-planx" type="button" data-i="'+i+'">×</button></div>' +
+        '<div class="pm-plandetail">'+det+'</div>' +
+      '</div>';
+  });
+  const total = _pmPlanTotal();
+  const tkeys = Object.keys(total);
+  if(tkeys.length){
+    let tot = '';
+    tkeys.forEach(function(k){
+      tot += '<div class="pm-plandrow strong"><span>'+_pmEsc(total[k].material)+'</span><span>'+total[k].qty.toLocaleString('es-PY')+' '+_pmEsc(total[k].unidad)+'</span></div>';
+    });
+    html += '<div class="pm-plantotal"><div class="pm-plantotalhdr">Total general por material (se guardará como límite)</div>'+tot+'</div>';
+  }
+  box.innerHTML = html;
   box.querySelectorAll('.pm-planx').forEach(function(b){ b.addEventListener('click', function(){ planRemove(Number(b.dataset.i)); }); });
 }
 
 async function planCalc(){
   if(!budgetUI.pp){ showToast('Elegí un presupuesto arriba', 'error'); return; }
   if(!budgetUI.plan.length){ showToast('Agregá al menos una actividad al plan', 'error'); return; }
+  const total = _pmPlanTotal();
+  const existMap = {};
+  (budgetUI.rows||[]).forEach(function(r){ existMap[(r.material||'').trim().toLowerCase()] = r.material; });
+  const payload = Object.keys(total).map(function(k){
+    return { presupuesto: budgetUI.pp, material: existMap[k] || total[k].material, unidad: total[k].unidad, limite: total[k].qty, origen: 'plan' };
+  });
+  if(!payload.length){ showToast('Las recetas elegidas no tienen materiales', 'error'); return; }
   try{
-    const acc = {};
-    for(let n=0; n<budgetUI.plan.length; n++){
-      const line = budgetUI.plan[n];
-      const { data, error } = await sb.from('receta_items').select('material,unidad,coef1,coef2').eq('receta_id', line.receta_id);
-      if(error) throw error;
-      (data||[]).forEach(function(it){
-        const q = _pmQty(it.coef1, it.coef2, line.m2);
-        const key = (it.material||'').trim().toLowerCase();
-        if(!acc[key]) acc[key] = { material: (it.material||'').trim(), unidad: it.unidad||'', qty: 0 };
-        acc[key].qty += q;
-      });
-    }
-    const existMap = {};
-    (budgetUI.rows||[]).forEach(function(r){ existMap[(r.material||'').trim().toLowerCase()] = r.material; });
-    const payload = Object.keys(acc).map(function(k){
-      return { presupuesto: budgetUI.pp, material: existMap[k] || acc[k].material, unidad: acc[k].unidad, limite: acc[k].qty, origen: 'plan' };
-    });
-    if(!payload.length){ showToast('Las recetas elegidas no tienen materiales', 'error'); return; }
     const { error } = await sb.from('presupuesto_materiales').upsert(payload, { onConflict: 'presupuesto,material' });
     if(error) throw error;
     showToast(payload.length + ' límite(s) calculados y guardados', 'success');
@@ -10269,7 +10303,16 @@ function injectBudgetStyles(){
     '.pm-planempty{font-size:12px;color:#9aa3af;padding:8px 2px}',
     '.pm-planitem{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #eee6cf;font-size:13px}',
     '.pm-planm2{margin-left:auto;color:#1F3864;font-weight:600;font-variant-numeric:tabular-nums}',
-    '.pm-planx{background:transparent;border:none;color:#b94a48;font-size:16px;cursor:pointer;padding:0 4px}'
+    '.pm-planx{background:transparent;border:none;color:#b94a48;font-size:16px;cursor:pointer;padding:0 4px}',
+    '.pm-planitem{display:block;padding:9px 0;border-bottom:1px solid #eee6cf}',
+    '.pm-planhdr{display:flex;align-items:center;gap:10px;font-size:13px}',
+    '.pm-plannm{font-weight:600;color:#1F3864}',
+    '.pm-plandetail{margin:6px 0 0 4px;padding-left:12px;border-left:2px solid #e7d9a8}',
+    '.pm-plandrow{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:#5a6677;padding:2px 0}',
+    '.pm-plandrow span:last-child{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600}',
+    '.pm-plandrow.strong{font-weight:700;color:#1F3864;font-size:13px}',
+    '.pm-plantotal{margin-top:12px;padding:10px 12px;background:#fff;border:1px solid #e7d9a8;border-radius:8px}',
+    '.pm-plantotalhdr{font-size:12px;font-weight:700;color:#8a6d10;margin-bottom:6px}'
   ].join('\n');
   document.head.appendChild(st);
 }
