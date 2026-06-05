@@ -9995,7 +9995,7 @@ function ceInjectModal(){
   ov.innerHTML =
     '<div class="ce-modal">' +
       '<div class="ce-head"><div><div class="ce-title">Editar composición</div>' +
-        '<div class="ce-sub">Agregá o quitá insumos y mano de obra. No afecta las OC ya hechas.</div></div>' +
+        '<div class="ce-sub">Agregá o quitá insumos y mano de obra. Los cambios se guardan al tocar “Listo”. No afecta las OC ya hechas.</div></div>' +
         '<button type="button" id="ceClose" class="ce-x">✕</button></div>' +
       '<div class="ce-body">' +
         '<div class="ce-fld"><label>Rubro / Sub Rubro</label><select id="ceReceta"></select></div>' +
@@ -10021,9 +10021,9 @@ function ceInjectModal(){
       '<div class="ce-foot"><button type="button" id="ceDone" class="rc-addbtn">Listo</button></div>' +
     '</div>';
   document.body.appendChild(ov);
-  document.getElementById('ceClose').addEventListener('click', closeCompEditor);
-  document.getElementById('ceDone').addEventListener('click', closeCompEditor);
-  ov.addEventListener('click', function(e){ if(e.target===ov) closeCompEditor(); });
+  document.getElementById('ceClose').addEventListener('click', function(){ closeCompEditor(false); });
+  document.getElementById('ceDone').addEventListener('click', ceCommit);
+  ov.addEventListener('click', function(e){ if(e.target===ov) closeCompEditor(false); });
   document.getElementById('ceReceta').addEventListener('change', function(){ ceLoadLines(this.value); });
   document.getElementById('ceInsSel').addEventListener('change', ceOnInsSel);
   document.getElementById('ceMoSel').addEventListener('change', ceOnMoSel);
@@ -10098,59 +10098,85 @@ async function openCompEditor(recetaId){
     document.getElementById('ceLines').innerHTML = '<div class="rc-empty">Elegí un rubro para ver su composición.</div>';
   }
 }
-function closeCompEditor(){
+function closeCompEditor(committed){
   const ov = document.getElementById('ceOverlay');
   if(ov) ov.classList.remove('open');
-  const cur = recipeUI.current;
-  const edited = recipeUI._ceReceta;
-  if(cur && edited && String(cur.id) === String(edited)){ onRecetaChange(); }
+  recipeUI._ceWork = null;
+  if(committed){
+    const cur = recipeUI.current;
+    const edited = recipeUI._ceReceta;
+    if(cur && edited && String(cur.id) === String(edited)){ onRecetaChange(); }
+  }
 }
 
 async function ceLoadLines(recetaId){
   const wrap = document.getElementById('ceLines');
   recipeUI._ceReceta = recetaId;
+  recipeUI._ceWork = null;
   if(!recetaId){ wrap.innerHTML = '<div class="rc-empty">Elegí un rubro…</div>'; return; }
   wrap.innerHTML = '<div class="rc-empty">Cargando…</div>';
   try{
     const { data, error } = await sb.from('receta_items').select('*').eq('receta_id', recetaId).eq('activo', true).order('orden');
     if(error) throw error;
-    recipeUI._ceLines = data || [];
+    recipeUI._ceWork = (data||[]).map(function(it){ return {
+      id: it.id, receta_id: recetaId, orden: it.orden,
+      material: it.material, unidad: it.unidad,
+      coef1: it.coef1, coef2: it.coef2, merma_pct: it.merma_pct,
+      precio_unit: it.precio_unit, tipo_componente: it.tipo_componente||'insumo',
+      codigo_catalogo: it.codigo_catalogo, _del:false }; });
     ceRenderLines();
   }catch(e){ console.warn('ceLoadLines', e); wrap.innerHTML = '<div class="rc-empty">Error al cargar la composición.</div>'; }
 }
 
 function ceRenderLines(){
-  const lines = recipeUI._ceLines || [];
-  if(!lines.length){ document.getElementById('ceLines').innerHTML = '<div class="rc-empty">Esta composición no tiene componentes. Agregá insumos abajo.</div>'; return; }
+  const work = recipeUI._ceWork || [];
+  const visible = work.map(function(it,i){ return {it:it,i:i}; }).filter(function(x){ return !x.it._del; });
+  if(!visible.length){ document.getElementById('ceLines').innerHTML = '<div class="rc-empty">Esta composición no tiene componentes. Agregá insumos abajo.</div>'; return; }
   let rows = '';
-  lines.forEach(function(it){
+  visible.forEach(function(o){
+    const it = o.it, i = o.i;
     const esMO = (it.tipo_componente==='mano_obra');
     const tag = esMO ? '<span class="rc-mo">Mano de obra</span>' : (it.codigo_catalogo?'<span class="rc-code">'+_rcEsc(it.codigo_catalogo)+'</span>':'');
     rows +=
       '<tr>' +
         '<td>'+_rcEsc(it.material||'')+' '+tag+'</td>' +
         '<td>'+_rcEsc(it.unidad||'')+'</td>' +
-        '<td class="rc-cen"><input class="rc-cin ce-edit" data-id="'+it.id+'" data-f="coef1" type="number" step="0.0001" value="'+(it.coef1!=null?it.coef1:'')+'"></td>' +
-        '<td class="rc-cen"><input class="rc-cin ce-edit" data-id="'+it.id+'" data-f="coef2" type="number" step="0.0001" value="'+(it.coef2!=null?it.coef2:'')+'"></td>' +
-        '<td class="rc-cen"><input class="rc-cin ce-edit" data-id="'+it.id+'" data-f="merma_pct" type="number" step="0.01" value="'+((Number(it.merma_pct)||0)*100)+'"></td>' +
-        '<td class="rc-cen"><button type="button" class="ce-del" data-id="'+it.id+'">Quitar</button></td>' +
+        '<td class="rc-cen"><input class="rc-cin ce-edit" data-idx="'+i+'" data-f="coef1" type="number" step="0.0001" value="'+(it.coef1!=null?it.coef1:'')+'"></td>' +
+        '<td class="rc-cen"><input class="rc-cin ce-edit" data-idx="'+i+'" data-f="coef2" type="number" step="0.0001" value="'+(it.coef2!=null?it.coef2:'')+'"></td>' +
+        '<td class="rc-cen"><input class="rc-cin ce-edit" data-idx="'+i+'" data-f="merma_pct" type="number" step="0.01" value="'+((Number(it.merma_pct)||0)*100)+'"></td>' +
+        '<td class="rc-cen"><button type="button" class="ce-del" data-idx="'+i+'">Quitar</button></td>' +
       '</tr>';
   });
   document.getElementById('ceLines').innerHTML =
     '<table class="rc-table ce-table"><thead><tr><th>Componente</th><th>Unidad</th><th class="rc-cen">coef 1</th><th class="rc-cen">coef 2</th><th class="rc-cen">merma %</th><th class="rc-cen">—</th></tr></thead><tbody>'+rows+'</tbody></table>';
-  document.querySelectorAll('#ceLines .ce-del').forEach(function(b){ b.addEventListener('click', function(){ ceRemove(b.dataset.id); }); });
-  document.querySelectorAll('#ceLines .ce-edit').forEach(function(inp){ inp.addEventListener('change', function(){ ceEditField(inp.dataset.id, inp.dataset.f, inp.value); }); });
+  document.querySelectorAll('#ceLines .ce-del').forEach(function(b){ b.addEventListener('click', function(){ ceRemove(Number(b.dataset.idx)); }); });
+  document.querySelectorAll('#ceLines .ce-edit').forEach(function(inp){ inp.addEventListener('change', function(){ ceEditField(Number(inp.dataset.idx), inp.dataset.f, inp.value); }); });
 }
 
 function _ceNextOrden(){
-  const lines = recipeUI._ceLines || [];
-  let m = 0; lines.forEach(function(x){ if(Number(x.orden)>m) m=Number(x.orden); });
+  const w = recipeUI._ceWork || [];
+  let m = 0; w.forEach(function(x){ if(Number(x.orden)>m) m=Number(x.orden); });
   return m+1;
 }
 
-async function ceAddInsumo(){
-  const rec = recipeUI._ceReceta;
-  if(!rec){ showToast('Elegí un rubro primero', 'error'); return; }
+function _ceAddOrUpdate(fields){
+  const w = recipeUI._ceWork || (recipeUI._ceWork = []);
+  let found = null;
+  for(let k=0;k<w.length;k++){ if(w[k].codigo_catalogo===fields.codigo_catalogo){ found=w[k]; break; } }
+  if(found){
+    Object.assign(found, fields); found._del = false;
+    ceMsg('Componente actualizado (en borrador)', 'success');
+  } else {
+    const row = Object.assign({ id:null, receta_id:recipeUI._ceReceta, orden:_ceNextOrden(), _del:false }, fields);
+    if(row.precio_unit===undefined) row.precio_unit = null;
+    w.push(row);
+    ceMsg('Componente agregado (en borrador)', 'success');
+  }
+  ceRenderLines();
+}
+
+function ceAddInsumo(){
+  if(!recipeUI._ceReceta){ ceMsg('Elegí un rubro primero', 'error'); return; }
   const sel = document.getElementById('ceInsSel');
   const code = sel.value;
   if(!code){ ceMsg('Elegí un insumo de la lista', 'error'); return; }
@@ -10159,67 +10185,65 @@ async function ceAddInsumo(){
   const c2 = Number(document.getElementById('ceInsC2').value) || Number(o.dataset.env) || 1;
   const mer = (Number(document.getElementById('ceInsMer').value)||0)/100;
   if(!(c1>0)){ ceMsg('Ingresá el coef 1 (consumo) antes de agregar', 'error'); return; }
-  await ceUpsert({
-    receta_id: rec, orden: _ceNextOrden(),
-    material: o.dataset.nombre || code, unidad: o.dataset.unidad || '',
-    coef1: c1, coef2: c2, merma_pct: mer,
-    tipo_componente: 'insumo', codigo_catalogo: code, activo: true
-  }, code);
+  _ceAddOrUpdate({ material:o.dataset.nombre||code, unidad:o.dataset.unidad||'', coef1:c1, coef2:c2, merma_pct:mer, tipo_componente:'insumo', codigo_catalogo:code });
   document.getElementById('ceInsC1').value=''; document.getElementById('ceInsC2').value=''; document.getElementById('ceInsMer').value='0'; sel.value='';
 }
 
-async function ceAddMO(){
-  const rec = recipeUI._ceReceta;
-  if(!rec){ showToast('Elegí un rubro primero', 'error'); return; }
+function ceAddMO(){
+  if(!recipeUI._ceReceta){ ceMsg('Elegí un rubro primero', 'error'); return; }
   const sel = document.getElementById('ceMoSel');
   const code = sel.value;
   if(!code){ ceMsg('Elegí una mano de obra de la lista', 'error'); return; }
   const o = sel.options[sel.selectedIndex];
   const precio = Number(document.getElementById('ceMoPrecio').value) || Number(o.dataset.precio) || 0;
-  await ceUpsert({
-    receta_id: rec, orden: _ceNextOrden(),
-    material: o.dataset.desc || code, unidad: o.dataset.unidad || '',
-    coef1: 1, coef2: 1, merma_pct: 0, precio_unit: precio,
-    tipo_componente: 'mano_obra', codigo_catalogo: code, activo: true
-  }, code);
+  _ceAddOrUpdate({ material:o.dataset.desc||code, unidad:o.dataset.unidad||'', coef1:1, coef2:1, merma_pct:0, precio_unit:precio, tipo_componente:'mano_obra', codigo_catalogo:code });
   document.getElementById('ceMoPrecio').value=''; sel.value='';
 }
 
-async function ceUpsert(row, code){
-  try{
-    const ex = await sb.from('receta_items').select('id').eq('receta_id', row.receta_id).eq('codigo_catalogo', code).limit(1);
-    if(ex.data && ex.data.length){
-      const patch = Object.assign({}, row); delete patch.receta_id; delete patch.orden;
-      const { error } = await sb.from('receta_items').update(patch).eq('id', ex.data[0].id);
-      if(error) throw error;
-    } else {
-      const { error } = await sb.from('receta_items').insert(row);
-      if(error) throw error;
-    }
-    ceMsg('Componente guardado', 'success');
-    await ceLoadLines(row.receta_id);
-  }catch(e){
-    console.warn('ceUpsert', e);
-    ceMsg('No se pudo guardar: '+(e && e.message ? e.message : 'revisá permisos de receta_items'), 'error');
+function ceRemove(idx){
+  const w = recipeUI._ceWork || [];
+  const it = w[idx];
+  if(!it) return;
+  if(it.id){ it._del = true; } else { w.splice(idx,1); }
+  ceRenderLines();
+}
+
+function ceEditField(idx, field, value){
+  const w = recipeUI._ceWork || [];
+  const it = w[idx];
+  if(!it) return;
+  it[field] = (field==='merma_pct') ? ((Number(value)||0)/100) : (Number(value)||0);
+}
+
+async function ceUpsertRow(row){
+  const ex = await sb.from('receta_items').select('id').eq('receta_id', row.receta_id).eq('codigo_catalogo', row.codigo_catalogo).limit(1);
+  if(ex.data && ex.data.length){
+    const patch = Object.assign({}, row); delete patch.receta_id; delete patch.orden;
+    const { error } = await sb.from('receta_items').update(patch).eq('id', ex.data[0].id); if(error) throw error;
+  } else {
+    const { error } = await sb.from('receta_items').insert(row); if(error) throw error;
   }
 }
 
-async function ceRemove(id){
+async function ceCommit(){
+  const rec = recipeUI._ceReceta;
+  if(!rec){ closeCompEditor(false); return; }
+  const work = recipeUI._ceWork || [];
   try{
-    const { error } = await sb.from('receta_items').update({ activo:false }).eq('id', id);
-    if(error) throw error;
-    ceMsg('Componente quitado', 'success');
-    await ceLoadLines(recipeUI._ceReceta);
-  }catch(e){ console.warn('ceRemove', e); ceMsg('No se pudo quitar: '+(e && e.message ? e.message : 'revisá permisos'), 'error'); }
-}
-
-async function ceEditField(id, field, value){
-  const patch = {};
-  patch[field] = (field==='merma_pct') ? ((Number(value)||0)/100) : (Number(value)||0);
-  try{
-    const { error } = await sb.from('receta_items').update(patch).eq('id', id);
-    if(error) throw error;
-  }catch(e){ console.warn('ceEditField', e); showToast('No se pudo guardar el cambio', 'error'); }
+    for(const it of work){ if(it._del && it.id){ const { error } = await sb.from('receta_items').update({ activo:false }).eq('id', it.id); if(error) throw error; } }
+    for(const it of work){ if(!it._del && it.id){ const { error } = await sb.from('receta_items').update({
+      coef1:Number(it.coef1)||0, coef2:Number(it.coef2)||0, merma_pct:Number(it.merma_pct)||0,
+      precio_unit: it.precio_unit!=null?Number(it.precio_unit):null, material:it.material, unidad:it.unidad, activo:true
+    }).eq('id', it.id); if(error) throw error; } }
+    for(const it of work){ if(!it._del && !it.id){ await ceUpsertRow({
+      receta_id:rec, orden:it.orden, material:it.material, unidad:it.unidad,
+      coef1:Number(it.coef1)||0, coef2:Number(it.coef2)||0, merma_pct:Number(it.merma_pct)||0,
+      precio_unit: it.precio_unit!=null?Number(it.precio_unit):null,
+      tipo_componente:it.tipo_componente, codigo_catalogo:it.codigo_catalogo, activo:true
+    }); } }
+    ceMsg('Composición guardada', 'success');
+    closeCompEditor(true);
+  }catch(e){ console.warn('ceCommit', e); ceMsg('No se pudo guardar: '+(e&&e.message?e.message:'revisá permisos'), 'error'); }
 }
 
 function injectRecipeStyles(){
