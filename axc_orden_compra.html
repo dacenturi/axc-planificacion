@@ -9654,11 +9654,35 @@ function recipePanelHTML(){
 async function loadRecetas(){
   const sel = document.getElementById('rcReceta');
   try{
-    const { data, error } = await sb.from('recetas').select('id,nombre,unidad').eq('activo', true).order('nombre');
+    const { data, error } = await sb.from('recetas').select('id,nombre,unidad,rubro_codigo').eq('activo', true).order('rubro_codigo');
     if(error) throw error;
     recipeUI.recetas = data || [];
-    sel.innerHTML = '<option value="">— Elegí una actividad —</option>' +
-      recipeUI.recetas.map(function(r){ return '<option value="'+r.id+'">'+_rcEsc(r.nombre)+' ('+_rcEsc(r.unidad)+')</option>'; }).join('');
+    // Traer el capítulo de cada rubro para agrupar
+    let capMap = {};
+    try{
+      const codes = recipeUI.recetas.map(function(r){ return r.rubro_codigo; }).filter(Boolean);
+      if(codes.length){
+        const { data: rub } = await sb.from('rubros').select('codigo,capitulo').in('codigo', codes);
+        (rub || []).forEach(function(x){ capMap[x.codigo] = x.capitulo || 'Otros'; });
+      }
+    }catch(e){ console.warn('capítulos', e); }
+    recipeUI.recetas.forEach(function(r){
+      r.capitulo = (r.rubro_codigo && capMap[r.rubro_codigo]) ? capMap[r.rubro_codigo] : 'Otros';
+    });
+    // Agrupar por capítulo (= rubro/familia)
+    const groups = {};
+    recipeUI.recetas.forEach(function(r){ (groups[r.capitulo] = groups[r.capitulo] || []).push(r); });
+    let html = '<option value="">— Elegí una actividad —</option>';
+    Object.keys(groups).sort().forEach(function(cap){
+      html += '<optgroup label="'+_rcEsc(cap)+'">';
+      groups[cap].sort(function(a,b){ return String(a.rubro_codigo||'').localeCompare(String(b.rubro_codigo||'')); });
+      groups[cap].forEach(function(r){
+        const code = r.rubro_codigo ? (r.rubro_codigo+' · ') : '';
+        html += '<option value="'+r.id+'">'+code+_rcEsc(r.nombre)+' ('+_rcEsc(r.unidad)+')</option>';
+      });
+      html += '</optgroup>';
+    });
+    sel.innerHTML = html;
   }catch(e){
     console.warn('Error cargando recetas:', e);
     sel.innerHTML = '<option value="">Error al cargar recetas</option>';
@@ -9686,6 +9710,7 @@ async function onRecetaChange(){
       id: id,
       nombre: rec ? rec.nombre : '',
       unidad: rec ? rec.unidad : '',
+      rubro_codigo: rec ? (rec.rubro_codigo || '') : '',
       items: (data || []).map(function(it){ it._link = null; return it; })
     };
     await hydrateLinks();
@@ -9722,7 +9747,7 @@ async function hydrateLinks(){
                                           .filter(function(n){ return !isNaN(n); })));
   if(!ids.length) return;
   try{
-    const { data, error } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids);
+    const { data, error } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo').in('id', ids);
     if(error) throw error;
     const map = {};
     (data || []).forEach(function(p){ map[String(p.id)] = p; });
@@ -9763,8 +9788,9 @@ function renderRecipeTable(){
       const pu = linked ? (Number(linked.precio_referencia) || 0) : 0;
       const sub = qty * pu;
       if(linked) totMat += sub;
+      const prodCod = linked ? (linked.codigo ? linked.codigo : ('#'+linked.id)) : '';
       prodCell = linked
-        ? '<span class="rc-linked">'+_rcEsc(linked.nombre)+'<br><span class="rc-price">'+fmtMoney(pu)+' · subtotal '+fmtMoney(sub)+'</span></span> <button type="button" class="rc-relink" data-idx="'+idx+'">cambiar</button>'
+        ? '<span class="rc-linked">'+_rcEsc(linked.nombre)+' <span class="rc-code">'+_rcEsc(prodCod)+'</span><br><span class="rc-price">'+fmtMoney(pu)+' · subtotal '+fmtMoney(sub)+'</span></span> <button type="button" class="rc-relink" data-idx="'+idx+'">cambiar</button>'
         : '<button type="button" class="rc-linkbtn" data-idx="'+idx+'">Vincular producto</button>';
     }
     rows +=
@@ -9778,9 +9804,14 @@ function renderRecipeTable(){
       '</tr>' +
       (esMO ? '' :
       '<tr class="rc-linkrow" id="rcLinkRow'+idx+'" style="display:none"><td colspan="6">' +
-        '<div class="rc-linkbox"><input type="text" class="rc-search" data-idx="'+idx+'" placeholder="Buscar producto del catálogo…">' +
-        '<div class="rc-results" id="rcResults'+idx+'"></div></div></td></tr>');
+        '<div class="rc-linkbox">' +
+          '<div class="rc-linkhead"><span>Buscar producto del catálogo</span>' +
+          '<button type="button" class="rc-close" data-idx="'+idx+'">✕ cerrar</button></div>' +
+          '<input type="text" class="rc-search" data-idx="'+idx+'" placeholder="Escribí para buscar…">' +
+          '<div class="rc-results" id="rcResults'+idx+'"></div>' +
+        '</div></td></tr>');
   });
+  const cap = '<div class="rc-cap">Actividad: <b>'+(cur.rubro_codigo?cur.rubro_codigo+' · ':'')+_rcEsc(cur.nombre)+'</b>'+(cur.unidad?' ('+_rcEsc(cur.unidad)+')':'')+'</div>';
   const resumen =
     '<div class="rc-tot">' +
       '<span>Materiales: <b>'+fmtMoney(totMat)+'</b></span>' +
@@ -9788,6 +9819,7 @@ function renderRecipeTable(){
       '<span class="rc-totgen">Total estimado: <b>'+fmtMoney(totMat+totMO)+'</b></span>' +
     '</div>';
   document.getElementById('rcTableWrap').innerHTML =
+    cap +
     '<table class="rc-table"><thead><tr>' +
       '<th>Material / Mano de obra</th><th>Unidad</th><th class="rc-num">coef 1</th><th class="rc-num">coef 2</th>' +
       '<th class="rc-num">A comprar</th><th>Producto del catálogo</th>' +
@@ -9799,10 +9831,18 @@ function renderRecipeTable(){
   document.querySelectorAll('#rcTableWrap .rc-linkbtn, #rcTableWrap .rc-relink').forEach(function(b){
     b.addEventListener('click', function(){ toggleLinkRow(Number(b.dataset.idx)); });
   });
+  document.querySelectorAll('#rcTableWrap .rc-close').forEach(function(b){
+    b.addEventListener('click', function(){ closeLinkRow(Number(b.dataset.idx)); });
+  });
   document.querySelectorAll('#rcTableWrap .rc-search').forEach(function(s){
     s.addEventListener('input', function(){ searchProductFor(Number(s.dataset.idx), s.value); });
   });
   updateAddBtn();
+}
+
+function closeLinkRow(idx){
+  const row = document.getElementById('rcLinkRow'+idx);
+  if(row) row.style.display = 'none';
 }
 
 function onCoefInput(e){
@@ -9851,12 +9891,13 @@ async function searchProductFor(idx, q){
     const safe = q.replace(/[%_]/g, function(c){ return '\\'+c; });
     const LIMIT = 50;
     const { data, error } = await sb.from('productos_catalogo')
-      .select('id,nombre,precio_referencia').eq('activo', true).ilike('nombre', '%'+safe+'%').order('nombre').limit(LIMIT);
+      .select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%'+safe+'%').order('nombre').limit(LIMIT);
     if(error) throw error;
     if(seq !== _rcSearchSeq) return;
     if(!data || !data.length){ box.innerHTML = '<div class="rc-hint">Sin resultados.</div>'; return; }
     let _html = data.map(function(p){
-      return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+'</span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
+      const cod = p.codigo ? p.codigo : ('#'+p.id);
+      return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+' <span class="rc-code">'+_rcEsc(cod)+'</span></span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
     }).join('');
     if(data.length >= LIMIT){ _html += '<div class="rc-hint">Mostrando los primeros '+LIMIT+'. Escribí más letras para afinar.</div>'; }
     box.innerHTML = _html;
@@ -9980,7 +10021,12 @@ function injectRecipeStyles(){
     '.rc-code{font-size:11px;color:#8893a5;font-weight:600}',
     '.rc-tot{display:flex;gap:18px;justify-content:flex-end;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed #e3e8f0;font-size:13px;color:#5a6677}',
     '.rc-tot b{color:#1F3864}',
-    '.rc-totgen b{font-size:15px}'
+    '.rc-totgen b{font-size:15px}',
+    '.rc-cap{font-size:13px;color:#5a6677;margin-bottom:10px;padding:8px 10px;background:#eef3fb;border-radius:8px}',
+    '.rc-cap b{color:#1F3864}',
+    '.rc-linkhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px;color:#5a6677;font-weight:600}',
+    '.rc-close{font-size:12px;padding:4px 10px;border:1px solid #d8dde6;background:#fff;color:#5a6677;border-radius:6px;cursor:pointer;font-weight:600}',
+    '.rc-close:hover{background:#f0f2f6}'
   ].join('\n');
   document.head.appendChild(st);
 }
