@@ -9700,23 +9700,46 @@ async function onRecetaChange(){
 async function hydrateLinks(){
   const cur = recipeUI.current;
   if(!cur) return;
-  const ids = cur.items.filter(function(i){ return i.producto_id; }).map(function(i){ return i.producto_id; });
+  // 1) Resolver insumos por su código -> insumos.producto_id (mapeo de la Fase 1)
+  const codes = cur.items.filter(function(i){ return _rcEsInsumo(i) && i.codigo_catalogo; })
+                         .map(function(i){ return i.codigo_catalogo; });
+  if(codes.length){
+    try{
+      const { data, error } = await sb.from('insumos').select('codigo,producto_id').in('codigo', codes);
+      if(error) throw error;
+      const insMap = {};
+      (data || []).forEach(function(r){ if(r.producto_id) insMap[r.codigo] = r.producto_id; });
+      cur.items.forEach(function(i){
+        if(_rcEsInsumo(i) && !i.producto_id && i.codigo_catalogo && insMap[i.codigo_catalogo]){
+          i.producto_id = insMap[i.codigo_catalogo];   // id del producto (texto)
+        }
+      });
+    }catch(e){ console.warn('mapeo insumos->producto', e); }
+  }
+  // 2) Traer datos (nombre, precio) de los productos resueltos
+  const ids = Array.from(new Set(cur.items.filter(function(i){ return i.producto_id; })
+                                          .map(function(i){ return Number(i.producto_id); })
+                                          .filter(function(n){ return !isNaN(n); })));
   if(!ids.length) return;
   try{
     const { data, error } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids);
     if(error) throw error;
     const map = {};
-    (data || []).forEach(function(p){ map[p.id] = p; });
-    cur.items.forEach(function(i){ if(i.producto_id && map[i.producto_id]) i._link = map[i.producto_id]; });
+    (data || []).forEach(function(p){ map[String(p.id)] = p; });
+    cur.items.forEach(function(i){ if(i.producto_id && map[String(i.producto_id)]) i._link = map[String(i.producto_id)]; });
   }catch(e){ console.warn('hydrateLinks', e); }
 }
 
 function recipeQty(it, m2){
   const c1 = Number(it.coef1) || 0;
   const c2 = Number(it.coef2) || 0;
-  const bruta = c1 * m2;
+  const merma = Number(it.merma_pct) || 0;   // fracción: 0.05 = 5%
+  const bruta = c1 * m2 * (1 + merma);
   return c2 > 0 ? Math.max(0, Math.ceil(bruta / c2)) : 0;
 }
+function _rcTipo(it){ return (it && it.tipo_componente) ? it.tipo_componente : 'insumo'; }
+function _rcEsInsumo(it){ return _rcTipo(it) === 'insumo'; }
+function _rcEsMO(it){ return _rcTipo(it) === 'mano_obra'; }
 
 function renderRecipeTable(){
   const cur = recipeUI.current;
@@ -9724,30 +9747,51 @@ function renderRecipeTable(){
   const m2 = Number(document.getElementById('rcM2').value) || 0;
   recipeUI.m2 = m2;
   let rows = '';
+  let totMat = 0, totMO = 0;
   cur.items.forEach(function(it, idx){
     const qty = recipeQty(it, m2);
-    const linked = it._link;
-    const prodCell = linked
-      ? '<span class="rc-linked">'+_rcEsc(linked.nombre)+'<br><span class="rc-price">'+fmtMoney(Number(linked.precio_referencia)||0)+'</span></span> <button type="button" class="rc-relink" data-idx="'+idx+'">cambiar</button>'
-      : '<button type="button" class="rc-linkbtn" data-idx="'+idx+'">Vincular producto</button>';
+    const esMO = _rcEsMO(it);
+    let prodCell;
+    if(esMO){
+      const pu = Number(it.precio_unit) || 0;
+      const sub = qty * pu;
+      totMO += sub;
+      prodCell = '<span class="rc-mo">Mano de obra · no se compra</span>' +
+                 '<br><span class="rc-price">' + fmtMoney(sub) + '</span>';
+    } else {
+      const linked = it._link;
+      const pu = linked ? (Number(linked.precio_referencia) || 0) : 0;
+      const sub = qty * pu;
+      if(linked) totMat += sub;
+      prodCell = linked
+        ? '<span class="rc-linked">'+_rcEsc(linked.nombre)+'<br><span class="rc-price">'+fmtMoney(pu)+' · subtotal '+fmtMoney(sub)+'</span></span> <button type="button" class="rc-relink" data-idx="'+idx+'">cambiar</button>'
+        : '<button type="button" class="rc-linkbtn" data-idx="'+idx+'">Vincular producto</button>';
+    }
     rows +=
-      '<tr id="rcDataRow'+idx+'">' +
-        '<td>'+_rcEsc(it.material)+'</td>' +
+      '<tr id="rcDataRow'+idx+'"'+(esMO?' class="rc-rowmo"':'')+'>' +
+        '<td>'+_rcEsc(it.material)+(it.codigo_catalogo?' <span class="rc-code">'+_rcEsc(it.codigo_catalogo)+'</span>':'')+'</td>' +
         '<td>'+_rcEsc(it.unidad||'')+'</td>' +
         '<td class="rc-num"><input class="rc-cin rc-c1" data-idx="'+idx+'" type="number" step="0.0001" value="'+it.coef1+'"></td>' +
         '<td class="rc-num"><input class="rc-cin rc-c2" data-idx="'+idx+'" type="number" step="0.0001" value="'+it.coef2+'"></td>' +
         '<td class="rc-num rc-qty">'+qty.toLocaleString('es-PY')+'</td>' +
         '<td class="rc-prod">'+prodCell+'</td>' +
       '</tr>' +
+      (esMO ? '' :
       '<tr class="rc-linkrow" id="rcLinkRow'+idx+'" style="display:none"><td colspan="6">' +
         '<div class="rc-linkbox"><input type="text" class="rc-search" data-idx="'+idx+'" placeholder="Buscar producto del catálogo…">' +
-        '<div class="rc-results" id="rcResults'+idx+'"></div></div></td></tr>';
+        '<div class="rc-results" id="rcResults'+idx+'"></div></div></td></tr>');
   });
+  const resumen =
+    '<div class="rc-tot">' +
+      '<span>Materiales: <b>'+fmtMoney(totMat)+'</b></span>' +
+      '<span>Mano de obra: <b>'+fmtMoney(totMO)+'</b></span>' +
+      '<span class="rc-totgen">Total estimado: <b>'+fmtMoney(totMat+totMO)+'</b></span>' +
+    '</div>';
   document.getElementById('rcTableWrap').innerHTML =
     '<table class="rc-table"><thead><tr>' +
-      '<th>Material</th><th>Unidad</th><th class="rc-num">coef 1</th><th class="rc-num">coef 2</th>' +
+      '<th>Material / Mano de obra</th><th>Unidad</th><th class="rc-num">coef 1</th><th class="rc-num">coef 2</th>' +
       '<th class="rc-num">A comprar</th><th>Producto del catálogo</th>' +
-    '</tr></thead><tbody>'+rows+'</tbody></table>';
+    '</tr></thead><tbody>'+rows+'</tbody></table>' + resumen;
 
   document.querySelectorAll('#rcTableWrap .rc-c1, #rcTableWrap .rc-c2').forEach(function(inp){
     inp.addEventListener('input', onCoefInput);
@@ -9774,13 +9818,8 @@ function onCoefInput(e){
 function recalcRecipe(){
   const cur = recipeUI.current;
   if(!cur) { updateAddBtn(); return; }
-  const m2 = Number(document.getElementById('rcM2').value) || 0;
-  recipeUI.m2 = m2;
-  cur.items.forEach(function(it, idx){
-    const row = document.getElementById('rcDataRow'+idx);
-    if(row){ const cell = row.querySelector('.rc-qty'); if(cell) cell.textContent = recipeQty(it, m2).toLocaleString('es-PY'); }
-  });
-  updateAddBtn();
+  recipeUI.m2 = Number(document.getElementById('rcM2').value) || 0;
+  renderRecipeTable();
 }
 
 function toggleLinkRow(idx){
@@ -9834,8 +9873,10 @@ async function linkProduct(idx, p){
   const it = recipeUI.current.items[idx];
   it.producto_id = p.id;
   it._link = p;
-  try{ await sb.from('receta_items').update({ producto_id: p.id }).eq('id', it.id); }
-  catch(e){ console.warn('No se pudo guardar el vínculo:', e); }
+  if(it.codigo_catalogo){
+    try{ await sb.from('insumos').update({ producto_id: String(p.id) }).eq('codigo', it.codigo_catalogo); }
+    catch(e){ console.warn('No se pudo guardar el vínculo del insumo:', e); }
+  }
   renderRecipeTable();
   showToast('Producto vinculado', 'success');
 }
@@ -9845,29 +9886,32 @@ function updateAddBtn(){
   if(!btn) return;
   const cur = recipeUI.current;
   const m2 = Number(document.getElementById('rcM2').value) || 0;
-  const allLinked = cur && cur.items.length && cur.items.every(function(i){ return i.producto_id && i._link; });
+  const insumos = cur ? cur.items.filter(_rcEsInsumo) : [];
+  const allLinked = insumos.length && insumos.every(function(i){ return i.producto_id && i._link; });
   const ok = !!(cur && m2 > 0 && allLinked);
   btn.disabled = !ok;
   if(!cur) btn.textContent = 'Agregar al carrito';
-  else if(m2 <= 0) btn.textContent = 'Ingresá los M²';
-  else if(!allLinked) btn.textContent = 'Vinculá todos los materiales';
-  else btn.textContent = 'Agregar '+cur.items.length+' material(es) al carrito';
+  else if(m2 <= 0) btn.textContent = 'Ingresá la cantidad';
+  else if(!insumos.length) btn.textContent = 'La receta no tiene materiales';
+  else if(!allLinked) btn.textContent = 'Faltan vincular materiales';
+  else btn.textContent = 'Agregar '+insumos.length+' material(es) al carrito';
 }
 
 function addRecipeToCart(){
   const cur = recipeUI.current;
   const m2 = Number(document.getElementById('rcM2').value) || 0;
-  if(!cur || m2 <= 0){ showToast('Elegí una receta e ingresá los M²', 'error'); return; }
-  const unlinked = cur.items.filter(function(i){ return !(i.producto_id && i._link); });
-  if(unlinked.length){ showToast('Vinculá todos los materiales a un producto', 'error'); return; }
+  if(!cur || m2 <= 0){ showToast('Elegí una receta e ingresá la cantidad', 'error'); return; }
+  const insumos = cur.items.filter(_rcEsInsumo);
+  const unlinked = insumos.filter(function(i){ return !(i.producto_id && i._link); });
+  if(unlinked.length){ showToast('Faltan vincular materiales a un producto', 'error'); return; }
   let added = 0;
   const origen = cur.nombre + (cur.unidad ? ' ('+cur.unidad+')' : '');
-  cur.items.forEach(function(it){
+  insumos.forEach(function(it){
     const qty = recipeQty(it, m2);
     if(qty <= 0) return;
     const prec = Number(it._link.precio_referencia) || 0;
-    const pid = it.producto_id;
-    const ci = wizard.cart.findIndex(function(c){ return c.producto_id === pid; });
+    const pid = Number(it.producto_id);
+    const ci = wizard.cart.findIndex(function(c){ return Number(c.producto_id) === pid; });
     if(ci >= 0){
       const nuevaCant = Number(wizard.cart[ci].cantidad || 0) + qty;
       const pu = Number(wizard.cart[ci].precio_unit || prec) || 0;
@@ -9930,7 +9974,13 @@ function injectRecipeStyles(){
     '.rc-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #eef1f5;flex-wrap:wrap}',
     '.rc-note{font-size:12px;color:#8893a5}',
     '.rc-addbtn{padding:10px 18px;border-radius:8px;border:none;background:#C8A028;color:#1F3864;font-weight:700;font-size:14px;cursor:pointer}',
-    '.rc-addbtn:disabled{background:#e7e2cf;color:#a59b78;cursor:not-allowed}'
+    '.rc-addbtn:disabled{background:#e7e2cf;color:#a59b78;cursor:not-allowed}',
+    '.rc-rowmo{background:#fbf7ec}',
+    '.rc-mo{display:inline-block;font-size:12px;color:#8a6d10;background:#f3e8c6;border-radius:6px;padding:2px 8px;font-weight:600}',
+    '.rc-code{font-size:11px;color:#8893a5;font-weight:600}',
+    '.rc-tot{display:flex;gap:18px;justify-content:flex-end;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed #e3e8f0;font-size:13px;color:#5a6677}',
+    '.rc-tot b{color:#1F3864}',
+    '.rc-totgen b{font-size:15px}'
   ].join('\n');
   document.head.appendChild(st);
 }
