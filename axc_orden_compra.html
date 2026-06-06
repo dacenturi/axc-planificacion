@@ -4128,6 +4128,7 @@ body{
               </div>
               <input type="text" class="step-input" id="fldPresupuesto" list="presuList" placeholder="Elegí o escribí el presupuesto (ej. PP39-ORQ)" style="display:none">
               <datalist id="presuList"></datalist>
+              <div id="presuSeguimiento" style="display:none;margin-top:10px"></div>
             </div>
 
             <div class="step-field full">
@@ -4189,6 +4190,15 @@ body{
           <span class="cart-count-pill" id="cartCountPill">0</span>
         </div>
         <div class="cart-subtitle" id="cartSubtitle">Agregá materiales del catálogo</div>
+      </div>
+      <div class="cb-bar" id="cbBar">
+        <div class="cb-modes">
+          <label class="cb-opt"><input type="radio" name="cbMode" id="cbNo" value="no" checked> Sin presupuesto</label>
+          <label class="cb-opt"><input type="radio" name="cbMode" id="cbSi" value="si"> Con presupuesto</label>
+        </div>
+        <input type="text" id="cbSelect" list="presuListCart" placeholder="Elegí el presupuesto" style="display:none">
+        <datalist id="presuListCart"></datalist>
+        <div class="cb-panel" id="cbPanel" style="display:none"></div>
       </div>
       <div class="cart-items" id="cartItems">
         <div class="cart-empty">
@@ -5117,6 +5127,7 @@ function openWizard(){
   wizard.autosaveTimer = setInterval(saveDraft, 30000);
   setTimeout(()=>document.getElementById('catSearch').focus(), 200);
   try{ if(typeof recipeOnWizardOpen === 'function') recipeOnWizardOpen(); }catch(e){ console.warn('recipe init:', e); }
+  try{ cartBudgetInit(); setPresupuesto(wizard.form.presupuesto||'', true); }catch(e){ console.warn('budget init:', e); }
 }
 
 function closeWizard(force=false){
@@ -5559,6 +5570,7 @@ document.getElementById('prodModalRemove').addEventListener('click', ()=>{
 
 function renderCart(){
   const wrap = document.getElementById('cartItems');
+  try{ cartBudgetInit(); }catch(e){}
   const total = wizard.cart.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
   document.getElementById('cartTotal').textContent = fmtMoney(total);
   document.getElementById('cartCountPill').textContent = wizard.cart.length;
@@ -5570,11 +5582,13 @@ function renderCart(){
   if(wizard.cart.length === 0){
     wrap.innerHTML = '<div class="cart-empty"><div class="cart-empty-icon">📦</div><div class="cart-empty-text">El carrito está vacío.<br>Hacé click en un producto del catálogo para agregarlo.</div></div>';
     document.getElementById('cartSubtitle').textContent = 'Agregá materiales del catálogo';
+    try{ cartBudgetRender(); }catch(e){}
     return;
   }
 
   document.getElementById('cartSubtitle').textContent = `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${fmtMoney(total)}`;
 
+  const _cbActive = !!cartBudget.pp && Array.isArray(cartBudget.mats) && cartBudget.mats.length>0;
   const html = wizard.cart.map((it, idx)=>`
     <div class="cart-item" data-cart-idx="${idx}">
       <div class="cart-item-top">
@@ -5588,6 +5602,7 @@ function renderCart(){
           <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
         </div>
       </div>
+      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl">Presupuesto:</span><select class="cb-isel" data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>` : ''}
       <div class="cart-item-bottom">
         <span class="cart-item-calc">Subtotal</span>
         <span class="cart-item-subtotal">${fmtMoney(it.subtotal)}</span>
@@ -5595,6 +5610,13 @@ function renderCart(){
     </div>
   `).join('');
   wrap.innerHTML = html;
+
+  wrap.querySelectorAll('.cb-isel').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const idx = Number(sel.dataset.cartIdx);
+      if(wizard.cart[idx]) setProductoItem(wizard.cart[idx].producto_id, sel.value);
+    });
+  });
 
   wrap.querySelectorAll('.cart-item').forEach(node=>{
     const idx = Number(node.dataset.cartIdx);
@@ -5611,6 +5633,7 @@ function renderCart(){
       else renderCatalog(false);
     });
   });
+  try{ cartBudgetRender(); }catch(e){}
 }
 
 document.getElementById('btnNextStep').addEventListener('click', ()=>{
@@ -6187,35 +6210,177 @@ async function enterStep2(){
   });
 });
 
-function presuApplyMode(){
-  const has = !!(wizard.form.presupuesto && String(wizard.form.presupuesto).trim());
-  const si = document.getElementById('presuSi'), no = document.getElementById('presuNo'), fld = document.getElementById('fldPresupuesto');
-  if(!si || !no || !fld) return;
-  si.checked = has; no.checked = !has;
-  fld.style.display = has ? '' : 'none';
-  if(has) loadPresuList();
+/* ── Presupuesto: control en carrito + detalles (sincronizados) ── */
+function _presuNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false };
+
+function _cbEls(){ return {
+  cno:document.getElementById('cbNo'), csi:document.getElementById('cbSi'),
+  csel:document.getElementById('cbSelect'), cpanel:document.getElementById('cbPanel'),
+  dno:document.getElementById('presuNo'), dsi:document.getElementById('presuSi'),
+  dfld:document.getElementById('fldPresupuesto')
+}; }
+
+function cbInjectStyles(){
+  if(document.getElementById('cbStyles')) return;
+  const st = document.createElement('style'); st.id = 'cbStyles';
+  st.textContent = [
+    '.cb-bar{padding:12px 16px;border-bottom:1px solid #eef1f5;background:#fafbfd}',
+    '.cb-modes{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}',
+    '.cb-opt{display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;padding:5px 10px;border:1px solid #d3d9e3;border-radius:8px;background:#fff}',
+    '#cbSelect{width:100%;padding:8px 10px;border:1px solid #d3d9e3;border-radius:8px;font-size:13px;box-sizing:border-box}',
+    '.cb-panel{margin-top:10px;border:1px solid #e6eaf1;border-radius:10px;overflow:hidden}',
+    '.cb-phead{background:#1F3864;color:#fff;padding:7px 10px;font-size:11.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center}',
+    '.cb-warn{background:#fde9e9;color:#b3443b;padding:7px 10px;font-size:11.5px;font-weight:700}',
+    '.cb-tbl{width:100%;border-collapse:collapse;font-size:11.5px}',
+    '.cb-tbl th{background:#eef3fb;color:#42506a;text-align:right;padding:5px 8px;font-weight:700}',
+    '.cb-tbl th:first-child{text-align:left}',
+    '.cb-tbl td{padding:5px 8px;border-top:1px solid #eef1f5;text-align:right}',
+    '.cb-tbl td:first-child{text-align:left}',
+    '.cb-empty{padding:10px;font-size:12px;color:#8893a5}',
+    '.cb-sub{font-size:10px;color:#8893a5;margin-top:1px}',
+    '.cart-item-presu{display:flex;align-items:center;gap:6px;margin-top:7px}',
+    '.cart-item-presu .cip-lbl{font-size:11px;color:#5a6677;white-space:nowrap}',
+    '.cb-isel{flex:1;min-width:0;font-size:12px;padding:4px 6px;border:1px solid #d3d9e3;border-radius:6px;background:#fff}'
+  ].join('\n');
+  document.head.appendChild(st);
 }
-let _presuInited = false;
-function presuInit(){
-  if(_presuInited) return; _presuInited = true;
-  const si = document.getElementById('presuSi'), no = document.getElementById('presuNo'), fld = document.getElementById('fldPresupuesto');
-  if(!si || !no || !fld) return;
-  function upd(){
-    const on = si.checked;
-    fld.style.display = on ? '' : 'none';
-    if(!on){ fld.value = ''; wizard.form.presupuesto = ''; }
-    else { loadPresuList(); fld.focus(); }
+
+let _cbInited = false;
+function cartBudgetInit(){
+  if(_cbInited) return; _cbInited = true;
+  cbInjectStyles();
+  loadProductoMap();
+  const e = _cbEls();
+  if(e.cno){
+    const updC = function(){ const on=e.csi.checked; e.csel.style.display=on?'':'none'; if(!on){ setPresupuesto(''); } else { cbLoadList('presuListCart'); setPresupuesto(e.csel.value); if(!e.csel.value) e.csel.focus(); } };
+    e.cno.addEventListener('change', updC);
+    e.csi.addEventListener('change', updC);
+    e.csel.addEventListener('change', function(){ setPresupuesto(e.csel.value); });
   }
-  si.addEventListener('change', upd);
-  no.addEventListener('change', upd);
+  if(e.dno){
+    const updD = function(){ const on=e.dsi.checked; e.dfld.style.display=on?'':'none'; if(!on){ setPresupuesto(''); } else { cbLoadList('presuList'); setPresupuesto(e.dfld.value); if(!e.dfld.value) e.dfld.focus(); } };
+    e.dno.addEventListener('change', updD);
+    e.dsi.addEventListener('change', updD);
+    e.dfld.addEventListener('change', function(){ setPresupuesto(e.dfld.value); });
+  }
 }
-async function loadPresuList(){
-  const dl = document.getElementById('presuList'); if(!dl) return;
+
+async function cbLoadList(id){
+  const dl = document.getElementById(id); if(!dl) return;
   try{
     const { data } = await sb.from('presupuesto_materiales').select('presupuesto');
     const set = []; (data || []).forEach(function(r){ if(r.presupuesto && set.indexOf(r.presupuesto) < 0) set.push(r.presupuesto); });
     dl.innerHTML = set.sort().map(function(p){ return '<option value="'+String(p).replace(/"/g,'&quot;')+'">'; }).join('');
-  }catch(e){ console.warn('loadPresuList', e); }
+  }catch(e){ console.warn('cbLoadList', e); }
+}
+
+async function setPresupuesto(pp, silent){
+  pp = (pp||'').trim();
+  wizard.form.presupuesto = pp;
+  const e = _cbEls();
+  if(e.cno){ e.csi.checked=!!pp; e.cno.checked=!pp; e.csel.style.display=pp?'':'none'; if(e.csel.value!==pp) e.csel.value=pp; }
+  if(e.dno){ e.dsi.checked=!!pp; e.dno.checked=!pp; e.dfld.style.display=pp?'':'none'; if(e.dfld.value!==pp) e.dfld.value=pp; }
+  if(!silent && typeof saveDraft === 'function') saveDraft();
+  if(pp){ await cartBudgetLoad(pp); } else { cartBudget.pp=''; cartBudget.mats=null; cartBudgetRender(); }
+}
+
+/* Compat con el populate de Detalles */
+function presuInit(){ cartBudgetInit(); }
+function presuApplyMode(){ setPresupuesto(wizard.form.presupuesto||'', true); }
+function loadPresuList(){ cbLoadList('presuList'); }
+
+async function loadProductoMap(force){
+  if(cartBudget.mapLoaded && !force) return;
+  try{
+    const { data } = await sb.from('producto_presupuesto_map').select('producto_id,material');
+    const m = {}; (data||[]).forEach(function(r){ m[String(r.producto_id)] = r.material || ''; });
+    cartBudget.map = m; cartBudget.mapLoaded = true;
+    if(cartBudget.pp && typeof renderCart === 'function') renderCart();
+  }catch(e){ console.warn('loadProductoMap', e); cartBudget.mapLoaded = true; }
+}
+
+async function setProductoItem(productoId, material){
+  cartBudget.map[String(productoId)] = material || '';
+  cartBudgetRender();
+  if(typeof renderCart === 'function') renderCart();
+  try{
+    const { error } = await sb.from('producto_presupuesto_map').upsert({ producto_id: Number(productoId), material: material||'', updated_at: new Date().toISOString() }, { onConflict:'producto_id' });
+    if(error) throw error;
+  }catch(e){ console.warn('setProductoItem', e); if(typeof showToast==='function') showToast('No se pudo recordar la asignación (¿falta crear la tabla producto_presupuesto_map?)', 'error'); }
+}
+
+function _cbItemMaterial(it){ return (cartBudget.map && cartBudget.map[String(it.producto_id)]) || ''; }
+
+function cbItemOptions(it){
+  const cur = _presuNorm(_cbItemMaterial(it));
+  let o = '<option value="">(sin asignar)</option>';
+  (cartBudget.mats||[]).forEach(function(m){ o += '<option value="'+escapeHtml(m.material)+'"'+(_presuNorm(m.material)===cur?' selected':'')+'>'+escapeHtml(m.material)+'</option>'; });
+  return o;
+}
+
+async function cartBudgetLoad(pp){
+  if(cartBudget.pp===pp && cartBudget.mats){ cartBudgetRender(); return; }
+  cartBudget.pp = pp; cartBudget.mats = null; cartBudget.ocItems = []; cartBudgetRender();
+  await loadProductoMap();
+  try{
+    const bm = await sb.from('presupuesto_materiales').select('material,unidad,limite').eq('presupuesto', pp).order('material');
+    const mats = (bm.data||[]).map(function(m){ return { material:m.material, unidad:m.unidad, limite:Number(m.limite)||0 }; });
+    const ocs = await sb.from('ordenes_compra').select('id,estado').eq('presupuesto', pp);
+    const estadoById = {}; const ids = [];
+    (ocs.data||[]).forEach(function(o){ estadoById[o.id] = _presuNorm(o.estado); ids.push(o.id); });
+    let ocItems = [];
+    if(ids.length){
+      const it = await sb.from('ordenes_compra_items').select('producto_id,cantidad,oc_id').in('oc_id', ids);
+      ocItems = (it.data||[]).map(function(x){ return { producto_id:x.producto_id, cantidad:Number(x.cantidad)||0, estado: estadoById[x.oc_id]||'' }; });
+    }
+    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.ocItems = ocItems; }
+  }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.ocItems = []; } }
+  cartBudgetRender();
+}
+
+const _CB_RESERVA = ['solicitado','observado'];
+const _CB_EJEC = ['aprobado','archivado'];
+function _cbAgg(materialNorm){
+  let ejec=0, reserv=0, carr=0;
+  (cartBudget.ocItems||[]).forEach(function(x){
+    if(_presuNorm(cartBudget.map[String(x.producto_id)]||'') !== materialNorm) return;
+    if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
+    else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
+  });
+  (wizard.cart||[]).forEach(function(it){ if(_presuNorm(_cbItemMaterial(it)) === materialNorm) carr += Number(it.cantidad)||0; });
+  return { ejec:ejec, reserv:reserv, carr:carr };
+}
+
+function _cbRenderInto(panel, includeCart){
+  if(!panel) return;
+  cbInjectStyles();
+  if(!cartBudget.pp){ panel.style.display='none'; panel.innerHTML=''; return; }
+  panel.style.display='';
+  const mats = cartBudget.mats;
+  if(mats===null){ panel.innerHTML='<div class="cb-empty">Cargando disponibilidad…</div>'; return; }
+  if(!mats.length){ panel.innerHTML='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span></span></div><div class="cb-empty">Este presupuesto no tiene materiales cargados (se definen en la app de Presupuestos).</div>'; return; }
+  let exceeded=0, rows='';
+  mats.forEach(function(m){
+    const mn=_presuNorm(m.material);
+    const a=_cbAgg(mn);
+    const enc = includeCart ? a.carr : 0;
+    const disp = m.limite - a.ejec - a.reserv - enc;
+    if(disp<0) exceeded++;
+    const color = m.limite<=0 ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < m.limite*0.15 ? '#C8A028' : '#1B5524'));
+    const sub = 'aprob '+a.ejec.toLocaleString('es-PY')+' · reserv '+a.reserv.toLocaleString('es-PY')+(includeCart?(' · carr '+enc.toLocaleString('es-PY')):'');
+    rows += '<tr><td><div>'+escapeHtml(m.material)+'</div><div class="cb-sub">'+sub+'</div></td>' +
+      '<td>'+m.limite.toLocaleString('es-PY')+'</td>' +
+      '<td style="color:'+color+';font-weight:700">'+disp.toLocaleString('es-PY')+'</td></tr>';
+  });
+  let html='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span>cantidades</span></div>';
+  if(exceeded) html+='<div class="cb-warn">⚠ '+exceeded+' material(es) superan lo presupuestado</div>';
+  html+='<table class="cb-tbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  panel.innerHTML=html;
+}
+function cartBudgetRender(){
+  _cbRenderInto(document.getElementById('cbPanel'), true);
+  _cbRenderInto(document.getElementById('presuSeguimiento'), false);
 }
 
 // ─── Validación del Step 2 ──────────────────────────────
