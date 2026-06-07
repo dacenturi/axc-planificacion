@@ -514,6 +514,7 @@ body{
         <input id="pmInsUni" class="pm-input" placeholder="Unidad" style="max-width:100px">
         <input id="pmInsCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:110px">
         <button id="pmInsAdd" class="pm-btn" type="button">Agregar insumo</button>
+        <button id="pmInsCalc" class="pm-btn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864">🧮 Calcular desde recetas</button>
       </div>
       <div class="pm-hint">Los insumos son los materiales presupuestados (cemento, cal, arena…) en su unidad de compra. Alimentan el control por cantidad en la orden de compra.</div>
     </div>
@@ -829,6 +830,50 @@ async function saveBudget(){
   finally{ btn.disabled = false; btn.textContent = old; }
 }
 
+// ── Calcular insumos desde las recetas del árbol ────────
+function _recipeQtyRaw(it, cant){
+  const c1 = Number(it.coef1)||0, c2 = Number(it.coef2)||0, merma = Number(it.merma_pct)||0;
+  const bruta = c1 * (Number(cant)||0) * (1 + merma);
+  return c2 > 0 ? (bruta / c2) : 0;
+}
+async function calcInsumosFromRecetas(){
+  const conCodigo = ed.rubros.filter(function(r){ return r.rubro_codigo && (Number(r.cantidad)||0) > 0; });
+  if(!conCodigo.length){ showToast('Cargá rubros con código y cantidad primero', 'error'); return; }
+  if(ed.insumos.length && !confirm('Esto reemplaza los insumos actuales por los calculados desde las recetas. ¿Continuar?')) return;
+  const btn = document.getElementById('pmInsCalc'); const old = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Calculando…';
+  try{
+    const codes = Array.from(new Set(conCodigo.map(function(r){ return r.rubro_codigo; })));
+    const { data:recs } = await sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes);
+    const recByRubro = {}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo] = r.id; });
+    const recetaIds = Array.from(new Set(Object.values(recByRubro)));
+    if(!recetaIds.length){ showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    const { data:items } = await sb.from('receta_items').select('receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo').eq('activo', true).in('receta_id', recetaIds);
+    const itemsByRec = {}; (items||[]).forEach(function(it){ (itemsByRec[it.receta_id] = itemsByRec[it.receta_id] || []).push(it); });
+    const agg = {}; let sinReceta = 0, sinCodigo = 0;
+    conCodigo.forEach(function(r){
+      const rid = recByRubro[r.rubro_codigo];
+      if(!rid){ sinReceta++; return; }
+      (itemsByRec[rid]||[]).forEach(function(it){
+        const tipo = it.tipo_componente || 'insumo';
+        if(tipo !== 'insumo') return;            // mano de obra no descuenta cantidad
+        const ins = it.codigo_catalogo;
+        if(!ins){ sinCodigo++; return; }
+        const q = _recipeQtyRaw(it, r.cantidad);
+        if(!agg[ins]) agg[ins] = { codigo_insumo:ins, material:it.material||'', unidad:it.unidad||'', cantidad:0 };
+        agg[ins].cantidad += q;
+      });
+    });
+    const out = Object.keys(agg).map(function(k){ const a = agg[k]; a.cantidad = Math.round(a.cantidad*1000)/1000; return a; });
+    if(!out.length){ showToast('Las recetas no tienen insumos con código', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    ed.insumos = out; renderInsumos();
+    let msg = out.length + ' insumo(s) calculados';
+    if(sinReceta) msg += ' · ' + sinReceta + ' rubro(s) sin receta';
+    showToast(msg + ' — revisá y Guardá', 'success');
+  }catch(e){ console.warn('calcInsumos', e); showToast('Error calculando insumos: ' + (e.message||''), 'error'); }
+  finally{ btn.disabled = false; btn.textContent = old; }
+}
+
 // ── Wiring ──────────────────────────────────────────────
 document.getElementById('btnNuevo').addEventListener('click', openNew);
 document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
@@ -836,6 +881,7 @@ document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
+document.getElementById('pmInsCalc').addEventListener('click', calcInsumosFromRecetas);
 document.getElementById('ppOverlay').addEventListener('click', function(e){ if(e.target === this) closeModal(); });
 document.getElementById('ppSearch').addEventListener('input', function(){
   const q = this.value.trim().toLowerCase();
