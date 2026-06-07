@@ -694,20 +694,42 @@ async function loadInsList(){
   }catch(e){ console.warn('loadInsList', e); }
 }
 function _fillDatalist(id, arr){ const dl=document.getElementById(id); if(dl) dl.innerHTML = arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'; }).join(''); }
+function _normObra(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function _obraMatch(a,b){ a=_normObra(a); b=_normObra(b); if(!a||!b) return false; if(a===b) return true; return (a.length>=4 && b.length>=4 && (a.indexOf(b)===0 || b.indexOf(a)===0)); }
+const _SECT_GENERIC = ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA','PB','SUBSUELO','AZOTEA','PLANTA BAJA'];
+
 async function loadListas(){
-  if(ed.listasLoaded) return;
   try{
-    const obras = {}, sect = {};
+    const obras = {}; ed.sectByObra = {};
     const { data:l } = await sb.from('listas').select('tipo,valor');
-    (l||[]).forEach(function(x){ const t=(x.tipo||'').toLowerCase(); if(!x.valor) return; if(t==='obras') obras[x.valor]=1; else if(t==='sectores') sect[x.valor]=1; });
+    (l||[]).forEach(function(x){ const t=(x.tipo||'').toLowerCase(); if(!x.valor) return; if(t==='obras') obras[x.valor]=1; });
     (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=1; });
-    const { data:rs } = await sb.from('presupuesto_rubros').select('sector');
-    (rs||[]).forEach(function(r){ if(r.sector) sect[r.sector]=1; });
-    ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA','PB','SUBSUELO','AZOTEA'].forEach(function(s){ sect[s]=1; });
+    // sectores reales por obra (de los presupuestos cargados)
+    const { data:cab } = await sb.from('presupuesto_cab').select('codigo,obra');
+    const obraByCod = {}; (cab||[]).forEach(function(c){ obraByCod[c.codigo] = c.obra||''; });
+    const { data:rs } = await sb.from('presupuesto_rubros').select('presupuesto,sector');
+    (rs||[]).forEach(function(r){
+      if(!r.sector) return;
+      const ob = obraByCod[r.presupuesto] || '';
+      const k = _normObra(ob);
+      (ed.sectByObra[k] = ed.sectByObra[k] || {})[r.sector] = 1;
+    });
     _fillDatalist('obrasList', Object.keys(obras).sort());
-    _fillDatalist('sectoresList', Object.keys(sect).sort());
+    refreshSectoresForObra();
     ed.listasLoaded = true;
   }catch(e){ console.warn('loadListas', e); }
+}
+
+// Sugerencias de sector según la obra elegida (A) + genéricos; se enriquece al guardar (C)
+function refreshSectoresForObra(){
+  const obra = (document.getElementById('pmObra').value||'').trim();
+  const set = {};
+  const map = ed.sectByObra || {};
+  Object.keys(map).forEach(function(k){
+    if(!obra || _obraMatch(k, obra)){ Object.keys(map[k]).forEach(function(s){ set[s]=1; }); }
+  });
+  _SECT_GENERIC.forEach(function(s){ set[s]=1; });
+  _fillDatalist('sectoresList', Object.keys(set).sort());
 }
 
 // ── Abrir editor ────────────────────────────────────────
@@ -938,6 +960,8 @@ document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
+document.getElementById('pmObra').addEventListener('input', refreshSectoresForObra);
+document.getElementById('pmObra').addEventListener('change', refreshSectoresForObra);
 document.getElementById('pmRubCod').addEventListener('input', _rubLiveUpdate);
 document.getElementById('pmRubCod').addEventListener('change', _rubLiveUpdate);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
