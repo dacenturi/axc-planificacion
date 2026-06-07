@@ -467,7 +467,8 @@ body{
         </div>
         <div class="pm-field">
           <label class="pm-label">Obra</label>
-          <input id="pmObra" class="pm-input" placeholder="Ej. Edificio Orquídeas" maxlength="120">
+          <input id="pmObra" class="pm-input" list="obrasList" placeholder="Ej. Edificio Orquídeas" maxlength="120">
+          <datalist id="obrasList"></datalist>
         </div>
         <div class="pm-field" style="grid-column:1/-1">
           <label class="pm-label">Descripción</label>
@@ -490,7 +491,8 @@ body{
         </table>
       </div>
       <div class="pm-addbar">
-        <input id="pmRubSector" class="pm-input" placeholder="Sector (ej. NP5)" style="max-width:140px">
+        <input id="pmRubSector" class="pm-input" list="sectoresList" placeholder="Sector (ej. NP5)" style="max-width:140px">
+        <datalist id="sectoresList"></datalist>
         <input id="pmRubCod" class="pm-input" list="arbolList" placeholder="Rubro (código o nombre)" style="max-width:230px">
         <datalist id="arbolList"></datalist>
         <input id="pmRubCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:110px">
@@ -603,7 +605,7 @@ async function loadProfileAndApp(){
 // ════════════════════════════════════════════════════════
 // Estado del editor (en memoria; commit al Guardar)
 // ════════════════════════════════════════════════════════
-const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null };
+const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, listasLoaded:false };
 
 // ── Lista ───────────────────────────────────────────────
 async function loadList(){
@@ -682,6 +684,22 @@ async function loadInsList(){
     if(dl) dl.innerHTML = ed.insList.map(function(i){ return '<option value="'+escapeHtml(i.codigo)+'">'+escapeHtml(i.codigo+(i.nombre?' · '+i.nombre:'')+(i.unidad?' ('+i.unidad+')':''))+'</option>'; }).join('');
   }catch(e){ console.warn('loadInsList', e); }
 }
+function _fillDatalist(id, arr){ const dl=document.getElementById(id); if(dl) dl.innerHTML = arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'; }).join(''); }
+async function loadListas(){
+  if(ed.listasLoaded) return;
+  try{
+    const obras = {}, sect = {};
+    const { data:l } = await sb.from('listas').select('tipo,valor');
+    (l||[]).forEach(function(x){ const t=(x.tipo||'').toLowerCase(); if(!x.valor) return; if(t==='obras') obras[x.valor]=1; else if(t==='sectores') sect[x.valor]=1; });
+    (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=1; });
+    const { data:rs } = await sb.from('presupuesto_rubros').select('sector');
+    (rs||[]).forEach(function(r){ if(r.sector) sect[r.sector]=1; });
+    ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA','PB','SUBSUELO','AZOTEA'].forEach(function(s){ sect[s]=1; });
+    _fillDatalist('obrasList', Object.keys(obras).sort());
+    _fillDatalist('sectoresList', Object.keys(sect).sort());
+    ed.listasLoaded = true;
+  }catch(e){ console.warn('loadListas', e); }
+}
 
 // ── Abrir editor ────────────────────────────────────────
 function openNew(){
@@ -693,7 +711,7 @@ function openNew(){
   document.getElementById('pmObra').value = '';
   document.getElementById('pmDescripcion').value = '';
   document.getElementById('pmActivo').checked = true;
-  renderRubros(); renderInsumos(); loadArbol(); loadInsList();
+  renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
   document.getElementById('ppOverlay').style.display = 'flex';
 }
 
@@ -709,7 +727,7 @@ async function openEdit(codigo){
   document.getElementById('pmDescripcion').value = h.descripcion || '';
   document.getElementById('pmActivo').checked = h.activo !== false;
   document.getElementById('ppOverlay').style.display = 'flex';
-  renderRubros(); renderInsumos(); loadArbol(); loadInsList();
+  renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
   try{
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
     ed.rubros = (rub||[]).map(function(r){ return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
