@@ -499,6 +499,7 @@ body{
         <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Precio total Gs" style="max-width:140px">
         <button id="pmRubAdd" class="pm-btn" type="button">Agregar rubro</button>
       </div>
+      <div id="pmRubHintLive" class="pm-hint"></div>
       <div class="pm-hint">Si el rubro tiene receta (composición) controlará por cantidad de insumos; si es un servicio, controlá por dinero cargando su precio total.</div>
 
       <!-- INSUMOS -->
@@ -669,7 +670,7 @@ async function loadArbol(){
     ed.arbol = data || [];
     ed.arbolByCod = {}; ed.arbol.forEach(function(r){ ed.arbolByCod[String(r.codigo)] = r; });
     const dl = document.getElementById('arbolList');
-    if(dl) dl.innerHTML = ed.arbol.map(function(r){ return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml(r.codigo+' · '+r.nombre)+'</option>'; }).join('');
+    if(dl) dl.innerHTML = ed.arbol.map(function(r){ return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml(r.codigo+' · '+r.nombre+(r.tiene_receta?'  🧱 receta':''))+'</option>'; }).join('');
   }catch(e){ console.warn('loadArbol', e); }
 }
 async function loadInsList(){
@@ -759,7 +760,9 @@ function renderRubros(){
       '<td>'+escapeHtml(r.descripcion)+'</td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
       '<td class="pm-num"><input type="number" step="0.01" data-i="'+i+'" data-f="cantidad" value="'+r.cantidad+'"></td>' +
-      '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>' +
+      (r.tiene_receta
+        ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>'
+        : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
       '<td><button class="pm-delx" data-del="'+i+'" type="button">×</button></td></tr>';
   }).join('');
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
@@ -781,8 +784,9 @@ function addRubro(){
   if(!code){ showToast('Elegí o escribí el rubro', 'error'); return; }
   const a = ed.arbolByCod[code];
   if(!a){ showToast('Ese código no está en el árbol de rubros', 'error'); return; }
-  ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total:pt, tiene_receta:!!a.tiene_receta });
+  ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta });
   document.getElementById('pmRubCod').value=''; document.getElementById('pmRubCant').value=''; document.getElementById('pmRubPT').value='';
+  _rubLiveUpdate();
   renderRubros();
 }
 
@@ -902,12 +906,31 @@ async function calcInsumosFromRecetas(){
   finally{ btn.disabled = false; btn.textContent = old; }
 }
 
+function _rubLiveUpdate(){
+  const code = (document.getElementById('pmRubCod').value||'').trim();
+  const pt = document.getElementById('pmRubPT');
+  const hint = document.getElementById('pmRubHintLive');
+  const a = ed.arbolByCod[code];
+  if(!a){ hint.textContent=''; pt.disabled=false; pt.placeholder='Precio total Gs'; pt.style.opacity='1'; return; }
+  if(a.tiene_receta){
+    pt.disabled=true; pt.value=''; pt.placeholder='— por cantidad'; pt.style.opacity='.5';
+    hint.innerHTML = '🧱 <b>'+escapeHtml(a.codigo)+'</b> tiene receta → se controla por <b>cantidad</b>. Cargá la cantidad y usá "Calcular desde recetas".';
+    hint.style.color = '#1F3864';
+  } else {
+    pt.disabled=false; pt.placeholder='Precio total Gs'; pt.style.opacity='1';
+    hint.innerHTML = '💰 <b>'+escapeHtml(a.codigo)+'</b> es un servicio → se controla por <b>dinero</b>. Cargá su precio total.';
+    hint.style.color = '#8a6d10';
+  }
+}
+
 // ── Wiring ──────────────────────────────────────────────
 document.getElementById('btnNuevo').addEventListener('click', openNew);
 document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
+document.getElementById('pmRubCod').addEventListener('input', _rubLiveUpdate);
+document.getElementById('pmRubCod').addEventListener('change', _rubLiveUpdate);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
 document.getElementById('pmInsCalc').addEventListener('click', calcInsumosFromRecetas);
 document.getElementById('ppOverlay').addEventListener('click', function(e){ if(e.target === this) closeModal(); });
