@@ -6226,7 +6226,7 @@ async function enterStep2(){
 
 /* ── Presupuesto: control en carrito + detalles (sincronizados) ── */
 function _presuNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
-const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false };
+const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false, insMap:{}, insLoaded:false };
 
 function _cbEls(){ return {
   cno:document.getElementById('cbNo'), csi:document.getElementById('cbSi'),
@@ -6289,10 +6289,22 @@ function cartBudgetInit(){
 async function cbLoadList(id){
   const dl = document.getElementById(id); if(!dl) return;
   try{
-    const { data } = await sb.from('presupuesto_materiales').select('presupuesto');
-    const set = []; (data || []).forEach(function(r){ if(r.presupuesto && set.indexOf(r.presupuesto) < 0) set.push(r.presupuesto); });
-    dl.innerHTML = set.sort().map(function(p){ return '<option value="'+String(p).replace(/"/g,'&quot;')+'">'; }).join('');
+    const { data } = await sb.from('presupuesto_cab').select('codigo,obra').eq('activo', true).order('codigo');
+    dl.innerHTML = (data||[]).map(function(r){
+      const lbl = r.obra ? (r.codigo+' — '+r.obra) : r.codigo;
+      return '<option value="'+String(r.codigo).replace(/"/g,'&quot;')+'">'+String(lbl).replace(/"/g,'&quot;')+'</option>';
+    }).join('');
   }catch(e){ console.warn('cbLoadList', e); }
+}
+
+async function loadInsumoMap(){
+  if(cartBudget.insLoaded) return;
+  try{
+    const { data } = await sb.from('insumos').select('codigo,producto_id');
+    const m = {};
+    (data||[]).forEach(function(r){ if(r.producto_id!=null && r.producto_id!=='') m[String(r.producto_id)] = r.codigo; });
+    cartBudget.insMap = m; cartBudget.insLoaded = true;
+  }catch(e){ console.warn('loadInsumoMap', e); cartBudget.insLoaded = true; }
 }
 
 async function setPresupuesto(pp, silent){
@@ -6311,7 +6323,8 @@ function presuApplyMode(){ setPresupuesto(wizard.form.presupuesto||'', true); }
 function loadPresuList(){ cbLoadList('presuList'); }
 
 async function loadProductoMap(force){
-  if(cartBudget.mapLoaded && !force) return;
+  if(cartBudget.mapLoaded && !force){ await loadInsumoMap(); return; }
+  await loadInsumoMap();
   try{
     const { data } = await sb.from('producto_presupuesto_map').select('producto_id,material');
     const m = {}; (data||[]).forEach(function(r){ m[String(r.producto_id)] = r.material || ''; });
@@ -6320,22 +6333,34 @@ async function loadProductoMap(force){
   }catch(e){ console.warn('loadProductoMap', e); cartBudget.mapLoaded = true; }
 }
 
-async function setProductoItem(productoId, material){
-  cartBudget.map[String(productoId)] = material || '';
+/* Resuelve el código de insumo (INS-xxx) de un producto:
+   1) override manual guardado (si es un INS-xxx), 2) insumo canónico por producto_id */
+function _cbResolveIns(productoId){
+  const k = String(productoId);
+  const ov = cartBudget.map ? cartBudget.map[k] : '';
+  if(ov && /^INS-/i.test(ov)) return ov;
+  return (cartBudget.insMap && cartBudget.insMap[k]) || '';
+}
+
+async function setProductoItem(productoId, codigoInsumo){
+  cartBudget.map[String(productoId)] = codigoInsumo || '';
   cartBudgetRender();
   if(typeof renderCart === 'function') renderCart();
   try{
-    const { error } = await sb.from('producto_presupuesto_map').upsert({ producto_id: Number(productoId), material: material||'', updated_at: new Date().toISOString() }, { onConflict:'producto_id' });
+    const { error } = await sb.from('producto_presupuesto_map').upsert({ producto_id: Number(productoId), material: codigoInsumo||'', updated_at: new Date().toISOString() }, { onConflict:'producto_id' });
     if(error) throw error;
   }catch(e){ console.warn('setProductoItem', e); if(typeof showToast==='function') showToast('No se pudo recordar la asignación (¿falta crear la tabla producto_presupuesto_map?)', 'error'); }
 }
 
-function _cbItemMaterial(it){ return (cartBudget.map && cartBudget.map[String(it.producto_id)]) || ''; }
+function _cbItemMaterial(it){ return _cbResolveIns(it.producto_id); }
 
 function cbItemOptions(it){
-  const cur = _presuNorm(_cbItemMaterial(it));
+  const cur = _cbResolveIns(it.producto_id);
   let o = '<option value="">(sin asignar)</option>';
-  (cartBudget.mats||[]).forEach(function(m){ o += '<option value="'+escapeHtml(m.material)+'"'+(_presuNorm(m.material)===cur?' selected':'')+'>'+escapeHtml(m.material)+'</option>'; });
+  (cartBudget.mats||[]).forEach(function(m){
+    const lbl = m.material + (m.unidad ? ' ('+m.unidad+')' : '');
+    o += '<option value="'+escapeHtml(m.codigo_insumo)+'"'+(m.codigo_insumo===cur?' selected':'')+'>'+escapeHtml(lbl)+'</option>';
+  });
   return o;
 }
 
@@ -6344,8 +6369,8 @@ async function cartBudgetLoad(pp){
   cartBudget.pp = pp; cartBudget.mats = null; cartBudget.ocItems = []; cartBudgetRender();
   await loadProductoMap();
   try{
-    const bm = await sb.from('presupuesto_materiales').select('material,unidad,limite').eq('presupuesto', pp).order('material');
-    const mats = (bm.data||[]).map(function(m){ return { material:m.material, unidad:m.unidad, limite:Number(m.limite)||0 }; });
+    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad').eq('presupuesto', pp).order('material');
+    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Number(m.cantidad)||0 }; });
     const ocs = await sb.from('ordenes_compra').select('id,estado').eq('presupuesto', pp);
     const estadoById = {}; const ids = [];
     (ocs.data||[]).forEach(function(o){ estadoById[o.id] = _presuNorm(o.estado); ids.push(o.id); });
@@ -6361,14 +6386,14 @@ async function cartBudgetLoad(pp){
 
 const _CB_RESERVA = ['solicitado','observado'];
 const _CB_EJEC = ['aprobado','archivado'];
-function _cbAgg(materialNorm){
+function _cbAgg(codigoInsumo){
   let ejec=0, reserv=0, carr=0;
   (cartBudget.ocItems||[]).forEach(function(x){
-    if(_presuNorm(cartBudget.map[String(x.producto_id)]||'') !== materialNorm) return;
+    if(_cbResolveIns(x.producto_id) !== codigoInsumo) return;
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
   });
-  (wizard.cart||[]).forEach(function(it){ if(_presuNorm(_cbItemMaterial(it)) === materialNorm) carr += Number(it.cantidad)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(_cbResolveIns(it.producto_id) === codigoInsumo) carr += Number(it.cantidad)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -6379,17 +6404,17 @@ function _cbRenderInto(panel, includeCart){
   panel.style.display='';
   const mats = cartBudget.mats;
   if(mats===null){ panel.innerHTML='<div class="cb-empty">Cargando disponibilidad…</div>'; return; }
-  if(!mats.length){ panel.innerHTML='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span></span></div><div class="cb-empty">Este presupuesto no tiene materiales cargados (se definen en la app de Presupuestos).</div>'; return; }
+  if(!mats.length){ panel.innerHTML='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span></span></div><div class="cb-empty">Este presupuesto no tiene insumos cargados.</div>'; return; }
   let exceeded=0, rows='';
   mats.forEach(function(m){
-    const mn=_presuNorm(m.material);
-    const a=_cbAgg(mn);
+    const a=_cbAgg(m.codigo_insumo);
     const enc = includeCart ? a.carr : 0;
     const disp = m.limite - a.ejec - a.reserv - enc;
     if(disp<0) exceeded++;
     const color = m.limite<=0 ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < m.limite*0.15 ? '#C8A028' : '#1B5524'));
     const sub = 'aprob '+a.ejec.toLocaleString('es-PY')+' · reserv '+a.reserv.toLocaleString('es-PY')+(includeCart?(' · carr '+enc.toLocaleString('es-PY')):'');
-    rows += '<tr><td><div>'+escapeHtml(m.material)+'</div><div class="cb-sub">'+sub+'</div></td>' +
+    const nm = escapeHtml(m.material)+(m.unidad?' <span class="cb-sub" style="display:inline">('+escapeHtml(m.unidad)+')</span>':'');
+    rows += '<tr><td><div>'+nm+'</div><div class="cb-sub">'+sub+'</div></td>' +
       '<td>'+m.limite.toLocaleString('es-PY')+'</td>' +
       '<td style="color:'+color+';font-weight:700">'+disp.toLocaleString('es-PY')+'</td></tr>';
   });
