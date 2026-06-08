@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
   --navy:#1F3864;
@@ -439,6 +440,7 @@ body{
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="btn-new" id="btnNuevo"><span style="font-size:16px">＋</span> Generar nuevo presupuesto</button>
+      <button class="btn-new" id="btnImport" style="background:#1B5524"><span style="font-size:16px">📥</span> Importar desde Excel</button>
       <button class="btn-new" id="btnExport" style="display:none;background:#1F3864"><span style="font-size:16px">⬇</span> Exportar a Excel</button>
     </div>
   </div>
@@ -580,7 +582,51 @@ body{
   </div>
 </div>
 
+<!-- MODAL IMPORTAR DESDE EXCEL -->
+<div class="pm-overlay" id="impOverlay">
+  <div class="pm-modal" style="max-width:980px">
+    <div class="pm-head">
+      <div>
+        <div class="pm-title">Importar presupuestos desde Excel</div>
+        <div class="pm-sub">Formato Cómputo · subí el archivo y revisá la vista previa antes de confirmar</div>
+      </div>
+      <button class="pm-close" id="impCloseBtn" type="button" title="Cancelar">×</button>
+    </div>
+    <div class="pm-body">
+      <div class="imp-drop" id="impDrop">
+        <input type="file" id="impFile" accept=".xlsx,.xls" style="display:none">
+        <div style="font-size:34px">📄</div>
+        <div style="font-weight:700;color:#1F3864;margin-top:6px">Elegí o arrastrá tu archivo Excel</div>
+        <div class="pm-hint" style="margin-top:4px">Hojas leídas: «Cómputo» (rubros) e «Insumos (opcional)». <a href="#" id="impTplLink">Descargar plantilla</a></div>
+      </div>
+      <div id="impStatus" class="pm-hint" style="margin-top:10px"></div>
+      <div id="impPreview" style="margin-top:14px"></div>
+    </div>
+    <div class="pm-foot">
+      <button class="pm-cancel" id="impCancelBtn" type="button">Cancelar</button>
+      <button class="pm-save" id="impConfirmBtn" type="button" disabled style="opacity:.5">Confirmar importación</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
+<style>
+  .imp-drop{border:2px dashed #c2cbd9;border-radius:14px;padding:26px;text-align:center;cursor:pointer;background:#fafbfd}
+  .imp-drop:hover{border-color:#1B5524;background:#f3f8f4}
+  .imp-pp{border:1px solid #e6eaf1;border-radius:12px;margin-bottom:14px;overflow:hidden}
+  .imp-pp-head{background:#1F3864;color:#fff;padding:9px 14px;font-weight:700;font-size:13px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .imp-pp-head.bad{background:#7a2520}
+  .imp-tbl{width:100%;border-collapse:collapse;font-size:12px}
+  .imp-tbl th{background:#eef3fb;color:#42506a;text-align:left;padding:5px 9px;font-weight:700}
+  .imp-tbl td{padding:4px 9px;border-top:1px solid #eef1f5}
+  .imp-tbl tr.bad td{background:#fdecea}
+  .imp-err{color:#c0392b;font-size:11px}
+  .imp-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px}
+  .imp-badge.rec{background:#e7f6ea;color:#1B5524}
+  .imp-badge.serv{background:#eef0f4;color:#5a6677}
+  .imp-summary{padding:10px 14px;background:#f7f9fc;border-radius:10px;margin-bottom:12px;font-size:13px}
+</style>
 
 <style>
   .pm-sectitle{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#1F3864;margin:18px 0 8px;border-bottom:2px solid #C8A028;padding-bottom:5px}
@@ -594,7 +640,9 @@ body{
   .pm-hint{font-size:11.5px;color:#8893a5;margin-top:6px;line-height:1.4}
   .pm-delx{background:#fde9e9;color:#c0392b;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;font-weight:700}
   .pm-emptyr{color:#8893a5;text-align:center;padding:14px}
-  .pm-tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;background:#fbf3da;color:#8a6d10;margin-left:6px}
+  .pm-tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;background:#fbf3da;color:#8a6d10;margin-left:0;margin-top:3px}
+  .pm-tag-rec{background:#e7f6ea;color:#1B5524}
+  .pm-tag-serv{background:#eef0f4;color:#5a6677}
   .pm-estbadge{display:inline-block;font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;padding:5px 14px;border-radius:999px}
   .pm-estbadge.borrador{background:#eceff4;color:#5a6677}
   .pm-estbadge.publicado{background:#e7f6ea;color:#1B5524}
@@ -729,7 +777,7 @@ async function loadArbol(){
     ed.arbol = data || [];
     ed.arbolByCod = {}; ed.arbol.forEach(function(r){ ed.arbolByCod[String(r.codigo)] = r; });
     const dl = document.getElementById('arbolList');
-    if(dl) dl.innerHTML = ed.arbol.map(function(r){ return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml(r.codigo+' · '+r.nombre+(r.tiene_receta?'  🧱 receta':''))+'</option>'; }).join('');
+    if(dl) dl.innerHTML = ed.arbol.map(function(r){ return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml((r.tiene_receta?'🧱 [receta] ':'💰 [servicio] ')+r.codigo+' · '+r.nombre)+'</option>'; }).join('');
   }catch(e){ console.warn('loadArbol', e); }
 }
 async function loadInsList(){
@@ -854,10 +902,12 @@ function renderRubros(){
   const tb = document.getElementById('pmRubTbody');
   if(!ed.rubros.length){ tb.innerHTML = '<tr><td colspan="7" class="pm-emptyr">Sin rubros todavía. Agregá abajo.</td></tr>'; return; }
   tb.innerHTML = ed.rubros.map(function(r,i){
-    const tag = r.tiene_receta ? '<span class="pm-tag">receta</span>' : '';
+    const tag = r.tiene_receta
+      ? '<span class="pm-tag pm-tag-rec">🧱 RECETA</span>'
+      : '<span class="pm-tag pm-tag-serv">💰 SERVICIO</span>';
     return '<tr>' +
       '<td><input data-i="'+i+'" data-f="sector" value="'+escapeHtml(r.sector)+'"></td>' +
-      '<td>'+escapeHtml(r.rubro_codigo||'—')+tag+'</td>' +
+      '<td>'+escapeHtml(r.rubro_codigo||'—')+'<br>'+tag+'</td>' +
       '<td>'+escapeHtml(r.descripcion)+'</td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
       '<td class="pm-num"><input type="number" step="0.01" data-i="'+i+'" data-f="cantidad" value="'+r.cantidad+'"></td>' +
@@ -1249,6 +1299,251 @@ document.getElementById('btnExport').addEventListener('click', exportExcel);
 
 
 // ── Pestañas Presupuestos / Reporte ──
+
+// ════════════════════════════════════════════════════════
+// MÓDULO IMPORTAR DESDE EXCEL (formato Cómputo)
+// ════════════════════════════════════════════════════════
+const IMP = { computo:[], insumos:[], byPP:{}, errCount:0, arbol:{}, recItems:{}, insSet:{} };
+function _impNorm(s){ return (s==null?'':String(s)).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function _impNum(v){ if(v==null||v==='') return null; const n=Number(String(v).replace(/\./g,'').replace(',','.')); return isNaN(n)?Number(v):n; }
+
+function openImport(){
+  document.getElementById('impStatus').textContent='';
+  document.getElementById('impPreview').innerHTML='';
+  document.getElementById('impFile').value='';
+  const b=document.getElementById('impConfirmBtn'); b.disabled=true; b.style.opacity=.5;
+  IMP.computo=[]; IMP.insumos=[]; IMP.byPP={}; IMP.errCount=0;
+  document.getElementById('impOverlay').style.display='flex';
+}
+function closeImport(){ document.getElementById('impOverlay').style.display='none'; }
+
+// Encuentra índice de columna por palabras clave
+function _impCol(headers, keys){
+  for(let i=0;i<headers.length;i++){ const h=_impNorm(headers[i]); for(const k of keys){ if(h.indexOf(k)>=0) return i; } }
+  return -1;
+}
+function _impSheetRows(wb, nameKeys){
+  const name = wb.SheetNames.find(function(n){ const nn=_impNorm(n); return nameKeys.some(function(k){ return nn.indexOf(k)>=0; }); });
+  if(!name) return null;
+  return XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:'' });
+}
+
+async function impHandleFile(file){
+  const st=document.getElementById('impStatus'); st.textContent='Leyendo archivo…';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array' });
+    // Hoja Cómputo
+    const cRows = _impSheetRows(wb, ['computo']);
+    if(!cRows){ st.innerHTML='<span class="imp-err">No se encontró la hoja «Cómputo» en el archivo.</span>'; return; }
+    // header row = primera fila con 'obra' y 'presup'
+    let hi=-1; for(let i=0;i<cRows.length;i++){ const r=cRows[i].map(_impNorm); if(r.some(function(x){return x.indexOf('obra')>=0;}) && r.some(function(x){return x.indexOf('presup')>=0;})){ hi=i; break; } }
+    if(hi<0){ st.innerHTML='<span class="imp-err">No se encontraron los encabezados (Obra, Presupuesto, Código…) en la hoja Cómputo.</span>'; return; }
+    const H=cRows[hi];
+    const ci={ obra:_impCol(H,['obra']), pp:_impCol(H,['presup']), cod:_impCol(H,['codig']), nom:_impCol(H,['rubro','descrip']), uni:_impCol(H,['unid']), cant:_impCol(H,['cantidad']), pre:_impCol(H,['precio']) };
+    IMP.computo=[];
+    for(let i=hi+1;i<cRows.length;i++){
+      const row=cRows[i]; if(!row || row.every(function(c){return c===''||c==null;})) continue;
+      const legend=_impNorm(row[ci.obra]); if(legend==='obligatorio'||legend==='opcional') continue;
+      const obra=String(row[ci.obra]||'').trim(), pp=String(row[ci.pp]||'').trim();
+      if(!obra && !pp && !String(row[ci.cod]||'').trim()) continue;
+      IMP.computo.push({ _row:i+1, obra:obra, pp:pp, codigo:String(row[ci.cod]||'').trim(), nombre:String(ci.nom>=0?row[ci.nom]:'').trim(), unidad:String(ci.uni>=0?row[ci.uni]:'').trim(), cantidad:_impNum(row[ci.cant]), precio:_impNum(ci.pre>=0?row[ci.pre]:null) });
+    }
+    // Hoja Insumos (opcional)
+    IMP.insumos=[];
+    const iRows=_impSheetRows(wb, ['insumo']);
+    if(iRows){
+      let ih=-1; for(let i=0;i<iRows.length;i++){ const r=iRows[i].map(_impNorm); if(r.some(function(x){return x.indexOf('presup')>=0;}) && r.some(function(x){return x.indexOf('codig')>=0||x.indexOf('ins')>=0;})){ ih=i; break; } }
+      if(ih>=0){
+        const IH=iRows[ih];
+        const ii={ pp:_impCol(IH,['presup']), cod:_impCol(IH,['codig','ins']), mat:_impCol(IH,['material']), uni:_impCol(IH,['unid']), cant:_impCol(IH,['cantidad']) };
+        for(let i=ih+1;i<iRows.length;i++){
+          const row=iRows[i]; if(!row || row.every(function(c){return c===''||c==null;})) continue;
+          const legend=_impNorm(row[ii.pp]); if(legend==='obligatorio'||legend==='opcional') continue;
+          const pp=String(row[ii.pp]||'').trim(), cod=String(row[ii.cod]||'').trim();
+          if(!pp && !cod) continue;
+          IMP.insumos.push({ _row:i+1, pp:pp, codigo_insumo:cod, material:String(ii.mat>=0?row[ii.mat]:'').trim(), unidad:String(ii.uni>=0?row[ii.uni]:'').trim(), cantidad:_impNum(row[ii.cant]) });
+        }
+      }
+    }
+    st.textContent='Validando contra el árbol de rubros…';
+    await impLoadRefs();
+    await impValidateAndPreview();
+  }catch(e){ console.warn('impHandleFile', e); document.getElementById('impStatus').innerHTML='<span class="imp-err">Error leyendo el archivo: '+(e.message||'')+'</span>'; }
+}
+
+async function impLoadRefs(){
+  const { data:rub } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta').eq('activo', true);
+  IMP.arbol={}; (rub||[]).forEach(function(r){ IMP.arbol[String(r.codigo)]=r; });
+  const { data:ins } = await sb.from('insumos').select('codigo,unidad_compra,producto_id');
+  IMP.insSet={}; (ins||[]).forEach(function(i){ IMP.insSet[i.codigo]={ unidad:i.unidad_compra||'', pid:i.producto_id }; });
+  // recetas + items para los códigos con receta presentes
+  const conReceta = Array.from(new Set(IMP.computo.map(function(r){return r.codigo;}).filter(function(c){ return IMP.arbol[c] && IMP.arbol[c].tiene_receta; })));
+  IMP.recItems={};
+  if(conReceta.length){
+    const { data:recs } = await sb.from('recetas').select('id,rubro_codigo').eq('activo',true).in('rubro_codigo', conReceta);
+    const recByRubro={}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo]=r.id; });
+    const ids=Array.from(new Set(Object.values(recByRubro)));
+    let itemsByRec={};
+    if(ids.length){
+      const { data:items } = await sb.from('receta_items').select('receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo').eq('activo',true).in('receta_id', ids);
+      (items||[]).forEach(function(it){ (itemsByRec[it.receta_id]=itemsByRec[it.receta_id]||[]).push(it); });
+    }
+    Object.keys(recByRubro).forEach(function(rc){ IMP.recItems[rc]=itemsByRec[recByRubro[rc]]||[]; });
+  }
+}
+
+async function impValidateAndPreview(){
+  IMP.byPP={}; IMP.errCount=0;
+  // agrupar cómputo por PP
+  IMP.computo.forEach(function(r){
+    const errs=[];
+    if(!r.obra) errs.push('Falta Obra');
+    if(!r.pp) errs.push('Falta Presupuesto');
+    if(!r.codigo) errs.push('Falta Código');
+    const a = r.codigo ? IMP.arbol[r.codigo] : null;
+    if(r.codigo && !a) errs.push('Código no existe en el árbol');
+    const receta = a ? !!a.tiene_receta : false;
+    if(a){
+      if(receta){ if(!(r.cantidad>0)) errs.push('Rubro con receta sin Cantidad'); }
+      else { if(!(r.precio>0)) errs.push('Servicio sin Precio total'); }
+    }
+    const pp=r.pp||'(sin PP)';
+    const g=IMP.byPP[pp]=IMP.byPP[pp]||{ pp:pp, obra:r.obra, rubros:[], insumos:[], errs:0 };
+    if(!g.obra && r.obra) g.obra=r.obra;
+    g.rubros.push({ codigo:r.codigo, nombre:(a?a.nombre:r.nombre), unidad:(a?(a.unidad||r.unidad):r.unidad), cantidad: receta?(r.cantidad||0):(r.cantidad||0), precio: receta?0:(r.precio||0), receta:receta, errs:errs, _row:r._row });
+    g.errs += errs.length?1:0; IMP.errCount += errs.length?1:0;
+  });
+  // insumos manuales por PP (validar)
+  const manualByPP={};
+  IMP.insumos.forEach(function(r){
+    const errs=[];
+    if(!r.pp) errs.push('Falta Presupuesto');
+    if(!r.codigo_insumo || !IMP.insSet[r.codigo_insumo]) errs.push('INS inválido');
+    if(!(r.cantidad>0)) errs.push('Falta Cantidad');
+    (manualByPP[r.pp]=manualByPP[r.pp]||[]).push({ codigo_insumo:r.codigo_insumo, material:r.material||(IMP.insSet[r.codigo_insumo]?'':''), unidad:r.unidad||(IMP.insSet[r.codigo_insumo]?IMP.insSet[r.codigo_insumo].unidad:''), cantidad:r.cantidad||0, errs:errs, _row:r._row });
+    if(errs.length){ IMP.errCount++; const g=IMP.byPP[r.pp]; if(g) g.errs++; }
+  });
+  // calcular/asignar insumos por PP
+  Object.keys(IMP.byPP).forEach(function(pp){
+    const g=IMP.byPP[pp];
+    if(manualByPP[pp] && manualByPP[pp].length){ g.insumos=manualByPP[pp]; g.insumoMode='manual'; }
+    else {
+      // calcular desde recetas
+      const agg={};
+      g.rubros.forEach(function(rb){
+        if(!rb.receta || !(rb.cantidad>0)) return;
+        (IMP.recItems[rb.codigo]||[]).forEach(function(it){
+          if((it.tipo_componente||'insumo')!=='insumo') return;
+          const ins=it.codigo_catalogo; if(!ins) return;
+          const q=_recipeQtyRaw(it, rb.cantidad);
+          if(!agg[ins]) agg[ins]={ codigo_insumo:ins, material:it.material||'', unidad:it.unidad||'', cantidad:0, errs:[] };
+          agg[ins].cantidad+=q;
+        });
+      });
+      g.insumos=Object.keys(agg).map(function(k){ const x=agg[k]; x.cantidad=Math.round(x.cantidad*1000)/1000; return x; });
+      g.insumoMode='receta';
+    }
+  });
+  impRenderPreview();
+}
+
+function impRenderPreview(){
+  const box=document.getElementById('impPreview');
+  const pps=Object.keys(IMP.byPP);
+  if(!pps.length){ box.innerHTML='<div class="imp-err">No se detectaron filas en la hoja Cómputo.</div>'; return; }
+  const totRub=IMP.computo.length, totIns=pps.reduce(function(s,p){return s+IMP.byPP[p].insumos.length;},0);
+  document.getElementById('impStatus').innerHTML = IMP.errCount
+    ? '<span class="imp-err">⚠ '+IMP.errCount+' fila(s) con error. Corregí el Excel y volvé a subirlo.</span>'
+    : '<span style="color:#1B5524;font-weight:700">✓ Listo para importar. Revisá y confirmá.</span>';
+  let html='<div class="imp-summary">Se detectaron <b>'+pps.length+'</b> presupuesto(s), <b>'+totRub+'</b> rubro(s) y <b>'+totIns+'</b> insumo(s) calculados/cargados. Los presupuestos se importan como <b>Borrador</b>.</div>';
+  pps.forEach(function(pp){
+    const g=IMP.byPP[pp];
+    html+='<div class="imp-pp"><div class="imp-pp-head'+(g.errs?' bad':'')+'"><span>'+escapeHtml(pp)+' · '+escapeHtml(g.obra||'(sin obra)')+'</span><span>'+(g.errs?(g.errs+' con error'):(g.rubros.length+' rubros'))+'</span></div>';
+    // rubros
+    html+='<table class="imp-tbl"><thead><tr><th>Código</th><th>Tipo</th><th>Descripción</th><th>Unid.</th><th>Cantidad</th><th>Precio Gs</th><th></th></tr></thead><tbody>';
+    g.rubros.forEach(function(rb){
+      html+='<tr class="'+(rb.errs.length?'bad':'')+'"><td>'+escapeHtml(rb.codigo||'—')+'</td>'+
+        '<td><span class="imp-badge '+(rb.receta?'rec':'serv')+'">'+(rb.receta?'RECETA':'SERVICIO')+'</span></td>'+
+        '<td>'+escapeHtml(rb.nombre||'')+'</td><td>'+escapeHtml(rb.unidad||'')+'</td>'+
+        '<td>'+(rb.receta?_qty(rb.cantidad):'—')+'</td><td>'+(rb.receta?'—':_money(rb.precio))+'</td>'+
+        '<td class="imp-err">'+(rb.errs.join(', '))+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    // insumos
+    if(g.insumos.length){
+      html+='<table class="imp-tbl"><thead><tr><th colspan="4" style="background:#eef3fb;color:#42506a">Insumos ('+(g.insumoMode==='manual'?'cargados a mano':'calculados desde recetas')+')</th></tr><tr><th>Código</th><th>Material</th><th>Unid.</th><th>Cantidad</th></tr></thead><tbody>';
+      g.insumos.forEach(function(it){
+        html+='<tr class="'+((it.errs&&it.errs.length)?'bad':'')+'"><td>'+escapeHtml(it.codigo_insumo)+'</td><td>'+escapeHtml(it.material||'')+'</td><td>'+escapeHtml(it.unidad||'')+'</td><td>'+_qty(it.cantidad)+(it.errs&&it.errs.length?' <span class="imp-err">('+it.errs.join(', ')+')</span>':'')+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    html+='</div>';
+  });
+  box.innerHTML=html;
+  const b=document.getElementById('impConfirmBtn'); const ok=IMP.errCount===0 && pps.length>0;
+  b.disabled=!ok; b.style.opacity=ok?1:.5;
+}
+
+async function impConfirm(){
+  if(IMP.errCount>0){ showToast('Corregí los errores antes de importar', 'error'); return; }
+  const pps=Object.keys(IMP.byPP); if(!pps.length) return;
+  const b=document.getElementById('impConfirmBtn'); const old=b.textContent; b.disabled=true; b.textContent='Importando…';
+  try{
+    for(const pp of pps){
+      const g=IMP.byPP[pp];
+      const r1=await sb.from('presupuesto_cab').upsert({ codigo:pp, obra:g.obra||'', descripcion:'Importado', activo:false }, { onConflict:'codigo' });
+      if(r1.error) throw r1.error;
+      await sb.from('presupuesto_rubros').delete().eq('presupuesto', pp);
+      if(g.rubros.length){
+        const pr=g.rubros.map(function(rb,idx){ return { presupuesto:pp, sector:'', orden:idx+1, rubro_codigo:rb.codigo||null, descripcion:rb.nombre||'', unidad:rb.unidad||'', cantidad:Number(rb.cantidad)||0, precio_total:Number(rb.precio)||0, tiene_receta:!!rb.receta }; });
+        const ri=await sb.from('presupuesto_rubros').insert(pr); if(ri.error) throw ri.error;
+      }
+      await sb.from('presupuesto_insumos').delete().eq('presupuesto', pp);
+      if(g.insumos.length){
+        const pi=g.insumos.map(function(it){ return { presupuesto:pp, rubro_codigo:null, codigo_insumo:it.codigo_insumo||'', material:it.material||'', unidad:it.unidad||'', cantidad:Number(it.cantidad)||0 }; });
+        const ii=await sb.from('presupuesto_insumos').insert(pi); if(ii.error) throw ii.error;
+      }
+    }
+    showToast(pps.length+' presupuesto(s) importado(s) como Borrador', 'success');
+    closeImport(); await loadList();
+  }catch(e){ console.warn('impConfirm', e); showToast('Error al importar: '+(e.message||''), 'error'); }
+  finally{ b.disabled=false; b.textContent=old; }
+}
+
+// Descargar plantilla (genera el Excel en el navegador)
+function impDownloadTemplate(){
+  const comp=[
+    ['Obra','Presupuesto','Codigo (CC.NNN)','Rubro (nombre, opcional)','Unidad','Cantidad','Precio total Gs'],
+    ['OBLIGATORIO','OBLIGATORIO','OBLIGATORIO','opcional','opcional','opcional','opcional'],
+    ['Orquídeas','PP70','05.003','Mampostería de cierre pared lindera 0,20 (hueco)','M2',39.54,''],
+    ['Top Internacional','PP70','99.041','Alquiler de andamios (servicio)','GL','',2500000]
+  ];
+  const ins=[
+    ['Presupuesto','Codigo insumo (INS-xxx)','Material','Unidad','Cantidad'],
+    ['OBLIGATORIO','OBLIGATORIO','opcional','opcional','OBLIGATORIO'],
+    ['PP70','INS-001','Cemento','BOLSA',12]
+  ];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(comp), 'Cómputo');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ins), 'Insumos (opcional)');
+  XLSX.writeFile(wb, 'Plantilla_Importacion_Presupuesto_AXC.xlsx');
+}
+
+// Wiring import
+document.getElementById('btnImport').addEventListener('click', openImport);
+document.getElementById('impCloseBtn').addEventListener('click', closeImport);
+document.getElementById('impCancelBtn').addEventListener('click', closeImport);
+document.getElementById('impOverlay').addEventListener('click', function(e){ if(e.target===this) closeImport(); });
+document.getElementById('impDrop').addEventListener('click', function(){ document.getElementById('impFile').click(); });
+document.getElementById('impFile').addEventListener('change', function(){ if(this.files&&this.files[0]) impHandleFile(this.files[0]); });
+document.getElementById('impDrop').addEventListener('dragover', function(e){ e.preventDefault(); this.style.borderColor='#1B5524'; });
+document.getElementById('impDrop').addEventListener('dragleave', function(){ this.style.borderColor='#c2cbd9'; });
+document.getElementById('impDrop').addEventListener('drop', function(e){ e.preventDefault(); this.style.borderColor='#c2cbd9'; if(e.dataTransfer.files&&e.dataTransfer.files[0]) impHandleFile(e.dataTransfer.files[0]); });
+document.getElementById('impConfirmBtn').addEventListener('click', impConfirm);
+document.getElementById('impTplLink').addEventListener('click', function(e){ e.preventDefault(); impDownloadTemplate(); });
+
+
 function showTab(which){
   const p = which==='presu';
   document.getElementById('viewPresu').style.display = p?'':'none';
