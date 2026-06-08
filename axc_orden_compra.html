@@ -6513,6 +6513,23 @@ function _cbLayout(){
   if(col) col.style.display = on ? '' : 'none';
   const seg = document.getElementById('presuSeguimiento'); if(seg) seg.style.display = 'none';
 }
+/* Lista de ítems que exceden lo presupuestado (insumos por cantidad + rubros por Gs), incluyendo el carrito actual */
+function _cbExceededList(){
+  const out = [];
+  if(!cartBudget.pp) return out;
+  (cartBudget.mats||[]).forEach(function(m){
+    const a = _cbAgg(m.codigo_insumo);
+    const disp = m.limite - a.ejec - a.reserv - a.carr;
+    if(disp < 0) out.push(m.material + ': excede ' + Math.abs(disp).toLocaleString('es-PY') + ' ' + (m.unidad||''));
+  });
+  (cartBudget.rubros||[]).forEach(function(r){
+    const a = _cbAggMoney(_cbRubroKey(r));
+    const disp = r.limite - a.ejec - a.reserv - a.carr;
+    if(disp < 0) out.push((r.rubro_codigo?r.rubro_codigo+' · ':'') + r.descripcion + ': excede Gs ' + Math.round(Math.abs(disp)).toLocaleString('es-PY'));
+  });
+  return out;
+}
+
 function cartBudgetRender(){
   _cbLayout();
   _cbRenderInto(document.getElementById('cbPanel'), true);
@@ -6921,6 +6938,17 @@ async function submitOC(){
     showToast('No hay items en el carrito', 'error');
     goToStep(1);
     return;
+  }
+
+  // Aviso si la orden supera lo presupuestado (no bloquea: permite crear igual)
+  if(cartBudget.pp){
+    const ex = _cbExceededList();
+    if(ex.length){
+      const shown = ex.slice(0, 8).map(function(s){ return '• ' + s; }).join('\n');
+      const more = ex.length > 8 ? ('\n• … y ' + (ex.length-8) + ' más') : '';
+      const msg = '⚠ Esta orden SUPERA lo presupuestado del ' + cartBudget.pp + ' en ' + ex.length + ' ítem(s):\n\n' + shown + more + '\n\n¿Crear la orden de compra igual?';
+      if(!confirm(msg)) return;
+    }
   }
 
   const btn = document.getElementById('btnSubmitOC');
