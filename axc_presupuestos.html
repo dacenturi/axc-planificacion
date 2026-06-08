@@ -434,20 +434,72 @@ body{
 <div class="app" id="appContainer" style="display:none">
   <div class="app-title-row">
     <div>
-      <h1 class="page-title">Presupuestos</h1>
+      <h1 class="page-title" id="appTitle">Presupuestos</h1>
       <div class="page-subtitle"><span id="pageSubtitle">Cargando…</span></div>
     </div>
-    <button class="btn-new" id="btnNuevo"><span style="font-size:16px">＋</span> Generar nuevo presupuesto</button>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn-new" id="btnNuevo"><span style="font-size:16px">＋</span> Generar nuevo presupuesto</button>
+      <button class="btn-new" id="btnExport" style="display:none;background:#1F3864"><span style="font-size:16px">⬇</span> Exportar a Excel</button>
+    </div>
   </div>
 
-  <div class="pp-kpis" id="ppKpis"></div>
-
-  <div class="pp-toolbar">
-    <input type="text" class="pp-search" id="ppSearch" placeholder="Buscar por código, nombre u obra…">
+  <div class="pp-tabs">
+    <button class="pp-tab active" id="tabPresu" type="button">Presupuestos</button>
+    <button class="pp-tab" id="tabReporte" type="button">📊 Reporte de avance</button>
   </div>
 
-  <div class="pp-list" id="ppList"></div>
+  <!-- Vista PRESUPUESTOS -->
+  <div id="viewPresu">
+    <div class="pp-kpis" id="ppKpis"></div>
+    <div class="pp-toolbar">
+      <input type="text" class="pp-search" id="ppSearch" placeholder="Buscar por código, nombre u obra…">
+    </div>
+    <div class="pp-list" id="ppList"></div>
+  </div>
+
+  <!-- Vista REPORTE -->
+  <div id="viewReporte" style="display:none">
+    <div class="rp-filters">
+      <select id="fObra" class="rp-sel"><option value="">Todas las obras</option></select>
+      <select id="fPP" class="rp-sel"><option value="">Todos los presupuestos</option></select>
+      <select id="fMov" class="rp-sel">
+        <option value="all">Mostrar todo</option>
+        <option value="mov">Solo con movimiento</option>
+        <option value="over">Solo excedidos</option>
+      </select>
+      <input type="text" id="fSearch" class="rp-search" placeholder="Buscar rubro o material…">
+    </div>
+    <div id="rpSummary" class="rp-summary"></div>
+    <div id="rpResults"></div>
+  </div>
 </div>
+
+<style>
+  .pp-tabs{display:flex;gap:6px;margin-bottom:18px;border-bottom:2px solid #e6eaf1}
+  .pp-tab{background:none;border:none;padding:10px 18px;font-size:14px;font-weight:700;color:#8893a5;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px}
+  .pp-tab.active{color:#1F3864;border-bottom-color:#C8A028}
+  .rp-filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+  .rp-sel,.rp-search{padding:10px 12px;border:1px solid #d3d9e3;border-radius:10px;font-size:14px;background:#fff}
+  .rp-search{flex:1;min-width:180px}
+  .rp-summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .rp-kpi{background:#fff;border:1px solid #e6eaf1;border-radius:12px;padding:12px 18px;min-width:140px}
+  .rp-kpi .l{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#8893a5}
+  .rp-kpi .v{font-size:22px;font-weight:800;color:#1F3864;margin-top:2px}
+  .rp-pp{background:#fff;border:1px solid #e6eaf1;border-radius:14px;margin-bottom:18px;overflow:hidden}
+  .rp-pp-head{background:#1F3864;color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  .rp-pp-head .code{font-weight:800;font-size:15px}
+  .rp-pp-head .meta{font-size:12px;opacity:.85}
+  .rp-block-title{font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#42506a;background:#eef3fb;padding:6px 18px;border-top:1px solid #e6eaf1}
+  .rp-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  .rp-tbl th{background:#f7f9fc;color:#42506a;text-align:left;padding:8px 12px;font-weight:700;border-bottom:2px solid #C8A028;white-space:nowrap}
+  .rp-tbl th.n,.rp-tbl td.n{text-align:right}
+  .rp-tbl td{padding:7px 12px;border-top:1px solid #eef1f5;vertical-align:middle}
+  .rp-sector{background:#fbf8ef;font-weight:700;color:#8a6d10}
+  .rp-bar{display:inline-block;width:60px;height:7px;border-radius:4px;background:#eceff4;overflow:hidden;vertical-align:middle}
+  .rp-bar > i{display:block;height:100%;background:#1B5524}
+  .rp-saldo-neg{color:#c0392b;font-weight:800}
+  .rp-empty{padding:40px;text-align:center;color:#8893a5}
+</style>
 <!-- MODAL CREAR/EDITAR (estructura por niveles) -->
 <div class="pm-overlay" id="ppOverlay">
   <div class="pm-modal">
@@ -625,6 +677,8 @@ async function loadList(){
     const { data:rub } = await sb.from('presupuesto_rubros').select('presupuesto');
     const cnt = {}; (rub||[]).forEach(function(r){ cnt[r.presupuesto] = (cnt[r.presupuesto]||0)+1; });
     state.list = (heads||[]).map(function(h){ return Object.assign({}, h, { _rub: cnt[h.codigo]||0 }); });
+    const _ppn = function(c){ const m=/(\d+)/.exec(String(c||'')); return m?parseInt(m[1],10):-1; };
+    state.list.sort(function(a,b){ return _ppn(b.codigo) - _ppn(a.codigo) || String(b.codigo).localeCompare(String(a.codigo)); });
     state.filtered = state.list.slice();
     renderKpis(); renderList();
     document.getElementById('pageSubtitle').textContent = state.list.length + ' presupuesto(s)';
@@ -988,6 +1042,8 @@ document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('input', refreshSectoresForObra);
 document.getElementById('pmObra').addEventListener('change', refreshSectoresForObra);
+document.getElementById('pmRubSector').addEventListener('focus', refreshSectoresForObra);
+document.getElementById('pmRubSector').addEventListener('click', refreshSectoresForObra);
 document.getElementById('pmRubCod').addEventListener('input', _rubLiveUpdate);
 document.getElementById('pmRubCod').addEventListener('change', _rubLiveUpdate);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
@@ -1002,6 +1058,211 @@ document.getElementById('ppSearch').addEventListener('input', function(){
   });
   renderList();
 });
+
+
+// ════════ REPORTE INTEGRADO ════════
+// ════════════════════════════════════════════════════════
+// Reporte de avance de presupuesto (datos en vivo)
+// ════════════════════════════════════════════════════════
+const REP = { loaded:false, cab:[], rubros:[], insumos:[], itemsByPP:{}, map:{}, rmap:{}, insMap:{} };
+const _RES = ['solicitado','observado'];   // reservado
+const _EJE = ['aprobado','archivado'];      // ejecutado / comprado firme
+function _pn(s){ return (s==null?'':String(s)).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function _money(n){ return Math.round(Number(n)||0).toLocaleString('es-PY'); }
+function _qty(n){ const v=Number(n)||0; return (Math.round(v*100)/100).toLocaleString('es-PY'); }
+function _rubKey(r){ return r.rubro_codigo ? String(r.rubro_codigo) : ('D:'+_pn(r.descripcion||'')); }
+
+function _resolveIns(pid){ const k=String(pid); const ov=REP.map[k]; if(ov && /^INS-/i.test(ov)) return ov; return REP.insMap[k]||''; }
+function _resolveRub(pid){ return REP.rmap[String(pid)]||''; }
+
+async function loadReport(){
+  document.getElementById('pageSubtitle').textContent = 'Cargando datos…';
+  try{
+    const [cab, rub, ins, ocs, items, ppm, insu] = await Promise.all([
+      sb.from('presupuesto_cab').select('codigo,obra,descripcion,activo'),
+      sb.from('presupuesto_rubros').select('presupuesto,sector,orden,rubro_codigo,descripcion,unidad,cantidad,precio_total,tiene_receta'),
+      sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,material,unidad,cantidad'),
+      sb.from('ordenes_compra').select('id,estado,presupuesto'),
+      sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit'),
+      sb.from('producto_presupuesto_map').select('producto_id,material,rubro_codigo'),
+      sb.from('insumos').select('codigo,producto_id')
+    ]);
+    REP.cab = (cab.data||[]).slice().sort(function(a,b){ const na=parseInt((/(\d+)/.exec(a.codigo)||[])[1]||'0',10), nb=parseInt((/(\d+)/.exec(b.codigo)||[])[1]||'0',10); return na-nb; });
+    REP.rubros = rub.data||[];
+    REP.insumos = ins.data||[];
+    REP.map = {}; REP.rmap = {};
+    (ppm.data||[]).forEach(function(r){ REP.map[String(r.producto_id)]=r.material||''; REP.rmap[String(r.producto_id)]=r.rubro_codigo||''; });
+    REP.insMap = {}; (insu.data||[]).forEach(function(i){ if(i.producto_id!=null) REP.insMap[String(i.producto_id)]=i.codigo; });
+    // OC items agrupados por presupuesto, con estado
+    const estadoOC = {}, ppOC = {};
+    (ocs.data||[]).forEach(function(o){ estadoOC[o.id]=_pn(o.estado); ppOC[o.id]=o.presupuesto||''; });
+    REP.itemsByPP = {};
+    (items.data||[]).forEach(function(it){
+      const pp = ppOC[it.oc_id]; if(!pp) return;
+      const c=Number(it.cantidad)||0, p=Number(it.precio_unit)||0;
+      (REP.itemsByPP[pp]=REP.itemsByPP[pp]||[]).push({ producto_id:it.producto_id, cantidad:c, subtotal:c*p, estado:estadoOC[it.oc_id]||'' });
+    });
+    // poblar filtro de obras
+    const obras = {}; REP.cab.forEach(function(c){ if(c.obra) obras[c.obra]=1; });
+    const fObra=document.getElementById('fObra');
+    fObra.innerHTML = '<option value="">Todas las obras</option>' + Object.keys(obras).sort().map(function(o){ return '<option value="'+escapeHtml(o)+'">'+escapeHtml(o)+'</option>'; }).join('');
+    refreshPPFilter();
+    renderReport();
+  }catch(e){ console.warn('loadReport', e); showToast('Error cargando el reporte', 'error'); }
+}
+
+function refreshPPFilter(){
+  const obra=document.getElementById('fObra').value;
+  const fPP=document.getElementById('fPP');
+  const list=REP.cab.filter(function(c){ return !obra || c.obra===obra; });
+  fPP.innerHTML = '<option value="">Todos los presupuestos</option>' + list.map(function(c){ return '<option value="'+escapeHtml(c.codigo)+'">'+escapeHtml(c.codigo+(c.obra?' · '+c.obra:''))+'</option>'; }).join('');
+}
+
+// Construye filas calculadas (flat). Cada fila: tipo insumo|rubro
+function buildRows(){
+  const obra=document.getElementById('fObra').value;
+  const pp=document.getElementById('fPP').value;
+  const mov=document.getElementById('fMov').value;
+  const q=_pn(document.getElementById('fSearch').value);
+  const cabSel = REP.cab.filter(function(c){ return (!obra||c.obra===obra) && (!pp||c.codigo===pp); });
+  const rows=[];
+  cabSel.forEach(function(c){
+    const items = REP.itemsByPP[c.codigo]||[];
+    // INSUMOS (cantidad)
+    REP.insumos.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(m){
+      let reserv=0, ejec=0;
+      items.forEach(function(it){ if(_resolveIns(it.producto_id)!==m.codigo_insumo) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.cantidad; else if(_RES.indexOf(it.estado)>=0) reserv+=it.cantidad; });
+      const comprado=reserv+ejec, pres=Number(m.cantidad)||0, saldo=pres-comprado;
+      rows.push({ pp:c.codigo, obra:c.obra||'', sector:'', tipo:'insumo', ref:m.codigo_insumo, desc:m.material, unid:m.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:false });
+    });
+    // RUBROS de servicio (dinero)
+    REP.rubros.filter(function(x){ return x.presupuesto===c.codigo && (Number(x.precio_total)||0)>0 && !x.tiene_receta; }).forEach(function(r){
+      const key=_rubKey(r);
+      let reserv=0, ejec=0;
+      items.forEach(function(it){ if(_resolveRub(it.producto_id)!==key) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.subtotal; else if(_RES.indexOf(it.estado)>=0) reserv+=it.subtotal; });
+      const comprado=reserv+ejec, pres=Number(r.precio_total)||0, saldo=pres-comprado;
+      rows.push({ pp:c.codigo, obra:c.obra||'', sector:r.sector||'', tipo:'rubro', ref:r.rubro_codigo||'', desc:r.descripcion||'', unid:r.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:true });
+    });
+  });
+  return rows.filter(function(r){
+    if(mov==='mov' && r.comprado<=0) return false;
+    if(mov==='over' && r.saldo>=0) return false;
+    if(q && _pn(r.desc).indexOf(q)<0 && _pn(r.ref).indexOf(q)<0) return false;
+    return true;
+  });
+}
+
+function renderReport(){
+  const rows=buildRows();
+  const box=document.getElementById('rpResults');
+  // resumen
+  const totItems=rows.length, over=rows.filter(function(r){return r.saldo<0;}).length;
+  const ppset={}; rows.forEach(function(r){ppset[r.pp]=1;});
+  document.getElementById('rpSummary').innerHTML =
+    '<div class="rp-kpi"><div class="l">Presupuestos</div><div class="v">'+Object.keys(ppset).length+'</div></div>'+
+    '<div class="rp-kpi"><div class="l">Líneas</div><div class="v">'+totItems+'</div></div>'+
+    '<div class="rp-kpi"><div class="l">Excedidos</div><div class="v" style="color:'+(over?'#c0392b':'#1F3864')+'">'+over+'</div></div>';
+  document.getElementById('pageSubtitle').textContent = Object.keys(ppset).length+' presupuesto(s) · '+totItems+' línea(s)';
+  if(!rows.length){ box.innerHTML='<div class="rp-empty">No hay datos para el filtro elegido.</div>'; return; }
+  // agrupar por PP
+  const byPP={}; rows.forEach(function(r){ (byPP[r.pp]=byPP[r.pp]||[]).push(r); });
+  let html='';
+  REP.cab.forEach(function(c){
+    const rs=byPP[c.codigo]; if(!rs) return;
+    const ins=rs.filter(function(r){return r.tipo==='insumo';});
+    const rub=rs.filter(function(r){return r.tipo==='rubro';});
+    html+='<div class="rp-pp"><div class="rp-pp-head"><div><span class="code">'+escapeHtml(c.codigo)+'</span> &nbsp;<span class="meta">'+escapeHtml((c.obra||'')+(c.descripcion?' · '+c.descripcion:''))+'</span></div><div class="meta">'+(c.activo?'Publicado':'Borrador')+'</div></div>';
+    if(ins.length) html+=_tableQty(ins);
+    if(rub.length) html+=_tableMoney(rub);
+    html+='</div>';
+  });
+  box.innerHTML=html;
+}
+
+function _pctBar(p){ const w=Math.max(0,Math.min(100,p)); return '<div class="rp-bar"><i style="width:'+w+'%;background:'+(p>100?'#c0392b':'#1B5524')+'"></i></div>'; }
+function _tableQty(rows){
+  let h='<div class="rp-block-title">Insumos (control por cantidad)</div><table class="rp-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Presup.</th><th class="n">Reservado</th><th class="n">Ejecutado</th><th class="n">Comprado</th><th>%</th><th class="n">Saldo</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    h+='<tr><td>'+escapeHtml(r.ref)+'</td><td>'+escapeHtml(r.desc)+'</td><td>'+escapeHtml(r.unid)+'</td>'+
+       '<td class="n">'+_qty(r.pres)+'</td><td class="n">'+_qty(r.reserv)+'</td><td class="n">'+_qty(r.ejec)+'</td><td class="n">'+_qty(r.comprado)+'</td>'+
+       '<td>'+_pctBar(r.pct)+' <span style="font-size:11px">'+Math.round(r.pct)+'%</span></td>'+
+       '<td class="n '+(r.saldo<0?'rp-saldo-neg':'')+'">'+_qty(r.saldo)+'</td></tr>';
+  });
+  return h+'</tbody></table>';
+}
+function _tableMoney(rows){
+  // agrupar por sector
+  let h='<div class="rp-block-title">Rubros / Servicios (control por dinero, Gs)</div><table class="rp-tbl"><thead><tr><th>Ref.</th><th>Descripción</th><th>Unid.</th><th class="n">Presup. Gs</th><th class="n">Reservado</th><th class="n">Ejecutado</th><th class="n">Comprado</th><th>%</th><th class="n">Saldo Gs</th></tr></thead><tbody>';
+  let curSec=null;
+  rows.forEach(function(r){
+    if(r.sector!==curSec){ curSec=r.sector; if(curSec) h+='<tr class="rp-sector"><td colspan="9">'+escapeHtml(curSec)+'</td></tr>'; }
+    h+='<tr><td>'+escapeHtml(r.ref||'—')+'</td><td>'+escapeHtml(r.desc)+'</td><td>'+escapeHtml(r.unid)+'</td>'+
+       '<td class="n">'+_money(r.pres)+'</td><td class="n">'+_money(r.reserv)+'</td><td class="n">'+_money(r.ejec)+'</td><td class="n">'+_money(r.comprado)+'</td>'+
+       '<td>'+_pctBar(r.pct)+' <span style="font-size:11px">'+Math.round(r.pct)+'%</span></td>'+
+       '<td class="n '+(r.saldo<0?'rp-saldo-neg':'')+'">'+_money(r.saldo)+'</td></tr>';
+  });
+  return h+'</tbody></table>';
+}
+
+// ── Exportar a Excel (.xls vía HTML, respeta el filtro actual) ──
+function exportExcel(){
+  const rows=buildRows();
+  if(!rows.length){ showToast('No hay datos para exportar', 'error'); return; }
+  const head=['Presupuesto','Obra','Tipo','Sector','Referencia','Descripción','Unidad','Presupuestado','Reservado','Ejecutado','Comprado','% Avance','Saldo disponible'];
+  let t='<table border="1" cellspacing="0" cellpadding="4"><thead><tr>';
+  head.forEach(function(h){ t+='<th style="background:#1F3864;color:#fff;font-weight:bold">'+h+'</th>'; });
+  t+='</tr></thead><tbody>';
+  rows.forEach(function(r){
+    const saldoStyle = r.saldo<0 ? ' style="color:#c0392b;font-weight:bold"' : '';
+    t+='<tr>'+
+      '<td>'+escapeHtml(r.pp)+'</td>'+
+      '<td>'+escapeHtml(r.obra)+'</td>'+
+      '<td>'+(r.tipo==='insumo'?'Insumo (cant.)':'Rubro (Gs)')+'</td>'+
+      '<td>'+escapeHtml(r.sector)+'</td>'+
+      '<td>'+escapeHtml(r.ref)+'</td>'+
+      '<td>'+escapeHtml(r.desc)+'</td>'+
+      '<td>'+escapeHtml(r.unid)+'</td>'+
+      '<td>'+(Math.round((r.pres+Number.EPSILON)*100)/100)+'</td>'+
+      '<td>'+(Math.round(r.reserv*100)/100)+'</td>'+
+      '<td>'+(Math.round(r.ejec*100)/100)+'</td>'+
+      '<td>'+(Math.round(r.comprado*100)/100)+'</td>'+
+      '<td>'+Math.round(r.pct)+'%</td>'+
+      '<td'+saldoStyle+'>'+(Math.round(r.saldo*100)/100)+'</td>'+
+      '</tr>';
+  });
+  t+='</tbody></table>';
+  const html='\ufeff<html><head><meta charset="utf-8"></head><body>'+t+'</body></html>';
+  const blob=new Blob([html],{type:'application/vnd.ms-excel'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const obra=document.getElementById('fObra').value, pp=document.getElementById('fPP').value;
+  a.href=url; a.download='reporte_presupuesto'+(pp?'_'+pp:(obra?'_'+obra.replace(/\s+/g,'_'):''))+'.xls';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// ── Wiring ──
+document.getElementById('fObra').addEventListener('change', function(){ refreshPPFilter(); renderReport(); });
+document.getElementById('fPP').addEventListener('change', renderReport);
+document.getElementById('fMov').addEventListener('change', renderReport);
+document.getElementById('fSearch').addEventListener('input', renderReport);
+document.getElementById('btnExport').addEventListener('click', exportExcel);
+
+
+// ── Pestañas Presupuestos / Reporte ──
+function showTab(which){
+  const p = which==='presu';
+  document.getElementById('viewPresu').style.display = p?'':'none';
+  document.getElementById('viewReporte').style.display = p?'none':'';
+  document.getElementById('tabPresu').classList.toggle('active', p);
+  document.getElementById('tabReporte').classList.toggle('active', !p);
+  document.getElementById('btnNuevo').style.display = p?'':'none';
+  document.getElementById('btnExport').style.display = p?'none':'';
+  document.getElementById('appTitle').textContent = p?'Presupuestos':'Reporte de avance';
+  if(p){ document.getElementById('pageSubtitle').textContent = (state.list.length||0)+' presupuesto(s)'; }
+  if(!p && !REP.loaded){ REP.loaded = true; loadReport(); }
+}
+document.getElementById('tabPresu').addEventListener('click', function(){ showTab('presu'); });
+document.getElementById('tabReporte').addEventListener('click', function(){ showTab('reporte'); });
 
 </script>
 </body>
