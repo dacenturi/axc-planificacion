@@ -5628,7 +5628,16 @@ function renderCart(){
   wrap.querySelectorAll('.cb-isel').forEach(sel=>{
     sel.addEventListener('change', ()=>{
       const idx = Number(sel.dataset.cartIdx);
-      if(wizard.cart[idx]) setProductoItem(wizard.cart[idx].producto_id, sel.value);
+      if(!wizard.cart[idx]) return;
+      const v = sel.value;
+      if(v.indexOf('@@') >= 0){
+        const parts = v.split('@@');
+        wizard.cart[idx].rubro_codigo = parts[1] || '';
+        setProductoItem(wizard.cart[idx].producto_id, parts[0]);   // mapea producto→insumo (global); el rubro queda en la línea
+      } else {
+        wizard.cart[idx].rubro_codigo = '';
+        setProductoItem(wizard.cart[idx].producto_id, v);          // rubro de servicio o sin asignar
+      }
     });
   });
 
@@ -5846,7 +5855,7 @@ async function cloneFromOC(ocId){
   try{
     const {data:items, error} = await sb
       .from('ordenes_compra_items')
-      .select('producto_id, producto_nombre, cantidad, precio_unit, subtotal')
+      .select('producto_id, producto_nombre, cantidad, precio_unit, subtotal, rubro_codigo')
       .eq('oc_id', ocId)
       .order('orden', {ascending:true});
     if(error) throw error;
@@ -5879,6 +5888,7 @@ async function cloneFromOC(ocId){
       cantidad: Number(it.cantidad)||0,
       precio_unit: Number(it.precio_unit)||0,
       subtotal: Number(it.subtotal)||0,
+      rubro_codigo: it.rubro_codigo || '',
     }));
 
     renderCart();
@@ -6226,7 +6236,7 @@ async function enterStep2(){
 
 /* ── Presupuesto: control en carrito + detalles (sincronizados) ── */
 function _presuNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
-const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false, insMap:{}, insLoaded:false, rubros:null, rmap:{} };
+const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false, insMap:{}, insLoaded:false, rubros:null, rmap:{}, rubroDesc:{} };
 
 function _cbEls(){ return {
   cno:document.getElementById('cbNo'), csi:document.getElementById('cbSi'),
@@ -6371,12 +6381,19 @@ function _cbItemMaterial(it){ return _cbResolveIns(it.producto_id); }
 function cbItemOptions(it){
   const curIns = _cbResolveIns(it.producto_id);
   const curRub = _cbResolveRubro(it.producto_id);
-  let o = '<option value="">(sin asignar)</option>';
+  const curLineRubro = (it.rubro_codigo||'');
+  let o = '<option value="">➕ Fuera de presupuesto / sin imputar</option>';
   if(cartBudget.mats && cartBudget.mats.length){
-    o += '<optgroup label="Insumos (descuenta cantidad)">';
+    o += '<optgroup label="Insumos (descuenta cantidad por rubro)">';
     cartBudget.mats.forEach(function(m){
-      const lbl = m.material + (m.unidad ? ' ('+m.unidad+')' : '');
-      o += '<option value="'+escapeHtml(m.codigo_insumo)+'"'+(m.codigo_insumo===curIns?' selected':'')+'>'+escapeHtml(lbl)+'</option>';
+      const rk = m.rubro_codigo||'';
+      const val = m.codigo_insumo + '@@' + rk;
+      const a = _cbAgg(m.codigo_insumo, rk);
+      const disp = m.limite - a.ejec - a.reserv;
+      const rlbl = rk ? (rk + (cartBudget.rubroDesc&&cartBudget.rubroDesc[rk]?(' '+cartBudget.rubroDesc[rk]):'')) : 'General';
+      const lbl = m.material + (m.unidad ? ' ('+m.unidad+')' : '') + ' — ' + rlbl + ' · saldo ' + disp.toLocaleString('es-PY');
+      const sel = (m.codigo_insumo===curIns && rk===curLineRubro) ? ' selected' : '';
+      o += '<option value="'+escapeHtml(val)+'"'+sel+'>'+escapeHtml(lbl.length>70?lbl.slice(0,69)+'…':lbl)+'</option>';
     });
     o += '</optgroup>';
   }
@@ -6397,12 +6414,14 @@ async function cartBudgetLoad(pp){
   cartBudget.pp = pp; cartBudget.mats = null; cartBudget.rubros = null; cartBudget.ocItems = []; cartBudgetRender();
   await loadProductoMap();
   try{
-    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad').eq('presupuesto', pp).order('material');
-    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Number(m.cantidad)||0 }; });
+    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo').eq('presupuesto', pp).order('material');
+    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Number(m.cantidad)||0, rubro_codigo:m.rubro_codigo||'' }; });
     // Rubros de servicio (control por dinero): precio_total>0 y sin receta. Agrupados por clave de rubro.
     const rb = await sb.from('presupuesto_rubros').select('rubro_codigo,descripcion,unidad,precio_total,tiene_receta').eq('presupuesto', pp).order('orden');
     const ragg = {}; const rorder = [];
+    const rubroDesc = {};
     (rb.data||[]).forEach(function(r){
+      if(r.rubro_codigo) rubroDesc[String(r.rubro_codigo)] = r.descripcion||'';
       const pt = Number(r.precio_total)||0;
       if(pt<=0 || r.tiene_receta) return;
       const key = r.rubro_codigo ? String(r.rubro_codigo) : ('D:'+_presuNorm(r.descripcion||''));
@@ -6410,13 +6429,14 @@ async function cartBudgetLoad(pp){
       ragg[key].limite += pt;
     });
     const rubros = rorder.map(function(k){ return ragg[k]; });
+    cartBudget.rubroDesc = rubroDesc;
     const ocs = await sb.from('ordenes_compra').select('id,estado').eq('presupuesto', pp);
     const estadoById = {}; const ids = [];
     (ocs.data||[]).forEach(function(o){ estadoById[o.id] = _presuNorm(o.estado); ids.push(o.id); });
     let ocItems = [];
     if(ids.length){
-      const it = await sb.from('ordenes_compra_items').select('producto_id,cantidad,precio_unit,oc_id').in('oc_id', ids);
-      ocItems = (it.data||[]).map(function(x){ const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0; return { producto_id:x.producto_id, cantidad:c, subtotal:c*p, estado: estadoById[x.oc_id]||'' }; });
+      const it = await sb.from('ordenes_compra_items').select('producto_id,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
+      ocItems = (it.data||[]).map(function(x){ const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0; return { producto_id:x.producto_id, cantidad:c, subtotal:c*p, estado: estadoById[x.oc_id]||'', rubro_codigo:x.rubro_codigo||'' }; });
     }
     if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; }
   }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.rubros = []; cartBudget.ocItems = []; } }
@@ -6425,14 +6445,16 @@ async function cartBudgetLoad(pp){
 
 const _CB_RESERVA = ['solicitado','observado'];
 const _CB_EJEC = ['aprobado','archivado'];
-function _cbAgg(codigoInsumo){
+function _cbAgg(codigoInsumo, rubroCodigo){
+  const rk = rubroCodigo||'';
   let ejec=0, reserv=0, carr=0;
   (cartBudget.ocItems||[]).forEach(function(x){
     if(_cbResolveIns(x.producto_id) !== codigoInsumo) return;
+    if((x.rubro_codigo||'') !== rk) return;
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
   });
-  (wizard.cart||[]).forEach(function(it){ if(_cbResolveIns(it.producto_id) === codigoInsumo) carr += Number(it.cantidad)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(_cbResolveIns(it.producto_id) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 /* Agregado en GUARANÍES para un rubro de servicio */
@@ -6458,21 +6480,28 @@ function _cbRenderInto(panel, includeCart){
   if(!mats.length && !rubros.length){ panel.innerHTML='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span></span></div><div class="cb-empty">Este presupuesto no tiene insumos ni rubros con monto cargados.</div>'; return; }
   const money = function(n){ try{ return (typeof fmtMoney==='function') ? fmtMoney(n) : ('Gs '+Math.round(n).toLocaleString('es-PY')); }catch(e){ return Math.round(n).toLocaleString('es-PY'); } };
   let exceeded=0;
-  // --- Sección 1: insumos (cantidad) ---
+  // --- Sección 1: insumos (cantidad), agrupados por rubro ---
   let secIns='';
   if(mats.length){
+    // agrupar mats por rubro_codigo
+    const grp = {}; const gorder = [];
+    mats.forEach(function(m){ const rk=m.rubro_codigo||''; if(!grp[rk]){ grp[rk]=[]; gorder.push(rk); } grp[rk].push(m); });
     let rows='';
-    mats.forEach(function(m){
-      const a=_cbAgg(m.codigo_insumo);
-      const enc = includeCart ? a.carr : 0;
-      const disp = m.limite - a.ejec - a.reserv - enc;
-      if(disp<0) exceeded++;
-      const color = m.limite<=0 ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < m.limite*0.15 ? '#C8A028' : '#1B5524'));
-      const sub = 'aprob '+a.ejec.toLocaleString('es-PY')+' · reserv '+a.reserv.toLocaleString('es-PY')+(includeCart?(' · carr '+enc.toLocaleString('es-PY')):'');
-      const nm = escapeHtml(m.material)+(m.unidad?' <span class="cb-sub" style="display:inline">('+escapeHtml(m.unidad)+')</span>':'');
-      rows += '<tr><td><div>'+nm+'</div><div class="cb-sub">'+sub+'</div></td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+color+';font-weight:700">'+disp.toLocaleString('es-PY')+'</td></tr>';
+    gorder.forEach(function(rk){
+      const rlbl = rk ? (rk + (cartBudget.rubroDesc&&cartBudget.rubroDesc[rk]?(' · '+cartBudget.rubroDesc[rk]):'')) : 'General (sin rubro)';
+      rows += '<tr><td colspan="3" style="background:#eef3fb;color:#1F3864;font-weight:700;font-size:11px">'+escapeHtml(rlbl)+'</td></tr>';
+      grp[rk].forEach(function(m){
+        const a=_cbAgg(m.codigo_insumo, rk);
+        const enc = includeCart ? a.carr : 0;
+        const disp = m.limite - a.ejec - a.reserv - enc;
+        if(disp<0) exceeded++;
+        const color = m.limite<=0 ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < m.limite*0.15 ? '#C8A028' : '#1B5524'));
+        const sub = 'aprob '+a.ejec.toLocaleString('es-PY')+' · reserv '+a.reserv.toLocaleString('es-PY')+(includeCart?(' · carr '+enc.toLocaleString('es-PY')):'');
+        const nm = escapeHtml(m.material)+(m.unidad?' <span class="cb-sub" style="display:inline">('+escapeHtml(m.unidad)+')</span>':'');
+        rows += '<tr><td><div>'+nm+'</div><div class="cb-sub">'+sub+'</div></td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+color+';font-weight:700">'+disp.toLocaleString('es-PY')+'</td></tr>';
+      });
     });
-    secIns='<div class="cb-sect">Insumos (cantidad)</div><table class="cb-tbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    secIns='<div class="cb-sect">Insumos por rubro (cantidad)</div><table class="cb-tbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }
   // --- Sección 2: rubros / servicios (Gs) ---
   let secRub='';
@@ -6491,11 +6520,28 @@ function _cbRenderInto(panel, includeCart){
     });
     secRub='<div class="cb-sect">Rubros / Servicios (Gs)</div><table class="cb-tbl"><thead><tr><th>Rubro</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }
+  // --- Sección 3: fuera de presupuesto (compras sin imputar a rubro/insumo) ---
+  let secExtra='';
+  let exAprob=0, exReserv=0, exCarr=0;
+  (cartBudget.ocItems||[]).forEach(function(x){
+    if(_cbResolveIns(x.producto_id) || _cbResolveRubro(x.producto_id)) return;
+    if(_CB_EJEC.indexOf(x.estado)>=0) exAprob += x.subtotal;
+    else if(_CB_RESERVA.indexOf(x.estado)>=0) exReserv += x.subtotal;
+  });
+  if(includeCart) (wizard.cart||[]).forEach(function(it){
+    if(_cbResolveIns(it.producto_id) || _cbResolveRubro(it.producto_id)) return;
+    exCarr += Number(it.subtotal)||0;
+  });
+  const exTot = exAprob + exReserv + exCarr;
+  if(exTot > 0){
+    const sub = 'aprob '+money(exAprob)+' · reserv '+money(exReserv)+(includeCart?(' · carr '+money(exCarr)):'');
+    secExtra = '<div class="cb-sect" style="color:#8a6d10">Fuera de presupuesto (Gs)</div><table class="cb-tbl"><tbody><tr><td><div>Compras sin imputar a rubro/insumo</div><div class="cb-sub">'+sub+'</div></td><td></td><td style="text-align:right;font-weight:700;color:#8a6d10">'+money(exTot)+'</td></tr></tbody></table>';
+  }
   const status = exceeded>0 ? '<span class="cb-pstatus" style="color:#ffd2d2">⚠ '+exceeded+'</span>' : '<span class="cb-pstatus" style="color:#bfe3c4">✓ en límite</span>';
   let html='<div class="cb-phead"><span>Presupuesto '+escapeHtml(cartBudget.pp)+'</span><span>'+status+'<span class="cb-chev">▾</span></span></div>';
   html+='<div class="cb-body">';
   if(exceeded) html+='<div class="cb-warn">⚠ '+exceeded+' ítem(s) superan lo presupuestado</div>';
-  html+=secIns+secRub;
+  html+=secIns+secRub+secExtra;
   html+='</div>';
   panel.innerHTML=html;
   if(cartBudget.collapsed) panel.classList.add('cb-collapsed'); else panel.classList.remove('cb-collapsed');
@@ -6518,9 +6564,10 @@ function _cbExceededList(){
   const out = [];
   if(!cartBudget.pp) return out;
   (cartBudget.mats||[]).forEach(function(m){
-    const a = _cbAgg(m.codigo_insumo);
+    const rk = m.rubro_codigo||'';
+    const a = _cbAgg(m.codigo_insumo, rk);
     const disp = m.limite - a.ejec - a.reserv - a.carr;
-    if(disp < 0) out.push(m.material + ': excede ' + Math.abs(disp).toLocaleString('es-PY') + ' ' + (m.unidad||''));
+    if(disp < 0){ const rl = rk ? (' ['+rk+']') : ''; out.push(m.material + rl + ': excede ' + Math.abs(disp).toLocaleString('es-PY') + ' ' + (m.unidad||'')); }
   });
   (cartBudget.rubros||[]).forEach(function(r){
     const a = _cbAggMoney(_cbRubroKey(r));
@@ -7029,6 +7076,7 @@ async function submitOC(){
       cantidad: it.cantidad,
       precio_unit: it.precio_unit,
       subtotal: it.subtotal,
+      rubro_codigo: it.rubro_codigo || null,
       orden: idx,
     }));
     if(itemsPayload.length > 0){
