@@ -5175,6 +5175,7 @@ function _setSyncStatus(status){
   // Paleta consistente con la app: verde / amarillo / azul / rojo
   const styles = {
     saved:   { ic:'✓', lb:'Guardado',          bd:'rgba(63,185,80,.45)',  bg:'rgba(63,185,80,.10)',  cl:'#3fb950' },
+    partial: { ic:'⚠', lb:'Guardado parcial',  bd:'rgba(240,165,0,.95)',  bg:'rgba(240,165,0,.22)',  cl:'#f0a500' },
     pending: { ic:'●', lb:'GUARDAR CAMBIOS',   bd:'rgba(240,165,0,.95)',  bg:'rgba(240,165,0,.22)',  cl:'#f0a500' },
     saving:  { ic:'⏳', lb:'Guardando…',        bd:'rgba(88,166,255,.55)', bg:'rgba(88,166,255,.12)', cl:'#58a6ff' },
     error:   { ic:'⚠', lb:'Error al guardar',  bd:'rgba(248,81,73,.55)',  bg:'rgba(248,81,73,.12)',  cl:'#f85149' }
@@ -5502,6 +5503,26 @@ function _classifyRow(a, hdr){
   return 'incomplete';
 }
 
+// Devuelve la lista de campos faltantes de una fila clasificada como 'incomplete'.
+// Para filas 'empty' o 'complete' devuelve []. Indica al usuario EXACTAMENTE
+// qué campo impide guardar la actividad en la nube.
+function _rowMissingFields(a, hdr){
+  if(_classifyRow(a, hdr) !== 'incomplete') return [];
+  const miss = [];
+  if(!(a.descripcion || a.item || '').trim())                 miss.push('Actividad (descripción)');
+  if(!(Array.isArray(a.days) && a.days.some(d => !!d)))        miss.push('Al menos un día marcado');
+  if(!(a.obra_act||'').trim())                                 miss.push('Obra');
+  if(!(a.contratista_act||'').trim())                          miss.push('Contratista');
+  if(!(hdr.hdrResidente||'').trim())                           miss.push('Residente (encabezado)');
+  if(!hdr.hdrFechaIni)                                         miss.push('Fecha inicio (encabezado)');
+  const estadoMF = a.cumple || '';
+  const reqRazonMF = (estadoMF === 'No' || estadoMF === 'No Cumple' ||
+                      estadoMF === 'En espera' || estadoMF === 'Retrasado' ||
+                      estadoMF === 'Cancelado');
+  if(reqRazonMF && !(a.razon||'').trim()) miss.push('Razón del estado');
+  return miss;
+}
+
 // Aplica bordes rojos a campos obligatorios vacíos y muestra el banner amarillo
 function _updateValidationUI(){
   const hdr = {
@@ -5546,10 +5567,21 @@ function _updateValidationUI(){
       if(appWrap && appWrap.firstChild) appWrap.insertBefore(banner, appWrap.firstChild);
     }
     // Color rojo intenso para dejar bien claro que hay un problema.
-    banner.style.cssText = 'background:linear-gradient(90deg,#dc2626,#ef4444);color:#fff;padding:12px 16px;text-align:center;font-family:Mulish,sans-serif;font-size:14px;font-weight:800;border-bottom:2px solid rgba(0,0,0,.3);box-shadow:0 2px 8px rgba(220,38,38,.4);letter-spacing:.3px';
-    banner.innerHTML = '🚫 ' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
+    banner.style.cssText = 'background:linear-gradient(90deg,#dc2626,#ef4444);color:#fff;padding:12px 16px;text-align:left;font-family:Mulish,sans-serif;font-size:13px;font-weight:700;border-bottom:2px solid rgba(0,0,0,.3);box-shadow:0 2px 8px rgba(220,38,38,.4);letter-spacing:.2px';
+    // Detalle por fila: indicar EXACTAMENTE qué campo falta en cada una.
+    const _detalles = incompleteIndices.map(idx => {
+      const a = acts[idx];
+      const desc = (a.descripcion || a.item || '').trim();
+      const etiqueta = desc ? ('«' + desc + '»') : ('Fila ' + (idx+1));
+      const faltan = _rowMissingFields(a, hdr);
+      return '• Fila ' + (idx+1) + ' ' + etiqueta + ': falta ' +
+             (faltan.length ? faltan.join(', ') : 'datos');
+    });
+    banner.innerHTML = '🚫 <b>' + incompleteCount + ' fila' + (incompleteCount===1?'':'s') +
       ' incompleta' + (incompleteCount===1?'':'s') +
-      ' — NO se están guardando en la nube. Completá los campos marcados en rojo.';
+      ' — NO se ' + (incompleteCount===1?'guarda':'guardan') + ' en la nube:</b>' +
+      '<div style="margin-top:6px;font-weight:600;line-height:1.5">' +
+      _detalles.join('<br>') + '</div>';
     banner.style.display = 'block';
   } else if(banner){
     banner.style.display = 'none';
@@ -5737,10 +5769,20 @@ async function _syncActsToSupabase(){
 
     // Solo guardar filas COMPLETAS. Las incompletas o vacías quedan en la
     // UI pero no se suben a Supabase.
+    const _hdrSync = {hdrObra, hdrContratista, hdrResidente, hdrFechaIni, hdrFechaFin};
     const rowsToSave = [];
+    const _incompletas = [];  // filas con datos pero que NO se pueden guardar
     acts.forEach((a, i) => {
-      const status = _classifyRow(a, {hdrObra, hdrContratista, hdrResidente, hdrFechaIni, hdrFechaFin});
-      if(status !== 'complete') return;
+      const status = _classifyRow(a, _hdrSync);
+      if(status === 'incomplete'){
+        _incompletas.push({
+          idx: i,
+          desc: (a.descripcion || a.item || '').trim() || ('Fila ' + (i+1)),
+          faltan: _rowMissingFields(a, _hdrSync)
+        });
+        return;
+      }
+      if(status !== 'complete') return;  // 'empty' → se ignora silenciosamente
       rowsToSave.push({
         id:            a._syncId,
         // Preservar owner original si existe (caso típico: admin creó filas
@@ -5842,7 +5884,19 @@ async function _syncActsToSupabase(){
 
     _hideSyncError();
     _syncDirty = false;
-    _setSyncStatus('saved');
+    // ★ FIX 08/06/2026 ★ — No mostrar "Guardado" (verde) si hubo filas con datos
+    // que NO se pudieron guardar por estar incompletas. El indicador pasa a
+    // "Guardado parcial" (ámbar) y se avisa qué campo falta en cada fila.
+    if(_incompletas.length){
+      _setSyncStatus('partial');
+      if(typeof showToast === 'function'){
+        showToast('⚠️ Guardado parcial: ' + _incompletas.length + ' fila(s) sin guardar por incompletas. Ver detalle en rojo arriba.', 'warn');
+      }
+      // Re-pintar el banner rojo con el detalle de campos faltantes.
+      if(typeof _updateValidationUI === 'function') _updateValidationUI();
+    } else {
+      _setSyncStatus('saved');
+    }
   } catch(e){
     console.error('Sync Supabase error:', e);
     // Construir mensaje detallado para que se vea POR QUÉ falló sin abrir DevTools
