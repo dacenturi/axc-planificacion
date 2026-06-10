@@ -6162,6 +6162,11 @@ document.getElementById('fldObra').addEventListener('change', (e)=>{
   triggerSmartAnalysis();
 });
 
+// ── Match tolerante de Obra (ignora tildes y plural) — mismo criterio que la app de Presupuestos ──
+function _normObra(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function _obraKey(s){ return _normObra(s).replace(/s$/,''); }
+function _obraMatch(a,b){ a=_obraKey(a); b=_obraKey(b); return !!a && a===b; }
+
 function filterSectoresByObra(obra){
   const sel = document.getElementById('fldSector');
   if(!obra){
@@ -6171,7 +6176,7 @@ function filterSectoresByObra(obra){
     return;
   }
   const sectores = wizard.listas.sectores.filter(s =>
-    (s.obra_ref||'').trim() === obra.trim() || !(s.obra_ref||'').trim()
+    _obraMatch(s.obra_ref, obra)
   );
   if(sectores.length === 0){
     sel.innerHTML = '<option value="">No hay sectores definidos para esta obra</option>';
@@ -7321,7 +7326,7 @@ function renderDetailBody(){
         const sectorSel = document.getElementById('editSector');
         if(!sectorSel) return;
         const sectores = wizard.listas.sectores.filter(s =>
-          (s.obra_ref||'').trim() === obra.trim() || !(s.obra_ref||'').trim()
+          _obraMatch(s.obra_ref, obra)
         );
         sectorSel.innerHTML = '<option value="">Sin sector específico</option>' +
           sectores.map(s => `<option value="${escapeHtml(s.valor)}">${escapeHtml(s.valor)}</option>`).join('');
@@ -7385,9 +7390,13 @@ function renderInfoSection(oc, editing){
     const contratistasOpts = wizard.listas.contratistas.map(c => `<option value="${escapeHtml(c.valor)}" ${c.valor===oc.contratista?'selected':''}>${escapeHtml(c.valor)}</option>`).join('');
     const proveedoresOpts = wizard.listas.proveedores.map(p => `<option value="${escapeHtml(p.valor)}" ${p.valor===oc.proveedor?'selected':''}>${escapeHtml(p.valor)}</option>`).join('');
     const sectores = wizard.listas.sectores.filter(s =>
-      (s.obra_ref||'').trim() === (oc.obra||'').trim() || !(s.obra_ref||'').trim()
+      _obraMatch(s.obra_ref, oc.obra)
     );
-    const sectoresOpts = sectores.map(s => `<option value="${escapeHtml(s.valor)}" ${s.valor===oc.sector?'selected':''}>${escapeHtml(s.valor)}</option>`).join('');
+    let sectoresOpts = sectores.map(s => `<option value="${escapeHtml(s.valor)}" ${s.valor===oc.sector?'selected':''}>${escapeHtml(s.valor)}</option>`).join('');
+    // Preservar el sector ya guardado aunque no pertenezca a la obra (datos históricos): no se pierde al editar.
+    if(oc.sector && !sectores.some(s => s.valor === oc.sector)){
+      sectoresOpts = `<option value="${escapeHtml(oc.sector)}" selected>${escapeHtml(oc.sector)} (sector actual)</option>` + sectoresOpts;
+    }
 
     return `
     <div class="detail-section">
