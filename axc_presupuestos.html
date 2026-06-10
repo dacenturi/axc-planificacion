@@ -675,7 +675,7 @@ async function loadProfileAndApp(){
 // ════════════════════════════════════════════════════════
 // Estado del editor (en memoria; commit al Guardar)
 // ════════════════════════════════════════════════════════
-const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, listasLoaded:false };
+const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, listasLoaded:false };
 
 // ── Lista ───────────────────────────────────────────────
 async function loadList(){
@@ -746,12 +746,14 @@ async function loadInsList(){
   try{
     const { data:ins } = await sb.from('insumos').select('codigo,unidad_compra,producto_id');
     const ids = (ins||[]).map(function(i){ return i.producto_id; }).filter(function(x){ return x!=null; });
-    let names = {};
+    let names = {}, precios = {};
     if(ids.length){
-      const { data:prods } = await sb.from('productos_catalogo').select('id,nombre').in('id', ids);
-      (prods||[]).forEach(function(p){ names[String(p.id)] = p.nombre; });
+      const { data:prods } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids);
+      (prods||[]).forEach(function(p){ names[String(p.id)] = p.nombre; precios[String(p.id)] = Number(p.precio_referencia)||0; });
     }
-    ed.insList = (ins||[]).map(function(i){ return { codigo:i.codigo, unidad:i.unidad_compra||'', nombre: names[String(i.producto_id)]||'' }; });
+    ed.precioByIns = {};
+    (ins||[]).forEach(function(i){ ed.precioByIns[i.codigo] = i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0; });
+    ed.insList = (ins||[]).map(function(i){ return { codigo:i.codigo, unidad:i.unidad_compra||'', nombre: names[String(i.producto_id)]||'', precio: (i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0) }; });
     ed.insList.sort(function(a,b){
       const na=parseInt((String(a.codigo).match(/(\d+)/)||[])[1]||'999999',10);
       const nb=parseInt((String(b.codigo).match(/(\d+)/)||[])[1]||'999999',10);
@@ -759,6 +761,7 @@ async function loadInsList(){
     });
     const dl = document.getElementById('insLista');
     if(dl) dl.innerHTML = ed.insList.map(function(i){ return '<option value="'+escapeHtml(i.codigo)+'">'+escapeHtml(i.codigo+(i.nombre?' · '+i.nombre:'')+(i.unidad?' ('+i.unidad+')':''))+'</option>'; }).join('');
+    if(ed.insumos && ed.insumos.length){ try{ renderInsumos(); }catch(e){} }   // repintar con precios ya cargados
   }catch(e){ console.warn('loadInsList', e); }
 }
 function _fillDatalist(id, arr){ const dl=document.getElementById(id); if(dl) dl.innerHTML = arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'; }).join(''); }
@@ -833,7 +836,7 @@ async function openEdit(codigo){
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
     ed.rubros = (rub||[]).map(function(r){ return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
-    ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'' }; });
+    ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):'') }; });
     renderRubros(); renderInsumos();
   }catch(e){ console.warn('openEdit', e); showToast('Error cargando el presupuesto', 'error'); }
 }
@@ -928,38 +931,92 @@ function renderInsumos(){
   const keys = []; order.forEach(function(k){ if(groups[k]) keys.push(k); });
   Object.keys(groups).forEach(function(k){ if(keys.indexOf(k)<0 && k!=='') keys.push(k); });
   if(groups['']) keys.push('');
+  const rubByCod = {}; ed.rubros.forEach(function(r){ rubByCod[r.rubro_codigo]=r; });
+  const PR = ed.precioByIns || {};
+  const _pr = function(cod){ return Number(PR[cod])||0; };
   let html='';
+  let totalGsPresu = 0;
   keys.forEach(function(k){
     const idxs = groups[k];
     const isGen = !k;
-    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+'</span><span class="sub">Subtotal: '+idxs.length+' insumo'+(idxs.length===1?'':'s')+'</span></div>';
-    html += '<table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad</th><th></th></tr></thead><tbody>';
-    idxs.forEach(function(idx){
-      const r = ed.insumos[idx];
-      html += '<tr>'+
-        '<td>'+escapeHtml(r.codigo_insumo)+'</td>'+
-        '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
-        '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:80px"></td>'+
-        '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="cantidad" value="'+r.cantidad+'"></td>'+
-        '<td><button class="pm-delx" data-del="'+idx+'" type="button">×</button></td></tr>';
-    });
-    html += '</tbody></table></div>';
+    const rub = rubByCod[k];
+    const cantRubro = rub ? (Number(rub.cantidad)||0) : 0;
+    const conReceta = !isGen && rub && rub.tiene_receta;
+    let subGs = 0;
+    idxs.forEach(function(idx){ const r=ed.insumos[idx]; const calc=(Number(r.coef1)||0)>0&&(Number(r.coef2)||0)>0&&conReceta; const q=calc?_recipeQtyRaw(r,cantRubro):(Number(r.cantidad)||0); subGs += q*_pr(r.codigo_insumo); });
+    subGs = Math.round(subGs); totalGsPresu += subGs;
+    const headExtra = conReceta ? (' · cantidad rubro: '+_qty(cantRubro)+' '+escapeHtml(rub.unidad||'')) : '';
+    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+'</span><span class="sub">'+idxs.length+' insumo'+(idxs.length===1?'':'s')+headExtra+' · <b style="color:#1F3864">Subtotal ₲ '+fmtGs(subGs)+'</b></span></div>';
+    if(conReceta){
+      html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n" title="Consumo por unidad de rubro">COEF1</th><th class="n" title="Contenido del envase">COEF2</th><th class="n" title="Merma (0,05 = 5%)">Merma</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
+      idxs.forEach(function(idx){
+        const r = ed.insumos[idx];
+        const calc = (Number(r.coef1)||0)>0 && (Number(r.coef2)||0)>0;
+        if(calc){ r.cantidad = Math.round(_recipeQtyRaw(r, cantRubro)*1000)/1000; }
+        const pr = _pr(r.codigo_insumo); const sub = Math.round((Number(r.cantidad)||0)*pr);
+        html += '<tr>'+
+          '<td>'+escapeHtml(r.codigo_insumo)+'</td>'+
+          '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
+          '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:58px"></td>'+
+          '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="coef1" data-rubrok="'+escapeHtml(k)+'" value="'+(r.coef1===''?'':r.coef1)+'" style="max-width:68px"></td>'+
+          '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="coef2" data-rubrok="'+escapeHtml(k)+'" value="'+(r.coef2===''?'':r.coef2)+'" style="max-width:68px"></td>'+
+          '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="merma_pct" data-rubrok="'+escapeHtml(k)+'" value="'+(r.merma_pct===''?'':r.merma_pct)+'" style="max-width:56px"></td>'+
+          (calc
+            ? '<td class="n" title="COEF1 × cantidad rubro × (1+merma) ÷ COEF2"><b>'+_qty(r.cantidad)+'</b></td>'
+            : '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="cantidad" value="'+r.cantidad+'"></td>')+
+          '<td class="n">'+(pr>0?fmtGs(pr):'<span style="color:#c0392b" title="Insumo sin precio en el catálogo">s/precio</span>')+'</td>'+
+          '<td class="n"><b>'+fmtGs(sub)+'</b></td>'+
+          '<td><button class="pm-delx" data-del="'+idx+'" type="button">×</button></td></tr>';
+      });
+      html += '</tbody></table></div></div>';
+    } else {
+      html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
+      idxs.forEach(function(idx){
+        const r = ed.insumos[idx];
+        const pr = _pr(r.codigo_insumo); const sub = Math.round((Number(r.cantidad)||0)*pr);
+        html += '<tr>'+
+          '<td>'+escapeHtml(r.codigo_insumo)+'</td>'+
+          '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
+          '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:70px"></td>'+
+          '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="cantidad" value="'+r.cantidad+'"></td>'+
+          '<td class="n">'+(pr>0?fmtGs(pr):'<span style="color:#c0392b">s/precio</span>')+'</td>'+
+          '<td class="n"><b>'+fmtGs(sub)+'</b></td>'+
+          '<td><button class="pm-delx" data-del="'+idx+'" type="button">×</button></td></tr>';
+      });
+      html += '</tbody></table></div></div>';
+    }
   });
-  // total consolidado por material
+  // total consolidado por material (cantidad + valor en Gs)
   const agg = {};
-  ed.insumos.forEach(function(it){ const k=it.codigo_insumo; if(!agg[k]) agg[k]={ codigo:k, material:it.material, unidad:it.unidad, cantidad:0 }; agg[k].cantidad += Number(it.cantidad)||0; });
+  ed.insumos.forEach(function(it){
+    const kk=it.codigo_insumo;
+    const rub2 = rubByCod[it.rubro_codigo||''];
+    const cantRub2 = rub2 ? (Number(rub2.cantidad)||0) : 0;
+    const calc2 = (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0 && rub2 && rub2.tiene_receta;
+    const qty = calc2 ? _recipeQtyRaw(it, cantRub2) : (Number(it.cantidad)||0);
+    if(!agg[kk]) agg[kk]={ codigo:kk, material:it.material, unidad:it.unidad, cantidad:0 };
+    agg[kk].cantidad += qty;
+  });
   const tot = Object.keys(agg).map(function(k){ return agg[k]; });
-  html += '<div class="ins-total"><div class="ins-total-head"><span>TOTAL DEL PRESUPUESTO (consolidado por material)</span><span>'+tot.length+' material'+(tot.length===1?'':'es')+'</span></div>';
-  html += '<table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad total</th></tr></thead><tbody>';
-  tot.forEach(function(t){ html += '<tr><td>'+escapeHtml(t.codigo)+'</td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.unidad||'')+'</td><td class="n"><b>'+_qty(Math.round(t.cantidad*1000)/1000)+'</b></td></tr>'; });
-  html += '</tbody></table></div>';
+  html += '<div class="ins-total"><div class="ins-total-head"><span>TOTAL DEL PRESUPUESTO (consolidado por material)</span><span>'+tot.length+' material'+(tot.length===1?'':'es')+' · ₲ '+fmtGs(Math.round(totalGsPresu))+'</span></div>';
+  html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad total</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th></tr></thead><tbody>';
+  let totCheck = 0;
+  tot.forEach(function(t){ const pr=_pr(t.codigo); const sub=Math.round(t.cantidad*pr); totCheck+=sub; html += '<tr><td>'+escapeHtml(t.codigo)+'</td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.unidad||'')+'</td><td class="n"><b>'+_qty(Math.round(t.cantidad*1000)/1000)+'</b></td><td class="n">'+(pr>0?fmtGs(pr):'—')+'</td><td class="n"><b>'+fmtGs(sub)+'</b></td></tr>'; });
+  html += '</tbody><tfoot><tr><td colspan="5" style="text-align:right;font-weight:700">TOTAL ₲</td><td class="n" style="font-weight:800;color:#1F3864">'+fmtGs(Math.round(totCheck))+'</td></tr></tfoot></table></div></div>';
   box.innerHTML = html;
   // handlers
   box.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
       const idx = Number(inp.dataset.idx), f = inp.dataset.f;
-      ed.insumos[idx][f] = (f==='cantidad') ? (Number(inp.value)||0) : inp.value;
-      if(f==='cantidad') renderInsumos();
+      const numF = {cantidad:1, coef1:1, coef2:1, merma_pct:1};
+      ed.insumos[idx][f] = numF[f] ? (inp.value===''?'':(Number(inp.value)||0)) : inp.value;
+      if(f==='coef1'||f==='coef2'||f==='merma_pct'){
+        const rub = rubByCod[inp.dataset.rubrok||''];
+        const cantRubro = rub ? (Number(rub.cantidad)||0) : 0;
+        const it = ed.insumos[idx];
+        if((Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0){ it.cantidad = Math.round(_recipeQtyRaw(it, cantRubro)*1000)/1000; }
+        renderInsumos();
+      } else if(f==='cantidad'){ renderInsumos(); }
     });
   });
   box.querySelectorAll('[data-del]').forEach(function(b){ b.addEventListener('click', function(){ ed.insumos.splice(Number(b.dataset.del),1); renderInsumos(); }); });
@@ -1016,7 +1073,12 @@ async function saveBudget(){
     const id = await sb.from('presupuesto_insumos').delete().eq('presupuesto', codigo);
     if(id.error) throw id.error;
     if(ed.insumos.length){
-      const payload = ed.insumos.map(function(i){ return { presupuesto:codigo, rubro_codigo:(i.rubro_codigo||null), codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0 }; });
+      const _hayCoef = ed.insumos.some(function(i){ return (Number(i.coef1)||0) || (Number(i.coef2)||0) || (Number(i.merma_pct)||0); });
+      const payload = ed.insumos.map(function(i){
+        const row = { presupuesto:codigo, rubro_codigo:(i.rubro_codigo||null), codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0 };
+        if(_hayCoef){ row.coef1 = (i.coef1!=null && i.coef1!=='') ? Number(i.coef1) : null; row.coef2 = (i.coef2!=null && i.coef2!=='') ? Number(i.coef2) : null; row.merma_pct = (i.merma_pct!=null && i.merma_pct!=='') ? Number(i.merma_pct) : null; }
+        return row;
+      });
       const ii = await sb.from('presupuesto_insumos').insert(payload);
       if(ii.error) throw ii.error;
     }
@@ -1059,7 +1121,7 @@ async function calcInsumosFromRecetas(){
         if(tipo !== 'insumo') return;
         const ins = it.codigo_catalogo; if(!ins) return;
         const q = _recipeQtyRaw(it, r.cantidad);
-        if(!agg[ins]) agg[ins] = { codigo_insumo:ins, material:it.material||'', unidad:it.unidad||'', cantidad:0, rubro_codigo:r.rubro_codigo };
+        if(!agg[ins]) agg[ins] = { codigo_insumo:ins, material:it.material||'', unidad:it.unidad||'', cantidad:0, rubro_codigo:r.rubro_codigo, coef1:Number(it.coef1)||0, coef2:Number(it.coef2)||0, merma_pct:Number(it.merma_pct)||0 };
         agg[ins].cantidad += q;
       });
       Object.keys(agg).forEach(function(k){ const a=agg[k]; a.cantidad=Math.round(a.cantidad*1000)/1000; nuevos.push(a); });
