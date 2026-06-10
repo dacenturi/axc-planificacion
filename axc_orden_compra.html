@@ -4194,6 +4194,7 @@ body{
         </div>
         <input type="text" id="cbSelect" list="presuListCart" placeholder="Elegí el presupuesto" style="display:none">
         <datalist id="presuListCart"></datalist>
+        <button type="button" id="cbVerDetalle" style="display:none;margin-top:8px;width:100%;padding:8px 10px;border:1px solid #1F3864;background:#1F3864;color:#fff;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">📊 Ver detalle del presupuesto</button>
       </div>
       <div class="cart-items" id="cartItems">
         <div class="cart-empty">
@@ -6342,6 +6343,7 @@ async function setPresupuesto(pp, silent){
   const e = _cbEls();
   if(e.cno){ e.csi.checked=!!pp; e.cno.checked=!pp; e.csel.style.display=pp?'':'none'; if(e.csel.value!==pp) e.csel.value=pp; }
   if(e.dno){ e.dsi.checked=!!pp; e.dno.checked=!pp; e.dfld.style.display=pp?'':'none'; if(e.dfld.value!==pp) e.dfld.value=pp; }
+  var _vd=document.getElementById('cbVerDetalle'); if(_vd) _vd.style.display = pp?'block':'none';
   if(!silent && typeof saveDraft === 'function') saveDraft();
   if(pp){ await cartBudgetLoad(pp); } else { cartBudget.pp=''; cartBudget.mats=null; cartBudgetRender(); }
 }
@@ -6447,6 +6449,8 @@ async function cartBudgetLoad(pp){
       ragg[key].limite += pt;
     });
     const rubros = rorder.map(function(k){ return ragg[k]; });
+    // Lista COMPLETA de rubros (con y sin receta) para el modal de detalle
+    const allRubros = (rb.data||[]).map(function(r){ return { rubro_codigo:String(r.rubro_codigo||''), descripcion:r.descripcion||'', unidad:r.unidad||'', precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
     cartBudget.rubroDesc = rubroDesc;
     const ocs = await sb.from('ordenes_compra').select('id,estado').eq('presupuesto', pp);
     const estadoById = {}; const ids = [];
@@ -6456,8 +6460,8 @@ async function cartBudgetLoad(pp){
       const it = await sb.from('ordenes_compra_items').select('producto_id,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
       ocItems = (it.data||[]).map(function(x){ const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0; return { producto_id:x.producto_id, cantidad:c, subtotal:c*p, estado: estadoById[x.oc_id]||'', rubro_codigo:x.rubro_codigo||'' }; });
     }
-    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; }
-  }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.rubros = []; cartBudget.ocItems = []; } }
+    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; cartBudget.allRubros = allRubros; }
+  }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.rubros = []; cartBudget.ocItems = []; cartBudget.allRubros = []; } }
   if(wizard.open && typeof renderCart === 'function') renderCart(); else cartBudgetRender();
 }
 
@@ -6486,6 +6490,7 @@ function _cbAggMoney(rubroKey){
   (wizard.cart||[]).forEach(function(it){ if(_cbResolveRubro(it.producto_id) === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
+
 
 function _cbRenderInto(panel, includeCart){
   if(!panel) return;
@@ -11174,6 +11179,133 @@ function injectBudgetStyles(){
 
 try{ initBudgetUI(); }catch(e){ console.warn('budget init:', e); }
 
+// ═══════════════════════════════════════════════════════════════════
+// MODAL · Detalle del presupuesto (rubros + composición, Presup./Disp.)
+// ═══════════════════════════════════════════════════════════════════
+function _pdInjectStyles(){
+  if(document.getElementById('pdStyles')) return;
+  const st=document.createElement('style'); st.id='pdStyles';
+  st.textContent=[
+    '.pd-head{background:#1F3864;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:flex-start}',
+    '.pd-title{font-size:16px;font-weight:700}',
+    '.pd-sub{font-size:12.5px;color:#b9c6dd;margin-top:3px}',
+    '.pd-close{font-size:18px;cursor:pointer;color:#b9c6dd;line-height:1}',
+    '.pd-globalbar{padding:14px 20px;border-bottom:1px solid #eef1f5}',
+    '.pd-gbtop{display:flex;justify-content:space-between;font-size:12px;color:#5a6677;margin-bottom:6px}',
+    '.pd-search{padding:12px 20px;border-bottom:1px solid #eef1f5}',
+    '.pd-search input{width:100%;padding:9px 12px;border:1px solid #d3d9e3;border-radius:8px;font-size:13px;box-sizing:border-box}',
+    '.pd-list{max-height:48vh;overflow-y:auto}',
+    '.pd-rubro{padding:12px 20px;border-bottom:1px solid #eef1f5}',
+    '.pd-rhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}',
+    '.pd-rname{font-size:13.5px;font-weight:700;color:#1F3864}',
+    '.pd-rsub{font-size:11.5px;color:#8893a5;margin-top:2px}',
+    '.pd-rnums{text-align:right;white-space:nowrap}',
+    '.pd-rpres{font-size:11px;color:#5a6677}',
+    '.pd-rdisp{font-size:13.5px;font-weight:700}',
+    '.pd-bar{height:6px;background:#eef1f5;border-radius:999px;margin-top:8px;overflow:hidden}',
+    '.pd-bar-lg{height:10px}',
+    '.pd-bar-fill{height:100%}',
+    '.pd-chev{display:inline-block;font-size:11px;color:#1F3864;width:12px}',
+    '.pd-comp{margin-top:10px}',
+    '.pd-ctbl{width:100%;border-collapse:collapse;font-size:11.5px}',
+    '.pd-ctbl th{background:#eef3fb;color:#42506a;text-align:right;padding:5px 8px;font-weight:700}',
+    '.pd-ctbl th:first-child{text-align:left}',
+    '.pd-ctbl td{padding:5px 8px;border-top:1px solid #eef1f5;text-align:right}',
+    '.pd-ctbl td:first-child{text-align:left}',
+    '.pd-u{color:#8893a5}',
+    '.pd-foot{padding:14px 20px;background:#f3f6fb;display:flex;justify-content:space-between;font-size:12.5px;color:#5a6677}'
+  ].join('\n');
+  document.head.appendChild(st);
+}
+function _pdMoney(n){ try{ return (typeof fmtMoney==='function')?fmtMoney(n):('₲ '+Math.round(n).toLocaleString('es-PY')); }catch(e){ return Math.round(n).toLocaleString('es-PY'); } }
+function _pdColor(disp, limite){ return limite<=0 ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < limite*0.15 ? '#C8A028' : '#1B5524')); }
+/* Gasto en Gs imputado a un rubro: por insumo (rubro_codigo del ítem) o por servicio (mapeo producto→rubro) */
+function _pdRubroGs(rubroCod, includeCart){
+  const rc=String(rubroCod||''); let ejec=0, reserv=0, carr=0;
+  if(!rc) return { ejec:0, reserv:0, carr:0 };
+  (cartBudget.ocItems||[]).forEach(function(x){
+    const hit = (String(x.rubro_codigo||'')===rc) || (_cbResolveRubro(x.producto_id)===rc);
+    if(!hit) return;
+    if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.subtotal;
+    else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.subtotal;
+  });
+  if(includeCart) (wizard.cart||[]).forEach(function(it){
+    const hit = (String(it.rubro_codigo||'')===rc) || (_cbResolveRubro(it.producto_id)===rc);
+    if(hit) carr += Number(it.subtotal)||0;
+  });
+  return { ejec:ejec, reserv:reserv, carr:carr };
+}
+async function openPresuDetalle(){
+  const pp=cartBudget.pp; if(!pp) return;
+  _pdInjectStyles();
+  const ov=document.getElementById('presuDetalleOverlay'); const modal=document.getElementById('presuDetalleModal');
+  if(!ov||!modal) return;
+  ov.style.display='flex';
+  modal.innerHTML='<div style="padding:40px;text-align:center;color:#8893a5;font-size:13px">Cargando detalle…</div>';
+  let obra='';
+  try{ const cab=await sb.from('presupuesto_cab').select('obra').eq('codigo',pp).maybeSingle(); obra=(cab.data&&cab.data.obra)||''; }catch(e){}
+  _pdRender(pp, obra, '');
+}
+function closePresuDetalle(){ const ov=document.getElementById('presuDetalleOverlay'); if(ov) ov.style.display='none'; }
+function _pdRender(pp, obra, filtro){
+  const modal=document.getElementById('presuDetalleModal'); if(!modal) return;
+  const allR=cartBudget.allRubros||[]; const mats=cartBudget.mats||[];
+  const insByRubro={}; mats.forEach(function(m){ const rk=m.rubro_codigo||''; (insByRubro[rk]=insByRubro[rk]||[]).push(m); });
+  const f=(filtro||'').toLowerCase().trim();
+  let totPres=0, totDisp=0, gConsum=0, exceeded=0, visibles=0, rows='';
+  allR.forEach(function(r){
+    const cod=r.rubro_codigo; const g=_pdRubroGs(cod, true);
+    const pres=r.precio_total; const disp=pres - g.ejec - g.reserv - g.carr;
+    totPres+=pres; totDisp+=disp; gConsum+=(g.ejec+g.reserv+g.carr); if(disp<0) exceeded++;
+    if(f && (cod+' '+r.descripcion).toLowerCase().indexOf(f)<0) return;
+    visibles++;
+    const ins=insByRubro[cod]||[]; const tieneComp=ins.length>0;
+    const col=_pdColor(disp, pres);
+    const consumPct=pres>0 ? Math.max(0,Math.min(100,Math.round(((g.ejec+g.reserv+g.carr)/pres)*100))) : 0;
+    rows+='<div class="pd-rubro">'+
+      '<div class="pd-rhead"'+(tieneComp?(' data-rk="'+escapeHtml(cod)+'" style="cursor:pointer"'):'')+'>'+
+        '<div style="min-width:0"><div class="pd-rname">'+(tieneComp?'<span class="pd-chev">▸</span> ':'')+escapeHtml((cod?cod+' · ':'')+r.descripcion)+'</div>'+
+        '<div class="pd-rsub"'+(tieneComp?' style="margin-left:16px"':'')+'>'+(tieneComp?('Composición · '+ins.length+' insumo'+(ins.length===1?'':'s')):'Control por monto')+'</div></div>'+
+        '<div class="pd-rnums"><div class="pd-rpres">Presup. '+_pdMoney(pres)+'</div><div class="pd-rdisp" style="color:'+col+'">Disp. '+_pdMoney(disp)+'</div></div>'+
+      '</div>'+
+      '<div class="pd-bar"><div class="pd-bar-fill" style="width:'+consumPct+'%;background:'+(disp<0?'#c0392b':'#1F3864')+'"></div></div>';
+    if(tieneComp){
+      let irows='';
+      ins.forEach(function(m){
+        const a=_cbAgg(m.codigo_insumo, cod); const idisp=m.limite - a.ejec - a.reserv - a.carr; const icol=_pdColor(idisp, m.limite);
+        irows+='<tr><td>'+escapeHtml(m.material)+(m.unidad?(' <span class="pd-u">('+escapeHtml(m.unidad)+')</span>'):'')+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+icol+';font-weight:700">'+idisp.toLocaleString('es-PY')+'</td></tr>';
+      });
+      rows+='<div class="pd-comp" id="pd-comp-'+escapeHtml(cod)+'" style="display:none"><table class="pd-ctbl"><thead><tr><th>Insumo</th><th>Presup.</th><th>Disp.</th></tr></thead><tbody>'+irows+'</tbody></table></div>';
+    }
+    rows+='</div>';
+  });
+  if(!visibles) rows='<div style="padding:24px;text-align:center;color:#8893a5;font-size:13px">Sin rubros que coincidan con la búsqueda.</div>';
+  const status=exceeded>0 ? '<span style="background:#7a1f1f;color:#ffd2d2;font-size:12px;padding:4px 10px;border-radius:999px;font-weight:700">⚠ '+exceeded+' excedido(s)</span>' : '<span style="background:#1B5524;color:#d6f0db;font-size:12px;padding:4px 10px;border-radius:999px;font-weight:700">✓ En límite</span>';
+  const globalConsum=totPres>0 ? Math.max(0,Math.min(100,Math.round((gConsum/totPres)*100))) : 0;
+  modal.innerHTML=
+    '<div class="pd-head"><div><div class="pd-title">Detalle del presupuesto · '+escapeHtml(pp)+'</div><div class="pd-sub">'+(obra?('Obra: '+escapeHtml(obra)+' · '):'')+allR.length+' rubro'+(allR.length===1?'':'s')+'</div></div><div style="display:flex;align-items:center;gap:10px">'+status+'<span class="pd-close" id="pdClose">✕</span></div></div>'+
+    '<div class="pd-globalbar"><div class="pd-gbtop"><span>Avance global</span><span>'+_pdMoney(totDisp)+' disp. de '+_pdMoney(totPres)+'</span></div><div class="pd-bar pd-bar-lg"><div class="pd-bar-fill" style="width:'+globalConsum+'%;background:'+(totDisp<0?'#c0392b':'#1F3864')+'"></div></div></div>'+
+    '<div class="pd-search"><input type="text" id="pdSearch" placeholder="Buscar rubro por código o nombre…" value="'+escapeHtml(filtro||'')+'"></div>'+
+    '<div class="pd-list">'+rows+'</div>'+
+    '<div class="pd-foot"><span>Total presupuestado <b>'+_pdMoney(totPres)+'</b></span><span>Total disponible <b style="color:'+(totDisp<0?'#c0392b':'#1B5524')+'">'+_pdMoney(totDisp)+'</b></span></div>';
+  const cl=document.getElementById('pdClose'); if(cl) cl.addEventListener('click', closePresuDetalle);
+  const search=document.getElementById('pdSearch');
+  if(search) search.addEventListener('input', function(){ const v=this.value; _pdRender(pp, obra, v); const s=document.getElementById('pdSearch'); if(s){ s.focus(); try{ s.setSelectionRange(v.length,v.length); }catch(_e){} } });
+  modal.querySelectorAll('.pd-rhead[data-rk]').forEach(function(h){
+    h.addEventListener('click', function(){
+      const rk=h.getAttribute('data-rk'); const comp=document.getElementById('pd-comp-'+rk); const chev=h.querySelector('.pd-chev');
+      if(comp){ const willOpen=(comp.style.display==='none'); comp.style.display=willOpen?'':'none'; if(chev) chev.textContent=willOpen?'▾':'▸'; }
+    });
+  });
+}
+(function(){
+  const vd=document.getElementById('cbVerDetalle'); if(vd) vd.addEventListener('click', function(){ try{ openPresuDetalle(); }catch(e){ console.warn('openPresuDetalle', e); } });
+  const ov=document.getElementById('presuDetalleOverlay'); if(ov) ov.addEventListener('click', function(e){ if(e.target===ov) closePresuDetalle(); });
+})();
+
 </script>
+<div id="presuDetalleOverlay" style="display:none;position:fixed;inset:0;background:rgba(12,30,60,0.55);z-index:9999;align-items:flex-start;justify-content:center;padding:24px;overflow:auto">
+  <div id="presuDetalleModal" style="width:100%;max-width:780px;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);margin:auto"></div>
+</div>
 </body>
 </html>
