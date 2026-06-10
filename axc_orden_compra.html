@@ -4125,16 +4125,7 @@ body{
                 <option value="Efectivo - Caja Chica">Efectivo - Caja Chica</option>
               </select>
             </div>
-            <div class="step-field">
-              <label>Presupuesto</label>
-              <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap">
-                <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;padding:7px 12px;border:1px solid #d3d9e3;border-radius:8px"><input type="radio" name="presuMode" id="presuNo" value="no" checked> Sin presupuesto</label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;padding:7px 12px;border:1px solid #d3d9e3;border-radius:8px"><input type="radio" name="presuMode" id="presuSi" value="si"> Con presupuesto</label>
-              </div>
-              <input type="text" class="step-input" id="fldPresupuesto" list="presuList" placeholder="Elegí o escribí el presupuesto (ej. PP39-ORQ)" style="display:none">
-              <datalist id="presuList"></datalist>
-              <div id="presuSeguimiento" style="display:none;margin-top:10px"></div>
-            </div>
+            <!-- Presupuesto: se elige únicamente en el Carrito (Paso 1). Selector quitado del Paso 2 para evitar duplicación y desincronización; el valor se toma del carrito vía setPresupuesto(). -->
 
             <div class="step-field full">
               <label for="fldObservacion">Observación (opcional)</label>
@@ -4759,6 +4750,28 @@ function fmtFecha(s){
     return d.toLocaleDateString('es-PY',{day:'2-digit',month:'short',year:'numeric'});
   }catch{return s}
 }
+function fmtFechaHora(oc){
+  // Fecha + hora de creación. Usa created_at (timestamp completo) si existe; sino, solo la fecha del día.
+  const ca = oc && oc.created_at ? oc.created_at : null;
+  if(ca){
+    try{
+      const d = new Date(ca);
+      if(!isNaN(d.getTime())){
+        const f = d.toLocaleDateString('es-PY',{day:'2-digit',month:'short',year:'numeric'});
+        const h = d.toLocaleTimeString('es-PY',{hour:'2-digit',minute:'2-digit'});
+        return f + ' · ' + h;
+      }
+    }catch{}
+  }
+  return fmtFecha(oc && oc.fecha ? oc.fecha : null);
+}
+function _ocFechaOrden(oc){
+  // Clave de ordenamiento por fecha-hora COMPLETA (no solo el día).
+  // Prioriza created_at (timestamp); si falta, usa fecha + medianoche para mantener comparabilidad.
+  if(oc && oc.created_at) return String(oc.created_at);
+  if(oc && oc.fecha) return String(oc.fecha) + 'T00:00:00';
+  return '';
+}
 function escapeHtml(s){
   if(s==null)return '';
   return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -4948,8 +4961,8 @@ function applyFiltersAndSort(){
   // Filtro por estado
   if(state.filtros.estado === 'pendientes'){
     arr = arr.filter(o => o.estado === 'Solicitado' || o.estado === 'Observado');
-    // Ordenar por antigüedad (más viejas primero) cuando es pendientes
-    arr.sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||''));
+    // Ordenar por antigüedad (más viejas primero) cuando es pendientes — por fecha-hora completa
+    arr.sort((a,b)=>_ocFechaOrden(a).localeCompare(_ocFechaOrden(b)));
   } else if(state.filtros.estado !== 'todos'){
     arr = arr.filter(o => o.estado === state.filtros.estado);
   }
@@ -4969,8 +4982,8 @@ function applyFiltersAndSort(){
   // Ordenamiento
   const ord = state.orden;
   arr.sort((a,b)=>{
-    if(ord==='fecha-desc') return (b.fecha||'').localeCompare(a.fecha||'');
-    if(ord==='fecha-asc')  return (a.fecha||'').localeCompare(b.fecha||'');
+    if(ord==='fecha-desc') return _ocFechaOrden(b).localeCompare(_ocFechaOrden(a));
+    if(ord==='fecha-asc')  return _ocFechaOrden(a).localeCompare(_ocFechaOrden(b));
     if(ord==='valor-desc') return Number(b.valor_total||0) - Number(a.valor_total||0);
     if(ord==='valor-asc')  return Number(a.valor_total||0) - Number(b.valor_total||0);
     if(ord==='numero-desc')return (b.numero_oc||'').localeCompare(a.numero_oc||'');
@@ -5059,7 +5072,7 @@ function renderList(){
         <div class="oc-numero-block">
           <div class="oc-numero">${escapeHtml(numeroDisplay)}</div>
           ${isLegacy ? '<div class="oc-legacy-tag">HISTÓRICA</div>' : ''}
-          <div class="oc-fecha">${fmtFecha(oc.fecha)}</div>
+          <div class="oc-fecha">${fmtFechaHora(oc)}</div>
         </div>
         <div class="oc-data">
           <div class="oc-obra">${obraEsc}${oc._adjuntos_count > 0 ? `<span class="oc-attach-tag" title="${oc._adjuntos_count} adjunto(s)">📎 ${oc._adjuntos_count}</span>` : ''}</div>
@@ -6212,7 +6225,7 @@ async function enterStep2(){
   document.getElementById('fldProveedor').value = wizard.form.proveedor || '';
   document.getElementById('fldVendedor').value = wizard.form.vendedor || '';
   document.getElementById('fldTipoCompra').value = wizard.form.tipo_compra || '';
-  document.getElementById('fldPresupuesto').value = wizard.form.presupuesto || '';
+  // Presupuesto se gestiona en el Carrito (Paso 1); presuApplyMode() sincroniza el valor actual.
   presuInit(); presuApplyMode();
   document.getElementById('fldObservacion').value = wizard.form.observacion || '';
 
