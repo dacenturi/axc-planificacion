@@ -1522,6 +1522,38 @@ body{
   opacity:1;
   transform:scale(1);
 }
+.prod-card .prod-edit-btn{
+  position:absolute;
+  top:6px;
+  right:40px;
+  width:28px;
+  height:28px;
+  background:rgba(255,255,255,.95);
+  border:1.5px solid #b9c7e0;
+  color:#1F3864;
+  border-radius:50%;
+  cursor:pointer;
+  font-size:13px;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transform:scale(.85);
+  transition:all .15s;
+  z-index:5;
+  backdrop-filter:blur(4px);
+}
+.prod-card:hover .prod-edit-btn{
+  display:flex;
+  opacity:1;
+  transform:scale(1);
+}
+.prod-card .prod-edit-btn:hover{
+  background:#1F3864;
+  color:#fff;
+  border-color:#1F3864;
+  transform:scale(1.08);
+}
 .prod-card .prod-delete-btn:hover{
   background:var(--red);
   color:#fff;
@@ -5348,6 +5380,10 @@ function renderCatalog(showLoading){
     const inCart = cartIds.has(p.id);
     const imgUrl = p.url_imagen && p.url_imagen.startsWith('http') ? p.url_imagen : '';
     const isCustom = !!p.creado_por; // Solo los creados desde la app tienen este campo
+    const isAdmin = state.profile?.rol === 'admin';
+    const editBtn = isAdmin
+      ? `<button class="prod-edit-btn" data-edit-product-id="${p.id}" title="Editar este producto (admin)">✎</button>`
+      : '';
     const marca = p.marca ? `<span class="prod-card-tag">${escapeHtml(p.marca)}</span>` : '';
     const unidad = p.unidad_medida ? `<span class="prod-card-tag">${escapeHtml(p.unidad_medida)}</span>` : '';
     const metaRow = (marca || unidad) ? `<div class="prod-card-meta-row">${marca}${unidad}</div>` : '';
@@ -5356,6 +5392,7 @@ function renderCatalog(showLoading){
       : '';
     return `
       <div class="prod-card ${inCart?'in-cart':''}" data-product-id="${p.id}">
+        ${editBtn}
         ${delBtn}
         <div class="prod-img-wrap">
           ${imgUrl ? `<img src="${escapeHtml(imgUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.innerHTML='<div class=&quot;prod-img-fallback&quot;>📦</div>'">` : '<div class="prod-img-fallback">📦</div>'}
@@ -5376,10 +5413,21 @@ function renderCatalog(showLoading){
 
   wrap.querySelectorAll('.prod-card').forEach(card => {
     card.addEventListener('click', (e)=>{
-      // Si clickearon en el botón eliminar, no abrir el modal de producto
+      // Si clickearon en el botón eliminar o editar, no abrir el modal de producto
       if(e.target.closest('.prod-delete-btn')) return;
+      if(e.target.closest('.prod-edit-btn')) return;
       const id = Number(card.dataset.productId);
       openProductModal(id);
+    });
+  });
+
+  // Bindings de los botones editar (solo admin)
+  wrap.querySelectorAll('.prod-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const id = Number(btn.dataset.editProductId);
+      const prod = (wizard.catalog.items||[]).find(x => x.id === id);
+      if(prod) openEditProductModal(prod);
     });
   });
 
@@ -9786,6 +9834,8 @@ const addProductState = {
   open: false,
   imageFile: null,    // File seleccionado (aún no subido)
   imageDataUrl: null, // Para preview local
+  editId: null,       // Si no es null, el modal está editando ese producto (solo admin)
+  editImgUrl: '',     // URL de imagen existente al editar (se conserva si no se cambia)
 };
 
 // ───────────────────────────────────────────────
@@ -9795,6 +9845,14 @@ function openAddProductModal(prefilledName){
   addProductState.open = true;
   addProductState.imageFile = null;
   addProductState.imageDataUrl = null;
+  addProductState.editId = null;
+  addProductState.editImgUrl = '';
+
+  // Título y subtítulo en modo CREAR
+  const titEl = document.querySelector('#addProductBackdrop .add-list-title');
+  const subEl = document.querySelector('#addProductBackdrop .add-list-subtitle');
+  if(titEl) titEl.textContent = 'Agregar producto al catálogo';
+  if(subEl) subEl.textContent = 'El producto queda disponible para todos los usuarios';
 
   // Reset campos
   document.getElementById('addProductName').value = (prefilledName || '').trim().slice(0,200);
@@ -9820,6 +9878,50 @@ function openAddProductModal(prefilledName){
 function closeAddProductModal(){
   addProductState.open = false;
   document.getElementById('addProductBackdrop').classList.remove('visible');
+}
+
+// Abrir el modal en modo EDICIÓN (solo admin). Precarga los datos del producto.
+function openEditProductModal(prod){
+  if(state.profile?.rol !== 'admin'){ showToast('Solo los administradores pueden editar productos', 'error'); return; }
+  if(!prod || prod.id == null) return;
+  addProductState.open = true;
+  addProductState.imageFile = null;
+  addProductState.imageDataUrl = null;
+  addProductState.editId = prod.id;
+  addProductState.editImgUrl = (prod.url_imagen && String(prod.url_imagen).startsWith('http')) ? prod.url_imagen : '';
+
+  // Título y subtítulo en modo EDITAR
+  const titEl = document.querySelector('#addProductBackdrop .add-list-title');
+  const subEl = document.querySelector('#addProductBackdrop .add-list-subtitle');
+  if(titEl) titEl.textContent = 'Editar producto del catálogo';
+  if(subEl) subEl.textContent = 'Los cambios se aplican para todos los usuarios';
+
+  // Precargar campos
+  document.getElementById('addProductName').value = (prod.nombre || '').slice(0,200);
+  document.getElementById('addProductPrice').value = (prod.precio_referencia != null ? prod.precio_referencia : '');
+  document.getElementById('addProductMarca').value = prod.marca || '';
+  document.getElementById('addProductUnidad').value = prod.unidad_medida || '';
+  document.getElementById('addProductUrl').value = prod.url_producto || '';
+  document.getElementById('addProductError').classList.remove('visible');
+  document.getElementById('addProductProgress').style.display = 'none';
+
+  // Imagen: mostrar la existente como preview (sin marcar como archivo nuevo)
+  resetProductImage();
+  if(addProductState.editImgUrl){
+    const empty = document.getElementById('addProductImageEmpty');
+    const preview = document.getElementById('addProductImagePreview');
+    const clearBtn = document.getElementById('addProductImageClear');
+    if(preview){ preview.src = addProductState.editImgUrl; preview.style.display = 'block'; }
+    if(empty) empty.style.display = 'none';
+    if(clearBtn) clearBtn.style.display = 'inline-flex';
+  }
+
+  const btn = document.getElementById('addProductConfirm');
+  btn.disabled = false;
+  document.getElementById('addProductConfirmLabel').textContent = 'Guardar cambios';
+
+  document.getElementById('addProductBackdrop').classList.add('visible');
+  setTimeout(()=>document.getElementById('addProductName').focus(), 80);
 }
 
 function resetProductImage(){
@@ -9910,7 +10012,7 @@ function bindAddProductModal(){
   });
 
   // Quitar foto
-  clearBtn?.addEventListener('click', resetProductImage);
+  clearBtn?.addEventListener('click', ()=>{ addProductState.editImgUrl=''; resetProductImage(); });
 
   // Cierre del modal
   document.getElementById('addProductClose')?.addEventListener('click', closeAddProductModal);
@@ -9988,6 +10090,54 @@ async function confirmAddProduct(){
   const progressText = document.getElementById('addProductProgressText');
 
   try{
+    // ═══ MODO EDICIÓN (solo admin): UPDATE en vez de INSERT ═══
+    if(addProductState.editId != null){
+      if(state.profile?.rol !== 'admin'){ throw new Error('Solo los administradores pueden editar productos'); }
+      const editId = addProductState.editId;
+      progressEl.style.display = 'block';
+      progressBar.style.setProperty('--progress', '25%');
+      progressText.textContent = 'Guardando cambios...';
+
+      let finalUrlImagen = addProductState.editImgUrl || '';
+      // Si cargó una imagen nueva, subirla y reemplazar
+      if(addProductState.imageFile){
+        progressBar.style.setProperty('--progress', '55%');
+        progressText.textContent = 'Subiendo imagen...';
+        const ext = (addProductState.imageFile.name.split('.').pop() || 'jpg').toLowerCase();
+        const safeExt = ['jpg','jpeg','png','webp'].includes(ext) ? ext : 'jpg';
+        const path = `producto_${editId}_${Date.now()}.${safeExt}`;
+        const {error: upError} = await sb.storage.from(PRODUCT_BUCKET)
+          .upload(path, addProductState.imageFile, { cacheControl:'31536000', upsert:false, contentType: addProductState.imageFile.type });
+        if(upError) throw upError;
+        const {data: urlData} = sb.storage.from(PRODUCT_BUCKET).getPublicUrl(path);
+        finalUrlImagen = urlData?.publicUrl || '';
+      }
+
+      progressBar.style.setProperty('--progress', '80%');
+      progressText.textContent = 'Aplicando cambios...';
+      const updatePayload = {
+        nombre: nombre,
+        precio_referencia: precio,
+        url_producto: url || '',
+        marca: marca,
+        unidad_medida: unidad,
+        url_imagen: finalUrlImagen,
+      };
+      const {error: updError} = await sb.from('productos_catalogo').update(updatePayload).eq('id', editId);
+      if(updError) throw updError;
+
+      progressBar.style.setProperty('--progress', '100%');
+      progressText.textContent = '¡Producto actualizado!';
+      setTimeout(async ()=>{
+        wizard.catalog.items = [];
+        wizard.catalog.offset = 0;
+        await loadCatalogPage(true);
+        closeAddProductModal();
+        showToast(`✓ Producto "${nombre}" actualizado`, 'success');
+      }, 400);
+      return;
+    }
+
     // 1) Insertar producto sin imagen primero (necesitamos el ID para nombrar el archivo)
     const insertPayload = {
       nombre: nombre,
@@ -10066,12 +10216,13 @@ async function confirmAddProduct(){
     }, 400);
 
   }catch(e){
-    console.error('Error creando producto:', e);
-    errBox.textContent = 'No se pudo crear el producto: ' + (e.message || 'error desconocido');
+    const editing = addProductState.editId != null;
+    console.error(editing ? 'Error editando producto:' : 'Error creando producto:', e);
+    errBox.textContent = (editing ? 'No se pudo guardar el producto: ' : 'No se pudo crear el producto: ') + (e.message || 'error desconocido');
     errBox.classList.add('visible');
     progressEl.style.display = 'none';
     btn.disabled = false;
-    lbl.textContent = 'Crear producto';
+    lbl.textContent = editing ? 'Guardar cambios' : 'Crear producto';
   }
 }
 
