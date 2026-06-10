@@ -6310,6 +6310,7 @@ function cbInjectStyles(){
     '.cb-mtbl td{font-size:10.5px;padding:3px 6px}',
     '.cb-u{color:#8893a5}',
     '.cb-rubro-foot{margin-top:6px;font-size:10.5px;color:#42506a;text-align:right;border-top:1px dashed #e6eaf1;padding-top:5px}',
+    '.cb-rubro-note{margin-top:5px;font-size:10px;color:#8893a5;font-style:italic}',
     '.cb-grandtotal{padding:10px;font-size:12px;color:#1F3864;text-align:right;background:#eef3fb;border-top:2px solid #d3dcea;line-height:1.5}',
     '.cart-item-presu{display:flex;align-items:center;gap:6px;margin-top:7px}',
     '.cart-item-presu .cip-lbl{font-size:11px;color:#5a6677;white-space:nowrap}',
@@ -6595,11 +6596,13 @@ function _cbRenderInto(panel, includeCart){
   // === Vista jerárquica: cada RUBRO (Gs) con sus MATERIALES (cantidad) y subtotal ===
   // Control DUAL: el rubro descuenta MONTO (incluye sus insumos comprados) y cada insumo descuenta CANTIDAD.
   const allR = cartBudget.allRubros || [];
-  const insByRubro = {}; (mats||[]).forEach(function(m){ const rk=m.rubro_codigo||''; (insByRubro[rk]=insByRubro[rk]||[]).push(m); });
+  const insByRubro = {}; (mats||[]).forEach(function(m){ const rk=String(m.rubro_codigo||'').trim(); (insByRubro[rk]=insByRubro[rk]||[]).push(m); });
+  const usedRk = {};
   let totalPres=0, totalDisp=0;
   let secRubros='';
   allR.forEach(function(r){
-    const cod = r.rubro_codigo;
+    const cod = String(r.rubro_codigo||'').trim();
+    usedRk[cod]=true;
     const g = _pdRubroGs(cod, includeCart);              // gasto en Gs del rubro (servicios + insumos imputados)
     const pres = Number(r.precio_total)||0;
     const dispGs = pres - g.ejec - g.reserv - g.carr;
@@ -6624,12 +6627,50 @@ function _cbRenderInto(panel, includeCart){
         mrows += '<tr><td>'+escapeHtml(m.material)+(m.unidad?' <span class="cb-u">('+escapeHtml(m.unidad)+')</span>':'')+carrTag+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+colC+';font-weight:700">'+dispC.toLocaleString('es-PY')+'</td></tr>';
       });
       block += '<table class="cb-tbl cb-mtbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+mrows+'</tbody></table>';
+    } else if(r.tiene_receta){
+      block += '<div class="cb-rubro-note">⚠ Receta marcada pero sin insumos cargados</div>';
+    } else {
+      block += '<div class="cb-rubro-note">Control por monto (rubro sin composición)</div>';
     }
     const compradoRubro = g.ejec + g.reserv + g.carr;
     block += '<div class="cb-rubro-foot">Subtotal rubro: <b>'+money(compradoRubro)+'</b> · disp. <b style="color:'+colR+'">'+money(dispGs)+'</b></div>';
     block += '</div>';
     secRubros += block;
   });
+  // Insumos cuyo rubro_codigo NO está en allRubros (huérfanos): mostrarlos igual, agrupados
+  const rendered = {}; allR.forEach(function(r){ rendered[r.rubro_codigo]=1; });
+  Object.keys(insByRubro).forEach(function(rk){
+    if(rendered[rk]) return;
+    const ins = insByRubro[rk];
+    const rlbl = rk ? (rk + (cartBudget.rubroDesc&&cartBudget.rubroDesc[rk]?(' · '+cartBudget.rubroDesc[rk]):'')) : 'General (sin rubro)';
+    let block = '<div class="cb-rubro"><div class="cb-rubro-head"><div class="cb-rubro-name">'+escapeHtml(rlbl)+'</div></div>';
+    let mrows='';
+    ins.forEach(function(m){
+      const a=_cbAgg(m.codigo_insumo, rk);
+      const enc = includeCart ? a.carr : 0;
+      const dispC = m.limite - a.ejec - a.reserv - enc;
+      if(dispC<0) exceeded++;
+      const colC = m.limite<=0?'#5a6677':(dispC<0?'#c0392b':(dispC<m.limite*0.15?'#C8A028':'#1B5524'));
+      const carrTag = enc>0 ? ' <span style="color:#8a6d10;font-weight:700">🛒'+enc.toLocaleString('es-PY')+'</span>' : '';
+      mrows += '<tr><td>'+escapeHtml(m.material)+(m.unidad?' <span class="cb-u">('+escapeHtml(m.unidad)+')</span>':'')+carrTag+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+colC+';font-weight:700">'+dispC.toLocaleString('es-PY')+'</td></tr>';
+    });
+    block += '<table class="cb-tbl cb-mtbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+mrows+'</tbody></table></div>';
+    secRubros += block;
+  });
+  // Insumos cuyo rubro_codigo no coincide con ningún rubro cargado (huérfanos)
+  let huerfanos=[];
+  Object.keys(insByRubro).forEach(function(rk){ if(!usedRk[rk]) huerfanos=huerfanos.concat(insByRubro[rk].map(function(m){ return {m:m, rk:rk}; })); });
+  if(huerfanos.length){
+    let mrows='';
+    huerfanos.forEach(function(h){
+      const m=h.m, rk=h.rk; const a=_cbAgg(m.codigo_insumo, rk);
+      const enc = includeCart ? a.carr : 0; const dispC = m.limite - a.ejec - a.reserv - enc;
+      if(dispC<0) exceeded++;
+      const colC = m.limite<=0?'#5a6677':(dispC<0?'#c0392b':(dispC<m.limite*0.15?'#C8A028':'#1B5524'));
+      mrows += '<tr><td>'+escapeHtml(m.material)+(rk?(' <span class="cb-u">['+escapeHtml(rk)+']</span>'):'')+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+colC+';font-weight:700">'+dispC.toLocaleString('es-PY')+'</td></tr>';
+    });
+    secRubros += '<div class="cb-rubro"><div class="cb-rubro-name" style="color:#8a6d10">⚠ Insumos sin rubro coincidente</div><table class="cb-tbl cb-mtbl"><thead><tr><th>Material</th><th>Pres.</th><th>Disp.</th></tr></thead><tbody>'+mrows+'</tbody></table></div>';
+  }
   const secTotal = allR.length ? ('<div class="cb-grandtotal">Total presup. <b>'+money(totalPres)+'</b><br>Total disp. <b style="color:'+(totalDisp<0?'#c0392b':'#1B5524')+'">'+money(totalDisp)+'</b></div>') : '';
   // --- Sección 3: fuera de presupuesto (compras sin imputar a rubro/insumo) ---
   let secExtra='';
