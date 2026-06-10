@@ -4228,6 +4228,9 @@ body{
         <datalist id="presuListCart"></datalist>
         <button type="button" id="cbVerDetalle" style="display:none;margin-top:8px;width:100%;padding:8px 10px;border:1px solid #1F3864;background:#1F3864;color:#fff;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">📊 Ver detalle del presupuesto</button>
       </div>
+      <div style="padding:6px 16px 2px">
+        <button type="button" id="btnAddManoObra" style="width:100%;padding:9px 12px;border:1.5px dashed #b9863a;background:#fbf3da;color:#8a6d10;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px">🔧 Agregar mano de obra</button>
+      </div>
       <div class="cart-items" id="cartItems">
         <div class="cart-empty">
           <div class="cart-empty-icon">📦</div>
@@ -4712,6 +4715,38 @@ body{
       <button class="add-list-btn confirm" id="addProductConfirm">
         <span style="font-size:14px">✓</span>
         <span id="addProductConfirmLabel">Crear producto</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="add-list-backdrop" id="moBackdrop" style="z-index:10002">
+  <div class="add-list-modal" style="max-width:460px">
+    <div class="add-list-header">
+      <div class="add-list-icon">🔧</div>
+      <div class="add-list-title-block">
+        <div class="add-list-title" id="moModalTitle">Agregar mano de obra</div>
+        <div class="add-list-subtitle">Cargá el servicio y su monto a esta orden de compra</div>
+      </div>
+      <button class="add-list-close" id="moClose" title="Cancelar">×</button>
+    </div>
+    <div class="add-list-body">
+      <div class="add-list-field">
+        <label class="add-list-label">Servicio a realizar <span style="color:var(--red)">*</span></label>
+        <textarea class="add-list-input" id="moDesc" rows="2" maxlength="300" placeholder="Ej. Instalación y cableado de interruptores wifi en planta alta"></textarea>
+        <div class="add-list-help">Describí el trabajo / mano de obra a registrar</div>
+      </div>
+      <div class="add-list-field">
+        <label class="add-list-label">Monto (₲) <span style="color:var(--red)">*</span></label>
+        <input type="number" class="add-list-input" id="moMonto" min="0" step="1000" placeholder="Ej. 350000">
+      </div>
+      <div class="add-list-error" id="moError"></div>
+    </div>
+    <div class="add-list-footer">
+      <button class="add-list-btn cancel" id="moCancel">Cancelar</button>
+      <button class="add-list-btn confirm" id="moConfirm">
+        <span style="font-size:14px">✓</span>
+        <span id="moConfirmLabel">Agregar al carrito</span>
       </button>
     </div>
   </div>
@@ -5668,7 +5703,7 @@ function renderCart(){
   if(_cbActive){ try{ _cbAutoImputar(); }catch(e){} }
   const html = wizard.cart.map((it, idx)=>{
     let _badge = '';
-    if(_cbActive){
+    if(_cbActive && !it.es_mano_obra){
       try{
         const d = _cbItemDestino(it);
         if(d){
@@ -5676,6 +5711,26 @@ function renderCart(){
           _badge = `<div class="cip-badge" style="background:${bg};color:${d.color};border:1px solid ${d.color}33">${d.excede?'⚠ ':'💳 '}Debita de: ${escapeHtml(d.txt)}</div>`;
         }
       }catch(e){}
+    }
+    if(it.es_mano_obra){
+      return `
+    <div class="cart-item" data-cart-idx="${idx}" style="border-left:3px solid #b9863a">
+      <div class="cart-item-top">
+        <div class="cart-item-info">
+          <div style="display:inline-flex;align-items:center;gap:5px;margin-bottom:4px;font-size:11px;font-weight:700;color:#8a6d10;background:#fbf3da;border:1px solid #e7d9a8;border-radius:6px;padding:2px 8px">🔧 Mano de obra</div>
+          <div class="cart-item-name">${escapeHtml(it.producto_nombre)}</div>
+        </div>
+        <div class="cart-item-actions">
+          <button class="cart-btn-icon" data-cart-action="edit" title="Editar">✎</button>
+          <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
+        </div>
+      </div>
+      <div class="cart-item-bottom">
+        <span class="cart-item-calc">Monto del servicio</span>
+        <span class="cart-item-subtotal">${fmtMoney(it.subtotal)}</span>
+      </div>
+    </div>
+  `;
     }
     return `
     <div class="cart-item" data-cart-idx="${idx}">
@@ -5723,6 +5778,7 @@ function renderCart(){
     const idx = Number(node.dataset.cartIdx);
     node.querySelector('[data-cart-action="edit"]').addEventListener('click', (e)=>{
       e.stopPropagation();
+      if(wizard.cart[idx] && wizard.cart[idx].es_mano_obra){ openManoObraModal(idx); return; }
       openProductModal(wizard.cart[idx].producto_id);
     });
     node.querySelector('[data-cart-action="remove"]').addEventListener('click', (e)=>{
@@ -5967,6 +6023,7 @@ async function cloneFromOC(ocId){
       precio_unit: Number(it.precio_unit)||0,
       subtotal: Number(it.subtotal)||0,
       rubro_codigo: it.rubro_codigo || '',
+      es_mano_obra: !!it.es_mano_obra,
     }));
 
     renderCart();
@@ -6595,6 +6652,7 @@ function _cbBestRubroForIns(codigoInsumo){
 function _cbAutoImputar(){
   if(!cartBudget.pp || !Array.isArray(cartBudget.mats) || !cartBudget.mats.length) return;
   (wizard.cart||[]).forEach(function(it){
+    if(it.es_mano_obra) return;                  // la mano de obra no se imputa a insumos/rubros
     if(it._rubroManual) return;                  // el usuario ya eligió a mano: no tocar
     if(it.rubro_codigo) return;                  // ya tiene rubro asignado
     if(_cbResolveRubro(it.producto_id)) return;  // mapeado a un rubro de servicio
@@ -7269,16 +7327,21 @@ async function submitOC(){
     const realNumero = ocData.numero_oc;
 
     // 3) Insertar items
-    const itemsPayload = wizard.cart.map((it, idx) => ({
-      oc_id: ocId,
-      producto_id: it.producto_id,
-      producto_nombre: it.producto_nombre,
-      cantidad: it.cantidad,
-      precio_unit: it.precio_unit,
-      subtotal: it.subtotal,
-      rubro_codigo: it.rubro_codigo || null,
-      orden: idx,
-    }));
+    const _hayMO = wizard.cart.some(it => it.es_mano_obra);
+    const itemsPayload = wizard.cart.map((it, idx) => {
+      const row = {
+        oc_id: ocId,
+        producto_id: it.es_mano_obra ? null : it.producto_id,
+        producto_nombre: it.producto_nombre,
+        cantidad: it.cantidad,
+        precio_unit: it.precio_unit,
+        subtotal: it.subtotal,
+        rubro_codigo: it.rubro_codigo || null,
+        orden: idx,
+      };
+      if(_hayMO) row.es_mano_obra = !!it.es_mano_obra;
+      return row;
+    });
     if(itemsPayload.length > 0){
       const {error: itemsError} = await sb.from('ordenes_compra_items').insert(itemsPayload);
       if(itemsError) throw itemsError;
@@ -9880,6 +9943,59 @@ function closeAddProductModal(){
   document.getElementById('addProductBackdrop').classList.remove('visible');
 }
 
+// ───────────────────────────────────────────────
+// Mano de obra (servicio + monto) en el carrito
+// ───────────────────────────────────────────────
+const moState = { editIdx: null };
+
+function openManoObraModal(editIdx){
+  moState.editIdx = (typeof editIdx === 'number') ? editIdx : null;
+  const editing = moState.editIdx != null;
+  const it = editing ? wizard.cart[moState.editIdx] : null;
+  document.getElementById('moDesc').value = editing && it ? (it.producto_nombre || '') : '';
+  document.getElementById('moMonto').value = editing && it ? (it.precio_unit != null ? it.precio_unit : '') : '';
+  document.getElementById('moError').classList.remove('visible');
+  document.getElementById('moModalTitle').textContent = editing ? 'Editar mano de obra' : 'Agregar mano de obra';
+  document.getElementById('moConfirmLabel').textContent = editing ? 'Guardar cambios' : 'Agregar al carrito';
+  document.getElementById('moBackdrop').classList.add('visible');
+  setTimeout(()=>document.getElementById('moDesc').focus(), 80);
+}
+
+function closeManoObraModal(){
+  moState.editIdx = null;
+  document.getElementById('moBackdrop').classList.remove('visible');
+}
+
+function confirmManoObra(){
+  const desc = (document.getElementById('moDesc').value || '').trim();
+  const monto = Number((document.getElementById('moMonto').value || '').trim());
+  const errBox = document.getElementById('moError');
+  errBox.classList.remove('visible');
+  if(!desc){ errBox.textContent = 'Describí el servicio a realizar.'; errBox.classList.add('visible'); document.getElementById('moDesc').focus(); return; }
+  if(!(monto > 0)){ errBox.textContent = 'Ingresá un monto válido mayor a 0.'; errBox.classList.add('visible'); document.getElementById('moMonto').focus(); return; }
+  if(monto > 999999999){ errBox.textContent = 'El monto es demasiado alto.'; errBox.classList.add('visible'); return; }
+
+  const item = {
+    producto_id: null,
+    producto_nombre: desc.slice(0,300),
+    url_imagen: '',
+    cantidad: 1,
+    precio_unit: monto,
+    subtotal: monto,
+    es_mano_obra: true,
+  };
+  if(moState.editIdx != null && wizard.cart[moState.editIdx]){
+    wizard.cart[moState.editIdx] = item;
+    showToast('Mano de obra actualizada', 'success');
+  } else {
+    wizard.cart.push(item);
+    showToast('Mano de obra agregada al carrito', 'success');
+  }
+  closeManoObraModal();
+  renderCart();
+  saveDraft();
+}
+
 // Abrir el modal en modo EDICIÓN (solo admin). Precarga los datos del producto.
 function openEditProductModal(prod){
   if(state.profile?.rol !== 'admin'){ showToast('Solo los administradores pueden editar productos', 'error'); return; }
@@ -10023,6 +10139,11 @@ function bindAddProductModal(){
 
   // Confirmar
   document.getElementById('addProductConfirm')?.addEventListener('click', confirmAddProduct);
+  document.getElementById('btnAddManoObra')?.addEventListener('click', ()=>openManoObraModal());
+  document.getElementById('moConfirm')?.addEventListener('click', confirmManoObra);
+  document.getElementById('moCancel')?.addEventListener('click', closeManoObraModal);
+  document.getElementById('moClose')?.addEventListener('click', closeManoObraModal);
+  document.getElementById('moBackdrop')?.addEventListener('click', (e)=>{ if(e.target === document.getElementById('moBackdrop')) closeManoObraModal(); });
 
   // Botón "+" en toolbar
   document.getElementById('btnAddProduct')?.addEventListener('click', ()=>{
