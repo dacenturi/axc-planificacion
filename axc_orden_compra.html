@@ -5617,7 +5617,19 @@ function renderCart(){
   document.getElementById('cartSubtitle').textContent = `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${fmtMoney(total)}`;
 
   const _cbActive = !!cartBudget.pp && ((Array.isArray(cartBudget.mats) && cartBudget.mats.length>0) || (Array.isArray(cartBudget.rubros) && cartBudget.rubros.length>0));
-  const html = wizard.cart.map((it, idx)=>`
+  if(_cbActive){ try{ _cbAutoImputar(); }catch(e){} }
+  const html = wizard.cart.map((it, idx)=>{
+    let _badge = '';
+    if(_cbActive){
+      try{
+        const d = _cbItemDestino(it);
+        if(d){
+          const bg = d.excede ? '#fde9e9' : (d.color==='#8a6d10'?'#fbf3da':'#eaf3ee');
+          _badge = `<div class="cip-badge" style="background:${bg};color:${d.color};border:1px solid ${d.color}33">${d.excede?'⚠ ':'💳 '}Debita de: ${escapeHtml(d.txt)}</div>`;
+        }
+      }catch(e){}
+    }
+    return `
     <div class="cart-item" data-cart-idx="${idx}">
       <div class="cart-item-top">
         <div class="cart-item-info">
@@ -5630,19 +5642,21 @@ function renderCart(){
           <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
         </div>
       </div>
-      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl">Presupuesto:</span><select class="cb-isel" data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>` : ''}
+      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl">Presupuesto:</span><select class="cb-isel" data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>${_badge}` : ''}
       <div class="cart-item-bottom">
         <span class="cart-item-calc">Subtotal</span>
         <span class="cart-item-subtotal">${fmtMoney(it.subtotal)}</span>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   wrap.innerHTML = html;
 
   wrap.querySelectorAll('.cb-isel').forEach(sel=>{
     sel.addEventListener('change', ()=>{
       const idx = Number(sel.dataset.cartIdx);
       if(!wizard.cart[idx]) return;
+      wizard.cart[idx]._rubroManual = true;   // el usuario eligió a mano → la auto-imputación no lo pisa
       const v = sel.value;
       if(v.indexOf('@@') >= 0){
         const parts = v.split('@@');
@@ -5652,6 +5666,8 @@ function renderCart(){
         wizard.cart[idx].rubro_codigo = '';
         setProductoItem(wizard.cart[idx].producto_id, v);          // rubro de servicio o sin asignar
       }
+      // Aviso si el débito elegido deja el rubro/insumo en rojo
+      setTimeout(function(){ try{ const d=_cbItemDestino(wizard.cart[idx]); if(d && d.excede && typeof showToast==='function') showToast('⚠ Este débito supera el saldo de '+d.txt, 'error'); }catch(e){} }, 60);
     });
   });
 
@@ -6285,6 +6301,8 @@ function cbInjectStyles(){
     '.cart-item-presu{display:flex;align-items:center;gap:6px;margin-top:7px}',
     '.cart-item-presu .cip-lbl{font-size:11px;color:#5a6677;white-space:nowrap}',
     '.cb-isel{flex:1;min-width:0;font-size:12px;padding:4px 6px;border:1px solid #d3d9e3;border-radius:6px;background:#fff}',
+    '.cip-badge{margin-top:5px;font-size:10.5px;font-weight:700;border:1px solid;border-radius:6px;padding:2px 7px;display:inline-block;background:#fff;line-height:1.4}',
+    '.cip-badge{margin-top:6px;font-size:11px;font-weight:700;border-radius:6px;padding:4px 9px;display:inline-block}',
     '.cb-phead{cursor:pointer;user-select:none}',
     '.cb-body{max-height:190px;overflow-y:auto}',
     '.cb-collapsed .cb-body{display:none}',
@@ -6404,16 +6422,21 @@ function cbItemOptions(it){
   const curLineRubro = (it.rubro_codigo||'');
   let o = '<option value="">➕ Fuera de presupuesto / sin imputar</option>';
   if(cartBudget.mats && cartBudget.mats.length){
-    o += '<optgroup label="Insumos (descuenta cantidad por rubro)">';
-    cartBudget.mats.forEach(function(m){
+    o += '<optgroup label="Insumos (ordenados por saldo)">';
+    const matsOrden = cartBudget.mats.map(function(m){
       const rk = m.rubro_codigo||'';
-      const val = m.codigo_insumo + '@@' + rk;
       const a = _cbAgg(m.codigo_insumo, rk);
-      const disp = m.limite - a.ejec - a.reserv;
+      return { m:m, rk:rk, disp: m.limite - a.ejec - a.reserv };
+    }).sort(function(x,y){ return y.disp - x.disp; });
+    matsOrden.forEach(function(row){
+      const m = row.m, rk = row.rk, disp = row.disp;
+      const val = m.codigo_insumo + '@@' + rk;
+      const dot = (m.limite<=0) ? '⚪' : (disp<0 ? '🔴' : (disp < m.limite*0.15 ? '🟡' : '🟢'));
+      const col = (m.limite<=0) ? '#5a6677' : (disp<0 ? '#c0392b' : (disp < m.limite*0.15 ? '#C8A028' : '#1B5524'));
       const rlbl = rk ? (rk + (cartBudget.rubroDesc&&cartBudget.rubroDesc[rk]?(' '+cartBudget.rubroDesc[rk]):'')) : 'General';
-      const lbl = m.material + (m.unidad ? ' ('+m.unidad+')' : '') + ' — ' + rlbl + ' · saldo ' + disp.toLocaleString('es-PY');
+      const lbl = dot + ' ' + m.material + (m.unidad ? ' ('+m.unidad+')' : '') + ' — ' + rlbl + ' · saldo ' + disp.toLocaleString('es-PY');
       const sel = (m.codigo_insumo===curIns && rk===curLineRubro) ? ' selected' : '';
-      o += '<option value="'+escapeHtml(val)+'"'+sel+'>'+escapeHtml(lbl.length>70?lbl.slice(0,69)+'…':lbl)+'</option>';
+      o += '<option value="'+escapeHtml(val)+'"'+sel+' style="color:'+col+'">'+escapeHtml(lbl.length>72?lbl.slice(0,71)+'…':lbl)+'</option>';
     });
     o += '</optgroup>';
   }
@@ -6479,6 +6502,7 @@ function _cbAgg(codigoInsumo, rubroCodigo){
   (wizard.cart||[]).forEach(function(it){ if(_cbResolveIns(it.producto_id) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
+
 /* Agregado en GUARANÍES para un rubro de servicio */
 function _cbAggMoney(rubroKey){
   let ejec=0, reserv=0, carr=0;
@@ -6489,6 +6513,58 @@ function _cbAggMoney(rubroKey){
   });
   (wizard.cart||[]).forEach(function(it){ if(_cbResolveRubro(it.producto_id) === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
+}
+
+/* Cascada · entre las apariciones de un insumo en distintos rubros, devuelve el de MAYOR saldo */
+function _cbBestRubroForIns(codigoInsumo){
+  if(!codigoInsumo || !Array.isArray(cartBudget.mats)) return null;
+  let best=null;
+  cartBudget.mats.forEach(function(m){
+    if(m.codigo_insumo !== codigoInsumo) return;
+    const rk = m.rubro_codigo||'';
+    const a = _cbAgg(m.codigo_insumo, rk);
+    const saldo = m.limite - a.ejec - a.reserv;
+    if(best===null || saldo > best.saldo){ best = { rubro_codigo: rk, saldo: saldo }; }
+  });
+  return best;
+}
+/* Cascada de débito automática (Presupuesto → Rubro → Insumo):
+   a cada ítem sin imputar (y no elegido a mano) le asigna el rubro de mayor saldo de su insumo */
+function _cbAutoImputar(){
+  if(!cartBudget.pp || !Array.isArray(cartBudget.mats) || !cartBudget.mats.length) return;
+  (wizard.cart||[]).forEach(function(it){
+    if(it._rubroManual) return;                  // el usuario ya eligió a mano: no tocar
+    if(it.rubro_codigo) return;                  // ya tiene rubro asignado
+    if(_cbResolveRubro(it.producto_id)) return;  // mapeado a un rubro de servicio
+    const ins = _cbResolveIns(it.producto_id);
+    if(!ins) return;                             // su producto no matchea un insumo del presupuesto
+    const best = _cbBestRubroForIns(ins);
+    if(best && best.rubro_codigo){ it.rubro_codigo = best.rubro_codigo; }
+  });
+}
+/* Destino de débito EFECTIVO de un ítem del carrito (para el badge). Devuelve {txt,color,excede} */
+function _cbItemDestino(it){
+  if(!cartBudget.pp) return null;
+  const curIns=_cbResolveIns(it.producto_id);
+  const curRub=_cbResolveRubro(it.producto_id);
+  const rkLinea=it.rubro_codigo||'';
+  if(curIns){
+    const m=(cartBudget.mats||[]).find(function(x){ return x.codigo_insumo===curIns && (x.rubro_codigo||'')===rkLinea; });
+    if(m){
+      const a=_cbAgg(curIns, rkLinea); const disp=m.limite - a.ejec - a.reserv - a.carr;
+      const col = m.limite<=0 ? '#5a6677' : (disp<0?'#c0392b':(disp<m.limite*0.15?'#C8A028':'#1B5524'));
+      return { txt:'Insumo · Rubro '+(rkLinea||'General'), color:col, excede:disp<0 };
+    }
+  }
+  if(curRub){
+    const r=(cartBudget.rubros||[]).find(function(x){ return _cbRubroKey(x)===curRub; });
+    if(r){
+      const a=_cbAggMoney(curRub); const disp=r.limite - a.ejec - a.reserv - a.carr;
+      const col = r.limite<=0 ? '#5a6677' : (disp<0?'#c0392b':(disp<r.limite*0.15?'#C8A028':'#1B5524'));
+      return { txt:'Rubro '+(r.rubro_codigo||r.descripcion), color:col, excede:disp<0 };
+    }
+  }
+  return { txt:'Fuera de presupuesto', color:'#8a6d10', excede:false };
 }
 
 
@@ -7691,8 +7767,8 @@ function renderDetailActions(){
   let leftBtns = '';
 
   // Botones de utilidades (PDF, Imprimir, WhatsApp, Compartir) — siempre visibles
-  leftBtns += `<button class="btn-action pdf" data-action="pdf" title="Descargar PDF"><span style="font-size:13px">📄</span><span>PDF</span></button>`;
-  leftBtns += `<button class="btn-action print" data-action="print" title="Imprimir"><span style="font-size:13px">🖨️</span><span>Imprimir</span></button>`;
+  leftBtns += `<button class="btn-action pdf" data-action="pdf" title="Descargar PDF (sin adjuntos)"><span style="font-size:13px">📄</span><span>PDF</span></button>`;
+  leftBtns += `<button class="btn-action pdf" data-action="pdf-adj" title="Descargar PDF con los archivos adjuntos"><span style="font-size:13px">📎</span><span>PDF + adjuntos</span></button>`;
 
   // WhatsApp: solo si está Aprobado (sino no tiene sentido enviar al proveedor)
   if(oc.estado === 'Aprobado'){
@@ -7744,9 +7820,9 @@ function renderDetailActions(){
       else if(action === 'observe') openDecisionModal('Observar', oc.id);
       else if(action === 'archive') archiveOC(oc.id);
       else if(action === 'unarchive') unarchiveOC(oc.id);
-      else if(action === 'pdf') generatePDF(oc);
+      else if(action === 'pdf') generatePDF(oc, false);
+      else if(action === 'pdf-adj') generatePDF(oc, true);
       else if(action === 'share') openShareModal(oc);
-      else if(action === 'print') printOC(oc);
       else if(action === 'whatsapp') shareWhatsApp(oc);
     });
   });
@@ -8055,7 +8131,7 @@ function pdfSafe(s){
     .replace(/[^\x20-\x7E]/g, '');
 }
 
-async function generatePDF(oc){
+async function generatePDF(oc, incluirAdjuntos){
   if(!window.jspdf || !window.jspdf.jsPDF){
     showToast('La librería de PDF aún se está cargando, intentá de nuevo en un momento.', 'error');
     return;
@@ -8315,11 +8391,85 @@ async function generatePDF(oc){
 
     // Guardar
     const fileName = `OC_${(numeroDisplay||'').replace(/[^a-z0-9-]/gi,'_')}_${new Date().toISOString().slice(0,10)}.pdf`;
-    doc.save(fileName);
-    showToast('PDF descargado', 'success');
+    if(incluirAdjuntos){
+      await _pdfAnexarAdjuntos(doc, oc, fileName);
+    } else {
+      doc.save(fileName);
+      showToast('PDF descargado', 'success');
+    }
   }catch(e){
     console.error('Error generando PDF:', e);
     showToast('Error al generar el PDF: '+(e.message||''), 'error');
+  }
+}
+
+// ─── Cargar pdf-lib bajo demanda (para anexar adjuntos al PDF) ───
+function _loadPdfLib(){
+  return new Promise(function(resolve, reject){
+    if(window.PDFLib) return resolve(window.PDFLib);
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+    s.onload=function(){ window.PDFLib ? resolve(window.PDFLib) : reject(new Error('pdf-lib no disponible')); };
+    s.onerror=function(){ reject(new Error('No se pudo cargar pdf-lib')); };
+    document.head.appendChild(s);
+  });
+}
+
+// ─── Anexar los archivos adjuntos al PDF de la OC ───
+async function _pdfAnexarAdjuntos(doc, oc, fileName){
+  // Lista de adjuntos (usar los del detalle si es la misma OC; sino consultar)
+  let adj = (detail.oc && detail.oc.id===oc.id) ? (detail.adjuntos||[]) : null;
+  if(!adj){
+    try{ const r=await sb.from('oc_adjuntos').select('*').eq('oc_id', oc.id); adj=r.data||[]; }catch(e){ adj=[]; }
+  }
+  if(!adj.length){ doc.save(fileName); showToast('PDF descargado (esta OC no tiene adjuntos)', 'info'); return; }
+
+  showToast('Anexando '+adj.length+' adjunto(s)…', 'info');
+  let PDFLib;
+  try{ PDFLib = await _loadPdfLib(); }
+  catch(e){ doc.save(fileName); showToast('Se descargó el PDF; no se pudieron anexar los adjuntos (sin conexión a la librería)', 'error'); return; }
+
+  try{
+    const { PDFDocument } = PDFLib;
+    const merged = await PDFDocument.load(doc.output('arraybuffer'));
+    let okImg=0, okPdf=0, omit=0;
+    for(const att of adj){
+      const path = att.url_storage; if(!path) { omit++; continue; }
+      const name = (att.nombre_archivo||path||'').toLowerCase();
+      const ext = name.split('.').pop();
+      let bytes;
+      try{
+        const url = await getSignedUrl(path);
+        const resp = await fetch(url); bytes = await resp.arrayBuffer();
+      }catch(e){ console.warn('descarga adjunto', name, e); omit++; continue; }
+      try{
+        if(ext==='pdf'){
+          const src = await PDFDocument.load(bytes, { ignoreEncryption:true });
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          pages.forEach(function(p){ merged.addPage(p); });
+          okPdf++;
+        } else if(ext==='jpg' || ext==='jpeg' || ext==='png'){
+          const img = (ext==='png') ? await merged.embedPng(bytes) : await merged.embedJpg(bytes);
+          const PW=595.28, PH=841.89, MG=30;
+          const sc=Math.min((PW-MG*2)/img.width, (PH-MG*2)/img.height, 1);
+          const w=img.width*sc, h=img.height*sc;
+          const page=merged.addPage([PW, PH]);
+          page.drawImage(img, { x:(PW-w)/2, y:(PH-h)/2, width:w, height:h });
+          okImg++;
+        } else { omit++; }
+      }catch(e){ console.warn('anexar adjunto', name, e); omit++; }
+    }
+    const out = await merged.save();
+    const blob = new Blob([out], { type:'application/pdf' });
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fileName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ try{ URL.revokeObjectURL(a.href); }catch(_e){} }, 3000);
+    const msg = 'PDF con adjuntos descargado'+(omit>0?(' ('+omit+' no se pudo anexar)'):'');
+    showToast(msg, omit>0?'info':'success');
+  }catch(e){
+    console.error('merge adjuntos', e);
+    doc.save(fileName);
+    showToast('Se descargó el PDF, pero hubo un problema al anexar los adjuntos', 'error');
   }
 }
 
@@ -11268,12 +11418,14 @@ function _pdRender(pp, obra, filtro){
         '<div class="pd-rsub"'+(tieneComp?' style="margin-left:16px"':'')+'>'+(tieneComp?('Composición · '+ins.length+' insumo'+(ins.length===1?'':'s')):'Control por monto')+'</div></div>'+
         '<div class="pd-rnums"><div class="pd-rpres">Presup. '+_pdMoney(pres)+'</div><div class="pd-rdisp" style="color:'+col+'">Disp. '+_pdMoney(disp)+'</div></div>'+
       '</div>'+
-      '<div class="pd-bar"><div class="pd-bar-fill" style="width:'+consumPct+'%;background:'+(disp<0?'#c0392b':'#1F3864')+'"></div></div>';
+      '<div class="pd-bar"><div class="pd-bar-fill" style="width:'+consumPct+'%;background:'+(disp<0?'#c0392b':'#1F3864')+'"></div></div>'+
+      (g.carr>0 ? '<div style="margin-top:6px;font-size:11px;font-weight:700;color:'+(disp<0?'#c0392b':'#8a6d10')+'">🛒 En carrito: '+_pdMoney(g.carr)+' a debitar de este rubro'+(disp<0?' · ⚠ lo deja sin saldo':'')+'</div>' : '');
     if(tieneComp){
       let irows='';
       ins.forEach(function(m){
         const a=_cbAgg(m.codigo_insumo, cod); const idisp=m.limite - a.ejec - a.reserv - a.carr; const icol=_pdColor(idisp, m.limite);
-        irows+='<tr><td>'+escapeHtml(m.material)+(m.unidad?(' <span class="pd-u">('+escapeHtml(m.unidad)+')</span>'):'')+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+icol+';font-weight:700">'+idisp.toLocaleString('es-PY')+'</td></tr>';
+        const carrTag = a.carr>0 ? (' <span style="color:#8a6d10;font-weight:700">🛒 '+a.carr.toLocaleString('es-PY')+'</span>') : '';
+        irows+='<tr><td>'+escapeHtml(m.material)+(m.unidad?(' <span class="pd-u">('+escapeHtml(m.unidad)+')</span>'):'')+carrTag+'</td><td>'+m.limite.toLocaleString('es-PY')+'</td><td style="color:'+icol+';font-weight:700">'+idisp.toLocaleString('es-PY')+'</td></tr>';
       });
       rows+='<div class="pd-comp" id="pd-comp-'+escapeHtml(cod)+'" style="display:none"><table class="pd-ctbl"><thead><tr><th>Insumo</th><th>Presup.</th><th>Disp.</th></tr></thead><tbody>'+irows+'</tbody></table></div>';
     }
