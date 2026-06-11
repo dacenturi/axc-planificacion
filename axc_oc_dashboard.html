@@ -2014,15 +2014,23 @@ function renderTable(){
   // Ordenar por fecha desc
   const sorted = [...items].sort((a,b)=>(b.oc_fecha||'').localeCompare(a.oc_fecha||''));
 
+  // Agrupar por orden de compra (preservando el orden por fecha desc)
+  const ocGroups = new Map();
+  sorted.forEach(it => {
+    if(!ocGroups.has(it.oc_id)) ocGroups.set(it.oc_id, { oc: it, items: [] });
+    ocGroups.get(it.oc_id).items.push(it);
+  });
+  const ocList = [...ocGroups.values()];
+
   const page = state.pagination.page;
   const perPage = state.pagination.perPage;
   const start = (page - 1) * perPage;
   const end = start + perPage;
-  const slice = sorted.slice(start, end);
-  const totalPages = Math.max(1, Math.ceil(sorted.length / perPage));
+  const slice = ocList.slice(start, end);   // paginamos por ORDEN, no por ítem
+  const totalPages = Math.max(1, Math.ceil(ocList.length / perPage));
 
   document.getElementById('tableMeta').textContent =
-    `Mostrando ${Math.min(start+1, sorted.length)}–${Math.min(end, sorted.length)} de ${sorted.length} items`;
+    `Mostrando ${Math.min(start+1, ocList.length)}–${Math.min(end, ocList.length)} de ${ocList.length} órdenes (${sorted.length} ítems)`;
   document.getElementById('tableTotal').textContent = fmtMoney(total);
 
   if(sorted.length === 0){
@@ -2032,25 +2040,57 @@ function renderTable(){
     return;
   }
 
-  document.getElementById('dataTableBody').innerHTML = slice.map(it => {
-    const numero = it.oc_legacy_id != null
-      ? 'OC ' + String(it.oc_legacy_id).padStart(4,'0')
-      : (it.oc_numero || '—');
-    return `
-      <tr>
-        <td>${fmtFecha(it.oc_fecha)}</td>
-        <td><strong>${escapeHtml(numero)}</strong></td>
-        <td>${escapeHtml(it.oc_obra)}</td>
+  document.getElementById('dataTableBody').innerHTML = slice.map(group => {
+    const it0 = group.oc;
+    const numero = it0.oc_legacy_id != null
+      ? 'OC ' + String(it0.oc_legacy_id).padStart(4,'0')
+      : (it0.oc_numero || '—');
+    const ocTotal = group.items.reduce((a,i)=>a+(Number(i.subtotal)||0),0);
+    const nItems = group.items.length;
+    // Cabecera de la OC (clickeable para desplegar)
+    let html = `
+      <tr class="oc-header" data-oc="${escapeHtml(String(it0.oc_id))}" style="cursor:pointer;background:#eef1f7">
+        <td>${fmtFecha(it0.oc_fecha)}</td>
+        <td><span class="oc-toggle" style="display:inline-block;width:14px;color:#1F3864;font-weight:700">▸</span><strong>${escapeHtml(numero)}</strong></td>
+        <td>${escapeHtml(it0.oc_obra)}</td>
+        <td style="color:#8B93A7">—</td>
+        <td>${escapeHtml(it0.oc_proveedor)}</td>
+        <td style="color:#5b6478;font-style:italic">${nItems} ítem${nItems===1?'':'s'} ▾</td>
+        <td class="right"></td>
+        <td class="right"></td>
+        <td class="right subtotal"><strong>${fmtMoney(ocTotal)}</strong></td>
+        <td><span class="badge-mini" data-state="${escapeHtml(it0.oc_estado)}">${escapeHtml(it0.oc_estado)}</span></td>
+      </tr>`;
+    // Ítems de la OC (ocultos hasta hacer clic)
+    group.items.forEach(it => {
+      html += `
+      <tr class="oc-item" data-oc-parent="${escapeHtml(String(it0.oc_id))}" style="display:none;background:#fbfbf8">
+        <td></td>
+        <td></td>
+        <td></td>
         <td>${escapeHtml(it.oc_rubro)}</td>
-        <td>${escapeHtml(it.oc_proveedor)}</td>
-        <td>${escapeHtml(it.producto_nombre || '—')}</td>
+        <td></td>
+        <td style="padding-left:14px">${escapeHtml(it.producto_nombre || '—')}</td>
         <td class="right">${Number(it.cantidad||0).toLocaleString('es-PY')}</td>
         <td class="right">${fmtMoney(it.precio_unit)}</td>
         <td class="right subtotal">${fmtMoney(it.subtotal)}</td>
-        <td><span class="badge-mini" data-state="${escapeHtml(it.oc_estado)}">${escapeHtml(it.oc_estado)}</span></td>
-      </tr>
-    `;
+        <td></td>
+      </tr>`;
+    });
+    return html;
   }).join('');
+
+  // Clic en la cabecera de OC: desplegar / contraer sus ítems
+  document.querySelectorAll('#dataTableBody .oc-header').forEach(row => {
+    row.addEventListener('click', () => {
+      const ocId = row.getAttribute('data-oc');
+      const items = document.querySelectorAll(`#dataTableBody .oc-item[data-oc-parent="${CSS.escape(ocId)}"]`);
+      const isOpen = items.length && items[0].style.display !== 'none';
+      items.forEach(r => r.style.display = isOpen ? 'none' : '');
+      const tog = row.querySelector('.oc-toggle');
+      if(tog) tog.textContent = isOpen ? '▸' : '▾';
+    });
+  });
 
   // Paginación
   const pag = document.getElementById('pagination');
@@ -2341,31 +2381,47 @@ async function exportPDF(){
     doc.line(M, y+1.5, M+35, y+1.5);
     y += 6;
 
-    // Ordenar items
+    // Ordenar items y agrupar por OC
     const sortedItems = [...state.filtered]
       .filter(it => it.oc_estado !== 'Rechazado')
       .sort((a,b) => (b.oc_fecha||'').localeCompare(a.oc_fecha||''));
 
+    const _ocg = new Map();
+    sortedItems.forEach(it => {
+      if(!_ocg.has(it.oc_id)) _ocg.set(it.oc_id, { oc: it, items: [] });
+      _ocg.get(it.oc_id).items.push(it);
+    });
+    const ocGroupsArr = [..._ocg.values()];
+
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(8);
     doc.setTextColor(140, 150, 170);
-    doc.text(pdfSafe(`Mostrando ${sortedItems.length} items (excluyendo Rechazados)`), M, y);
+    doc.text(pdfSafe(`${ocGroupsArr.length} ordenes · ${sortedItems.length} items (excluyendo Rechazados)`), M, y);
     y += 4;
 
-    const tableRows = sortedItems.map(it => [
-      fmtFecha(it.oc_fecha),
-      it.oc_legacy_id != null ? 'OC ' + String(it.oc_legacy_id).padStart(4,'0') : (it.oc_numero || '-'),
-      pdfSafe(it.oc_obra),
-      pdfSafe(it.oc_proveedor),
-      pdfSafe((it.producto_nombre||'').slice(0,30)),
-      String(it.cantidad||0),
-      fmtPdfMoney(it.subtotal),
-      pdfSafe(it.oc_estado),
-    ]);
+    // Filas: por cada OC, una cabecera (con su total) y debajo sus items
+    const pdfRows = [];   // metadatos por fila (tipo y subtotal) para estilos y suma por hoja
+    const tableRows = [];
+    ocGroupsArr.forEach(g => {
+      const numero = g.oc.oc_legacy_id != null ? 'OC ' + String(g.oc.oc_legacy_id).padStart(4,'0') : (g.oc.oc_numero || '-');
+      const ocTotal = g.items.reduce((a,i)=>a+(Number(i.subtotal)||0),0);
+      tableRows.push([
+        fmtFecha(g.oc.oc_fecha), numero, pdfSafe(g.oc.oc_obra), pdfSafe(g.oc.oc_proveedor),
+        pdfSafe(`${g.items.length} item${g.items.length===1?'':'s'}`), '', fmtPdfMoney(ocTotal), pdfSafe(g.oc.oc_estado),
+      ]);
+      pdfRows.push({ type:'oc', sub:0 });
+      g.items.forEach(it => {
+        tableRows.push([
+          '', '', '', '', pdfSafe('   ' + (it.producto_nombre||'').slice(0,34)),
+          String(it.cantidad||0), fmtPdfMoney(it.subtotal), '',
+        ]);
+        pdfRows.push({ type:'item', sub:(Number(it.subtotal)||0) });
+      });
+    });
 
     const tableTotal = sortedItems.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
 
-    // Acumulador del subtotal de la hoja actual (se suma en didDrawCell, se imprime y resetea en didDrawPage)
+    // Acumulador del subtotal de la hoja actual
     let _pageSum = 0;
 
     doc.autoTable({
@@ -2392,11 +2448,22 @@ async function exportPDF(){
         7: { cellWidth: 16 },
       },
       margin: { left: M, right: M, bottom: 20 },
+      didParseCell: function(data){
+        // Resaltar las filas cabecera de cada OC
+        if(data.section === 'body'){
+          const meta = pdfRows[data.row.index];
+          if(meta && meta.type === 'oc'){
+            data.cell.styles.fillColor = [238, 241, 247];
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.textColor = [31, 56, 100];
+          }
+        }
+      },
       didDrawCell: function(data){
-        // Acumular el subtotal de cada fila visible en la hoja (columna 6 del body)
+        // Acumular SOLO los subtotales de los items (no las cabeceras de OC, para no duplicar)
         if(data.section === 'body' && data.column.index === 6){
-          const it = sortedItems[data.row.index];
-          if(it) _pageSum += (Number(it.subtotal)||0);
+          const meta = pdfRows[data.row.index];
+          if(meta && meta.type === 'item') _pageSum += meta.sub;
         }
       },
       didDrawPage: function(data){
