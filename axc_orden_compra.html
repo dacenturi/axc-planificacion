@@ -7488,12 +7488,14 @@ async function openDetail(oc){
 
   // Cargar items y adjuntos en paralelo
   try{
-    const [itemsRes, adjRes] = await Promise.all([
+    const [itemsRes, adjRes, histRes] = await Promise.all([
       sb.from('ordenes_compra_items').select('*').eq('oc_id', oc.id).order('orden', {ascending:true}),
       sb.from('oc_adjuntos').select('*').eq('oc_id', oc.id).order('created_at', {ascending:false}),
+      sb.from('oc_historial').select('*').eq('oc_id', oc.id).order('creado_en', {ascending:true}),
     ]);
     detail.items = itemsRes.data || [];
     detail.adjuntos = adjRes.data || [];
+    detail.historial = histRes.data || [];
 
     // Hidratar imágenes de productos
     const ids = detail.items.map(i => i.producto_id).filter(x => x != null);
@@ -7521,6 +7523,7 @@ function closeDetail(){
   detail.oc = null;
   detail.items = [];
   detail.adjuntos = [];
+  detail.historial = [];
   detail.isEditing = false;
 }
 
@@ -7945,11 +7948,33 @@ function renderHistorialSection(oc){
     });
   }
 
+  // Ediciones registradas (auditoría) — entre la solicitud y la decisión
+  (detail.historial || []).filter(h => (h.tipo || 'edicion') === 'edicion').forEach(h => {
+    let comment = '';
+    if(h.total_anterior != null && h.total_nuevo != null && Number(h.total_anterior) !== Number(h.total_nuevo)){
+      comment = `Total: ${fmtMoney(h.total_anterior)} → ${fmtMoney(h.total_nuevo)}`;
+    }
+    if(h.detalle && /reenviad/i.test(h.detalle)){
+      comment = comment ? (comment + ' · reenviada a aprobación') : 'Reenviada a aprobación';
+    }
+    rows.push({
+      icon: '✎', cls: 'info',
+      title: `Editada por ${escapeHtml(h.usuario || '—')}`,
+      meta: h.creado_en ? new Date(h.creado_en).toLocaleString('es-PY') : '—',
+      comment,
+    });
+  });
+
   // Decisión (aprobado/rechazado/observado)
   if(oc.fecha_aprobacion || oc.aprobado_por){
     let icon = '✓', cls = 'success', verb = 'Aprobada';
     if(oc.estado === 'Rechazado'){icon='✗'; cls='danger'; verb='Rechazada';}
     else if(oc.estado === 'Observado'){icon='!'; cls='warning'; verb='Observada';}
+    else if(oc.estado === 'Solicitado'){
+      // Hubo una decisión registrada pero la OC volvió a Solicitado:
+      // la única acción que la devuelve a la cola es una OBSERVACIÓN (luego reenviada).
+      icon='!'; cls='warning'; verb='Observada';
+    }
     rows.push({
       icon, cls,
       title: `${verb} por ${escapeHtml(oc.aprobado_por || '—')}`,
@@ -8260,6 +8285,20 @@ async function saveDetailEdits(){
       .select();
     if(error) throw error;
     if(!ocData || ocData.length === 0) throw new Error('No se pudo actualizar la OC (permisos insuficientes).');
+
+    // 3) Registrar el evento de auditoría (no bloquea el guardado si la tabla no existe)
+    try{
+      await sb.from('oc_historial').insert({
+        oc_id: oc.id,
+        tipo: 'edicion',
+        usuario: state.profile?.nombre || state.user?.email || '—',
+        detalle: reenviar ? 'Editada y reenviada a aprobación' : 'Editada',
+        total_anterior: oc.valor_total ?? null,
+        total_nuevo: nuevoTotal,
+        estado_anterior: oc.estado,
+        estado_nuevo: reenviar ? 'Solicitado' : oc.estado,
+      });
+    }catch(_){ /* si oc_historial no existe aún, no abortar el guardado */ }
 
     showToast(reenviar ? '✓ Cambios guardados · OC reenviada a aprobación' : 'Cambios guardados', 'success');
     detail.isEditing = false;
@@ -8658,14 +8697,27 @@ async function generatePDF(oc, incluirAdjuntos){
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       doc.setTextColor(60, 70, 90);
+      let histEvts = (detail.oc && detail.oc.id === oc.id) ? (detail.historial || []) : null;
+      if(histEvts === null){
+        try{ const _r = await sb.from('oc_historial').select('*').eq('oc_id', oc.id).order('creado_en',{ascending:true}); histEvts = _r.data || []; }catch(_){ histEvts = []; }
+      }
       const histLines = [];
       if(oc.solicitado_por || oc.fecha_solicitud){
         const ds = oc.fecha_solicitud ? new Date(oc.fecha_solicitud).toLocaleString('es-PY') : fmtFecha(oc.fecha);
         histLines.push(`Solicitada por ${pdfSafe(oc.solicitado_por || '-')} - ${pdfSafe(ds)}`);
       }
+      (histEvts || []).filter(h => (h.tipo||'edicion')==='edicion').forEach(h => {
+        const dh = h.creado_en ? new Date(h.creado_en).toLocaleString('es-PY') : '-';
+        histLines.push(`Editada por ${pdfSafe(h.usuario || '-')} - ${pdfSafe(dh)}`);
+        if(h.total_anterior != null && h.total_nuevo != null && Number(h.total_anterior) !== Number(h.total_nuevo)){
+          histLines.push(`   Total: ${pdfSafe(fmtMoney(h.total_anterior))} -> ${pdfSafe(fmtMoney(h.total_nuevo))}`);
+        }
+      });
       if(oc.aprobado_por || oc.fecha_aprobacion){
         const da = oc.fecha_aprobacion ? new Date(oc.fecha_aprobacion).toLocaleString('es-PY') : '-';
-        const verb = oc.estado === 'Rechazado' ? 'Rechazada' : (oc.estado === 'Observado' ? 'Observada' : 'Aprobada');
+        const verb = oc.estado === 'Rechazado' ? 'Rechazada'
+          : (oc.estado === 'Observado' ? 'Observada'
+          : (oc.estado === 'Solicitado' ? 'Observada' : 'Aprobada'));
         histLines.push(`${verb} por ${pdfSafe(oc.aprobado_por || '-')} - ${pdfSafe(da)}`);
         if(oc.motivo_decision){
           const motivo = pdfSafe(oc.motivo_decision);
