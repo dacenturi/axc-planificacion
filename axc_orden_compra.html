@@ -7534,7 +7534,7 @@ function renderDetailBody(){
   const oc = detail.oc;
   const body = document.getElementById('detailBody');
   const isAdmin = state.profile?.rol === 'admin';
-  const editing = detail.isEditing && isAdmin;
+  const editing = detail.isEditing && _puedeEditarOC(oc);
 
   // Banner de estado destacado (no se muestra en modo edición)
   const bannerHtml = editing ? '' : renderEstadoBanner(oc);
@@ -7543,7 +7543,7 @@ function renderDetailBody(){
   const infoHtml = renderInfoSection(oc, editing);
 
   // Sección 2: Items
-  const itemsHtml = renderItemsSection();
+  const itemsHtml = renderItemsSection(editing);
 
   // Sección 3: Adjuntos
   const adjHtml = renderAdjuntosSection(isAdmin);
@@ -7557,6 +7557,10 @@ function renderDetailBody(){
   if(editing){
     const btnSave = document.getElementById('detailBtnSave');
     if(btnSave) btnSave.addEventListener('click', saveDetailEdits);
+    // Recálculo en vivo de subtotales/total al editar items
+    document.querySelectorAll('.edit-item-input').forEach(inp => {
+      inp.addEventListener('input', _recalcDetailItems);
+    });
     const btnCancelEdit = document.getElementById('detailBtnCancelEdit');
     if(btnCancelEdit) btnCancelEdit.addEventListener('click', ()=>{
       detail.isEditing = false;
@@ -7623,9 +7627,22 @@ function renderDetailBody(){
   });
 }
 
+// ─── ¿Quién puede editar esta OC? ───────────────────────
+// Admin: cualquier OC no archivada.
+// Residente: SOLO la OC que él creó (solicitado_por) y SOLO si está Observado,
+// para corregir lo observado y reenviarla a aprobación.
+function _puedeEditarOC(oc){
+  if(!oc) return false;
+  const isAdmin = state.profile?.rol === 'admin';
+  if(isAdmin) return oc.estado !== 'Archivado';
+  const yo = state.profile?.nombre || state.user?.email || '';
+  const esCreador = !!oc.solicitado_por && oc.solicitado_por === yo;
+  return esCreador && oc.estado === 'Observado';
+}
+
 function renderInfoSection(oc, editing){
   const isAdmin = state.profile?.rol === 'admin';
-  const canEdit = isAdmin && oc.estado !== 'Archivado';
+  const canEdit = _puedeEditarOC(oc);
 
   if(editing){
     // Modo edición: inputs
@@ -7738,7 +7755,7 @@ function renderInfoSection(oc, editing){
     </div>`;
 }
 
-function renderItemsSection(){
+function renderItemsSection(editing){
   const items = detail.items;
   if(items.length === 0){
     return `
@@ -7753,27 +7770,62 @@ function renderItemsSection(){
       </div>`;
   }
 
+  const inpStyle = 'text-align:right;padding:5px 7px;border:1px solid var(--border,#d9cfb8);border-radius:6px;font-family:inherit;font-size:13px';
   const total = items.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
   const rows = items.map(it => {
-    const imgHtml = it._url_imagen && it._url_imagen.startsWith('http')
-      ? `<img src="${escapeHtml(it._url_imagen)}" alt="" onerror="this.parentNode.innerHTML='<span style=\\'opacity:.4\\'>📦</span>'">`
-      : '<span style="opacity:.4">📦</span>';
-    return `
-      <tr>
+    const esMO = !!it.es_mano_obra;
+    const imgHtml = esMO
+      ? '<span style="opacity:.6;font-size:16px">🔧</span>'
+      : (it._url_imagen && it._url_imagen.startsWith('http')
+          ? `<img src="${escapeHtml(it._url_imagen)}" alt="" onerror="this.parentNode.innerHTML='<span style=\\'opacity:.4\\'>📦</span>'">`
+          : '<span style="opacity:.4">📦</span>');
+    const nombreSub = esMO
+      ? '<div class="detail-item-id" style="color:#9a7b1a">🔧 Mano de obra</div>'
+      : (it.producto_id ? `<div class="detail-item-id">ID #${it.producto_id}</div>` : '');
+    const nameCell = `
         <td>
           <div class="detail-item-row-name">
             <div class="detail-item-img">${imgHtml}</div>
             <div style="min-width:0">
               <div class="detail-item-name">${escapeHtml(it.producto_nombre||'—')}</div>
-              ${it.producto_id ? `<div class="detail-item-id">ID #${it.producto_id}</div>` : ''}
+              ${nombreSub}
             </div>
           </div>
-        </td>
+        </td>`;
+
+    if(editing && esMO){
+      // Mano de obra: cantidad fija 1, se edita el monto (precio = subtotal)
+      return `
+      <tr data-item-id="${it.id}" data-es-mo="1">
+        ${nameCell}
+        <td class="right">1</td>
+        <td class="right"><input type="text" inputmode="numeric" class="edit-item-input" data-item-id="${it.id}" data-item-field="precio" value="${Number(it.precio_unit||it.subtotal||0)}" style="width:120px;${inpStyle}"></td>
+        <td class="right subtotal" id="detItemSub-${it.id}">${fmtMoney(it.subtotal)}</td>
+      </tr>`;
+    }
+    if(editing){
+      // Material: se editan cantidad y precio unitario
+      return `
+      <tr data-item-id="${it.id}">
+        ${nameCell}
+        <td class="right"><input type="text" inputmode="decimal" class="edit-item-input" data-item-id="${it.id}" data-item-field="cantidad" value="${Number(it.cantidad||0)}" style="width:80px;${inpStyle}"></td>
+        <td class="right"><input type="text" inputmode="numeric" class="edit-item-input" data-item-id="${it.id}" data-item-field="precio" value="${Number(it.precio_unit||0)}" style="width:120px;${inpStyle}"></td>
+        <td class="right subtotal" id="detItemSub-${it.id}">${fmtMoney(it.subtotal)}</td>
+      </tr>`;
+    }
+    // Modo lectura
+    return `
+      <tr>
+        ${nameCell}
         <td class="right">${Number(it.cantidad).toLocaleString('es-PY')}</td>
         <td class="right">${fmtMoney(it.precio_unit)}</td>
         <td class="right subtotal">${fmtMoney(it.subtotal)}</td>
       </tr>`;
   }).join('');
+
+  const editHint = editing
+    ? '<div style="font-size:11.5px;color:var(--text2,#7a6f55);margin-bottom:8px;line-height:1.4">✎ Editá cantidad y precio de los materiales, o el monto de la mano de obra. El subtotal y el total se recalculan solos.</div>'
+    : '';
 
   return `
     <div class="detail-section">
@@ -7783,6 +7835,7 @@ function renderItemsSection(){
           <span>Items (${items.length})</span>
         </div>
       </div>
+      ${editHint}
       <div style="overflow-x:auto">
       <table class="detail-items-table">
         <thead>
@@ -7797,12 +7850,36 @@ function renderItemsSection(){
         <tfoot>
           <tr>
             <td colspan="3" class="right">Total</td>
-            <td class="right total">${fmtMoney(total)}</td>
+            <td class="right total" id="detailItemsTotal">${fmtMoney(total)}</td>
           </tr>
         </tfoot>
       </table>
       </div>
     </div>`;
+}
+
+// Recalcula subtotales y total en vivo mientras se editan los items
+function _recalcDetailItems(){
+  let total = 0;
+  document.querySelectorAll('#detailBody tr[data-item-id]').forEach(tr => {
+    const id = tr.getAttribute('data-item-id');
+    const esMO = tr.getAttribute('data-es-mo') === '1';
+    const precioInp = tr.querySelector('input[data-item-field="precio"]');
+    const precio = precioInp ? (parseFloat(String(precioInp.value).replace(/[^\d.-]/g,'')) || 0) : 0;
+    let subtotal;
+    if(esMO){
+      subtotal = Math.round(precio);
+    } else {
+      const cantInp = tr.querySelector('input[data-item-field="cantidad"]');
+      const cant = cantInp ? (parseFloat(String(cantInp.value).replace(/[^\d.,-]/g,'').replace(',','.')) || 0) : 0;
+      subtotal = Math.round(cant * precio);
+    }
+    const subCell = document.getElementById('detItemSub-'+id);
+    if(subCell) subCell.textContent = fmtMoney(subtotal);
+    total += subtotal;
+  });
+  const totalCell = document.getElementById('detailItemsTotal');
+  if(totalCell) totalCell.textContent = fmtMoney(total);
 }
 
 function renderAdjuntosSection(isAdmin){
@@ -8103,6 +8180,7 @@ document.getElementById('decisionConfirm').addEventListener('click', async ()=>{
 // ─── Guardar edits del detalle (admin) ──────────────────
 async function saveDetailEdits(){
   const oc = detail.oc;
+  const isAdmin = state.profile?.rol === 'admin';
   const payload = {
     fecha: document.getElementById('editFecha').value || null,
     rubro: document.getElementById('editRubro').value || '',
@@ -8123,20 +8201,67 @@ async function saveDetailEdits(){
     return;
   }
 
+  // Leer los items editados del DOM y recalcular subtotales + total
+  const itemUpdates = [];
+  let nuevoTotal = 0;
+  let itemsInvalidos = false;
+  document.querySelectorAll('#detailBody tr[data-item-id]').forEach(tr => {
+    const id = tr.getAttribute('data-item-id');
+    const esMO = tr.getAttribute('data-es-mo') === '1';
+    const precioInp = tr.querySelector('input[data-item-field="precio"]');
+    const precio = precioInp ? (parseFloat(String(precioInp.value).replace(/[^\d.-]/g,'')) || 0) : 0;
+    let cantidad, subtotal;
+    if(esMO){
+      cantidad = 1;
+      subtotal = Math.round(precio);
+    } else {
+      const cantInp = tr.querySelector('input[data-item-field="cantidad"]');
+      cantidad = cantInp ? (parseFloat(String(cantInp.value).replace(/[^\d.,-]/g,'').replace(',','.')) || 0) : 0;
+      subtotal = Math.round(cantidad * precio);
+    }
+    if(precio < 0 || cantidad <= 0) itemsInvalidos = true;
+    itemUpdates.push({ id, cantidad, precio_unit: Math.round(precio), subtotal });
+    nuevoTotal += subtotal;
+  });
+  if(itemsInvalidos){
+    showToast('Revisá los items: cantidad y precio deben ser válidos (> 0)', 'error');
+    return;
+  }
+
+  // Si es el residente creador y la OC está Observada → vuelve a la cola de aprobación del admin
+  const reenviar = !isAdmin && oc.estado === 'Observado';
+  payload.valor_total = nuevoTotal;
+  if(reenviar){
+    payload.estado = 'Solicitado';
+    payload.fecha_solicitud = new Date().toISOString();
+  }
+
   const btn = document.getElementById('detailBtnSave');
   btn.disabled = true;
   btn.textContent = 'Guardando...';
 
   try{
-    const {data, error} = await sb
+    // 1) Actualizar cada item (con .select() para detectar bloqueos de permisos/RLS)
+    for(const u of itemUpdates){
+      const { data: d1, error: e1 } = await sb
+        .from('ordenes_compra_items')
+        .update({ cantidad: u.cantidad, precio_unit: u.precio_unit, subtotal: u.subtotal })
+        .eq('id', u.id)
+        .select();
+      if(e1) throw e1;
+      if(!d1 || d1.length === 0) throw new Error('No se pudo actualizar un item (permisos insuficientes).');
+    }
+
+    // 2) Actualizar la OC (datos + total recalculado + estado si corresponde)
+    const { data: ocData, error } = await sb
       .from('ordenes_compra')
       .update(payload)
       .eq('id', oc.id)
-      .select()
-      .single();
+      .select();
     if(error) throw error;
+    if(!ocData || ocData.length === 0) throw new Error('No se pudo actualizar la OC (permisos insuficientes).');
 
-    showToast('Cambios guardados', 'success');
+    showToast(reenviar ? '✓ Cambios guardados · OC reenviada a aprobación' : 'Cambios guardados', 'success');
     detail.isEditing = false;
     await loadOCs();
     const fresh = state.ocs.find(o => o.id === oc.id);
