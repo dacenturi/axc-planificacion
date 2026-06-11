@@ -2365,11 +2365,13 @@ async function exportPDF(){
 
     const tableTotal = sortedItems.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
 
+    // Acumulador del subtotal de la hoja actual (se suma en didDrawCell, se imprime y resetea en didDrawPage)
+    let _pageSum = 0;
+
     doc.autoTable({
       startY: y,
       head: [['Fecha','Nro OC','Obra','Proveedor','Producto','Cant.','Subtotal','Estado']],
       body: tableRows,
-      foot: [['','','','','', '', { content:'TOTAL: '+fmtPdfMoney(tableTotal), colSpan:1, styles:{halign:'right',fontStyle:'bold',fillColor:[31,56,100],textColor:[200,160,40]} }, '']],
       theme: 'grid',
       styles: {
         font: 'helvetica', fontSize: 7.5, cellPadding: 1.8,
@@ -2389,8 +2391,22 @@ async function exportPDF(){
         6: { halign:'right', cellWidth: 23, fontStyle:'bold' },
         7: { cellWidth: 16 },
       },
-      margin: { left: M, right: M },
+      margin: { left: M, right: M, bottom: 20 },
+      didDrawCell: function(data){
+        // Acumular el subtotal de cada fila visible en la hoja (columna 6 del body)
+        if(data.section === 'body' && data.column.index === 6){
+          const it = sortedItems[data.row.index];
+          if(it) _pageSum += (Number(it.subtotal)||0);
+        }
+      },
       didDrawPage: function(data){
+        // Subtotal SOLO de las filas de esta hoja
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(31, 56, 100);
+        doc.text(pdfSafe(`Subtotal de esta hoja: ${fmtPdfMoney(_pageSum)}`), pageW - M, pageH - 12, {align:'right'});
+        _pageSum = 0; // reset para la próxima hoja
+
         // Footer cada página
         const cur = doc.internal.getCurrentPageInfo().pageNumber;
         const pn = doc.internal.getNumberOfPages();
@@ -2401,6 +2417,35 @@ async function exportPDF(){
         doc.text(`Pagina ${cur} de ${pn}`, pageW - M, pageH - 7, {align:'right'});
       },
     });
+
+    // ─── RESUMEN GENERAL (en la última hoja) ───
+    const cantItems = sortedItems.length;
+    const cantOC = new Set(sortedItems.map(it => it.oc_numero || it.oc_legacy_id)).size;
+    let yR = (doc.lastAutoTable && doc.lastAutoTable.finalY) ? doc.lastAutoTable.finalY + 8 : 40;
+    if(yR > pageH - 34){
+      doc.addPage();
+      yR = 20;
+      // footer en la hoja nueva del resumen
+      const cur = doc.internal.getCurrentPageInfo().pageNumber;
+      const pn = doc.internal.getNumberOfPages();
+      doc.setFontSize(7.5); doc.setTextColor(140,150,170); doc.setFont('helvetica','normal');
+      doc.text(pdfSafe(`AXC Constructora · Desarrollado por Conexdata`), M, pageH - 7);
+      doc.text(`Pagina ${cur} de ${pn}`, pageW - M, pageH - 7, {align:'right'});
+    }
+    doc.setFillColor(31, 56, 100);
+    doc.roundedRect(M, yR, pageW - 2*M, 19, 2, 2, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('RESUMEN GENERAL', M + 5, yR + 7.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(210, 220, 235);
+    doc.text(pdfSafe(`${cantItems} items  ·  ${cantOC} ordenes  (excluye Rechazados)`), M + 5, yR + 14);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(200, 160, 40);
+    doc.text(pdfSafe(`TOTAL: ${fmtPdfMoney(tableTotal)}`), pageW - M - 5, yR + 11, {align:'right'});
 
     // Guardar
     const fname = `Reporte_Compras_AXC_${new Date().toISOString().slice(0,10)}.pdf`;
