@@ -12010,7 +12010,9 @@ const pbtUI = {
   recetasPp: '',        // presupuesto cuyas recetas están cacheadas
   recetasByRubro: {},   // { rubro_codigo: {nombre, unidad, ins:{ci:{coef1,coef2,merma}}, mo:[...] } }
   recetasLoading: false,
-  npSeq: 0
+  npSeq: 0,
+  openRubros: {},       // { rubro_codigo: true } → estado expandido (se preserva entre re-renders)
+  openInitPp: ''        // presupuesto para el que ya se inicializó el estado de colapso
 };
 
 function pbtEsc(s){
@@ -12094,7 +12096,18 @@ function pbtInjectStyles(){
     '.pbt-np-res{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid #eef1f5;border-radius:7px;margin-bottom:5px;cursor:pointer;background:#fff}',
     '.pbt-np-res:hover{background:#f6f4ec}',
     '.pbt-np-res .pbt-np-code{color:#8893a5;font-size:10.5px}',
-    '.pbt-empty{font-size:12.5px;color:#5b6478;padding:10px 12px;background:#faf8f1;border:1px dashed #e3dcc9;border-radius:8px}'
+    '.pbt-empty{font-size:12.5px;color:#5b6478;padding:10px 12px;background:#faf8f1;border:1px dashed #e3dcc9;border-radius:8px}',
+    /* modo pantalla-ancha: oculta la columna de presupuesto (redundante con el árbol) */
+    '.wizard-body.pbt-mode .budget-col{display:none !important}',
+    '.wizard-body.pbt-mode.has-budget{grid-template-columns:1fr 360px}',
+    /* resumen pegajoso */
+    '.pbt-summary{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid #e3dcc9;border-radius:10px;padding:9px 13px;margin-bottom:14px;box-shadow:0 2px 8px rgba(31,56,100,.05)}',
+    '.pbt-sum-pill{font-size:12px;color:#42506a;background:#eef3fb;border-radius:8px;padding:4px 10px;font-weight:600}',
+    '.pbt-sum-pill b{color:#1F3864}',
+    '.pbt-sum-total{font-size:13px;font-weight:800;color:#1F3864;margin-left:auto}',
+    '.pbt-sum-total span{font-weight:600;color:#5b6478;font-size:11px;margin-right:5px;text-transform:uppercase;letter-spacing:.3px}',
+    '.pbt-expand{font-family:inherit;font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:7px;border:1px solid #c8cfdb;background:#fff;color:#42506a;cursor:pointer}',
+    '.pbt-expand:hover{background:#eef3fb;border-color:#1F3864;color:#1F3864}'
   ].join('\n');
   document.head.appendChild(st);
 }
@@ -12151,6 +12164,7 @@ function pbtSetMode(on){
   const recipePanel = document.getElementById('recipeMode');
   const tabMat = document.getElementById('rcTabMat');
   const tabRec = document.getElementById('rcTabRec');
+  const wb = document.querySelector('.wizard-body');
   if(on){
     _pbtRcMatEls().forEach(function(el){ if(el.dataset.rcPrev === undefined) el.dataset.rcPrev = el.style.display; el.style.display = 'none'; });
     if(recipePanel) recipePanel.style.display = 'none';
@@ -12158,11 +12172,13 @@ function pbtSetMode(on){
     if(tab) tab.classList.add('rc-on');
     if(tabMat) tabMat.classList.remove('rc-on');
     if(tabRec) tabRec.classList.remove('rc-on');
+    if(wb) wb.classList.add('pbt-mode');   // oculta la columna de presupuesto (redundante) y ensancha el árbol
     pbtEnsureData();
     pbtRender();
   } else {
     if(panel) panel.style.display = 'none';
     if(tab) tab.classList.remove('rc-on');
+    if(wb) wb.classList.remove('pbt-mode');
   }
 }
 
@@ -12294,7 +12310,20 @@ function pbtRender(){
     sectores[idx[sec]].rubros.push(r);
   });
 
-  let html = '<div class="pbt-hint">Tildá los insumos que vas a comprar o usá <b>Calcular receta</b> (avance × coeficientes) / <b>Todo el saldo</b>. El saldo baja en vivo; la reserva real se graba al crear la OC.</div>';
+  // Resumen en vivo: rubros tocados + total a comprar.
+  const pbtItems = (wizard.cart || []).filter(function(c){ return c._pbt; });
+  const rubrosTocados = {}; let totalComprar = 0;
+  pbtItems.forEach(function(c){ if(c.rubro_codigo) rubrosTocados[c.rubro_codigo] = 1; totalComprar += Number(c.subtotal)||0; });
+  const nRub = Object.keys(rubrosTocados).length;
+  const money = function(n){ try{ return fmtMoney(n); }catch(e){ return 'Gs ' + Math.round(Number(n)||0).toLocaleString('es-PY'); } };
+  const summary = '<div class="pbt-summary">' +
+      '<span class="pbt-sum-pill">🌳 <b>' + nRub + '</b> rubro' + (nRub === 1 ? '' : 's') + ' tocado' + (nRub === 1 ? '' : 's') + '</span>' +
+      '<span class="pbt-sum-pill"><b>' + pbtItems.length + '</b> ítem' + (pbtItems.length === 1 ? '' : 's') + '</span>' +
+      '<button type="button" class="pbt-expand" data-pbt-expandall>Colapsar / Expandir todo</button>' +
+      '<span class="pbt-sum-total"><span>A comprar</span>' + money(totalComprar) + '</span>' +
+    '</div>';
+
+  let html = summary + '<div class="pbt-hint">Tildá los insumos que vas a comprar o usá <b>Calcular receta</b> (avance × coeficientes) / <b>Todo el saldo</b>. El saldo baja en vivo; la reserva real se graba al crear la OC.</div>';
 
   sectores.forEach(function(grp){
     let cuerpos = '';
@@ -12470,6 +12499,12 @@ function pbtSync(){
 
 function pbtOnTreeClick(e){
   const t = e.target;
+  if(t.closest('[data-pbt-expandall]')){
+    const rubros = document.querySelectorAll('#pbtTree .pbt-rubro');
+    let anyClosed = false; rubros.forEach(function(r){ if(!r.classList.contains('open')) anyClosed = true; });
+    rubros.forEach(function(r){ r.classList.toggle('open', anyClosed); });
+    return;
+  }
   const toggle = t.closest('[data-pbt-toggle]');
   if(toggle && !t.closest('.pbt-avance') && !t.closest('.pbt-monto')){
     const box = toggle.closest('.pbt-rubro'); if(box) box.classList.toggle('open');
