@@ -5216,6 +5216,7 @@ function openWizard(){
   wizard.autosaveTimer = setInterval(saveDraft, 30000);
   setTimeout(()=>document.getElementById('catSearch').focus(), 200);
   try{ if(typeof recipeOnWizardOpen === 'function') recipeOnWizardOpen(); }catch(e){ console.warn('recipe init:', e); }
+  try{ if(typeof pbtOnWizardOpen === 'function') pbtOnWizardOpen(); }catch(e){ console.warn('pbt init:', e); }
   try{ cartBudgetInit(); setPresupuesto(wizard.form.presupuesto||'', true); }catch(e){ console.warn('budget init:', e); }
   try{ const _b=document.getElementById('btnSubmitOC'); if(_b) _b.disabled=false; const _l=document.getElementById('btnSubmitOCLabel'); if(_l) _l.textContent='Crear orden de compra'; }catch(e){}
   goToStep(1);
@@ -6851,6 +6852,7 @@ function _cbExceededList(){
 function cartBudgetRender(){
   _cbLayout();
   _cbRenderInto(document.getElementById('cbPanel'), true);
+  try{ if(typeof pbtOnBudgetChange === 'function') pbtOnBudgetChange(); }catch(e){}
 }
 
 // ─── Validación del Step 2 ──────────────────────────────
@@ -7341,6 +7343,9 @@ async function submitOC(){
 
     // 3) Insertar items
     const _hayMO = wizard.cart.some(it => it.es_mano_obra);
+    const _haySinPres = wizard.cart.some(it => it.sin_presupuesto);
+    const _hayProdReal = wizard.cart.some(it => it.producto_real);
+    const _haySector = wizard.cart.some(it => it.sector);
     const itemsPayload = wizard.cart.map((it, idx) => {
       const row = {
         oc_id: ocId,
@@ -7353,6 +7358,9 @@ async function submitOC(){
         orden: idx,
       };
       if(_hayMO) row.es_mano_obra = !!it.es_mano_obra;
+      if(_haySinPres) row.sin_presupuesto = !!it.sin_presupuesto;
+      if(_hayProdReal) row.producto_real = it.producto_real || null;
+      if(_haySector) row.sector = it.sector || null;
       return row;
     });
     if(itemsPayload.length > 0){
@@ -11979,5 +11987,637 @@ function _pdRender(pp, obra, filtro){
 <div id="presuDetalleOverlay" style="display:none;position:fixed;inset:0;background:rgba(12,30,60,0.55);z-index:9999;align-items:flex-start;justify-content:center;padding:24px;overflow:auto">
   <div id="presuDetalleModal" style="width:100%;max-width:780px;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);margin:auto"></div>
 </div>
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   MÓDULO "🌳 DESDE PRESUPUESTO" · Incremento 2 · bloque aislado y removible
+   Agrega una 3.ª pestaña en la barra de modos (junto a "Por materiales" y
+   "Por composición"). Árbol Sector → Rubro → Insumo desde cartBudget, saldos
+   en vivo con _cbAgg, y empuja ítems a wizard.cart (reusa toda la maquinaria
+   de presupuesto ya existente: cbItemOptions, _cbItemDestino, es_mano_obra).
+   Para QUITARLO: poné OC_PRESUP_ENABLED=false (o borrá este bloque). No toca
+   "Por materiales" ni "Por composición".
+   ────────────────────────────────────────────────────────────────── */
+
+/* ★ INTERRUPTOR: true para activar el modo "Desde presupuesto". */
+const OC_PRESUP_ENABLED = true;
+
+const pbtUI = {
+  inited: false,
+  active: false,
+  invReady: false,      // prodByIns + prodInfo cargados
+  prodByIns: {},        // { codigo_insumo: [producto_id_str, ...] }
+  prodInfo: {},         // { producto_id_str: {id, nombre, precio_referencia, url_imagen} }
+  recetasPp: '',        // presupuesto cuyas recetas están cacheadas
+  recetasByRubro: {},   // { rubro_codigo: {nombre, unidad, ins:{ci:{coef1,coef2,merma}}, mo:[...] } }
+  recetasLoading: false,
+  npSeq: 0
+};
+
+function pbtEsc(s){
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+function pbtMoney(n){ try{ return fmtMoney(n); }catch(e){ return 'Gs ' + Math.round(Number(n)||0).toLocaleString('es-PY'); } }
+function pbtNum(n){ return Number(n||0).toLocaleString('es-PY', {maximumFractionDigits:2}); }
+function pbtRecipeQty(c1, c2, merma, m2){
+  const a = Number(c1)||0, b = Number(c2)||0, mm = Number(merma)||0, mer = Number(m2)||0;
+  return b > 0 ? Math.max(0, Math.ceil(a * mer * (1 + mm) / b)) : 0;
+}
+
+/* ── ciclo de vida ── */
+function pbtOnWizardOpen(){
+  if(!OC_PRESUP_ENABLED) return;
+  pbtInit();
+  pbtSetMode(false);            // el wizard abre en "Por materiales"
+}
+
+function pbtOnBudgetChange(){
+  if(!OC_PRESUP_ENABLED || !pbtUI.inited || !pbtUI.active) return;
+  pbtRender();
+}
+
+function pbtInjectStyles(){
+  if(document.getElementById('pbtStyles')) return;
+  const st = document.createElement('style'); st.id = 'pbtStyles';
+  st.textContent = [
+    '#pbtPanel{font-size:13px}',
+    '.pbt-hint{font-size:12.5px;color:#5b6478;background:#faf8f1;border:1px dashed #e3dcc9;border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.45}',
+    '.pbt-sector{margin-bottom:18px}',
+    '.pbt-sector-head{display:flex;align-items:center;gap:10px;font-size:13px;color:#1F3864;font-weight:700;padding:6px 2px 9px;border-bottom:2px solid #e7d29a;margin-bottom:8px}',
+    '.pbt-sector-count{margin-left:auto;font-size:11px;font-weight:600;color:#5b6478;background:#f3f1e9;border-radius:10px;padding:2px 9px}',
+    '.pbt-rubro{background:#fff;border:1px solid #e3dcc9;border-radius:11px;margin-bottom:12px;overflow:hidden}',
+    '.pbt-rubro-head{display:flex;align-items:center;gap:10px;padding:11px 13px;background:#f3f1e9;cursor:pointer;flex-wrap:wrap}',
+    '.pbt-caret{color:#1F3864;font-size:12px;transition:transform .15s}',
+    '.pbt-rubro.open .pbt-caret{transform:rotate(90deg)}',
+    '.pbt-code{font-weight:700;color:#1F3864}',
+    '.pbt-desc{color:#1a2236}',
+    '.pbt-unit{font-size:11px;color:#5b6478;background:#fff;border:1px solid #e3dcc9;padding:1px 7px;border-radius:10px}',
+    '.pbt-sin-tag{font-size:10.5px;font-weight:600;color:#8a6d12;background:#fbf3da;border:1px solid #e7d29a;border-radius:10px;padding:2px 9px}',
+    '.pbt-avance{margin-left:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}',
+    '.pbt-avance label{font-size:11px;color:#5b6478;font-weight:600}',
+    '.pbt-avance input{width:74px;font-family:inherit;font-size:13px;padding:5px 7px;border:1px solid #e3dcc9;border-radius:7px;text-align:right}',
+    '.pbt-btn{font-family:inherit;font-size:11.5px;font-weight:600;padding:5px 10px;border-radius:7px;border:1px solid #1F3864;background:#fff;color:#1F3864;cursor:pointer;white-space:nowrap}',
+    '.pbt-btn:hover{background:#1F3864;color:#fff}',
+    '.pbt-btn.ghost{border-color:#C8A028;color:#8a6d12}',
+    '.pbt-btn.ghost:hover{background:#C8A028;color:#3a2e06}',
+    '.pbt-body{padding:2px 8px 10px}',
+    '.pbt-monto{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12.5px}',
+    'table.pbt-tbl{width:100%;border-collapse:collapse;font-size:12.5px}',
+    'table.pbt-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:#5b6478;text-align:left;padding:7px 7px;border-bottom:1px solid #e3dcc9;font-weight:600}',
+    'table.pbt-tbl td{padding:8px 7px;border-bottom:1px solid #f0ece0;vertical-align:middle}',
+    'table.pbt-tbl tr:last-child td{border-bottom:none}',
+    '.pbt-rowsel{background:#fcf7e8}',
+    '.pbt-mat{font-weight:600}',
+    '.pbt-isub{font-size:10.5px;color:#5b6478;margin-top:1px}',
+    '.pbt-right{text-align:right}.pbt-center{text-align:center}',
+    '.pbt-coef{font-variant-numeric:tabular-nums;color:#5b6478}',
+    '.pbt-chk{width:17px;height:17px;accent-color:#1F3864;cursor:pointer}',
+    '.pbt-qty{width:74px;font-family:inherit;font-size:12.5px;padding:5px 7px;border:1px solid #e3dcc9;border-radius:7px;text-align:right}',
+    '.pbt-qty:disabled{background:#f4f2ea;color:#aaa}',
+    '.pbt-price{width:96px;font-family:inherit;font-size:12px;padding:5px 7px;border:1px solid #e3dcc9;border-radius:7px;text-align:right}',
+    '.pbt-msel{font-family:inherit;font-size:11.5px;padding:3px 5px;border:1px solid #e3dcc9;border-radius:6px;background:#fff;max-width:200px;margin-top:4px}',
+    '.pbt-marca{font-family:inherit;font-size:11.5px;padding:3px 6px;border:1px solid #e3dcc9;border-radius:6px;background:#fff;width:170px;margin-top:4px}',
+    '.pbt-marca::placeholder{color:#b5bcc9}',
+    '.pbt-saldo{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;font-weight:600}',
+    '.pbt-dot{width:9px;height:9px;border-radius:50%;display:inline-block}',
+    '.pbt-g{color:#1B5524}.pbt-a{color:#9a7b1a}.pbt-r{color:#c0392b}',
+    '.pbt-dot.pbt-g{background:#1B5524}.pbt-dot.pbt-a{background:#C8A028}.pbt-dot.pbt-r{background:#c0392b}',
+    '.pbt-pres{color:#5b6478;font-variant-numeric:tabular-nums}',
+    '.pbt-libre-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:9px 4px 11px}',
+    '.pbt-lf{font-family:inherit;font-size:12.5px;padding:6px 8px;border:1px solid #e3dcc9;border-radius:7px;background:#fff}',
+    '.pbt-noprod{font-size:11px;color:#8a6d12;background:#fbf3da;border:1px solid #e7d29a;border-radius:6px;padding:2px 8px;display:inline-block;margin-top:4px}',
+    '.pbt-np{background:#fff;border:1px dashed #C8A028;border-radius:11px;padding:13px 14px;margin-top:6px}',
+    '.pbt-np-head{font-size:13.5px;font-weight:600;color:#1F3864;margin-bottom:8px}',
+    '.pbt-np-head b{color:#8a6d12}',
+    '.pbt-np-results{max-height:170px;overflow:auto;margin-top:6px}',
+    '.pbt-np-res{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid #eef1f5;border-radius:7px;margin-bottom:5px;cursor:pointer;background:#fff}',
+    '.pbt-np-res:hover{background:#f6f4ec}',
+    '.pbt-np-res .pbt-np-code{color:#8893a5;font-size:10.5px}',
+    '.pbt-empty{font-size:12.5px;color:#5b6478;padding:10px 12px;background:#faf8f1;border:1px dashed #e3dcc9;border-radius:8px}'
+  ].join('\n');
+  document.head.appendChild(st);
+}
+
+function pbtInit(){
+  if(!OC_PRESUP_ENABLED || pbtUI.inited) return;
+  const step1 = document.getElementById('step1Content');
+  if(!step1) return;
+  pbtInjectStyles();
+
+  // 3.ª pestaña en la barra existente (la crea el módulo de recetas).
+  const bar = document.getElementById('recipeToggleBar');
+  if(bar && !document.getElementById('pbtTab')){
+    const b = document.createElement('button');
+    b.type = 'button'; b.id = 'pbtTab'; b.className = 'rc-tab';
+    b.textContent = '🌳 Desde presupuesto';
+    bar.appendChild(b);
+    b.addEventListener('click', function(){ pbtSetMode(true); });
+    // Al volver a los otros modos, ocultar mi panel y desmarcar mi pestaña.
+    const tMat = document.getElementById('rcTabMat');
+    const tRec = document.getElementById('rcTabRec');
+    if(tMat) tMat.addEventListener('click', function(){ pbtSetMode(false); });
+    if(tRec) tRec.addEventListener('click', function(){ pbtSetMode(false); });
+  }
+
+  // Panel del árbol.
+  if(!document.getElementById('pbtPanel')){
+    const panel = document.createElement('div');
+    panel.id = 'pbtPanel';
+    panel.style.display = 'none';
+    panel.innerHTML = '<div id="pbtTree"></div>';
+    step1.appendChild(panel);
+    panel.addEventListener('click', pbtOnTreeClick);
+    panel.addEventListener('change', pbtOnTreeChange);
+    panel.addEventListener('input', pbtOnTreeInput);
+  }
+
+  pbtUI.inited = true;
+}
+
+function _pbtRcMatEls(){
+  const step1 = document.getElementById('step1Content');
+  if(!step1) return [];
+  return [step1.querySelector('.cat-toolbar'),
+          document.getElementById('catResults'),
+          document.getElementById('catLoadmoreWrap')].filter(Boolean);
+}
+
+function pbtSetMode(on){
+  if(!pbtUI.inited) return;
+  pbtUI.active = !!on;
+  const panel = document.getElementById('pbtPanel');
+  const tab = document.getElementById('pbtTab');
+  const recipePanel = document.getElementById('recipeMode');
+  const tabMat = document.getElementById('rcTabMat');
+  const tabRec = document.getElementById('rcTabRec');
+  if(on){
+    _pbtRcMatEls().forEach(function(el){ if(el.dataset.rcPrev === undefined) el.dataset.rcPrev = el.style.display; el.style.display = 'none'; });
+    if(recipePanel) recipePanel.style.display = 'none';
+    if(panel) panel.style.display = '';
+    if(tab) tab.classList.add('rc-on');
+    if(tabMat) tabMat.classList.remove('rc-on');
+    if(tabRec) tabRec.classList.remove('rc-on');
+    pbtEnsureData();
+    pbtRender();
+  } else {
+    if(panel) panel.style.display = 'none';
+    if(tab) tab.classList.remove('rc-on');
+  }
+}
+
+/* ── carga de datos (lazy) ── */
+function pbtEnsureData(){
+  pbtBuildInverse();
+  pbtLoadRecetas();
+}
+
+async function pbtBuildInverse(){
+  if(pbtUI.invReady) return;
+  try{
+    if(typeof loadInsumoMap === 'function') await loadInsumoMap();
+    const inv = {};
+    const map = cartBudget.insMap || {};   // { producto_id: codigo_insumo }
+    Object.keys(map).forEach(function(pid){
+      const ci = map[pid];
+      if(!ci) return;
+      (inv[ci] = inv[ci] || []).push(String(pid));
+    });
+    pbtUI.prodByIns = inv;
+    // Hidratar nombre/precio de todos los producto_id involucrados.
+    const ids = Object.keys(map).map(function(p){ return Number(p); }).filter(function(n){ return !isNaN(n); });
+    const info = {};
+    if(ids.length){
+      const { data } = await sb.from('productos_catalogo')
+        .select('id,nombre,precio_referencia,url_imagen').in('id', ids);
+      (data || []).forEach(function(p){ info[String(p.id)] = p; });
+    }
+    pbtUI.prodInfo = info;
+    pbtUI.invReady = true;
+    if(pbtUI.active) pbtRender();
+  }catch(e){ console.warn('pbtBuildInverse', e); pbtUI.invReady = true; }
+}
+
+async function pbtLoadRecetas(){
+  const pp = cartBudget.pp || '';
+  if(!pp) return;
+  if(pbtUI.recetasPp === pp || pbtUI.recetasLoading) return;
+  pbtUI.recetasLoading = true;
+  try{
+    const rubros = (cartBudget.allRubros || []).filter(function(r){ return r.tiene_receta; }).map(function(r){ return r.rubro_codigo; });
+    const byRubro = {};
+    if(rubros.length){
+      const rec = await sb.from('recetas').select('id,nombre,unidad,rubro_codigo').eq('activo', true).in('rubro_codigo', rubros);
+      const recList = rec.data || [];
+      const byId = {};
+      recList.forEach(function(r){ byId[r.id] = r; if(!byRubro[String(r.rubro_codigo)]) byRubro[String(r.rubro_codigo)] = { id:r.id, nombre:r.nombre||'', unidad:r.unidad||'', ins:{}, mo:[] }; });
+      const ids = recList.map(function(r){ return r.id; });
+      if(ids.length){
+        const its = await sb.from('receta_items').select('receta_id,codigo_catalogo,coef1,coef2,merma_pct,tipo_componente,material,unidad,precio_unit').eq('activo', true).in('receta_id', ids);
+        (its.data || []).forEach(function(it){
+          const r = byId[it.receta_id]; if(!r) return;
+          const slot = byRubro[String(r.rubro_codigo)]; if(!slot) return;
+          if((it.tipo_componente||'insumo') === 'mano_obra'){
+            slot.mo.push({ material: it.material || '', unidad: it.unidad || '', coef1: Number(it.coef1)||1, coef2: Number(it.coef2)||1, precio_unit: Number(it.precio_unit)||0 });
+          } else if(it.codigo_catalogo){
+            slot.ins[String(it.codigo_catalogo)] = { coef1: Number(it.coef1)||0, coef2: Number(it.coef2)||0, merma: Number(it.merma_pct)||0 };
+          }
+        });
+      }
+    }
+    pbtUI.recetasByRubro = byRubro;
+    pbtUI.recetasPp = pp;
+    if(pbtUI.active) pbtRender();
+  }catch(e){ console.warn('pbtLoadRecetas', e); pbtUI.recetasByRubro = {}; pbtUI.recetasPp = pp; }
+  finally{ pbtUI.recetasLoading = false; }
+}
+
+/* ── saldo y semáforo ── */
+function pbtMatOf(ci, rk){
+  return (cartBudget.mats || []).find(function(m){ return m.codigo_insumo === ci && (m.rubro_codigo||'') === (rk||''); });
+}
+function pbtSaldo(ci, rk){
+  const m = pbtMatOf(ci, rk); if(!m) return 0;
+  const a = _cbAgg(ci, rk);
+  return m.limite - a.ejec - a.reserv - a.carr;
+}
+function pbtBaseDisp(ci, rk){   // saldo "base" sin lo del carrito (para topear)
+  const m = pbtMatOf(ci, rk); if(!m) return 0;
+  const a = _cbAgg(ci, rk);
+  return m.limite - a.ejec - a.reserv;
+}
+function pbtSem(saldo, base){
+  if(saldo <= 0) return 'pbt-r';
+  if(base > 0 && saldo / base <= 0.15) return 'pbt-a';
+  return 'pbt-g';
+}
+function pbtFindLine(ci, rk){
+  return (wizard.cart || []).find(function(c){ return c._pbt && c._codigo_insumo === ci && (c.rubro_codigo||'') === (rk||''); });
+}
+function pbtMontoSaldo(rk, precioTotal){
+  let usado = 0;
+  (cartBudget.ocItems || []).forEach(function(x){ if((x.rubro_codigo||'') === rk && _cbResolveIns(x.producto_id) === '') usado += Number(x.subtotal)||0; });
+  (wizard.cart || []).forEach(function(it){ if(it._pbt && it.es_mano_obra && (it.rubro_codigo||'') === rk) usado += Number(it.subtotal)||0; });
+  return (Number(precioTotal)||0) - usado;
+}
+
+/* ── render del árbol ── */
+function pbtRender(){
+  if(!pbtUI.inited) return;
+  const tree = document.getElementById('pbtTree');
+  if(!tree) return;
+
+  if(!cartBudget.pp){
+    tree.innerHTML = '<div class="pbt-hint">📌 Elegí primero el <b>presupuesto origen</b> en el paso <b>“Detalles”</b>. Cuando lo cargues, acá aparece el árbol Sector → Rubro → Insumos con los saldos en vivo.</div>';
+    return;
+  }
+  if(cartBudget.mats === null){
+    tree.innerHTML = '<div class="pbt-hint">Cargando disponibilidad del presupuesto…</div>';
+    return;
+  }
+  if(!pbtUI.invReady){
+    tree.innerHTML = '<div class="pbt-hint">Resolviendo productos del catálogo…</div>';
+    pbtBuildInverse();
+    return;
+  }
+  pbtLoadRecetas();
+
+  const allR = cartBudget.allRubros || [];
+  const insByRubro = {};
+  (cartBudget.mats || []).forEach(function(m){ const rk = String(m.rubro_codigo||'').trim(); (insByRubro[rk] = insByRubro[rk] || []).push(m); });
+
+  // Agrupar por sector según el rubro.
+  const sectores = []; const idx = {};
+  allR.forEach(function(r){
+    const sec = (r.sector || '').trim() || 'Sin sector';
+    if(!(sec in idx)){ idx[sec] = sectores.length; sectores.push({ sector: sec, rubros: [] }); }
+    sectores[idx[sec]].rubros.push(r);
+  });
+
+  let html = '<div class="pbt-hint">Tildá los insumos que vas a comprar o usá <b>Calcular receta</b> (avance × coeficientes) / <b>Todo el saldo</b>. El saldo baja en vivo; la reserva real se graba al crear la OC.</div>';
+
+  sectores.forEach(function(grp){
+    let cuerpos = '';
+    grp.rubros.forEach(function(r){
+      const rk = String(r.rubro_codigo||'').trim();
+      const ins = insByRubro[rk] || [];
+      if(ins.length){ cuerpos += pbtRubroInsumos(r, rk, ins); }
+      else if((Number(r.precio_total)||0) > 0){ cuerpos += pbtRubroMonto(r, rk); }
+    });
+    if(!cuerpos) return;
+    html += '<div class="pbt-sector"><div class="pbt-sector-head">📂 Sector · <span>' + pbtEsc(grp.sector) + '</span>' +
+            '<span class="pbt-sector-count">' + grp.rubros.length + ' rubro' + (grp.rubros.length === 1 ? '' : 's') + '</span></div>' +
+            cuerpos + '</div>';
+  });
+
+  html += pbtNoPresupPanel();
+  tree.innerHTML = html;
+}
+
+function pbtRubroInsumos(r, rk, ins){
+  const conReceta = !!r.tiene_receta;
+  const rec = pbtUI.recetasByRubro[rk];
+  const rows = ins.map(function(m){
+    const ci = m.codigo_insumo;
+    const base = pbtBaseDisp(ci, rk);
+    const saldo = pbtSaldo(ci, rk);
+    const sem = pbtSem(saldo, base);
+    const line = pbtFindLine(ci, rk);
+    const checked = line ? 'checked' : '';
+    const qtyVal = line ? line.cantidad : '';
+    const prods = pbtUI.prodByIns[ci] || [];
+    const curPid = line ? String(line.producto_id) : (prods[0] || '');
+    const info = pbtUI.prodInfo[curPid];
+    const precioVal = line ? line.precio_unit : (info ? (Number(info.precio_referencia)||0) : 0);
+    const coef = rec && rec.ins[ci] ? rec.ins[ci] : null;
+
+    let matSelect = '';
+    if(prods.length > 1){
+      matSelect = '<select class="pbt-msel" data-pbt-mat="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '">' +
+        prods.map(function(pid){ const p = pbtUI.prodInfo[pid]; const nm = p ? p.nombre : ('Producto #' + pid); return '<option value="' + pbtEsc(pid) + '"' + (pid === curPid ? ' selected' : '') + '>' + pbtEsc(nm) + '</option>'; }).join('') +
+      '</select>';
+    } else if(prods.length === 1){
+      matSelect = '<div class="pbt-isub">' + pbtEsc(info ? info.nombre : ('Producto #' + curPid)) + '</div>';
+    } else {
+      matSelect = '<span class="pbt-noprod">⚠ sin producto de catálogo vinculado</span>';
+    }
+    const marca = '<input class="pbt-marca" data-pbt-marca="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" placeholder="otra marca (opcional)" value="' + pbtEsc(line && line.producto_real ? line.producto_real : '') + '">';
+    const canCheck = prods.length > 0;
+
+    const coefCells = conReceta
+      ? ('<td class="pbt-center pbt-coef">' + (coef ? pbtNum(coef.coef1) : '—') + '</td><td class="pbt-center pbt-coef">' + (coef ? pbtNum(coef.coef2) : '—') + '</td>')
+      : '';
+
+    return '<tr class="' + (line ? 'pbt-rowsel' : '') + '">' +
+      '<td class="pbt-center"><input type="checkbox" class="pbt-chk" data-pbt-chk="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" ' + checked + (canCheck ? '' : ' disabled') + '></td>' +
+      '<td><div class="pbt-mat">' + pbtEsc(m.material) + '</div><div class="pbt-isub">' + pbtEsc(ci) + '</div>' + matSelect + '<div>' + marca + '</div></td>' +
+      '<td class="pbt-center">' + pbtEsc(m.unidad||'') + '</td>' +
+      coefCells +
+      '<td class="pbt-right pbt-pres">' + pbtNum(base) + '</td>' +
+      '<td class="pbt-right"><span class="pbt-saldo ' + sem + '"><span class="pbt-dot ' + sem + '"></span>' + pbtNum(saldo) + '</span></td>' +
+      '<td class="pbt-right"><input type="number" class="pbt-qty" data-pbt-qty="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" value="' + qtyVal + '" ' + (line ? '' : 'disabled') + ' min="0" placeholder="0"></td>' +
+      '<td class="pbt-right"><input type="number" class="pbt-price" data-pbt-precio="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" value="' + (Math.round(precioVal)||0) + '" min="0" ' + (line ? '' : 'disabled') + '></td>' +
+    '</tr>';
+  }).join('');
+
+  const avanceBar = conReceta
+    ? ('<div class="pbt-avance" onclick="event.stopPropagation()">' +
+        '<label>Avance a ejecutar (' + pbtEsc(r.unidad||'') + '):</label>' +
+        '<input type="number" data-pbt-avance="' + pbtEsc(rk) + '" placeholder="0" min="0">' +
+        '<button type="button" class="pbt-btn" data-pbt-calc="' + pbtEsc(rk) + '">Calcular receta</button>' +
+        '<button type="button" class="pbt-btn ghost" data-pbt-todo="' + pbtEsc(rk) + '">Todo el saldo</button>' +
+      '</div>')
+    : ('<div class="pbt-avance" onclick="event.stopPropagation()">' +
+        '<button type="button" class="pbt-btn ghost" data-pbt-todo="' + pbtEsc(rk) + '">Todo el saldo</button>' +
+      '</div>');
+
+  const headTh = conReceta
+    ? '<th class="pbt-center">✓</th><th>Insumo</th><th class="pbt-center">Unidad</th><th class="pbt-center">Coef 1</th><th class="pbt-center">Coef 2</th><th class="pbt-right">Saldo base</th><th class="pbt-right">Disp.</th><th class="pbt-right">A comprar</th><th class="pbt-right">₲ Unit.</th>'
+    : '<th class="pbt-center">✓</th><th>Insumo</th><th class="pbt-center">Unidad</th><th class="pbt-right">Saldo base</th><th class="pbt-right">Disp.</th><th class="pbt-right">A comprar</th><th class="pbt-right">₲ Unit.</th>';
+
+  return '<div class="pbt-rubro open" data-pbt-rubro="' + pbtEsc(rk) + '">' +
+    '<div class="pbt-rubro-head" data-pbt-toggle="' + pbtEsc(rk) + '">' +
+      '<span class="pbt-caret">▸</span><span class="pbt-code">' + pbtEsc(rk) + '</span><span class="pbt-desc">' + pbtEsc(r.descripcion) + '</span>' +
+      '<span class="pbt-unit">' + pbtEsc(r.unidad||'') + '</span>' + avanceBar +
+    '</div>' +
+    '<div class="pbt-body"><table class="pbt-tbl"><thead><tr>' + headTh + '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+  '</div>';
+}
+
+function pbtRubroMonto(r, rk){
+  const base = Number(r.precio_total)||0;
+  const saldo = pbtMontoSaldo(rk, base);
+  const sem = pbtSem(saldo, base);
+  const libres = (wizard.cart || []).map(function(c, i){ return { c:c, i:i }; }).filter(function(x){ return x.c._pbt && x.c.es_mano_obra && (x.c.rubro_codigo||'') === rk; });
+  const lista = libres.length
+    ? libres.map(function(x){ return '<div class="pbt-np-res" style="cursor:default"><span>' + pbtEsc(x.c.producto_nombre) + ' <span class="pbt-np-code">' + pbtNum(x.c.cantidad) + ' × ' + pbtMoney(x.c.precio_unit) + '</span></span><span><b>' + pbtMoney(x.c.subtotal) + '</b> &nbsp;<a href="#" class="pbt-del-libre" data-pbt-dellibre="' + x.i + '" style="color:#c0392b;text-decoration:none;font-weight:600">quitar</a></span></div>'; }).join('')
+    : '<div class="pbt-empty">Cargá ítems por monto a este rubro; el disponible baja según el subtotal.</div>';
+  return '<div class="pbt-rubro open" data-pbt-rubro="' + pbtEsc(rk) + '">' +
+    '<div class="pbt-rubro-head" data-pbt-toggle="' + pbtEsc(rk) + '">' +
+      '<span class="pbt-caret">▸</span><span class="pbt-code">' + pbtEsc(rk) + '</span><span class="pbt-desc">' + pbtEsc(r.descripcion) + '</span>' +
+      '<span class="pbt-sin-tag">por monto</span>' +
+      '<div class="pbt-monto"><span class="pbt-pres">Presup. ' + pbtMoney(base) + '</span><span class="pbt-saldo ' + sem + '"><span class="pbt-dot ' + sem + '"></span>Disp. ' + pbtMoney(saldo) + '</span></div>' +
+    '</div>' +
+    '<div class="pbt-body">' +
+      '<div class="pbt-libre-form" onclick="event.stopPropagation()">' +
+        '<input class="pbt-lf" data-pbt-lf="nom|' + pbtEsc(rk) + '" placeholder="Producto / servicio" style="flex:1;min-width:160px">' +
+        '<input class="pbt-lf" data-pbt-lf="qty|' + pbtEsc(rk) + '" type="number" min="0" placeholder="Cant." style="width:78px">' +
+        '<input class="pbt-lf" data-pbt-lf="pre|' + pbtEsc(rk) + '" type="number" min="0" placeholder="₲ P. unit." style="width:120px">' +
+        '<button type="button" class="pbt-btn" data-pbt-addlibre="' + pbtEsc(rk) + '">+ Agregar al carrito</button>' +
+      '</div>' +
+      '<div>' + lista + '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function pbtNoPresupPanel(){
+  return '<div class="pbt-np">' +
+    '<div class="pbt-np-head">➕ Agregar insumo <b>no presupuestado</b></div>' +
+    '<div class="pbt-libre-form" style="padding:0">' +
+      '<input class="pbt-lf" id="pbtNpSearch" placeholder="Buscar producto del catálogo (2+ letras)…" style="flex:1;min-width:200px">' +
+      '<input class="pbt-lf" id="pbtNpQty" type="number" min="0" placeholder="Cant." style="width:78px">' +
+      '<input class="pbt-lf" id="pbtNpPre" type="number" min="0" placeholder="₲ P. unit." style="width:120px">' +
+    '</div>' +
+    '<div class="pbt-np-results" id="pbtNpResults"></div>' +
+  '</div>';
+}
+
+/* ── interacciones ── */
+function pbtParts(v){ const p = String(v||'').split('|'); return { rk: p[0]||'', ci: p[1]||'' }; }
+
+function pbtSetCheck(rk, ci, checked){
+  if(checked){
+    const prods = pbtUI.prodByIns[ci] || [];
+    const pid = prods[0]; if(!pid){ return; }
+    let q = pbtBaseDisp(ci, rk);
+    if(q < 0) q = 0;
+    pbtUpsertLine(ci, rk, Number(pid), q);
+  } else {
+    pbtRemoveLine(ci, rk);
+  }
+  pbtSync();
+}
+
+function pbtUpsertLine(ci, rk, pid, qty){
+  const info = pbtUI.prodInfo[String(pid)] || {};
+  const r = (cartBudget.allRubros || []).find(function(x){ return String(x.rubro_codigo||'').trim() === rk; });
+  let line = pbtFindLine(ci, rk);
+  const precio = line ? Number(line.precio_unit)||0 : (Number(info.precio_referencia)||0);
+  const cantidad = Math.max(0, Number(qty)||0);
+  if(!line){
+    line = { _pbt:true, _codigo_insumo:ci, _rubroManual:true, es_mano_obra:false };
+    wizard.cart.push(line);
+  }
+  line.producto_id = pid;
+  line.producto_nombre = line.producto_real ? line.producto_real : (info.nombre || ('Producto #' + pid));
+  line.url_imagen = info.url_imagen || '';
+  line.cantidad = cantidad;
+  line.precio_unit = precio;
+  line.subtotal = Math.round(cantidad * precio * 100) / 100;
+  line.rubro_codigo = rk;
+  line.sector = r ? (r.sector || '') : '';
+}
+
+function pbtRemoveLine(ci, rk){
+  const i = (wizard.cart || []).findIndex(function(c){ return c._pbt && c._codigo_insumo === ci && (c.rubro_codigo||'') === (rk||''); });
+  if(i >= 0) wizard.cart.splice(i, 1);
+}
+
+function pbtSync(){
+  if(typeof renderCart === 'function') renderCart();   // re-dibuja carrito + panel presupuesto + (vía hook) este árbol
+  if(typeof saveDraft === 'function') saveDraft();
+}
+
+function pbtOnTreeClick(e){
+  const t = e.target;
+  const toggle = t.closest('[data-pbt-toggle]');
+  if(toggle && !t.closest('.pbt-avance') && !t.closest('.pbt-monto')){
+    const box = toggle.closest('.pbt-rubro'); if(box) box.classList.toggle('open');
+    return;
+  }
+  const calc = t.closest('[data-pbt-calc]');
+  if(calc){ pbtCalcReceta(calc.getAttribute('data-pbt-calc')); return; }
+  const todo = t.closest('[data-pbt-todo]');
+  if(todo){ pbtTodoSaldo(todo.getAttribute('data-pbt-todo')); return; }
+  const addl = t.closest('[data-pbt-addlibre]');
+  if(addl){ pbtAddLibre(addl.getAttribute('data-pbt-addlibre')); return; }
+  const dell = t.closest('[data-pbt-dellibre]');
+  if(dell){ e.preventDefault(); const i = Number(dell.getAttribute('data-pbt-dellibre')); if(wizard.cart[i]){ wizard.cart.splice(i,1); pbtSync(); } return; }
+  const npRes = t.closest('[data-pbt-np-add]');
+  if(npRes){ pbtAddNoPresup(Number(npRes.getAttribute('data-pbt-np-add'))); return; }
+}
+
+function pbtOnTreeChange(e){
+  const t = e.target;
+  if(t.matches('[data-pbt-chk]')){ const p = pbtParts(t.getAttribute('data-pbt-chk')); pbtSetCheck(p.rk, p.ci, t.checked); return; }
+  if(t.matches('[data-pbt-qty]')){
+    const p = pbtParts(t.getAttribute('data-pbt-qty')); const line = pbtFindLine(p.ci, p.rk); if(!line) return;
+    let q = Number(t.value)||0;
+    const otros = (wizard.cart||[]).filter(function(c){ return c !== line && c._pbt && c._codigo_insumo === p.ci && (c.rubro_codigo||'') === p.rk; }).reduce(function(a,c){ return a + (Number(c.cantidad)||0); }, 0);
+    const m = pbtMatOf(p.ci, p.rk); const a = _cbAgg(p.ci, p.rk);
+    const maxQ = m ? (m.limite - a.ejec - a.reserv - otros) : q;
+    if(q > maxQ){ q = Math.max(0, maxQ); if(typeof showToast==='function') showToast('Topeado al saldo: ' + pbtNum(maxQ), 'info'); }
+    pbtUpsertLine(p.ci, p.rk, Number(line.producto_id), Math.max(0, q)); pbtSync(); return;
+  }
+  if(t.matches('[data-pbt-mat]')){
+    const p = pbtParts(t.getAttribute('data-pbt-mat')); const line = pbtFindLine(p.ci, p.rk); if(!line) return;
+    const info = pbtUI.prodInfo[String(t.value)] || {};
+    line.producto_real = '';
+    pbtUpsertLine(p.ci, p.rk, Number(t.value), Number(line.cantidad)||0);
+    line.precio_unit = Number(info.precio_referencia)||line.precio_unit||0;
+    line.subtotal = Math.round((Number(line.cantidad)||0) * line.precio_unit * 100) / 100;
+    pbtSync(); return;
+  }
+  if(t.matches('[data-pbt-precio]')){
+    const p = pbtParts(t.getAttribute('data-pbt-precio')); const line = pbtFindLine(p.ci, p.rk); if(!line) return;
+    const precio = Math.max(0, Number(t.value)||0); line.precio_unit = precio;
+    line.subtotal = Math.round((Number(line.cantidad)||0) * precio * 100) / 100; pbtSync(); return;
+  }
+}
+
+function pbtOnTreeInput(e){
+  const t = e.target;
+  if(t.matches('[data-pbt-marca]')){
+    const p = pbtParts(t.getAttribute('data-pbt-marca')); const line = pbtFindLine(p.ci, p.rk); if(!line) return;
+    const v = (t.value||'').trim();
+    line.producto_real = v;
+    const info = pbtUI.prodInfo[String(line.producto_id)] || {};
+    line.producto_nombre = v ? v : (info.nombre || line.producto_nombre);
+    if(typeof saveDraft === 'function') saveDraft();
+    return;
+  }
+  if(t.id === 'pbtNpSearch'){ pbtNpSearch(t.value); return; }
+}
+
+function pbtCalcReceta(rk){
+  const av = document.querySelector('[data-pbt-avance="' + (window.CSS && CSS.escape ? CSS.escape(rk) : rk) + '"]');
+  const avance = av ? (Number(av.value)||0) : 0;
+  if(avance <= 0){ if(typeof showToast==='function') showToast('Cargá el avance a ejecutar (ej. 50)', 'error'); return; }
+  const rec = pbtUI.recetasByRubro[rk];
+  const ins = (cartBudget.mats || []).filter(function(m){ return (m.rubro_codigo||'') === rk; });
+  ins.forEach(function(m){
+    const ci = m.codigo_insumo;
+    const coef = rec && rec.ins[ci] ? rec.ins[ci] : null;
+    const prods = pbtUI.prodByIns[ci] || []; if(!prods.length) return;
+    let q = coef ? pbtRecipeQty(coef.coef1, coef.coef2, coef.merma, avance) : 0;
+    const cap = pbtBaseDisp(ci, rk);
+    if(q > cap) q = Math.max(0, cap);
+    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(prods[0]), q); }
+  });
+  // Mano de obra de la receta → ítems por monto.
+  if(rec && rec.mo && rec.mo.length){
+    const r = (cartBudget.allRubros || []).find(function(x){ return String(x.rubro_codigo||'').trim() === rk; });
+    rec.mo.forEach(function(mo){
+      const cant = pbtRecipeQty(mo.coef1, mo.coef2, 0, avance) || avance;
+      const sub = Math.round(cant * (Number(mo.precio_unit)||0) * 100) / 100;
+      // Reemplaza la MO previa de este rubro+material si existe.
+      const exIdx = (wizard.cart||[]).findIndex(function(c){ return c._pbt && c.es_mano_obra && (c.rubro_codigo||'')===rk && c.producto_nombre===mo.material; });
+      const line = { _pbt:true, es_mano_obra:true, _rubroManual:true, producto_id:null, producto_nombre:mo.material||'Mano de obra', cantidad:cant, precio_unit:Number(mo.precio_unit)||0, subtotal:sub, rubro_codigo:rk, sector:r?(r.sector||''):'' };
+      if(exIdx >= 0) wizard.cart[exIdx] = line; else wizard.cart.push(line);
+    });
+  }
+  pbtSync();
+}
+
+function pbtTodoSaldo(rk){
+  const ins = (cartBudget.mats || []).filter(function(m){ return (m.rubro_codigo||'') === rk; });
+  ins.forEach(function(m){
+    const ci = m.codigo_insumo;
+    const prods = pbtUI.prodByIns[ci] || []; if(!prods.length) return;
+    const q = Math.max(0, pbtBaseDisp(ci, rk));
+    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(prods[0]), q); }
+  });
+  pbtSync();
+}
+
+function pbtAddLibre(rk){
+  const root = document.getElementById('pbtTree'); if(!root) return;
+  const nomEl = root.querySelector('[data-pbt-lf="nom|' + rk + '"]');
+  const qtyEl = root.querySelector('[data-pbt-lf="qty|' + rk + '"]');
+  const preEl = root.querySelector('[data-pbt-lf="pre|' + rk + '"]');
+  const nom = nomEl ? (nomEl.value||'').trim() : '';
+  const qty = qtyEl ? (Number(qtyEl.value)||0) : 0;
+  const pre = preEl ? (Number(preEl.value)||0) : 0;
+  if(!nom){ if(typeof showToast==='function') showToast('Poné el nombre del producto/servicio', 'error'); return; }
+  if(qty <= 0 || pre <= 0){ if(typeof showToast==='function') showToast('Cargá cantidad y precio', 'error'); return; }
+  const r = (cartBudget.allRubros || []).find(function(x){ return String(x.rubro_codigo||'').trim() === rk; });
+  wizard.cart.push({ _pbt:true, es_mano_obra:true, _rubroManual:true, producto_id:null, producto_nombre:nom, cantidad:qty, precio_unit:pre, subtotal:Math.round(qty*pre*100)/100, rubro_codigo:rk, sector:r?(r.sector||''):'' });
+  pbtSync();
+}
+
+async function pbtNpSearch(q){
+  const box = document.getElementById('pbtNpResults'); if(!box) return;
+  q = (q||'').trim();
+  if(q.length < 2){ box.innerHTML = ''; return; }
+  const seq = ++pbtUI.npSeq;
+  box.innerHTML = '<div class="pbt-empty">Buscando…</div>';
+  try{
+    const safe = q.replace(/[%_]/g, function(c){ return '\\' + c; });
+    const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%' + safe + '%').order('nombre').limit(30);
+    if(seq !== pbtUI.npSeq) return;
+    if(!data || !data.length){ box.innerHTML = '<div class="pbt-empty">Sin resultados.</div>'; return; }
+    box.innerHTML = data.map(function(p){
+      const cod = p.codigo ? p.codigo : ('#' + p.id);
+      return '<div class="pbt-np-res" data-pbt-np-add="' + p.id + '"><span>' + pbtEsc(p.nombre) + ' <span class="pbt-np-code">' + pbtEsc(cod) + '</span></span><span>' + pbtMoney(Number(p.precio_referencia)||0) + '</span></div>';
+    }).join('');
+    pbtUI._npCache = {}; data.forEach(function(p){ pbtUI._npCache[String(p.id)] = p; });
+  }catch(e){ console.warn('pbtNpSearch', e); box.innerHTML = '<div class="pbt-empty">Error al buscar.</div>'; }
+}
+
+function pbtAddNoPresup(pid){
+  const p = (pbtUI._npCache || {})[String(pid)]; if(!p){ return; }
+  const qtyEl = document.getElementById('pbtNpQty');
+  const preEl = document.getElementById('pbtNpPre');
+  const qty = qtyEl ? (Number(qtyEl.value)||0) : 0;
+  let pre = preEl ? (Number(preEl.value)||0) : 0;
+  if(!pre) pre = Number(p.precio_referencia)||0;
+  if(qty <= 0 || pre <= 0){ if(typeof showToast==='function') showToast('Cargá cantidad y precio del insumo no presupuestado', 'error'); return; }
+  wizard.cart.push({ _pbt:true, sin_presupuesto:true, _rubroManual:true, es_mano_obra:false, producto_id:p.id, producto_nombre:p.nombre, cantidad:qty, precio_unit:pre, subtotal:Math.round(qty*pre*100)/100, rubro_codigo:'', sector:(wizard.form && wizard.form.sector)||'' });
+  if(qtyEl) qtyEl.value = ''; if(preEl) preEl.value = '';
+  pbtSync();
+}
+
+</script>
+
 </body>
 </html>
