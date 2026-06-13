@@ -631,17 +631,27 @@ body{
 
 <div class="mini-overlay" id="compRubOverlay" style="z-index:10001">
   <div class="mini-modal">
-    <div class="mini-head"><span>Nuevo rubro en el árbol</span><button type="button" class="mini-x" id="crClose">&times;</button></div>
+    <div class="mini-head"><span>Nuevo en el árbol</span><button type="button" class="mini-x" id="crClose">&times;</button></div>
     <div class="mini-body">
-      <label class="pm-label">Código *</label>
-      <input id="crCod" class="pm-input" placeholder="Ej. 03.05.010" maxlength="40" autocomplete="off">
-      <label class="pm-label" style="margin-top:10px">Nombre *</label>
-      <input id="crNom" class="pm-input" placeholder="Ej. Mampostería de ladrillo común" maxlength="160">
-      <div style="display:flex;gap:10px;margin-top:10px">
-        <div style="flex:0 0 110px"><label class="pm-label">Unidad</label><input id="crUni" class="pm-input" placeholder="m², m³, gl…" maxlength="20"></div>
-        <div style="flex:1"><label class="pm-label">Capítulo</label><input id="crCap" class="pm-input" list="compCapList2" placeholder="Capítulo…" maxlength="120"></div>
+      <div class="cr-step"><span class="cr-step-n">1</span> Capítulo</div>
+      <select id="crCapSel" class="pm-input"></select>
+      <div id="crNewCapBox" style="display:none;margin-top:8px;background:#f7f4fc;border:1px solid #e3dbf3;border-radius:8px;padding:10px">
+        <div style="display:flex;gap:10px">
+          <div style="flex:0 0 96px"><label class="pm-label">Código cap.</label><input id="crCapCod" class="pm-input cr-code" placeholder="Ej. 17" maxlength="10" autocomplete="off"></div>
+          <div style="flex:1"><label class="pm-label">Nombre del capítulo</label><input id="crCapNom" class="pm-input" placeholder="Ej. Pinturas" maxlength="120"></div>
+        </div>
       </div>
-      <datalist id="compCapList2"></datalist>
+
+      <div class="cr-step" style="margin-top:16px"><span class="cr-step-n">2</span> Rubro</div>
+      <div id="crRubBox" style="opacity:.45;pointer-events:none">
+        <label class="pm-label">Código del rubro <span style="color:#8893a5;font-weight:400">· se genera solo</span></label>
+        <input id="crCod" class="pm-input cr-code" placeholder="—" maxlength="40" autocomplete="off">
+        <label class="pm-label" style="margin-top:10px">Nombre *</label>
+        <input id="crNom" class="pm-input" placeholder="Ej. Mampostería de ladrillo común" maxlength="160">
+        <label class="pm-label" style="margin-top:10px">Unidad</label>
+        <input id="crUni" class="pm-input" placeholder="m², m³, gl, UNID…" maxlength="20" style="max-width:170px">
+      </div>
+
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="crCancel">Cancelar</button><button type="button" class="pm-btn" id="crSave">Crear rubro</button></div>
     </div>
   </div>
@@ -742,6 +752,10 @@ body{
   .comp-total b{font-size:20px;color:#1F3864;font-family:ui-monospace,Menlo,Consolas,monospace}
   .comp-foot-actions{display:flex;gap:8px}
   .comp-tipo-mo{background:#f3f1ea}
+  .comp-tbl input.ci-cod{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:#1F3864}
+  .cr-step{font-size:12px;font-weight:800;color:#1F3864;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .cr-step-n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#5a3fa0;color:#fff;font-size:11px;flex-shrink:0}
+  .cr-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:#1F3864;letter-spacing:.5px}
   .mini-overlay{display:none;position:fixed;inset:0;background:rgba(20,30,55,.45);z-index:9999;align-items:center;justify-content:center}
   .mini-overlay.show{display:flex}
   .mini-modal{background:#fff;border-radius:14px;width:min(420px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
@@ -2090,35 +2104,114 @@ async function saveComposicion(){
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
-// ── Nuevo rubro en el árbol ──
-function openNewRubro(){
-  document.getElementById('crCod').value=''; document.getElementById('crNom').value='';
-  document.getElementById('crUni').value=''; document.getElementById('crCap').value='';
-  document.getElementById('compCapList2').innerHTML=Object.keys(ed.byCap||{}).filter(function(c){return c!=='(Sin capítulo)';}).map(function(c){return '<option value="'+escapeHtml(c)+'">';}).join('');
+// ── Nuevo en el árbol: Capítulo → Rubro (codificado y guiado) ──
+let _capCache = null; // [{codigo, nombre}]
+
+async function _loadCapitulos(){
+  let caps = [];
+  // 1) fuente de verdad: tabla capitulos (si existe)
+  try{
+    const { data, error } = await sb.from('capitulos').select('codigo,nombre').eq('activo', true);
+    if(!error && data) caps = data.map(function(c){ return { codigo:String(c.codigo), nombre:c.nombre||'' }; });
+  }catch(e){ /* la tabla puede no existir todavía */ }
+  // 2) complemento: capítulos ya presentes en el árbol (por si la tabla no los tiene)
+  const seen = {}; caps.forEach(function(c){ seen[c.codigo]=true; });
+  Object.keys(ed.byCap||{}).forEach(function(s){
+    if(s==='(Sin capítulo)') return;
+    const m = String(s).match(/^\s*(\S+)\s*([\s\S]*)$/);
+    const cod = m ? m[1] : s; const nom = m ? (m[2]||'').trim() : '';
+    if(!seen[cod]){ caps.push({ codigo:cod, nombre:nom }); seen[cod]=true; }
+  });
+  caps.sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}); });
+  _capCache = caps;
+  return caps;
+}
+
+function _nextRubroCode(capCode){
+  if(!capCode) return '';
+  let max = 0;
+  const re = new RegExp('^'+String(capCode).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\.(\\d+)$');
+  (ed.arbol||[]).forEach(function(r){
+    const m = String(r.codigo).match(re);
+    if(m){ const n=parseInt(m[1],10); if(n>max) max=n; }
+  });
+  return String(capCode) + '.' + String(max+1).padStart(3,'0');
+}
+
+function _setRubBoxEnabled(on){
+  const box=document.getElementById('crRubBox');
+  box.style.opacity = on ? '1' : '.45';
+  box.style.pointerEvents = on ? 'auto' : 'none';
+}
+function _recalcRubCode(){
+  const sel=document.getElementById('crCapSel').value;
+  let capCode='';
+  if(sel==='__new__'){ capCode=(document.getElementById('crCapCod').value||'').trim(); }
+  else if(sel){ capCode=sel; }
+  if(capCode){ document.getElementById('crCod').value=_nextRubroCode(capCode); _setRubBoxEnabled(true); }
+  else { document.getElementById('crCod').value=''; _setRubBoxEnabled(false); }
+}
+function _onCapSelChange(){
+  const v=document.getElementById('crCapSel').value;
+  document.getElementById('crNewCapBox').style.display = (v==='__new__') ? 'block' : 'none';
+  _recalcRubCode();
+  if(v==='__new__'){ setTimeout(function(){ document.getElementById('crCapCod').focus(); }, 30); }
+}
+
+async function openNewRubro(){
+  await _loadCapitulos();
+  const sel=document.getElementById('crCapSel');
+  sel.innerHTML = '<option value="">Elegí un capítulo…</option>' +
+    _capCache.map(function(c){ return '<option value="'+escapeHtml(c.codigo)+'">'+escapeHtml(c.codigo+' · '+(c.nombre||''))+'</option>'; }).join('') +
+    '<option value="__new__">➕ Nuevo capítulo…</option>';
+  sel.value='';
+  document.getElementById('crNewCapBox').style.display='none';
+  document.getElementById('crCapCod').value=''; document.getElementById('crCapNom').value='';
+  document.getElementById('crCod').value=''; document.getElementById('crNom').value=''; document.getElementById('crUni').value='';
+  _setRubBoxEnabled(false);
   document.getElementById('compRubOverlay').classList.add('show');
-  setTimeout(function(){ document.getElementById('crCod').focus(); }, 50);
+  setTimeout(function(){ sel.focus(); }, 50);
 }
 function closeNewRubro(){ document.getElementById('compRubOverlay').classList.remove('show'); }
+
 async function saveNewRubro(){
+  const selv=document.getElementById('crCapSel').value;
+  let capCode='', capNom='';
+  if(selv==='__new__'){
+    capCode=(document.getElementById('crCapCod').value||'').trim();
+    capNom=(document.getElementById('crCapNom').value||'').trim();
+    if(!capCode){ showToast('Falta el código del capítulo','error'); return; }
+    if(!capNom){ showToast('Falta el nombre del capítulo','error'); return; }
+  } else if(selv){
+    capCode=selv;
+    const c=(_capCache||[]).find(function(x){return x.codigo===selv;});
+    capNom = c ? c.nombre : '';
+  } else { showToast('Elegí o creá un capítulo primero','error'); return; }
+
   const cod=(document.getElementById('crCod').value||'').trim();
   const nom=(document.getElementById('crNom').value||'').trim();
   const uni=(document.getElementById('crUni').value||'').trim();
-  const cap=(document.getElementById('crCap').value||'').trim();
-  if(!cod){ showToast('Falta el código','error'); return; }
-  if(!nom){ showToast('Falta el nombre','error'); return; }
+  if(!cod){ showToast('Falta el código del rubro','error'); return; }
+  if(!nom){ showToast('Falta el nombre del rubro','error'); return; }
+
+  const capLabel = (capCode + ' ' + capNom).trim();
   const btn=document.getElementById('crSave'); const old=btn.textContent; btn.disabled=true; btn.textContent='Creando…';
   try{
+    if(selv==='__new__'){
+      try{ await sb.from('capitulos').upsert({ codigo:capCode, nombre:capNom, activo:true }, { onConflict:'codigo' }); }catch(e){ /* tabla puede no existir; el capítulo queda igual vía rubros.capitulo */ }
+    }
     const ex=await sb.from('rubros').select('codigo,activo').eq('codigo', cod).maybeSingle();
     if(ex.data){
-      if(ex.data.activo===false){ const up=await sb.from('rubros').update({activo:true,nombre:nom,unidad:uni||null,capitulo:cap||null}).eq('codigo',cod); if(up.error) throw up.error; }
-      else { showToast('Ya existe un rubro con ese código','error'); btn.disabled=false; btn.textContent=old; return; }
+      if(ex.data.activo===false){ const up=await sb.from('rubros').update({activo:true,nombre:nom,unidad:uni||null,capitulo:capLabel}).eq('codigo',cod); if(up.error) throw up.error; }
+      else { showToast('Ya existe un rubro con el código '+cod,'error'); btn.disabled=false; btn.textContent=old; return; }
     } else {
-      const ins=await sb.from('rubros').insert({ codigo:cod, nombre:nom, unidad:uni||null, capitulo:cap||null, tiene_receta:false, activo:true, fuente:'manual' });
+      const ins=await sb.from('rubros').insert({ codigo:cod, nombre:nom, unidad:uni||null, capitulo:capLabel, tiene_receta:false, activo:true, fuente:'manual' });
       if(ins.error) throw ins.error;
     }
     await _reloadArbolForce();
+    _capCache=null;
     closeNewRubro();
-    showToast('Rubro «'+cod+'» creado', 'success');
+    showToast('Rubro «'+cod+'» creado en '+capLabel, 'success');
     selectCompRubro(cod);
   }catch(e){ console.warn('saveNewRubro', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
@@ -2131,6 +2224,8 @@ document.getElementById('compNewRubro').addEventListener('click', openNewRubro);
 document.getElementById('crClose').addEventListener('click', closeNewRubro);
 document.getElementById('crCancel').addEventListener('click', closeNewRubro);
 document.getElementById('crSave').addEventListener('click', saveNewRubro);
+document.getElementById('crCapSel').addEventListener('change', _onCapSelChange);
+document.getElementById('crCapCod').addEventListener('input', _recalcRubCode);
 document.getElementById('compRubOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewRubro(); });
 
 
