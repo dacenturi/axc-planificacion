@@ -522,6 +522,7 @@ body{
           <div class="pm-withadd">
             <select id="pmObra" class="pm-input"><option value="">Elegí la obra…</option></select>
             <button type="button" class="pm-addmini" id="pmAddObraBtn" title="Agregar nueva obra">+</button>
+            <button type="button" class="pm-mgmini" id="pmManageObraBtn" title="Gestionar obras del catálogo">⚙</button>
           </div>
         </div>
         <div class="pm-field" style="grid-column:1/-1">
@@ -547,6 +548,7 @@ body{
         <div class="pm-withadd" style="max-width:210px">
           <select id="pmRubSector" class="pm-input"><option value="">Sector…</option></select>
           <button type="button" class="pm-addmini" id="pmAddSectorBtn" title="Agregar nuevo sector">+</button>
+          <button type="button" class="pm-mgmini" id="pmManageSectorBtn" title="Gestionar sectores de la obra">⚙</button>
         </div>
         <select id="pmRubCap" class="pm-input" style="max-width:200px"><option value="">Capítulo…</option></select>
         <select id="pmRubComp" class="pm-input" style="max-width:260px" disabled><option value="">Composición…</option></select>
@@ -600,6 +602,18 @@ body{
 
 <div class="toast" id="toast"></div>
 
+<div class="mini-overlay" id="mgOverlay">
+  <div class="mini-modal" style="width:min(460px,94vw)">
+    <div class="mini-head"><span id="mgTitle">Gestionar</span>
+      <button type="button" class="mini-x" id="mgClose">&times;</button></div>
+    <div class="mini-body">
+      <div id="mgCtx" class="mini-ctx"></div>
+      <div id="mgList" class="mg-list"></div>
+      <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="mgDone">Cerrar</button></div>
+    </div>
+  </div>
+</div>
+
 <style>
   .pm-sectitle{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#1F3864;margin:18px 0 8px;border-bottom:2px solid #C8A028;padding-bottom:5px}
   .pm-tablewrap{border:1px solid #e6eaf1;border-radius:10px;overflow:auto;max-height:220px}
@@ -620,6 +634,18 @@ body{
   .pm-withadd .pm-input{flex:1}
   .pm-addmini{flex:none;width:34px;border:1px solid var(--gold,#C8A028);background:#fbf3da;color:#8a6d10;border-radius:8px;font-size:20px;font-weight:700;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
   .pm-addmini:hover{background:#C8A028;color:#fff}
+  .pm-mgmini{flex:none;width:34px;border:1px solid #1F3864;background:#eef2f8;color:#1F3864;border-radius:8px;font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+  .pm-mgmini:hover{background:#1F3864;color:#fff}
+  .mg-list{border:1px solid #e6eaf1;border-radius:10px;max-height:340px;overflow:auto;margin-top:4px}
+  .mg-item{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #eef1f5;gap:10px}
+  .mg-item:last-child{border-bottom:none}
+  .mg-item:hover{background:#f7f9fc}
+  .mg-item.mg-inactive .mg-name{color:#9aa4b3;text-decoration:line-through}
+  .mg-name{font-size:13px;color:#1F3864;font-weight:600;flex:1;word-break:break-word}
+  .mg-badge{display:inline-block;font-size:9px;font-weight:700;padding:1px 6px;border-radius:5px;background:#eef0f4;color:#8893a5;margin-left:6px;vertical-align:middle;text-transform:uppercase;letter-spacing:.4px}
+  .mg-del{flex:none;background:#fde9e9;color:#c0392b;border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-weight:700;font-size:14px}
+  .mg-del:hover{background:#c0392b;color:#fff}
+  .mg-empty{text-align:center;color:#8893a5;padding:20px;font-size:13px}
   .mini-overlay{display:none;position:fixed;inset:0;background:rgba(20,30,55,.45);z-index:9999;align-items:center;justify-content:center}
   .mini-overlay.show{display:flex}
   .mini-modal{background:#fff;border-radius:14px;width:min(420px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
@@ -702,6 +728,7 @@ async function loadProfileAndApp(){
     return;
   }
   state.profile = profile;
+  state.isAdmin = (String(profile.rol||'').toLowerCase() === 'admin');
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
   document.getElementById('appContainer').style.display='block';
@@ -867,8 +894,10 @@ async function loadListas(){
         const k=_normObra(x.obra_ref);
         (ed.sectByObraCat[k] = ed.sectByObraCat[k] || {})[x.valor] = 1;
       }
-      // Fallback: catálogo viejo de Planificación
-      if(t==='obras'){ obras[x.valor]=obras[x.valor]||1; }
+      // (Quitado 13/06/2026) Antes se mezclaban las obras de Planificación
+      // (tipo 'obras'), lo que metía ruido en el dropdown (Polka, SHANGAI, etc.).
+      // Ahora el dropdown muestra SOLO el catálogo de presupuesto (obras_presu)
+      // + obras que ya tienen un presupuesto real (líneas de abajo). No toca Planificación.
     });
     (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=obras[p.obra]||1; });
     // sectores reales por obra (de los presupuestos cargados) — como respaldo
@@ -1406,6 +1435,102 @@ async function saveMini(){
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
+// ── GESTIÓN DE CATÁLOGO (listar + eliminar) ──────────────────
+// Regla acordada: si el ítem está EN USO por algún presupuesto → DESACTIVAR
+// (sale del dropdown para nuevos presupuestos, sin romper los existentes).
+// Si NO está en uso → BORRAR definitivamente. Eliminar es solo admin.
+let _mgKind = null; // 'obra' | 'sector'
+
+function openManage(kind){
+  if(kind==='sector'){
+    var obra=(document.getElementById('pmObra').value||'').trim();
+    if(!obra){ showToast('Primero elegí la obra para gestionar sus sectores', 'error'); return; }
+  }
+  _mgKind = kind;
+  document.getElementById('mgTitle').textContent = (kind==='obra') ? 'Gestionar obras' : 'Gestionar sectores';
+  var ctx=document.getElementById('mgCtx');
+  if(kind==='sector'){ ctx.textContent='Obra: '+(document.getElementById('pmObra').value||'').trim(); ctx.classList.add('show'); }
+  else { ctx.textContent=''; ctx.classList.remove('show'); }
+  renderManageList();
+  document.getElementById('mgOverlay').classList.add('show');
+}
+function closeManage(){ document.getElementById('mgOverlay').classList.remove('show'); _mgKind=null; }
+
+async function renderManageList(){
+  var list = document.getElementById('mgList');
+  list.innerHTML = '<div class="mg-empty">Cargando…</div>';
+  var rows = [];
+  try{
+    if(_mgKind==='obra'){
+      var r = await sb.from('listas').select('id,valor,activo').eq('tipo','obras_presu').order('valor');
+      if(r.error) throw r.error;
+      rows = (r.data||[]);
+    } else {
+      var obra=(document.getElementById('pmObra').value||'').trim();
+      var r2 = await sb.from('listas').select('id,valor,obra_ref,activo').eq('tipo','sectores_presu');
+      if(r2.error) throw r2.error;
+      rows = (r2.data||[]).filter(function(x){ return _obraMatch(_normObra(x.obra_ref||''), obra); })
+                          .sort(function(a,b){ return String(a.valor||'').localeCompare(String(b.valor||'')); });
+    }
+  }catch(e){ console.warn('renderManageList', e); list.innerHTML='<div class="mg-empty">No se pudo cargar el catálogo.</div>'; return; }
+  if(!rows.length){ list.innerHTML='<div class="mg-empty">Sin elementos. Agregá uno con el botón +.</div>'; return; }
+  var canDel = !!state.isAdmin;
+  list.innerHTML = rows.map(function(x){
+    var inactive = (x.activo===false);
+    return '<div class="mg-item'+(inactive?' mg-inactive':'')+'">'+
+      '<span class="mg-name">'+escapeHtml(x.valor)+(inactive?' <span class="mg-badge">inactiva</span>':'')+'</span>'+
+      (canDel ? '<button type="button" class="mg-del" data-id="'+escapeHtml(String(x.id))+'" data-val="'+escapeHtml(x.valor)+'" title="Eliminar">✕</button>' : '')+
+    '</div>';
+  }).join('');
+  if(canDel){
+    list.querySelectorAll('.mg-del').forEach(function(b){
+      b.addEventListener('click', function(){ deleteCatalogItem(b.getAttribute('data-id'), b.getAttribute('data-val')); });
+    });
+  }
+}
+
+// Cuenta cuántos presupuestos usan esta obra / este sector (scopeado por obra)
+async function _usoCatalogo(kind, valor, obra){
+  if(kind==='obra'){
+    var r = await sb.from('presupuesto_cab').select('codigo', { count:'exact', head:true }).eq('obra', valor);
+    if(r.error) throw r.error;
+    return r.count||0;
+  }
+  // sector: rubros con ese sector dentro de los presupuestos de esa obra
+  var cabs = await sb.from('presupuesto_cab').select('codigo').eq('obra', obra);
+  if(cabs.error) throw cabs.error;
+  var cods = (cabs.data||[]).map(function(c){ return c.codigo; });
+  if(!cods.length) return 0;
+  var r2 = await sb.from('presupuesto_rubros').select('presupuesto', { count:'exact', head:true }).eq('sector', valor).in('presupuesto', cods);
+  if(r2.error) throw r2.error;
+  return r2.count||0;
+}
+
+async function deleteCatalogItem(id, valor){
+  if(!state.isAdmin){ showToast('Solo el administrador puede eliminar', 'error'); return; }
+  var kind = _mgKind;
+  var obra = (kind==='sector') ? (document.getElementById('pmObra').value||'').trim() : '';
+  var uso;
+  try{ uso = await _usoCatalogo(kind, valor, obra); }
+  catch(e){ console.warn('uso', e); showToast('No se pudo verificar si está en uso', 'error'); return; }
+
+  if(uso>0){
+    if(!confirm('«'+valor+'» está en uso por '+uso+' presupuesto'+(uso===1?'':'s')+'.\n\n'+
+                'No se puede borrar, pero puedo DESACTIVARLO: deja de aparecer en el dropdown para presupuestos nuevos, sin afectar los existentes.\n\n¿Desactivar?')) return;
+    var up = await sb.from('listas').update({activo:false}).eq('id', id);
+    if(up.error){ showToast('No se pudo desactivar: '+(up.error.message||''), 'error'); return; }
+    showToast('«'+valor+'» desactivado', 'success');
+  } else {
+    if(!confirm('«'+valor+'» no está en uso por ningún presupuesto.\n\n¿Eliminarlo definitivamente del catálogo?')) return;
+    var del = await sb.from('listas').delete().eq('id', id);
+    if(del.error){ showToast('No se pudo eliminar: '+(del.error.message||''), 'error'); return; }
+    showToast('«'+valor+'» eliminado', 'success');
+  }
+  await loadListas();
+  if(kind==='sector') refreshSectoresForObra();
+  renderManageList();
+}
+
 document.getElementById('pmAddObraBtn').addEventListener('click', function(){ openMini('obra'); });
 document.getElementById('pmAddSectorBtn').addEventListener('click', function(){ openMini('sector'); });
 document.getElementById('miniClose').addEventListener('click', closeMini);
@@ -1413,6 +1538,11 @@ document.getElementById('miniCancel').addEventListener('click', closeMini);
 document.getElementById('miniSave').addEventListener('click', saveMini);
 document.getElementById('miniInput').addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); saveMini(); } });
 document.getElementById('miniOverlay').addEventListener('click', function(e){ if(e.target===this) closeMini(); });
+document.getElementById('pmManageObraBtn').addEventListener('click', function(){ openManage('obra'); });
+document.getElementById('pmManageSectorBtn').addEventListener('click', function(){ openManage('sector'); });
+document.getElementById('mgClose').addEventListener('click', closeManage);
+document.getElementById('mgDone').addEventListener('click', closeManage);
+document.getElementById('mgOverlay').addEventListener('click', function(e){ if(e.target===this) closeManage(); });
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
 document.getElementById('pmInsCod').addEventListener('input', _insLiveUpdate);
 document.getElementById('pmInsCod').addEventListener('change', _insLiveUpdate);
