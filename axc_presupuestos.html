@@ -519,7 +519,10 @@ body{
         </div>
         <div class="pm-field">
           <label class="pm-label">Obra</label>
-          <select id="pmObra" class="pm-input"><option value="">Elegí la obra…</option></select>
+          <div class="pm-withadd">
+            <select id="pmObra" class="pm-input"><option value="">Elegí la obra…</option></select>
+            <button type="button" class="pm-addmini" id="pmAddObraBtn" title="Agregar nueva obra">+</button>
+          </div>
         </div>
         <div class="pm-field" style="grid-column:1/-1">
           <label class="pm-label">Descripción</label>
@@ -541,7 +544,10 @@ body{
         </table>
       </div>
       <div class="pm-addbar">
-        <select id="pmRubSector" class="pm-input" style="max-width:180px"><option value="">Sector…</option></select>
+        <div class="pm-withadd" style="max-width:210px">
+          <select id="pmRubSector" class="pm-input"><option value="">Sector…</option></select>
+          <button type="button" class="pm-addmini" id="pmAddSectorBtn" title="Agregar nuevo sector">+</button>
+        </div>
         <select id="pmRubCap" class="pm-input" style="max-width:200px"><option value="">Capítulo…</option></select>
         <select id="pmRubComp" class="pm-input" style="max-width:260px" disabled><option value="">Composición…</option></select>
         <input id="pmRubCod" type="hidden">
@@ -575,6 +581,23 @@ body{
   </div>
 </div>
 
+<!-- Pop-up chico para agregar Obra o Sector al vuelo -->
+<div class="mini-overlay" id="miniOverlay">
+  <div class="mini-modal">
+    <div class="mini-head"><span id="miniTitle">Nueva obra</span>
+      <button type="button" class="mini-x" id="miniClose">&times;</button></div>
+    <div class="mini-body">
+      <div id="miniCtx" class="mini-ctx"></div>
+      <label class="pm-label" id="miniLabel">Nombre de la obra</label>
+      <input id="miniInput" class="pm-input" placeholder="Escribí el nombre…" maxlength="120" autocomplete="off">
+      <div class="mini-actions">
+        <button type="button" class="pm-btn-ghost" id="miniCancel">Cancelar</button>
+        <button type="button" class="pm-btn" id="miniSave">Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <style>
@@ -593,6 +616,21 @@ body{
   .pm-tag-rec{background:#e7f6ea;color:#1B5524}
   .pm-tag-serv{background:#eef0f4;color:#5a6677}
   .pm-rubcell{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
+  .pm-withadd{display:flex;align-items:stretch;gap:4px;width:100%}
+  .pm-withadd .pm-input{flex:1}
+  .pm-addmini{flex:none;width:34px;border:1px solid var(--gold,#C8A028);background:#fbf3da;color:#8a6d10;border-radius:8px;font-size:20px;font-weight:700;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+  .pm-addmini:hover{background:#C8A028;color:#fff}
+  .mini-overlay{display:none;position:fixed;inset:0;background:rgba(20,30,55,.45);z-index:9999;align-items:center;justify-content:center}
+  .mini-overlay.show{display:flex}
+  .mini-modal{background:#fff;border-radius:14px;width:min(420px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
+  .mini-head{background:#1F3864;color:#fff;padding:14px 18px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between}
+  .mini-x{background:none;border:0;color:#fff;font-size:24px;cursor:pointer;line-height:1;padding:0}
+  .mini-body{padding:18px}
+  .mini-ctx{font-size:12.5px;color:#5a6677;background:#eef2f8;border-radius:8px;padding:8px 11px;margin-bottom:12px;display:none}
+  .mini-ctx.show{display:block}
+  .mini-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+  .pm-btn-ghost{padding:9px 16px;border:1px solid #d8dde6;background:#fff;border-radius:8px;font:inherit;font-size:13px;font-weight:500;color:#5a6677;cursor:pointer}
+  .pm-btn-ghost:hover{background:#f4f6f9}
   .pm-rubcap{font-size:11px;font-weight:600;color:#8a6d10;background:#fbf3da;border-radius:4px;padding:1px 7px}
   .pm-rubcap-empty{color:#8893a5;background:#eef0f4}
   .pm-desccell{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
@@ -819,9 +857,10 @@ const _SECT_GENERIC = ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA'
 async function loadListas(){
   try{
     const obras = {}; ed.sectByObra = {}; ed.sectByObraCat = {};
-    const { data:l } = await sb.from('listas').select('tipo,valor,obra_ref');
+    const { data:l } = await sb.from('listas').select('tipo,valor,obra_ref,activo');
     (l||[]).forEach(function(x){
       const t=(x.tipo||'').toLowerCase(); if(!x.valor) return;
+      if(x.activo===false) return; // omitir desactivados
       // Catálogo exclusivo del presupuesto (preferido)
       if(t==='obras_presu'){ obras[x.valor]=1; }
       if(t==='sectores_presu' && x.obra_ref){
@@ -1296,6 +1335,84 @@ document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
 document.getElementById('pmRubCap').addEventListener('change', _fillCompSelect);
 document.getElementById('pmRubComp').addEventListener('change', _onCompChange);
+
+// ===== Pop-up para agregar Obra o Sector al vuelo =====
+var _miniMode = null; // 'obra' | 'sector'
+function openMini(mode){
+  _miniMode = mode;
+  var title = document.getElementById('miniTitle');
+  var label = document.getElementById('miniLabel');
+  var ctx = document.getElementById('miniCtx');
+  var inp = document.getElementById('miniInput');
+  inp.value = '';
+  if(mode==='obra'){
+    title.textContent = 'Nueva obra';
+    label.textContent = 'Nombre de la obra';
+    inp.placeholder = 'Ej. Edificio Orquídeas';
+    ctx.classList.remove('show'); ctx.textContent='';
+  } else {
+    var obra = (document.getElementById('pmObra').value||'').trim();
+    if(!obra){ showToast('Primero elegí la obra para agregarle un sector', 'error'); return; }
+    title.textContent = 'Nuevo sector';
+    label.textContent = 'Nombre del sector';
+    inp.placeholder = 'Ej. Nivel 5';
+    ctx.textContent = 'Se va a crear dentro de la obra: ' + obra;
+    ctx.classList.add('show');
+  }
+  document.getElementById('miniOverlay').classList.add('show');
+  setTimeout(function(){ inp.focus(); }, 50);
+}
+function closeMini(){ document.getElementById('miniOverlay').classList.remove('show'); _miniMode=null; }
+
+async function saveMini(){
+  var nombre = (document.getElementById('miniInput').value||'').trim();
+  if(!nombre){ showToast('Escribí un nombre', 'error'); return; }
+  var btn = document.getElementById('miniSave'); var old = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try{
+    if(_miniMode==='obra'){
+      // ¿ya existe? (en obras_presu)
+      var res = await sb.from('listas').select('id,valor,activo').eq('tipo','obras_presu').ilike('valor', nombre);
+      var dup = (res.data||[]).find(function(x){ return (x.valor||'').trim().toLowerCase()===nombre.toLowerCase(); });
+      if(dup){
+        // si existe pero inactiva, reactivar; si activa, solo seleccionarla
+        if(dup.activo===false){ await sb.from('listas').update({activo:true}).eq('id', dup.id); }
+        await loadListas(); _setObraValue(dup.valor); showToast('Esa obra ya existía, la seleccioné', 'success'); closeMini(); return;
+      }
+      var ins = await sb.from('listas').insert({ tipo:'obras_presu', valor:nombre, activo:true });
+      if(ins.error) throw ins.error;
+      await loadListas(); _setObraValue(nombre);
+      showToast('Obra «'+nombre+'» agregada', 'success'); closeMini();
+    } else {
+      var obra = (document.getElementById('pmObra').value||'').trim();
+      if(!obra){ showToast('Elegí la obra primero', 'error'); btn.disabled=false; btn.textContent=old; return; }
+      var res2 = await sb.from('listas').select('id,valor,obra_ref,activo').eq('tipo','sectores_presu');
+      var dup2 = (res2.data||[]).find(function(x){
+        return _obraMatch(_normObra(x.obra_ref||''), obra) && (x.valor||'').trim().toLowerCase()===nombre.toLowerCase();
+      });
+      if(dup2){
+        if(dup2.activo===false){ await sb.from('listas').update({activo:true}).eq('id', dup2.id); }
+        await loadListas(); refreshSectoresForObra();
+        document.getElementById('pmRubSector').value = dup2.valor;
+        showToast('Ese sector ya existía, lo seleccioné', 'success'); closeMini(); return;
+      }
+      var ins2 = await sb.from('listas').insert({ tipo:'sectores_presu', valor:nombre, obra_ref:obra, activo:true });
+      if(ins2.error) throw ins2.error;
+      await loadListas(); refreshSectoresForObra();
+      document.getElementById('pmRubSector').value = nombre;
+      showToast('Sector «'+nombre+'» agregado a '+obra, 'success'); closeMini();
+    }
+  }catch(e){ console.warn('saveMini', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+document.getElementById('pmAddObraBtn').addEventListener('click', function(){ openMini('obra'); });
+document.getElementById('pmAddSectorBtn').addEventListener('click', function(){ openMini('sector'); });
+document.getElementById('miniClose').addEventListener('click', closeMini);
+document.getElementById('miniCancel').addEventListener('click', closeMini);
+document.getElementById('miniSave').addEventListener('click', saveMini);
+document.getElementById('miniInput').addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); saveMini(); } });
+document.getElementById('miniOverlay').addEventListener('click', function(e){ if(e.target===this) closeMini(); });
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
 document.getElementById('pmInsCod').addEventListener('input', _insLiveUpdate);
 document.getElementById('pmInsCod').addEventListener('change', _insLiveUpdate);
