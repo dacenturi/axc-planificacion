@@ -541,15 +541,16 @@ body{
         </table>
       </div>
       <div class="pm-addbar">
-        <select id="pmRubSector" class="pm-input" style="max-width:200px"><option value="">Sector…</option></select>
-        <input id="pmRubCod" class="pm-input" list="arbolList" placeholder="Rubro (código o nombre)" style="max-width:230px">
-        <datalist id="arbolList"></datalist>
-        <input id="pmRubCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:110px">
-        <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Precio total Gs" style="max-width:140px">
+        <select id="pmRubSector" class="pm-input" style="max-width:180px"><option value="">Sector…</option></select>
+        <select id="pmRubCap" class="pm-input" style="max-width:200px"><option value="">Capítulo…</option></select>
+        <select id="pmRubComp" class="pm-input" style="max-width:260px" disabled><option value="">Composición…</option></select>
+        <input id="pmRubCod" type="hidden">
+        <input id="pmRubCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:100px">
+        <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Precio total Gs" style="max-width:130px">
         <button id="pmRubAdd" class="pm-btn" type="button">Agregar rubro</button>
       </div>
       <div id="pmRubHintLive" class="pm-hint"></div>
-      <div class="pm-hint">Si el rubro tiene receta (composición) controlará por cantidad de insumos; si es un servicio, controlá por dinero cargando su precio total.</div>
+      <div class="pm-hint">Elegí el capítulo, después la composición. Si tiene receta, al agregarla se cargan sus insumos automáticamente; si es servicio, cargá su precio total.</div>
 
       <!-- INSUMOS -->
       <div class="pm-sectitle">Insumos por rubro (control por cantidad)</div>
@@ -732,12 +733,53 @@ function suggestNextCode(){
 async function loadArbol(){
   if(ed.arbol) return;
   try{
-    const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta').eq('activo', true).order('codigo');
+    const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
-    ed.arbolByCod = {}; ed.arbol.forEach(function(r){ ed.arbolByCod[String(r.codigo)] = r; });
-    const dl = document.getElementById('arbolList');
-    if(dl) dl.innerHTML = ed.arbol.map(function(r){ return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml((r.tiene_receta?'🧱 [receta] ':'💰 [servicio] ')+r.codigo+' · '+r.nombre)+'</option>'; }).join('');
+    ed.arbolByCod = {}; ed.byCap = {};
+    ed.arbol.forEach(function(r){
+      ed.arbolByCod[String(r.codigo)] = r;
+      const cap = (r.capitulo && String(r.capitulo).trim()) ? String(r.capitulo).trim() : '(Sin capítulo)';
+      (ed.byCap[cap] = ed.byCap[cap] || []).push(r);
+    });
+    _fillCapSelect();
   }catch(e){ console.warn('loadArbol', e); }
+}
+
+// Poblar el dropdown de capítulos (ordenados; "(Sin capítulo)" al final)
+function _fillCapSelect(){
+  const sel = document.getElementById('pmRubCap'); if(!sel || !ed.byCap) return;
+  const caps = Object.keys(ed.byCap).sort(function(a,b){
+    if(a==='(Sin capítulo)') return 1; if(b==='(Sin capítulo)') return -1;
+    return a.localeCompare(b);
+  });
+  sel.innerHTML = '<option value="">Capítulo…</option>' +
+    caps.map(function(c){ return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+' ('+ed.byCap[c].length+')</option>'; }).join('');
+}
+
+// Al elegir capítulo, poblar las composiciones de ese capítulo
+function _fillCompSelect(){
+  const cap = (document.getElementById('pmRubCap').value||'');
+  const sel = document.getElementById('pmRubComp');
+  const hidden = document.getElementById('pmRubCod');
+  if(hidden) hidden.value = '';
+  if(!cap || !ed.byCap || !ed.byCap[cap]){
+    sel.innerHTML = '<option value="">Composición…</option>'; sel.disabled = true; _rubLiveUpdate(); return;
+  }
+  const items = ed.byCap[cap].slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo)); });
+  sel.innerHTML = '<option value="">Composición…</option>' +
+    items.map(function(r){
+      const icon = r.tiene_receta ? '🧱 ' : '💰 ';
+      return '<option value="'+escapeHtml(r.codigo)+'">'+icon+escapeHtml(r.codigo+' · '+r.nombre)+'</option>';
+    }).join('');
+  sel.disabled = false;
+}
+
+// Al elegir composición, reflejar el código en el input oculto y actualizar la pista
+function _onCompChange(){
+  const code = (document.getElementById('pmRubComp').value||'');
+  const hidden = document.getElementById('pmRubCod');
+  if(hidden) hidden.value = code;
+  _rubLiveUpdate();
 }
 async function loadInsList(){
   if(ed.insList) return;
@@ -848,6 +890,10 @@ function openNew(){
   const cod = document.getElementById('pmCodigo'); cod.value = suggestNextCode(); cod.disabled = false;
   document.getElementById('pmObra').value = '';
   document.getElementById('pmRubSector').innerHTML = '<option value="">Sector…</option>';
+  document.getElementById('pmRubCap').value = '';
+  document.getElementById('pmRubComp').innerHTML = '<option value="">Composición…</option>';
+  document.getElementById('pmRubComp').disabled = true;
+  document.getElementById('pmRubCod').value = '';
   document.getElementById('pmDescripcion').value = '';
   ed.activo = false; renderEstadoUI();
   renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
@@ -952,15 +998,27 @@ function addRubro(){
   // Validaciones de carga (punto 4)
   if(!obra){ showToast('Primero elegí la obra', 'error'); document.getElementById('pmObra').focus(); return; }
   if(!sector){ showToast('Falta seleccionar el sector', 'error'); document.getElementById('pmRubSector').focus(); return; }
-  if(!code){ showToast('Elegí el rubro (composición)', 'error'); return; }
+  if(!code){ showToast('Elegí el capítulo y la composición', 'error'); document.getElementById('pmRubCap').focus(); return; }
   const a = ed.arbolByCod[code];
   if(!a){ showToast('Ese código no está en el catálogo de rubros', 'error'); return; }
   if(!(cant>0)){ showToast('La cantidad debe ser mayor a 0', 'error'); document.getElementById('pmRubCant').focus(); return; }
   if(!a.tiene_receta && !(pt>0)){ showToast('Este rubro es servicio: cargá su precio total', 'error'); document.getElementById('pmRubPT').focus(); return; }
+  // evitar duplicado exacto (mismo sector + mismo código)
+  if(ed.rubros.some(function(r){ return r.sector===sector && r.rubro_codigo===a.codigo; })){
+    showToast('Ese rubro ya está cargado en ese sector', 'error'); return;
+  }
   ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta });
+  const teniaReceta = !!a.tiene_receta;
+  // limpiar cascada
+  document.getElementById('pmRubCap').value=''; 
+  const cs=document.getElementById('pmRubComp'); cs.innerHTML='<option value="">Composición…</option>'; cs.disabled=true;
   document.getElementById('pmRubCod').value=''; document.getElementById('pmRubCant').value=''; document.getElementById('pmRubPT').value='';
   _rubLiveUpdate();
   renderRubros();
+  // si tiene receta, cargar sus insumos automáticamente
+  if(teniaReceta && typeof calcInsumosFromRecetas==='function'){
+    calcInsumosFromRecetas(true);
+  }
 }
 
 // ── Insumos (memoria) ───────────────────────────────────
@@ -1155,10 +1213,10 @@ function _recipeQtyRaw(it, cant){
   const bruta = c1 * (Number(cant)||0) * (1 + merma);
   return c2 > 0 ? (bruta / c2) : 0;
 }
-async function calcInsumosFromRecetas(){
+async function calcInsumosFromRecetas(silent){
   const conCodigo = ed.rubros.filter(function(r){ return r.rubro_codigo && (Number(r.cantidad)||0) > 0; });
-  if(!conCodigo.length){ showToast('Cargá rubros con código y cantidad primero', 'error'); return; }
-  if(ed.insumos.some(function(x){ return x.rubro_codigo && x.rubro_codigo!==''; }) && !confirm('Esto recalcula los insumos de los rubros con receta (mantiene los cargados a mano y los «General»). ¿Continuar?')) return;
+  if(!conCodigo.length){ if(!silent) showToast('Cargá rubros con código y cantidad primero', 'error'); return; }
+  if(!silent && ed.insumos.some(function(x){ return x.rubro_codigo && x.rubro_codigo!==''; }) && !confirm('Esto recalcula los insumos de los rubros con receta (mantiene los cargados a mano y los «General»). ¿Continuar?')) return;
   const btn = document.getElementById('pmInsCalc'); const old = btn.textContent;
   btn.disabled = true; btn.textContent = 'Calculando…';
   try{
@@ -1166,7 +1224,7 @@ async function calcInsumosFromRecetas(){
     const { data:recs } = await sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes);
     const recByRubro = {}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo] = r.id; });
     const recetaIds = Array.from(new Set(Object.values(recByRubro)));
-    if(!recetaIds.length){ showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    if(!recetaIds.length){ if(!silent) showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; btn.textContent=old; return; }
     const { data:items } = await sb.from('receta_items').select('receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo').eq('activo', true).in('receta_id', recetaIds);
     const itemsByRec = {}; (items||[]).forEach(function(it){ (itemsByRec[it.receta_id] = itemsByRec[it.receta_id] || []).push(it); });
     const recetaRubros = {}; conCodigo.forEach(function(r){ if(recByRubro[r.rubro_codigo]) recetaRubros[r.rubro_codigo]=1; });
@@ -1187,12 +1245,12 @@ async function calcInsumosFromRecetas(){
       });
       Object.keys(agg).forEach(function(k){ const a=agg[k]; a.cantidad=Math.round(a.cantidad*1000)/1000; nuevos.push(a); });
     });
-    if(!nuevos.length){ showToast('Las recetas no tienen insumos con código', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    if(!nuevos.length){ if(!silent) showToast('Las recetas no tienen insumos con código', 'error'); btn.disabled=false; btn.textContent=old; return; }
     ed.insumos = nuevos.concat(preservados); renderInsumos();
     let msg = nuevos.length + ' insumo(s) calculados por rubro';
     if(sinReceta) msg += ' · ' + sinReceta + ' rubro(s) sin receta';
-    showToast(msg + ' — revisá y Guardá', 'success');
-  }catch(e){ console.warn('calcInsumos', e); showToast('Error calculando insumos: ' + (e.message||''), 'error'); }
+    showToast(msg + (silent?'':' — revisá y Guardá'), 'success');
+  }catch(e){ console.warn('calcInsumos', e); if(!silent) showToast('Error calculando insumos: ' + (e.message||''), 'error'); }
   finally{ btn.disabled = false; btn.textContent = old; }
 }
 
@@ -1202,13 +1260,14 @@ function _rubLiveUpdate(){
   const hint = document.getElementById('pmRubHintLive');
   const a = ed.arbolByCod[code];
   if(!a){ hint.textContent=''; pt.disabled=false; pt.placeholder='Precio total Gs'; pt.style.opacity='1'; return; }
+  const cap = (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '(Sin capítulo)';
   if(a.tiene_receta){
     pt.disabled=true; pt.value=''; pt.placeholder='— por cantidad'; pt.style.opacity='.5';
-    hint.innerHTML = '🧱 <b>'+escapeHtml(a.codigo)+'</b> · '+escapeHtml(a.nombre)+' ('+escapeHtml(a.unidad||'')+') → se controla por <b>cantidad</b>. Cargá la cantidad y usá "Calcular desde recetas".';
+    hint.innerHTML = '🧱 <b>'+escapeHtml(a.codigo)+'</b> · '+escapeHtml(a.nombre)+' ('+escapeHtml(a.unidad||'')+') · cap. '+escapeHtml(cap)+' → tiene <b>receta</b>: al agregarlo se cargan sus insumos automáticamente.';
     hint.style.color = '#1F3864';
   } else {
     pt.disabled=false; pt.placeholder='Precio total Gs'; pt.style.opacity='1';
-    hint.innerHTML = '💰 <b>'+escapeHtml(a.codigo)+'</b> · '+escapeHtml(a.nombre)+' ('+escapeHtml(a.unidad||'')+') → servicio, se controla por <b>dinero</b>. Cargá su precio total.';
+    hint.innerHTML = '💰 <b>'+escapeHtml(a.codigo)+'</b> · '+escapeHtml(a.nombre)+' ('+escapeHtml(a.unidad||'')+') · cap. '+escapeHtml(cap)+' → <b>servicio</b>, se controla por dinero. Cargá su precio total.';
     hint.style.color = '#8a6d10';
   }
 }
@@ -1221,8 +1280,8 @@ document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
-document.getElementById('pmRubCod').addEventListener('input', _rubLiveUpdate);
-document.getElementById('pmRubCod').addEventListener('change', _rubLiveUpdate);
+document.getElementById('pmRubCap').addEventListener('change', _fillCompSelect);
+document.getElementById('pmRubComp').addEventListener('change', _onCompChange);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
 document.getElementById('pmInsCod').addEventListener('input', _insLiveUpdate);
 document.getElementById('pmInsCod').addEventListener('change', _insLiveUpdate);
