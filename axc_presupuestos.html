@@ -519,8 +519,7 @@ body{
         </div>
         <div class="pm-field">
           <label class="pm-label">Obra</label>
-          <input id="pmObra" class="pm-input" list="obrasList" placeholder="Ej. Edificio Orquídeas" maxlength="120">
-          <datalist id="obrasList"></datalist>
+          <select id="pmObra" class="pm-input"><option value="">Elegí la obra…</option></select>
         </div>
         <div class="pm-field" style="grid-column:1/-1">
           <label class="pm-label">Descripción</label>
@@ -542,8 +541,7 @@ body{
         </table>
       </div>
       <div class="pm-addbar">
-        <input id="pmRubSector" class="pm-input" list="sectoresList" placeholder="Sector (ej. NP5)" style="max-width:140px">
-        <datalist id="sectoresList"></datalist>
+        <select id="pmRubSector" class="pm-input" style="max-width:200px"><option value="">Sector…</option></select>
         <input id="pmRubCod" class="pm-input" list="arbolList" placeholder="Rubro (código o nombre)" style="max-width:230px">
         <datalist id="arbolList"></datalist>
         <input id="pmRubCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:110px">
@@ -772,37 +770,73 @@ const _SECT_GENERIC = ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA'
 
 async function loadListas(){
   try{
-    const obras = {}; ed.sectByObra = {};
-    const { data:l } = await sb.from('listas').select('tipo,valor');
-    (l||[]).forEach(function(x){ const t=(x.tipo||'').toLowerCase(); if(!x.valor) return; if(t==='obras') obras[x.valor]=1; });
-    (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=1; });
-    // sectores reales por obra (de los presupuestos cargados)
+    const obras = {}; ed.sectByObra = {}; ed.sectByObraCat = {};
+    const { data:l } = await sb.from('listas').select('tipo,valor,obra_ref');
+    (l||[]).forEach(function(x){
+      const t=(x.tipo||'').toLowerCase(); if(!x.valor) return;
+      // Catálogo exclusivo del presupuesto (preferido)
+      if(t==='obras_presu'){ obras[x.valor]=1; }
+      if(t==='sectores_presu' && x.obra_ref){
+        const k=_normObra(x.obra_ref);
+        (ed.sectByObraCat[k] = ed.sectByObraCat[k] || {})[x.valor] = 1;
+      }
+      // Fallback: catálogo viejo de Planificación
+      if(t==='obras'){ obras[x.valor]=obras[x.valor]||1; }
+    });
+    (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=obras[p.obra]||1; });
+    // sectores reales por obra (de los presupuestos cargados) — como respaldo
     const { data:cab } = await sb.from('presupuesto_cab').select('codigo,obra');
     const obraByCod = {}; (cab||[]).forEach(function(c){ obraByCod[c.codigo] = c.obra||''; });
     const { data:rs } = await sb.from('presupuesto_rubros').select('presupuesto,sector');
     (rs||[]).forEach(function(r){
       if(!r.sector) return;
-      if(ed.origCodigo && r.presupuesto === ed.origCodigo) return; // no sugerir los del propio PP en edición
+      if(ed.origCodigo && r.presupuesto === ed.origCodigo) return;
       const ob = obraByCod[r.presupuesto] || '';
       const k = _normObra(ob);
       (ed.sectByObra[k] = ed.sectByObra[k] || {})[r.sector] = 1;
     });
-    _fillDatalist('obrasList', Object.keys(obras).sort());
+    _fillObraSelect(Object.keys(obras).sort());
     refreshSectoresForObra();
     ed.listasLoaded = true;
   }catch(e){ console.warn('loadListas', e); }
 }
 
-// Sugerencias de sector según la obra elegida (A) + genéricos; se enriquece al guardar (C)
+function _fillObraSelect(arr){
+  const sel = document.getElementById('pmObra'); if(!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Elegí la obra…</option>' +
+    arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('');
+  if(cur && arr.indexOf(cur)>=0) sel.value = cur;
+}
+
+// Sectores según la obra elegida: prioriza catálogo sectores_presu; cae a los reales del presupuesto
 function refreshSectoresForObra(){
   const obra = (document.getElementById('pmObra').value||'').trim();
+  const sel = document.getElementById('pmRubSector');
+  if(!sel) return;
+  const cur = sel.value;
   const set = {};
-  const map = ed.sectByObra || {};
-  Object.keys(map).forEach(function(k){
-    if(!obra || _obraMatch(k, obra)){ Object.keys(map[k]).forEach(function(s){ set[s]=1; }); }
+  const cat = ed.sectByObraCat || {};
+  const obraKey = _normObra(obra);
+  let usedCat = false;
+  // 1) catálogo oficial del presupuesto
+  Object.keys(cat).forEach(function(k){
+    if(obra && _obraMatch(k, obra)){ Object.keys(cat[k]).forEach(function(s){ set[s]=1; }); usedCat=true; }
   });
-  _SECT_GENERIC.forEach(function(s){ set[s]=1; });
-  _fillDatalist('sectoresList', Object.keys(set).sort());
+  // 2) si no hay catálogo para esa obra, usar sectores reales ya cargados
+  if(!usedCat){
+    const map = ed.sectByObra || {};
+    Object.keys(map).forEach(function(k){
+      if(!obra || _obraMatch(k, obra)){ Object.keys(map[k]).forEach(function(s){ set[s]=1; }); }
+    });
+  }
+  const opts = Object.keys(set).sort();
+  sel.innerHTML = '<option value="">Sector…</option>' +
+    opts.map(function(s){ return '<option value="'+escapeHtml(s)+'">'+escapeHtml(s)+'</option>'; }).join('');
+  if(cur && opts.indexOf(cur)>=0) sel.value = cur;
+  // pista si falta elegir obra
+  const live = document.getElementById('pmRubHintLive');
+  if(!obra && live && !opts.length){ /* sin obra aún */ }
 }
 
 // ── Abrir editor ────────────────────────────────────────
@@ -813,10 +847,26 @@ function openNew(){
   document.getElementById('pmSub').textContent = 'Completá la ficha, los rubros y (si tiene) los insumos';
   const cod = document.getElementById('pmCodigo'); cod.value = suggestNextCode(); cod.disabled = false;
   document.getElementById('pmObra').value = '';
+  document.getElementById('pmRubSector').innerHTML = '<option value="">Sector…</option>';
   document.getElementById('pmDescripcion').value = '';
   ed.activo = false; renderEstadoUI();
   renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
   document.getElementById('ppOverlay').style.display = 'flex';
+}
+
+// Setea la obra en el select asegurando que la opción exista (para presupuestos viejos
+// cuya obra no esté en el catálogo, la agrega para no perderla)
+function _setObraValue(obra){
+  if(!obra) return;
+  const sel = document.getElementById('pmObra'); if(!sel) return;
+  const exists = Array.prototype.some.call(sel.options, function(o){ return o.value===obra; });
+  if(!exists){
+    const op = document.createElement('option');
+    op.value = obra; op.textContent = obra + ' (fuera de catálogo)';
+    sel.appendChild(op);
+  }
+  sel.value = obra;
+  refreshSectoresForObra();
 }
 
 async function openEdit(codigo){
@@ -827,11 +877,12 @@ async function openEdit(codigo){
   document.getElementById('pmTitle').textContent = 'Editar ' + codigo;
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
-  document.getElementById('pmObra').value = h.obra || '';
   document.getElementById('pmDescripcion').value = h.descripcion || '';
   ed.activo = h.activo !== false; renderEstadoUI();
   document.getElementById('ppOverlay').style.display = 'flex';
-  renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
+  renderRubros(); renderInsumos(); loadArbol(); loadInsList();
+  await loadListas();
+  _setObraValue(h.obra || '');
   try{
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
     ed.rubros = (rub||[]).map(function(r){ return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
@@ -893,13 +944,19 @@ function renderRubros(){
 }
 
 function addRubro(){
+  const obra = (document.getElementById('pmObra').value||'').trim();
   const sector = (document.getElementById('pmRubSector').value||'').trim();
   const code = (document.getElementById('pmRubCod').value||'').trim();
   const cant = round2(document.getElementById('pmRubCant').value);
   const pt = Number(document.getElementById('pmRubPT').value)||0;
-  if(!code){ showToast('Elegí o escribí el rubro', 'error'); return; }
+  // Validaciones de carga (punto 4)
+  if(!obra){ showToast('Primero elegí la obra', 'error'); document.getElementById('pmObra').focus(); return; }
+  if(!sector){ showToast('Falta seleccionar el sector', 'error'); document.getElementById('pmRubSector').focus(); return; }
+  if(!code){ showToast('Elegí el rubro (composición)', 'error'); return; }
   const a = ed.arbolByCod[code];
-  if(!a){ showToast('Ese código no está en el árbol de rubros', 'error'); return; }
+  if(!a){ showToast('Ese código no está en el catálogo de rubros', 'error'); return; }
+  if(!(cant>0)){ showToast('La cantidad debe ser mayor a 0', 'error'); document.getElementById('pmRubCant').focus(); return; }
+  if(!a.tiene_receta && !(pt>0)){ showToast('Este rubro es servicio: cargá su precio total', 'error'); document.getElementById('pmRubPT').focus(); return; }
   ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta });
   document.getElementById('pmRubCod').value=''; document.getElementById('pmRubCant').value=''; document.getElementById('pmRubPT').value='';
   _rubLiveUpdate();
@@ -1056,6 +1113,10 @@ async function saveBudget(){
   if(ed.isNew && state.list.some(function(x){ return (x.codigo||'').toLowerCase() === codigo.toLowerCase(); })){
     showToast('Ya existe un presupuesto con ese código', 'error'); return;
   }
+  if(!obra){ showToast('Elegí la obra antes de guardar', 'error'); document.getElementById('pmObra').focus(); return; }
+  if(!ed.rubros.length){ showToast('Agregá al menos un rubro al presupuesto', 'error'); return; }
+  const sinSector = ed.rubros.filter(function(r){ return !r.sector; });
+  if(sinSector.length){ showToast('Hay '+sinSector.length+' rubro(s) sin sector. Revisalos.', 'error'); return; }
   const btn = document.getElementById('pmSaveBtn'); const old = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando…';
   try{
@@ -1159,10 +1220,7 @@ document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
-document.getElementById('pmObra').addEventListener('input', refreshSectoresForObra);
-document.getElementById('pmObra').addEventListener('change', refreshSectoresForObra);
-document.getElementById('pmRubSector').addEventListener('focus', refreshSectoresForObra);
-document.getElementById('pmRubSector').addEventListener('click', refreshSectoresForObra);
+document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
 document.getElementById('pmRubCod').addEventListener('input', _rubLiveUpdate);
 document.getElementById('pmRubCod').addEventListener('change', _rubLiveUpdate);
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
