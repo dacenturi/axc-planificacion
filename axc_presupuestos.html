@@ -593,6 +593,7 @@ body{
   .pm-tag-rec{background:#e7f6ea;color:#1B5524}
   .pm-tag-serv{background:#eef0f4;color:#5a6677}
   .pm-rubcell{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+  .pm-rubcap{font-size:10.5px;font-weight:600;color:#8a6d10;background:#fbf3da;border-radius:4px;padding:0 6px}
   .pm-rubcod{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:13px;color:#1F3864}
   .pm-rubname{font-size:12px;color:#3a4150;line-height:1.25}
   .ins-grp{border:1px solid #e6eaf1;border-radius:10px;margin-bottom:10px;overflow:hidden}
@@ -929,12 +930,17 @@ async function openEdit(codigo){
   document.getElementById('pmDescripcion').value = h.descripcion || '';
   ed.activo = h.activo !== false; renderEstadoUI();
   document.getElementById('ppOverlay').style.display = 'flex';
-  renderRubros(); renderInsumos(); loadArbol(); loadInsList();
+  renderRubros(); renderInsumos(); loadInsList();
+  await loadArbol();
   await loadListas();
   _setObraValue(h.obra || '');
   try{
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
-    ed.rubros = (rub||[]).map(function(r){ return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
+    ed.rubros = (rub||[]).map(function(r){
+      const cat = ed.arbolByCod[String(r.rubro_codigo||'')];
+      const cap = cat && cat.capitulo ? String(cat.capitulo).trim() : '';
+      return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta, capitulo:cap };
+    });
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
     ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):'') }; });
     renderRubros(); renderInsumos();
@@ -971,7 +977,9 @@ function renderRubros(){
       : '<span class="pm-tag pm-tag-serv">💰 SERVICIO</span>';
     return '<tr>' +
       '<td><input data-i="'+i+'" data-f="sector" value="'+escapeHtml(r.sector)+'"></td>' +
-      '<td><div class="pm-rubcell"><span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+
+      '<td><div class="pm-rubcell">'+
+        (r.capitulo ? '<span class="pm-rubcap">'+escapeHtml(r.capitulo)+'</span>' : '')+
+        '<span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+
         '<span class="pm-rubname">'+escapeHtml(r.descripcion||'')+'</span>'+tag+'</div></td>' +
       '<td>'+escapeHtml(r.descripcion)+'</td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
@@ -1011,7 +1019,7 @@ function addRubro(){
   if(ed.rubros.some(function(r){ return r.sector===sector && r.rubro_codigo===a.codigo; })){
     showToast('Ese rubro ya está cargado en ese sector', 'error'); return;
   }
-  ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta });
+  ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta, capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' });
   const teniaReceta = !!a.tiene_receta;
   // limpiar cascada
   document.getElementById('pmRubCap').value=''; 
