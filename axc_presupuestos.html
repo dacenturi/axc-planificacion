@@ -580,6 +580,7 @@ body{
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
+      <button class="pm-toggle" id="pmReporteBtn" type="button" style="background:#0E7C86;color:#fff;border-color:#0E7C86">📄 Reporte</button>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
       <button class="pm-save" id="pmSaveBtn" type="button">Guardar presupuesto</button>
     </div>
@@ -1013,9 +1014,14 @@ function renderList(){
       ? '<div class="pp-name">'+escapeHtml(p.descripcion)+'</div>'
       : '<div class="pp-name vacio">Sin descripción</div>';
     const meta = [ p.obra ? escapeHtml(p.obra) : 'Sin obra', p._rub + ' rubro' + (p._rub===1?'':'s') ].filter(Boolean).join(' · ');
+    const _autor = p.actualizado_por || p.creado_por || '';
+    const _fIso = p.actualizado_en || p.creado_en || '';
+    let _fTxt=''; if(_fIso){ try{ _fTxt=new Date(_fIso).toLocaleString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){} }
+    const _editado = (p.actualizado_en && p.creado_en && p.actualizado_en!==p.creado_en) ? 'Modificado' : 'Creado';
+    const by = (_autor||_fTxt) ? '<div class="pp-meta" style="margin-top:3px;color:#9aa4b2;font-size:11px">'+(_autor?('👤 '+escapeHtml(_autor)):'')+(_autor&&_fTxt?' · ':'')+(_fTxt?(_editado+' '+_fTxt):'')+'</div>' : '';
     return '<div class="pp-row" data-cod="'+escapeHtml(p.codigo)+'">' +
       '<div class="pp-code">'+escapeHtml(p.codigo)+'</div>' +
-      '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div></div>' +
+      '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+'</div>' +
       '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
       '<span class="pp-chev">›</span></div>';
   }).join('');
@@ -1490,6 +1496,13 @@ async function saveBudget(){
   try{
     const r1 = await sb.from('presupuesto_cab').upsert({ codigo:codigo, obra:obra, descripcion:descripcion, activo:activo }, { onConflict:'codigo' });
     if(r1.error) throw r1.error;
+    // Metadata de auditoría en la cabecera (best-effort: las columnas pueden no existir aún)
+    try{
+      const _now=new Date().toISOString(); const _u=_userTag();
+      const _meta={ actualizado_por:_u, actualizado_en:_now };
+      if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
+      await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
+    }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
     // Rubros: reemplazo completo
     const rd = await sb.from('presupuesto_rubros').delete().eq('presupuesto', codigo);
     if(rd.error) throw rd.error;
@@ -1516,6 +1529,152 @@ async function saveBudget(){
     closeModal(); await loadList();
   }catch(e){ console.warn('saveBudget', e); showToast('No se pudo guardar: ' + (e.message||''), 'error'); }
   finally{ btn.disabled = false; btn.textContent = old; }
+}
+
+
+// ════════════════════════════════════════════════════════
+// REPORTE PROFESIONAL DE PRESUPUESTO (imprimible / PDF)
+// Subtotales por capítulo y por sector, detalle de composiciones, total general.
+// ════════════════════════════════════════════════════════
+function _reporteCompute(){
+  const PR = ed.precioByIns || {};
+  const _pr = function(cod){ return Number(PR[cod])||0; };
+  const rubByCod = {}; ed.rubros.forEach(function(r){ if(r.rubro_codigo) rubByCod[r.rubro_codigo]=r; });
+  const insCostByRubro = {}; const insByRubro = {};
+  (ed.insumos||[]).forEach(function(it){
+    const k = it.rubro_codigo||'';
+    const rub = rubByCod[k];
+    const cantRubro = rub ? (Number(rub.cantidad)||0) : 0;
+    const conReceta = k && rub && rub.tiene_receta;
+    const calc = (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0 && conReceta;
+    const q = calc ? _recipeQtyRaw(it, cantRubro) : (Number(it.cantidad)||0);
+    const pr = _pr(it.codigo_insumo); const sub = q*pr;
+    insCostByRubro[k] = (insCostByRubro[k]||0) + sub;
+    (insByRubro[k]=insByRubro[k]||[]).push({ cod:it.codigo_insumo, material:it.material, unidad:it.unidad, cantidad:q, precio:pr, sub:sub });
+  });
+  function rubroCost(r){ return r.tiene_receta ? Math.round(insCostByRubro[r.rubro_codigo]||0) : Math.round(Number(r.precio_total)||0); }
+  const rows = ed.rubros.map(function(r){
+    return { capitulo:(r.capitulo&&String(r.capitulo).trim())||'(Sin capítulo)', sector:r.sector||'(Sin sector)', codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, tiene_receta:!!r.tiene_receta, costo:rubroCost(r) };
+  });
+  const genCost = Math.round(insCostByRubro['']||0);
+  const byCap = {}; rows.forEach(function(x){ (byCap[x.capitulo]=byCap[x.capitulo]||{sub:0,rows:[]}); byCap[x.capitulo].sub+=x.costo; byCap[x.capitulo].rows.push(x); });
+  const bySec = {}; rows.forEach(function(x){ bySec[x.sector]=(bySec[x.sector]||0)+x.costo; });
+  if(genCost>0){ byCap['(Insumos sin imputar)']={sub:genCost,rows:[]}; bySec['(Insumos sin imputar)']=(bySec['(Insumos sin imputar)']||0)+genCost; }
+  const total = rows.reduce(function(a,x){return a+x.costo;},0) + genCost;
+  return { rows, byCap, bySec, insByRubro, rubByCod, genCost, total };
+}
+
+function buildReporte(){
+  if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
+  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+  const codigo = (document.getElementById('pmCodigo').value||'').trim();
+  const obra = (document.getElementById('pmObra').value||'').trim();
+  const descripcion = (document.getElementById('pmDescripcion').value||'').trim();
+  const estado = ed.activo ? 'PUBLICADO' : 'BORRADOR';
+  const cab = (state.list||[]).find(function(p){ return p.codigo===codigo; }) || {};
+  const autor = cab.actualizado_por || cab.creado_por || _userTag() || '—';
+  const fIso = cab.actualizado_en || cab.creado_en || new Date().toISOString();
+  let fTxt='—'; try{ fTxt=new Date(fIso).toLocaleString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){}
+  const creadoTxt = cab.creado_en ? (function(){ try{ return new Date(cab.creado_en).toLocaleString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){ return '—'; } })() : '—';
+  const D = _reporteCompute();
+  const T = D.total;
+  const pct = function(v){ return T>0 ? (Math.round(v/T*1000)/10).toFixed(1)+'%' : '—'; };
+
+  const capKeys = Object.keys(D.byCap).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); });
+  const secKeys = Object.keys(D.bySec).sort(function(a,b){ return String(a).localeCompare(String(b)); });
+
+  // Resumen por capítulo
+  let resumenCap='';
+  capKeys.forEach(function(c){ resumenCap+='<tr><td>'+escapeHtml(c)+'</td><td class="n">₲ '+fmtGs(D.byCap[c].sub)+'</td><td class="n">'+pct(D.byCap[c].sub)+'</td></tr>'; });
+  // Resumen por sector
+  let resumenSec='';
+  secKeys.forEach(function(s){ resumenSec+='<tr><td>'+escapeHtml(s)+'</td><td class="n">₲ '+fmtGs(D.bySec[s])+'</td><td class="n">'+pct(D.bySec[s])+'</td></tr>'; });
+
+  // Detalle por capítulo -> rubros
+  let detalle='';
+  capKeys.forEach(function(c){
+    const g=D.byCap[c]; if(!g.rows.length){ // sin imputar
+      detalle+='<tr class="cap"><td colspan="6">'+escapeHtml(c)+'</td><td class="n">₲ '+fmtGs(g.sub)+'</td></tr>';
+      detalle+='<tr><td></td><td colspan="5">Insumos cargados sin rubro asignado</td><td class="n">₲ '+fmtGs(g.sub)+'</td></tr>';
+      return;
+    }
+    detalle+='<tr class="cap"><td colspan="6">'+escapeHtml(c)+'</td><td class="n">₲ '+fmtGs(g.sub)+'</td></tr>';
+    g.rows.forEach(function(x){
+      detalle+='<tr>'+
+        '<td class="cod">'+escapeHtml(x.codigo)+'</td>'+
+        '<td>'+escapeHtml(x.descripcion)+(x.tiene_receta?' <span class="tag">receta</span>':'')+'</td>'+
+        '<td>'+escapeHtml(x.sector)+'</td>'+
+        '<td class="c">'+escapeHtml(x.unidad)+'</td>'+
+        '<td class="n">'+_qty(x.cantidad)+'</td>'+
+        '<td class="n">'+(x.cantidad>0?('₲ '+fmtGs(x.costo/x.cantidad)):'—')+'</td>'+
+        '<td class="n"><b>₲ '+fmtGs(x.costo)+'</b></td></tr>';
+    });
+  });
+
+  // Composiciones (insumos por rubro con receta)
+  let comp='';
+  ed.rubros.forEach(function(r){
+    if(!r.tiene_receta) return;
+    const items=D.insByRubro[r.rubro_codigo]; if(!items||!items.length) return;
+    let body=''; let sub=0;
+    items.forEach(function(it){ sub+=it.sub; body+='<tr><td class="cod">'+escapeHtml(it.cod)+'</td><td>'+escapeHtml(it.material)+'</td><td class="c">'+escapeHtml(it.unidad)+'</td><td class="n">'+_qty(it.cantidad)+'</td><td class="n">'+(it.precio>0?('₲ '+fmtGs(it.precio)):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n"><b>₲ '+fmtGs(Math.round(it.sub))+'</b></td></tr>'; });
+    comp+='<div class="comp-blk"><div class="comp-head"><span><b>'+escapeHtml(r.rubro_codigo)+'</b> · '+escapeHtml(r.descripcion)+' <span class="muted">('+_qty(Number(r.cantidad)||0)+' '+escapeHtml(r.unidad||'')+')</span></span><span>Subtotal ₲ '+fmtGs(Math.round(sub))+'</span></div>'+
+      '<table class="t comp"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit</th><th class="n">Subtotal</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+  });
+  if(!comp) comp='<div class="muted" style="padding:8px 0">Este presupuesto no tiene rubros con receta (composición de insumos).</div>';
+
+  const html =
+'<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Presupuesto '+escapeHtml(codigo)+' — AXC</title>'+
+'<style>'+
+'*{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1c2430;margin:0;background:#f3f4f6}'+
+'.page{max-width:920px;margin:0 auto;background:#fff;padding:32px 38px}'+
+'.top{display:flex;align-items:center;gap:16px;border-bottom:3px solid #C9A961;padding-bottom:14px}'+
+'.top img{height:48px}.top .t1{font-size:12px;letter-spacing:2px;color:#8a93a0}.top .t2{font-size:22px;font-weight:800;color:#1F3864}'+
+'.badge{margin-left:auto;font-size:11px;font-weight:700;padding:5px 12px;border-radius:999px;letter-spacing:1px}'+
+'.badge.pub{background:#e6f4ea;color:#1B5524}.badge.bor{background:#eef0f3;color:#5a6677}'+
+'.meta{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px;margin:16px 0 6px;font-size:12.5px}'+
+'.meta div span{color:#8a93a0;display:inline-block;min-width:96px}'+
+'h3{font-size:13px;letter-spacing:1px;color:#1F3864;text-transform:uppercase;margin:24px 0 8px;border-left:4px solid #C9A961;padding-left:9px}'+
+'table.t{width:100%;border-collapse:collapse;font-size:12px}'+
+'table.t th{background:#1F3864;color:#fff;text-align:left;padding:7px 9px;font-weight:600}'+
+'table.t td{padding:6px 9px;border-bottom:1px solid #eceff3}'+
+'table.t td.n,table.t th.n{text-align:right}table.t td.c{text-align:center}td.cod{font-family:Consolas,monospace;color:#0E7C86;font-weight:600;white-space:nowrap}'+
+'tr.cap td{background:#eef1f6;font-weight:700;color:#1F3864;border-top:2px solid #C9A961}'+
+'.tag{font-size:9px;background:#e6f4ea;color:#1B5524;padding:1px 5px;border-radius:4px;vertical-align:middle}'+
+'.tot{display:flex;justify-content:flex-end;margin-top:14px}'+
+'.tot .box{background:#1F3864;color:#fff;padding:12px 22px;border-radius:10px;text-align:right}'+
+'.tot .box .l{font-size:11px;letter-spacing:1px;opacity:.8}.tot .box .v{font-size:24px;font-weight:800}'+
+'.comp-blk{margin:10px 0;border:1px solid #e6e9ee;border-radius:8px;overflow:hidden}'+
+'.comp-head{display:flex;justify-content:space-between;background:#f7f9fc;padding:7px 11px;font-size:12px;border-bottom:1px solid #e6e9ee}'+
+'.comp-head b{color:#1F3864}.muted{color:#8a93a0}'+
+'table.comp th{background:#5a6677}'+
+'.foot{margin-top:26px;border-top:1px solid #e6e9ee;padding-top:10px;font-size:10.5px;color:#9aa4b2;display:flex;justify-content:space-between}'+
+'.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 16px;display:flex;gap:10px;align-items:center;font-size:13px}'+
+'.bar button{margin-left:auto;background:#C9A961;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer}'+
+'@media print{.bar{display:none}body{background:#fff}.page{padding:0;max-width:100%}tr,.comp-blk{page-break-inside:avoid}}'+
+'</style></head><body>'+
+'<div class="bar">Reporte de presupuesto — '+escapeHtml(codigo)+'<button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>'+
+'<div class="page">'+
+'<div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC"><div><div class="t1">AXC CONSTRUCTORA · PRESUPUESTO</div><div class="t2">'+escapeHtml(codigo)+(descripcion?(' — '+escapeHtml(descripcion)):'')+'</div></div><span class="badge '+(ed.activo?'pub':'bor')+'">'+estado+'</span></div>'+
+'<div class="meta">'+
+'<div><span>Obra:</span><b>'+escapeHtml(obra||'—')+'</b></div>'+
+'<div><span>Rubros:</span>'+ed.rubros.length+'</div>'+
+'<div><span>Realizado por:</span><b>'+escapeHtml(autor)+'</b></div>'+
+'<div><span>Creado:</span>'+creadoTxt+'</div>'+
+'<div><span>Últ. modificación:</span>'+fTxt+'</div>'+
+'<div><span>Emitido:</span>'+new Date().toLocaleString('es-PY')+'</div>'+
+'</div>'+
+'<h3>Resumen por capítulo</h3><table class="t"><thead><tr><th>Capítulo</th><th class="n">Subtotal</th><th class="n">%</th></tr></thead><tbody>'+resumenCap+'</tbody></table>'+
+'<h3>Resumen por sector</h3><table class="t"><thead><tr><th>Sector</th><th class="n">Subtotal</th><th class="n">%</th></tr></thead><tbody>'+resumenSec+'</tbody></table>'+
+'<h3>Detalle por capítulo</h3><table class="t"><thead><tr><th>Código</th><th>Rubro</th><th>Sector</th><th class="c">Unid.</th><th class="n">Cant.</th><th class="n">P.unit</th><th class="n">Total</th></tr></thead><tbody>'+detalle+'</tbody></table>'+
+'<div class="tot"><div class="box"><div class="l">TOTAL GENERAL DEL PRESUPUESTO</div><div class="v">₲ '+fmtGs(T)+'</div></div></div>'+
+'<h3>Composiciones (detalle de insumos)</h3>'+comp+
+'<div class="foot"><span>Conexdata · Soluciones Industriales Inteligentes · www.conexdata.com.py</span><span>Generado el '+new Date().toLocaleString('es-PY')+'</span></div>'+
+'</div></body></html>';
+
+  const w=window.open('','_blank');
+  if(!w){ showToast('Permití las ventanas emergentes para ver el reporte','error'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
 }
 
 // ── Calcular insumos desde las recetas del árbol ────────
@@ -1588,6 +1747,7 @@ document.getElementById('btnNuevo').addEventListener('click', openNew);
 document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
+document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
