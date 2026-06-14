@@ -17,6 +17,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
 :root{
   --navy:#1F3864;
@@ -1511,6 +1512,7 @@ async function saveBudget(){
       if(ii.error) throw ii.error;
     }
     showToast('Presupuesto guardado', 'success');
+    _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
   }catch(e){ console.warn('saveBudget', e); showToast('No se pudo guardar: ' + (e.message||''), 'error'); }
   finally{ btn.disabled = false; btn.textContent = old; }
@@ -1983,6 +1985,11 @@ const comp = { open:false, rubro:null, recetaId:null, items:[], search:'' };
 function _userTag(){
   return (state.user && state.user.email) || (state.profile && (state.profile.residente||state.profile.nombre)) || '';
 }
+// Auditoría: registra usuario + fecha de cada alta/cambio. Fire-and-forget (no rompe el flujo).
+async function _audit(entidad, referencia, accion, detalle){
+  try{ await sb.from('auditoria').insert({ entidad:entidad, referencia:(referencia!=null?String(referencia):null), accion:accion, detalle:(detalle||null), usuario:_userTag(), fecha:new Date().toISOString() }); }
+  catch(e){ /* la tabla puede no existir todavía; no interrumpir */ }
+}
 function _numCoef(v){ const n = Number(String(v==null?'':v).trim().replace(',','.')); return isFinite(n)?n:0; }
 function _numInt(v){ const n = Number(String(v==null?'':v).replace(/[^\d.-]/g,'')); return isFinite(n)?n:0; }
 
@@ -2226,6 +2233,7 @@ async function saveComposicion(){
     renderCompTree();
     renderCompEditor();
     showToast('Composición guardada', 'success');
+    _audit('composicion', r.codigo, 'guardar', {componentes: comp.items.length, costo_unit: Math.round(_unitTotal())});
   }catch(e){ console.warn('saveComposicion', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
@@ -2348,6 +2356,7 @@ async function saveNewRubro(){
     _capCache=null;
     closeNewRubro();
     showToast('Rubro «'+cod+'» creado en '+capLabel, 'success');
+    _audit('rubro', cod, 'crear', {capitulo: capLabel, nombre: nom});
     selectCompRubro(cod);
   }catch(e){ console.warn('saveNewRubro', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
@@ -2432,6 +2441,7 @@ async function saveNewInsumo(){
     _applyInsToRow(code, nom, uni);
     closeNewInsumo();
     showToast('Insumo «'+code+'» creado', 'success');
+    _audit('insumo', code, 'crear', {nombre: nom, precio: precio});
   }catch(e){ console.warn('saveNewInsumo', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
@@ -2470,6 +2480,7 @@ async function saveCapEdit(){
     renderCompTree(); if(comp.rubro) renderCompEditor();
     closeCapEdit();
     showToast('Capítulo actualizado','success');
+    _audit('capitulo', cod, 'renombrar', {nombre: nom});
   }catch(e){ console.warn('saveCapEdit',e); showToast('No se pudo actualizar: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
@@ -2482,7 +2493,7 @@ async function bajaCapitulo(capLabel){
   const cod=(String(capLabel).match(/^\s*(\S+)/)||[])[1]||'';
   try{ await sb.from('capitulos').update({activo:false}).eq('codigo',cod); }catch(e){}
   await _reloadArbolForce(); _capCache=null; renderCompTree();
-  showToast('Capítulo dado de baja','success');
+  showToast('Capítulo dado de baja','success'); _audit('capitulo', cod, 'baja');
 }
 
 // ── Rubro: baja inteligente ──
@@ -2498,7 +2509,7 @@ async function bajaRubro(codigo){
     if(!confirm(head+'\n\nLo voy a DESACTIVAR: sale del árbol para presupuestos nuevos, sin afectar los existentes.\n\n¿Continuar?')) return;
     const up=await sb.from('rubros').update({activo:false}).eq('codigo',codigo);
     if(up.error){ showToast('No se pudo desactivar: '+(up.error.message||''),'error'); return; }
-    showToast('Rubro '+codigo+' desactivado','success');
+    showToast('Rubro '+codigo+' desactivado','success'); _audit('rubro', codigo, 'desactivar');
   } else {
     if(!confirm('El rubro '+codigo+' no se usa en ningún presupuesto.\n\n¿Eliminarlo del árbol? (también se borra su composición)')) return;
     try{
@@ -2508,7 +2519,7 @@ async function bajaRubro(codigo){
     }catch(e){ console.warn('limpiar recetas',e); }
     const del=await sb.from('rubros').delete().eq('codigo',codigo);
     if(del.error){ showToast('No se pudo eliminar: '+(del.error.message||''),'error'); return; }
-    showToast('Rubro '+codigo+' eliminado','success');
+    showToast('Rubro '+codigo+' eliminado','success'); _audit('rubro', codigo, 'eliminar');
   }
   await _reloadArbolForce();
   if(comp.rubro && comp.rubro.codigo===codigo){
@@ -2584,6 +2595,7 @@ async function saveInsEdit(){
     if(comp.rubro) renderCompEditor();
     closeInsEdit();
     showToast('Insumo '+_insEditCod+' actualizado','success');
+    _audit('insumo', _insEditCod, 'editar', {nombre: nom, precio: precio});
   }catch(e){ console.warn('saveInsEdit',e); showToast('No se pudo actualizar: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
@@ -2600,12 +2612,12 @@ async function bajaInsumo(codigo){
     if(!confirm(head+'\n\nLo voy a DESACTIVAR: sale del selector, sin tocar las composiciones existentes.\n\n¿Continuar?')) return;
     const up=await sb.from('insumos').update({activo:false}).eq('codigo',codigo);
     if(up.error){ showToast('No se pudo desactivar: '+(up.error.message||''),'error'); return; }
-    showToast('Insumo '+codigo+' desactivado','success');
+    showToast('Insumo '+codigo+' desactivado','success'); _audit('insumo', codigo, 'desactivar');
   } else {
     if(!confirm('El insumo '+codigo+' no se usa en ninguna composición.\n\n¿Eliminarlo del catálogo?')) return;
     const del=await sb.from('insumos').delete().eq('codigo',codigo);
     if(del.error){ showToast('No se pudo eliminar: '+(del.error.message||''),'error'); return; }
-    showToast('Insumo '+codigo+' eliminado','success');
+    showToast('Insumo '+codigo+' eliminado','success'); _audit('insumo', codigo, 'eliminar');
   }
   ed.insList=null; await loadInsList(); _fillCompInsDatalist(); renderInsMgr();
 }
@@ -2771,91 +2783,130 @@ async function _cargarComps(){
   return byRubro;
 }
 
+// ── Constructor de la planilla rica (ExcelJS) ──
+function buildPlantillaWb(ExcelJS, data){
+  const NAVY='FF1F3864', TEAL='FF0E7C86', GRAY='FFEDEFF2', GREEN='FFE9F7EF', RED='FFFDECEC';
+  const wb=new ExcelJS.Workbook();
+  wb.creator='AXC · Conexdata'; wb.created=new Date();
+  const NEW=40;
+  function styleHeader(ws,row,ncol){
+    for(let c=1;c<=ncol;c++){ const cell=ws.getRow(row).getCell(c);
+      cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:NAVY}};
+      cell.font={bold:true,color:{argb:'FFFFFFFF'},size:11};
+      cell.alignment={horizontal:'center',vertical:'middle'};
+      cell.border={bottom:{style:'thin',color:{argb:'FFBBBBBB'}}}; }
+    ws.getRow(row).height=20;
+  }
+  function lockRow(ws,row,ncol){
+    for(let c=1;c<=ncol;c++){ const cell=ws.getRow(row).getCell(c);
+      cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:GRAY}};
+      cell.font={color:{argb:'FF5A6677'}}; cell.protection={locked:true}; }
+  }
+  function colLetter(n){ let s=''; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26); } return s; }
+  const lst=wb.addWorksheet('Listas',{state:'veryHidden'});
+  lst.getColumn(1).values=['CAP_CODES'].concat(data.capCodes||[]);
+  const ins=wb.addWorksheet('📖 Instrucciones',{properties:{tabColor:{argb:NAVY}}});
+  ins.getColumn(1).width=110;
+  const lines=[
+    {t:'AXC CONSTRUCTORA — Plantilla de carga del árbol de codificación',s:'title'},
+    {t:'Conexdata · '+data.fecha,s:'sub'},{t:''},{t:'GUÍA RÁPIDA',s:'h2'},
+    {t:'1.  Filas GRISES = datos ya en el sistema. Son de referencia y están bloqueadas. La importación las ignora.'},
+    {t:'2.  Cargá lo nuevo en las filas con ESTADO = NUEVO. Al escribir, la fila se pinta de VERDE.'},
+    {t:'3.  Si una celda clave se pinta de ROJO = dato duplicado. Corregilo antes de importar.'},
+    {t:'4.  Los CÓDIGOS de Rubro (CC.NNN) e Insumo (INS-###) los asigna el sistema. NO los escribas.'},
+    {t:'5.  En Capítulos escribís el código (2 dígitos) y el nombre.'},
+    {t:'6.  Para enlazar la composición de un rubro/insumo NUEVO, ponele una REF única (ej. R001 / I001)'},
+    {t:'     y usá esa misma REF en la hoja Composiciones. Para los existentes, usá su código real.'},
+    {t:'7.  Tipo y Capítulo se eligen desde la lista desplegable de la celda.'},
+    {t:'8.  Merma se carga en % (ej. 5 = 5%).'},
+    {t:'9.  En la hoja "Vista de carga" ves el resumen de lo que vas a importar.'},
+    {t:'10. Al subir la planilla, el sistema muestra una vista previa y NO avanza si hay códigos o duplicados mal.'},
+    {t:''},
+    {t:'Seguridad: la importación es ADITIVA. Nunca borra ni sobrescribe datos existentes. Toda alta/cambio queda auditado (usuario + fecha).',s:'note'}
+  ];
+  lines.forEach(function(l,i){ const cell=ins.getCell(i+1,1); cell.value=l.t;
+    if(l.s==='title') cell.font={bold:true,size:15,color:{argb:NAVY}};
+    else if(l.s==='sub') cell.font={italic:true,color:{argb:'FF888888'}};
+    else if(l.s==='h2') cell.font={bold:true,size:12,color:{argb:NAVY}};
+    else if(l.s==='note'){ cell.font={italic:true,color:{argb:'FF1B5524'}}; cell.alignment={wrapText:true}; }
+    else cell.font={size:11,color:{argb:'FF333333'}}; });
+  function buildEntity(name,cols,existingRows,opts){
+    opts=opts||{};
+    const ws=wb.addWorksheet(name,{properties:{tabColor:{argb:TEAL}},views:[{state:'frozen',ySplit:3}]});
+    cols.forEach(function(c,i){ ws.getColumn(i+1).width=c.w; });
+    const ncol=cols.length;
+    ws.mergeCells(1,1,1,ncol); const tc=ws.getCell(1,1); tc.value=opts.title||name; tc.font={bold:true,size:13,color:{argb:NAVY}};
+    ws.mergeCells(2,1,2,ncol); const lc=ws.getCell(2,1);
+    lc.value='🔒 Gris = ya existe (no editar)    🟩 Verde = se carga    🟥 Rojo = duplicado, corregir';
+    lc.font={italic:true,size:9,color:{argb:'FF888888'}};
+    cols.forEach(function(c,i){ ws.getCell(3,i+1).value=c.h; }); styleHeader(ws,3,ncol);
+    let r=4;
+    existingRows.forEach(function(rowVals){ rowVals.forEach(function(v,i){ ws.getCell(r,i+1).value=v; }); lockRow(ws,r,ncol); r++; });
+    const firstNew=r;
+    for(let k=0;k<NEW;k++){ ws.getCell(r,1).value='NUEVO';
+      for(let c=1;c<=ncol;c++){ ws.getCell(r,c).protection={locked:(c===1)}; } r++; }
+    return { ws, ncol, firstNew, lastNew:r-1, colLetter };
+  }
+  function condFormats(o,keyColLetter,dupColLetter){
+    const ws=o.ws;
+    const range='A'+o.firstNew+':'+colLetter(o.ncol)+o.lastNew;
+    ws.addConditionalFormatting({ ref:range, rules:[
+      { type:'expression', formulae:['$'+keyColLetter+o.firstNew+'<>""'], style:{ fill:{type:'pattern',pattern:'solid',bgColor:{argb:GREEN}} }, priority:2 } ]});
+    if(dupColLetter){
+      const dupRange='$'+dupColLetter+'$4:$'+dupColLetter+'$'+o.lastNew;
+      ws.addConditionalFormatting({ ref:dupColLetter+o.firstNew+':'+dupColLetter+o.lastNew, rules:[
+        { type:'expression', formulae:['AND($'+dupColLetter+o.firstNew+'<>"",COUNTIF('+dupRange+',$'+dupColLetter+o.firstNew+')>1)'], style:{ fill:{type:'pattern',pattern:'solid',bgColor:{argb:RED}}, font:{color:{argb:'FF8B1F1F'}} }, priority:1 } ]});
+    }
+  }
+  const capE=(data.caps||[]).map(function(c){ return ['EXISTENTE',c.codigo,c.nombre]; });
+  const capO=buildEntity('Capítulos',[{h:'ESTADO',w:11},{h:'Código',w:10},{h:'Nombre',w:46}],capE,{title:'CAPÍTULOS'});
+  condFormats(capO,'B','C'); condFormats(capO,'B','B');
+  const rubE=(data.rubros||[]).map(function(r){ return ['EXISTENTE',r.capCod,r.nombre,r.unidad,r.codigo,'']; });
+  const rubO=buildEntity('Rubros',[{h:'ESTADO',w:11},{h:'Capítulo (cód)',w:13},{h:'Nombre',w:42},{h:'Unidad',w:9},{h:'Código (auto)',w:13},{h:'Ref (nuevos)',w:13}],rubE,{title:'RUBROS'});
+  condFormats(rubO,'C','F');
+  for(let rr=rubO.firstNew; rr<=rubO.lastNew; rr++){ rubO.ws.getCell(rr,2).dataValidation={type:'list',allowBlank:true,formulae:['=Listas!$A$2:$A$'+(1+(data.capCodes||[]).length)]}; }
+  const insE=(data.insumos||[]).map(function(i){ return ['EXISTENTE',i.nombre,i.unidad,Number(i.precio)||0,i.codigo,'']; });
+  const insO=buildEntity('Insumos',[{h:'ESTADO',w:11},{h:'Nombre',w:46},{h:'Unidad',w:10},{h:'Precio Gs',w:12},{h:'Código (auto)',w:13},{h:'Ref (nuevos)',w:13}],insE,{title:'INSUMOS'});
+  condFormats(insO,'B','B');
+  for(let rr=insO.firstNew; rr<=insO.lastNew; rr++){ insO.ws.getCell(rr,4).numFmt='#,##0'; }
+  const cmpE=(data.comps||[]).map(function(c){ return ['EXISTENTE',c.rubro,c.tipo,c.insumo,c.unidad,c.c1,c.c2,c.merma,c.precio]; });
+  const cmpO=buildEntity('Composiciones',[{h:'ESTADO',w:11},{h:'Rubro (cód/ref)',w:14},{h:'Tipo',w:13},{h:'Insumo (cód/ref) o desc.',w:30},{h:'Unidad',w:9},{h:'Rend.(c1)',w:10},{h:'Div.(c2)',w:9},{h:'Merma %',w:9},{h:'Precio (M.O.)',w:13}],cmpE,{title:'COMPOSICIONES'});
+  condFormats(cmpO,'B');
+  for(let rr=cmpO.firstNew; rr<=cmpO.lastNew; rr++){ cmpO.ws.getCell(rr,3).dataValidation={type:'list',allowBlank:true,formulae:['"Material,Mano de obra"']}; }
+  const v=wb.addWorksheet('Vista de carga',{properties:{tabColor:{argb:NAVY}}});
+  v.getColumn(1).width=34; v.getColumn(2).width=16;
+  v.getCell(1,1).value='VISTA DE CARGA — resumen de lo nuevo'; v.getCell(1,1).font={bold:true,size:14,color:{argb:NAVY}};
+  v.getCell(2,1).value='Se actualiza solo a medida que cargás en las otras hojas.'; v.getCell(2,1).font={italic:true,color:{argb:'FF888888'}};
+  const vr=[
+    ['Capítulos nuevos','COUNTIFS(Capítulos!$A$'+capO.firstNew+':$A$'+capO.lastNew+',"NUEVO",Capítulos!$C$'+capO.firstNew+':$C$'+capO.lastNew+',"<>")'],
+    ['Rubros nuevos','COUNTIFS(Rubros!$A$'+rubO.firstNew+':$A$'+rubO.lastNew+',"NUEVO",Rubros!$C$'+rubO.firstNew+':$C$'+rubO.lastNew+',"<>")'],
+    ['Insumos nuevos','COUNTIFS(Insumos!$A$'+insO.firstNew+':$A$'+insO.lastNew+',"NUEVO",Insumos!$B$'+insO.firstNew+':$B$'+insO.lastNew+',"<>")'],
+    ['Componentes nuevos','COUNTIFS(Composiciones!$A$'+cmpO.firstNew+':$A$'+cmpO.lastNew+',"NUEVO",Composiciones!$B$'+cmpO.firstNew+':$B$'+cmpO.lastNew+',"<>")'] ];
+  v.getCell(4,1).value='Indicador'; v.getCell(4,2).value='Cantidad'; styleHeader(v,4,2);
+  vr.forEach(function(row,i){ v.getCell(5+i,1).value=row[0]; const c=v.getCell(5+i,2); c.value={formula:row[1]}; c.font={bold:true,color:{argb:TEAL}}; c.alignment={horizontal:'center'}; });
+  v.getCell(10,1).value='⚠ Revisá las celdas ROJAS en cada hoja antes de importar (duplicados).'; v.getCell(10,1).font={color:{argb:'FF8B1F1F'}};
+  return { wb };
+}
+
 async function exportPlantilla(){
   const btn=document.getElementById('compPlantilla'); const old=btn.textContent; btn.disabled=true; btn.textContent='Generando…';
   try{
+    if(typeof ExcelJS==='undefined'){ showToast('No se cargó el generador de Excel. Revisá tu conexión.','error'); return; }
     await loadArbol(); await loadInsList();
     const itemsByRubro=await _cargarComps();
-    const caps=Object.keys(ed.byCap||{}).filter(function(c){return c!=='(Sin capítulo)';}).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); });
-    const rubros=(ed.arbol||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); });
-    const insumos=(ed.insList||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); });
-    const NEW_ROWS=18;
-    function blanks(n,cols){ const out=[]; for(let i=0;i<n;i++){ const row=[{v:'NUEVO',s:'neu'}]; for(let k=1;k<cols;k++) row.push({v:'',s:'neu'}); out.push(row); } return out; }
-
-    // ── Instrucciones ──
-    const instr=[
-      [{v:'AXC — Plantilla de carga del árbol de codificación',s:'title'}],
-      [{v:'Conexdata · '+new Date().toLocaleString('es-PY'),s:'sub'}],
-      [{v:''}],
-      [{v:'Cómo usar esta planilla',s:'hdr2'}],
-      [{v:'1) Las filas grises ("EXISTENTE") son sólo de referencia. NO las toques: la importación las ignora.'}],
-      [{v:'2) Cargá lo nuevo en las filas verdes ("NUEVO"). Podés agregar más filas debajo, dejando ESTADO = NUEVO.'}],
-      [{v:'3) Los CÓDIGOS de Rubro (CC.NNN) e Insumo (INS-###) los asigna el sistema. NO los escribas.'}],
-      [{v:'4) En Capítulos sí escribís el código (2 dígitos) y el nombre.'}],
-      [{v:'5) Para enlazar una composición a un rubro/insumo NUEVO, ponele una REF única (ej. R001 / I001) en su hoja,'}],
-      [{v:'   y usá esa misma REF en la hoja Composiciones. Para los existentes, usá su código real.'}],
-      [{v:'6) Merma se carga en % (ej. 5 = 5%). Tipo: escribí "Material" o "Mano de obra".'}],
-      [{v:'7) Al subir, vas a ver una VISTA PREVIA con lo que se va a crear. Nada se borra ni se modifica.'}],
-      [{v:''}],
-      [{v:'Hojas: Capítulos · Rubros · Insumos · Composiciones',s:'sub'}]
-    ];
-
-    // ── Capítulos ──
-    const capCols=[{w:80},{w:70},{w:320}];
-    const capRows=[[{v:'ESTADO',s:'hdr'},{v:'Código',s:'hdr'},{v:'Nombre',s:'hdr'}]];
-    caps.forEach(function(cap){ const m=String(cap).match(/^\s*(\S+)\s*([\s\S]*)$/); capRows.push([{v:'EXISTENTE',s:'lock'},{v:m?m[1]:cap,s:'lockc'},{v:m?(m[2]||'').trim():'',s:'lock'}]); });
-    capRows.push([{v:'EJEMPLO',s:'ej'},{v:'18',s:'ej'},{v:'Pinturas (ejemplo — podés borrar esta fila)',s:'ej'}]);
-    blanks(NEW_ROWS,3).forEach(function(r){ capRows.push(r); });
-
-    // ── Rubros ──
-    const rubCols=[{w:80},{w:90},{w:300},{w:70},{w:90},{w:100}];
-    const rubRows=[[{v:'ESTADO',s:'hdr'},{v:'Capítulo (cód)',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Código (auto)',s:'hdr'},{v:'Ref (para nuevos)',s:'hdr'}]];
-    rubros.forEach(function(r){ const m=String(r.capitulo||'').match(/^\s*(\S+)/); rubRows.push([{v:'EXISTENTE',s:'lock'},{v:m?m[1]:'',s:'lockc'},{v:r.nombre||'',s:'lock'},{v:r.unidad||'',s:'lock'},{v:r.codigo,s:'lockc'},{v:'',s:'lock'}]); });
-    rubRows.push([{v:'EJEMPLO',s:'ej'},{v:'17',s:'ej'},{v:'Pintura látex 2 manos',s:'ej'},{v:'m2',s:'ej'},{v:'(lo asigna el sistema)',s:'ej'},{v:'R001',s:'ej'}]);
-    blanks(NEW_ROWS,6).forEach(function(r){ rubRows.push(r); });
-
-    // ── Insumos ──
-    const insCols=[{w:80},{w:320},{w:80},{w:100},{w:90},{w:100}];
-    const insRows=[[{v:'ESTADO',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Precio Gs',s:'hdr'},{v:'Código (auto)',s:'hdr'},{v:'Ref (para nuevos)',s:'hdr'}]];
-    insumos.forEach(function(i){ insRows.push([{v:'EXISTENTE',s:'lock'},{v:i.nombre||'',s:'lock'},{v:i.unidad||'',s:'lock'},{v:Number(i.precio)||0,t:'n',s:'lockm'},{v:i.codigo,s:'lockc'},{v:'',s:'lock'}]); });
-    insRows.push([{v:'EJEMPLO',s:'ej'},{v:'LÁTEX INTERIOR 18L (BALDE)',s:'ej'},{v:'BALDE',s:'ej'},{v:185000,t:'n',s:'ej'},{v:'(lo asigna el sistema)',s:'ej'},{v:'I001',s:'ej'}]);
-    blanks(NEW_ROWS,6).forEach(function(r){ insRows.push(r); });
-
-    // ── Composiciones ──
-    const compCols=[{w:80},{w:110},{w:90},{w:240},{w:60},{w:70},{w:70},{w:60},{w:110}];
-    const compRows=[[{v:'ESTADO',s:'hdr'},{v:'Rubro (cód/ref)',s:'hdr'},{v:'Tipo',s:'hdr'},{v:'Insumo (cód/ref) o descripción',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Rend.(c1)',s:'hdr'},{v:'Div.(c2)',s:'hdr'},{v:'Merma %',s:'hdr'},{v:'Precio (mano obra)',s:'hdr'}]];
-    rubros.forEach(function(r){ (itemsByRubro[r.codigo]||[]).forEach(function(it){
-      const isMat=(it.tipo_componente||'insumo')!=='mano_obra';
-      compRows.push([{v:'EXISTENTE',s:'lock'},{v:r.codigo,s:'lockc'},{v:isMat?'Material':'Mano de obra',s:'lock'},{v:isMat?(it.codigo_catalogo||''):(it.material||''),s:'lock'},{v:it.unidad||'',s:'lock'},{v:Number(it.coef1)||0,t:'n',s:'lock'},{v:Number(it.coef2)||0,t:'n',s:'lock'},{v:(Number(it.merma_pct)||0)*100,t:'n',s:'lock'},{v:isMat?'':(Number(it.precio_unit)||0),t:isMat?'s':'n',s:'lock'}]);
-    }); });
-    compRows.push([{v:'EJEMPLO',s:'ej'},{v:'R001',s:'ej'},{v:'Material',s:'ej'},{v:'I001',s:'ej'},{v:'m2',s:'ej'},{v:0.25,t:'n',s:'ej'},{v:1,t:'n',s:'ej'},{v:5,t:'n',s:'ej'},{v:'',s:'ej'}]);
-    blanks(NEW_ROWS,9).forEach(function(r){ compRows.push(r); });
-
-    const styles='<Styles>'+
-      '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'+
-      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1F3864" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center"/></Style>'+
-      '<Style ss:ID="hdr2"><Font ss:Bold="1" ss:Color="#1F3864" ss:Size="12"/></Style>'+
-      '<Style ss:ID="title"><Font ss:Bold="1" ss:Size="15" ss:Color="#1F3864"/></Style>'+
-      '<Style ss:ID="sub"><Font ss:Italic="1" ss:Color="#666666"/></Style>'+
-      '<Style ss:ID="lock"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Color="#5a6677"/></Style>'+
-      '<Style ss:ID="lockc"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Bold="1" ss:Color="#0E7C86" ss:FontName="Consolas"/></Style>'+
-      '<Style ss:ID="lockm"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Color="#5a6677"/><NumberFormat ss:Format="#,##0"/></Style>'+
-      '<Style ss:ID="neu"><Interior ss:Color="#E9F7EF" ss:Pattern="Solid"/></Style>'+
-      '<Style ss:ID="ej"><Interior ss:Color="#FFF7E0" ss:Pattern="Solid"/><Font ss:Italic="1" ss:Color="#92560a"/></Style>'+
-      '</Styles>';
-
-    const wb='<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'+
-      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">'+
-      styles+
-      _ssSheet('Instrucciones',[{w:560}],instr)+
-      _ssSheet('Capítulos',capCols,capRows)+
-      _ssSheet('Rubros',rubCols,rubRows)+
-      _ssSheet('Insumos',insCols,insRows)+
-      _ssSheet('Composiciones',compCols,compRows)+
-      '</Workbook>';
-    const blob=new Blob([wb],{type:'application/vnd.ms-excel;charset=utf-8'});
+    const capset={}; const capCodes=[];
+    const caps=Object.keys(ed.byCap||{}).filter(function(c){return c!=='(Sin capítulo)';}).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); }).map(function(cap){ const m=String(cap).match(/^\s*(\S+)\s*([\s\S]*)$/); const cod=m?m[1]:cap; if(!capset[cod]){capset[cod]=1;capCodes.push(cod);} return { codigo:cod, nombre:m?(m[2]||'').trim():'' }; });
+    const rubros=(ed.arbol||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); }).map(function(r){ const m=String(r.capitulo||'').match(/^\s*(\S+)/); return { codigo:r.codigo, capCod:m?m[1]:'', nombre:r.nombre||'', unidad:r.unidad||'' }; });
+    const insumos=(ed.insList||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); }).map(function(i){ return { codigo:i.codigo, nombre:i.nombre||'', unidad:i.unidad||'', precio:Number(i.precio)||0 }; });
+    const comps=[];
+    rubros.forEach(function(r){ (itemsByRubro[r.codigo]||[]).forEach(function(it){ const isMat=(it.tipo_componente||'insumo')!=='mano_obra'; comps.push({ rubro:r.codigo, tipo:isMat?'Material':'Mano de obra', insumo:isMat?(it.codigo_catalogo||''):(it.material||''), unidad:it.unidad||'', c1:Number(it.coef1)||0, c2:Number(it.coef2)||0, merma:(Number(it.merma_pct)||0)*100, precio:isMat?'':(Number(it.precio_unit)||0) }); }); });
+    const data={ fecha:new Date().toLocaleString('es-PY'), capCodes:capCodes, caps:caps, rubros:rubros, insumos:insumos, comps:comps };
+    const built=buildPlantillaWb(ExcelJS, data);
+    for(const nm of ['Capítulos','Rubros','Insumos','Composiciones']){ const ws=built.wb.getWorksheet(nm); if(ws) await ws.protect('', {selectLockedCells:true,selectUnlockedCells:true,insertRows:true,formatColumns:false}); }
+    const buf=await built.wb.xlsx.writeBuffer();
+    const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const url=URL.createObjectURL(blob); const a=document.createElement('a');
-    a.href=url; a.download='AXC_Plantilla_Carga_Presupuesto_'+new Date().toISOString().slice(0,10)+'.xls';
+    a.href=url; a.download='AXC_Plantilla_Carga_Presupuesto_'+new Date().toISOString().slice(0,10)+'.xlsx';
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
     showToast('Plantilla descargada','success');
   }catch(e){ console.warn('exportPlantilla',e); showToast('No se pudo generar: '+(e.message||''),'error'); }
@@ -2937,6 +2988,14 @@ function _impAnalyze(p){
     newComps.push({rubCode:rub,tipo:tipo,codigo_catalogo:cod,material:mat,unidad:c.unidad||'',coef1:c.c1,coef2:(c.c2>0?c.c2:1),merma_pct:(c.merma||0)/100,precio_unit:precio});
   });
 
+  // duplicados dentro de la propia planilla (bloquean la importación)
+  (function(){
+    const sR={}; p.rubros.forEach(function(r){ if(r.ref){ const k=r.ref.toLowerCase(); if(sR[k]) issues.push('Ref de rubro repetida en la planilla: '+r.ref); sR[k]=1; } });
+    const sI={}; p.insumos.forEach(function(i){ if(i.ref){ const k=i.ref.toLowerCase(); if(sI[k]) issues.push('Ref de insumo repetida en la planilla: '+i.ref); sI[k]=1; } });
+    const sC={}; p.caps.forEach(function(c){ const k=String(c.codigo); if(sC[k]) issues.push('Código de capítulo repetido en la planilla: '+c.codigo); sC[k]=1; });
+    const sN={}; p.insumos.forEach(function(i){ const k=String(i.nombre||'').trim().toLowerCase(); if(k){ if(sN[k]) issues.push('Nombre de insumo repetido en la planilla: '+i.nombre); sN[k]=1; } });
+  })();
+
   return {newCaps:newCaps,newRubros:newRubros,newInsumos:newInsumos,newComps:newComps,issues:issues};
 }
 
@@ -2952,8 +3011,8 @@ function renderImportPreview(a){
   const iss=document.getElementById('impIssues');
   iss.innerHTML = a.issues.length ? ('<div style="margin-top:10px;background:#fdecec;border:1px solid #e7a3a3;border-radius:8px;padding:9px 11px;font-size:12px;color:#8B1F1F"><b>⚠ '+a.issues.length+' fila(s) con problemas (se omiten):</b><br>'+a.issues.slice(0,12).map(_xse).join('<br>')+(a.issues.length>12?'<br>…':'')+'</div>') : '';
   const apply=document.getElementById('impApply');
-  apply.disabled = (tot===0);
-  apply.textContent = tot===0 ? 'Nada para crear' : ('Confirmar y crear '+tot);
+  if(a.issues.length){ apply.disabled=true; apply.textContent='Corregí '+a.issues.length+' problema(s) para continuar'; }
+  else { apply.disabled=(tot===0); apply.textContent = tot===0 ? 'Nada para crear' : ('Confirmar y crear '+tot); }
 }
 
 async function _impApply(a){
@@ -3037,6 +3096,7 @@ document.getElementById('impApply').addEventListener('click', async function(){
     document.getElementById('impOverlay').classList.remove('show');
     renderCompTree(); if(comp.rubro) renderCompEditor();
     showToast('Planilla importada','success');
+    _audit('importacion', null, 'importar', {capitulos:_impCurrent.newCaps.length, rubros:_impCurrent.newRubros.length, insumos:_impCurrent.newInsumos.length, componentes:_impCurrent.newComps.length});
   }catch(e){ console.warn('apply',e); showToast('Error al importar: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 });
