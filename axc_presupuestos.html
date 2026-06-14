@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{
   --navy:#1F3864;
@@ -611,6 +612,9 @@ body{
         <div class="sub">Análisis de precio unitario por rubro · basado en el árbol de codificaciones</div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
+        <button type="button" class="comp-head-btn" id="compPlantilla">⬇ Plantilla de carga</button>
+        <button type="button" class="comp-head-btn" id="compImportar">⬆ Importar</button>
+        <input type="file" id="compImportFile" accept=".xlsx,.xls,.xml" style="display:none">
         <button type="button" class="comp-head-btn" id="compExport">⬇ Exportar árbol</button>
         <button type="button" class="comp-head-btn" id="compInsMgr">📦 Insumos</button>
         <button type="button" class="comp-x" id="compClose">&times;</button>
@@ -721,6 +725,17 @@ body{
       </div>
       <div id="insEditWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="insEditCancel">Cancelar</button><button type="button" class="pm-btn" id="insEditSave">Guardar</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="mini-overlay" id="impOverlay" style="z-index:10004">
+  <div class="mini-modal" style="width:min(560px,96vw)">
+    <div class="mini-head"><span>Importar plantilla — vista previa</span><button type="button" class="mini-x" id="impClose">&times;</button></div>
+    <div class="mini-body">
+      <div id="impSummary"></div>
+      <div id="impIssues"></div>
+      <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="impCancel">Cancelar</button><button type="button" class="pm-btn" id="impApply" style="background:#1B5524;border-color:#1B5524;color:#fff">Confirmar y crear</button></div>
     </div>
   </div>
 </div>
@@ -2740,6 +2755,244 @@ async function exportArbol(){
 }
 
 
+
+// ════════════════════════════════════════════════════════
+// PLANTILLA DE CARGA (descarga) + IMPORTACIÓN (subida con vista previa)
+// Add-only: NUNCA borra ni modifica datos existentes. Códigos los asigna el sistema.
+// ════════════════════════════════════════════════════════
+async function _cargarComps(){
+  let recs=[], items=[];
+  try{
+    const r1=await sb.from('recetas').select('id,rubro_codigo').eq('activo',true); recs=r1.data||[];
+    const r2=await sb.from('receta_items').select('*').eq('activo',true).order('orden'); items=r2.data||[];
+  }catch(e){ console.warn('cargarComps',e); }
+  const recRubro={}; recs.forEach(function(x){ recRubro[x.id]=x.rubro_codigo; });
+  const byRubro={}; items.forEach(function(it){ const rc=recRubro[it.receta_id]; if(rc==null) return; (byRubro[rc]=byRubro[rc]||[]).push(it); });
+  return byRubro;
+}
+
+async function exportPlantilla(){
+  const btn=document.getElementById('compPlantilla'); const old=btn.textContent; btn.disabled=true; btn.textContent='Generando…';
+  try{
+    await loadArbol(); await loadInsList();
+    const itemsByRubro=await _cargarComps();
+    const caps=Object.keys(ed.byCap||{}).filter(function(c){return c!=='(Sin capítulo)';}).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); });
+    const rubros=(ed.arbol||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); });
+    const insumos=(ed.insList||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),undefined,{numeric:true}); });
+    const NEW_ROWS=18;
+    function blanks(n,cols){ const out=[]; for(let i=0;i<n;i++){ const row=[{v:'NUEVO',s:'neu'}]; for(let k=1;k<cols;k++) row.push({v:'',s:'neu'}); out.push(row); } return out; }
+
+    // ── Instrucciones ──
+    const instr=[
+      [{v:'AXC — Plantilla de carga del árbol de codificación',s:'title'}],
+      [{v:'Conexdata · '+new Date().toLocaleString('es-PY'),s:'sub'}],
+      [{v:''}],
+      [{v:'Cómo usar esta planilla',s:'hdr2'}],
+      [{v:'1) Las filas grises ("EXISTENTE") son sólo de referencia. NO las toques: la importación las ignora.'}],
+      [{v:'2) Cargá lo nuevo en las filas verdes ("NUEVO"). Podés agregar más filas debajo, dejando ESTADO = NUEVO.'}],
+      [{v:'3) Los CÓDIGOS de Rubro (CC.NNN) e Insumo (INS-###) los asigna el sistema. NO los escribas.'}],
+      [{v:'4) En Capítulos sí escribís el código (2 dígitos) y el nombre.'}],
+      [{v:'5) Para enlazar una composición a un rubro/insumo NUEVO, ponele una REF única (ej. R001 / I001) en su hoja,'}],
+      [{v:'   y usá esa misma REF en la hoja Composiciones. Para los existentes, usá su código real.'}],
+      [{v:'6) Merma se carga en % (ej. 5 = 5%). Tipo: escribí "Material" o "Mano de obra".'}],
+      [{v:'7) Al subir, vas a ver una VISTA PREVIA con lo que se va a crear. Nada se borra ni se modifica.'}],
+      [{v:''}],
+      [{v:'Hojas: Capítulos · Rubros · Insumos · Composiciones',s:'sub'}]
+    ];
+
+    // ── Capítulos ──
+    const capCols=[{w:80},{w:70},{w:320}];
+    const capRows=[[{v:'ESTADO',s:'hdr'},{v:'Código',s:'hdr'},{v:'Nombre',s:'hdr'}]];
+    caps.forEach(function(cap){ const m=String(cap).match(/^\s*(\S+)\s*([\s\S]*)$/); capRows.push([{v:'EXISTENTE',s:'lock'},{v:m?m[1]:cap,s:'lockc'},{v:m?(m[2]||'').trim():'',s:'lock'}]); });
+    capRows.push([{v:'EJEMPLO',s:'ej'},{v:'18',s:'ej'},{v:'Pinturas (ejemplo — podés borrar esta fila)',s:'ej'}]);
+    blanks(NEW_ROWS,3).forEach(function(r){ capRows.push(r); });
+
+    // ── Rubros ──
+    const rubCols=[{w:80},{w:90},{w:300},{w:70},{w:90},{w:100}];
+    const rubRows=[[{v:'ESTADO',s:'hdr'},{v:'Capítulo (cód)',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Código (auto)',s:'hdr'},{v:'Ref (para nuevos)',s:'hdr'}]];
+    rubros.forEach(function(r){ const m=String(r.capitulo||'').match(/^\s*(\S+)/); rubRows.push([{v:'EXISTENTE',s:'lock'},{v:m?m[1]:'',s:'lockc'},{v:r.nombre||'',s:'lock'},{v:r.unidad||'',s:'lock'},{v:r.codigo,s:'lockc'},{v:'',s:'lock'}]); });
+    rubRows.push([{v:'EJEMPLO',s:'ej'},{v:'17',s:'ej'},{v:'Pintura látex 2 manos',s:'ej'},{v:'m2',s:'ej'},{v:'(lo asigna el sistema)',s:'ej'},{v:'R001',s:'ej'}]);
+    blanks(NEW_ROWS,6).forEach(function(r){ rubRows.push(r); });
+
+    // ── Insumos ──
+    const insCols=[{w:80},{w:320},{w:80},{w:100},{w:90},{w:100}];
+    const insRows=[[{v:'ESTADO',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Precio Gs',s:'hdr'},{v:'Código (auto)',s:'hdr'},{v:'Ref (para nuevos)',s:'hdr'}]];
+    insumos.forEach(function(i){ insRows.push([{v:'EXISTENTE',s:'lock'},{v:i.nombre||'',s:'lock'},{v:i.unidad||'',s:'lock'},{v:Number(i.precio)||0,t:'n',s:'lockm'},{v:i.codigo,s:'lockc'},{v:'',s:'lock'}]); });
+    insRows.push([{v:'EJEMPLO',s:'ej'},{v:'LÁTEX INTERIOR 18L (BALDE)',s:'ej'},{v:'BALDE',s:'ej'},{v:185000,t:'n',s:'ej'},{v:'(lo asigna el sistema)',s:'ej'},{v:'I001',s:'ej'}]);
+    blanks(NEW_ROWS,6).forEach(function(r){ insRows.push(r); });
+
+    // ── Composiciones ──
+    const compCols=[{w:80},{w:110},{w:90},{w:240},{w:60},{w:70},{w:70},{w:60},{w:110}];
+    const compRows=[[{v:'ESTADO',s:'hdr'},{v:'Rubro (cód/ref)',s:'hdr'},{v:'Tipo',s:'hdr'},{v:'Insumo (cód/ref) o descripción',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Rend.(c1)',s:'hdr'},{v:'Div.(c2)',s:'hdr'},{v:'Merma %',s:'hdr'},{v:'Precio (mano obra)',s:'hdr'}]];
+    rubros.forEach(function(r){ (itemsByRubro[r.codigo]||[]).forEach(function(it){
+      const isMat=(it.tipo_componente||'insumo')!=='mano_obra';
+      compRows.push([{v:'EXISTENTE',s:'lock'},{v:r.codigo,s:'lockc'},{v:isMat?'Material':'Mano de obra',s:'lock'},{v:isMat?(it.codigo_catalogo||''):(it.material||''),s:'lock'},{v:it.unidad||'',s:'lock'},{v:Number(it.coef1)||0,t:'n',s:'lock'},{v:Number(it.coef2)||0,t:'n',s:'lock'},{v:(Number(it.merma_pct)||0)*100,t:'n',s:'lock'},{v:isMat?'':(Number(it.precio_unit)||0),t:isMat?'s':'n',s:'lock'}]);
+    }); });
+    compRows.push([{v:'EJEMPLO',s:'ej'},{v:'R001',s:'ej'},{v:'Material',s:'ej'},{v:'I001',s:'ej'},{v:'m2',s:'ej'},{v:0.25,t:'n',s:'ej'},{v:1,t:'n',s:'ej'},{v:5,t:'n',s:'ej'},{v:'',s:'ej'}]);
+    blanks(NEW_ROWS,9).forEach(function(r){ compRows.push(r); });
+
+    const styles='<Styles>'+
+      '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'+
+      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1F3864" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center"/></Style>'+
+      '<Style ss:ID="hdr2"><Font ss:Bold="1" ss:Color="#1F3864" ss:Size="12"/></Style>'+
+      '<Style ss:ID="title"><Font ss:Bold="1" ss:Size="15" ss:Color="#1F3864"/></Style>'+
+      '<Style ss:ID="sub"><Font ss:Italic="1" ss:Color="#666666"/></Style>'+
+      '<Style ss:ID="lock"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Color="#5a6677"/></Style>'+
+      '<Style ss:ID="lockc"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Bold="1" ss:Color="#0E7C86" ss:FontName="Consolas"/></Style>'+
+      '<Style ss:ID="lockm"><Interior ss:Color="#EDEFF2" ss:Pattern="Solid"/><Font ss:Color="#5a6677"/><NumberFormat ss:Format="#,##0"/></Style>'+
+      '<Style ss:ID="neu"><Interior ss:Color="#E9F7EF" ss:Pattern="Solid"/></Style>'+
+      '<Style ss:ID="ej"><Interior ss:Color="#FFF7E0" ss:Pattern="Solid"/><Font ss:Italic="1" ss:Color="#92560a"/></Style>'+
+      '</Styles>';
+
+    const wb='<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'+
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">'+
+      styles+
+      _ssSheet('Instrucciones',[{w:560}],instr)+
+      _ssSheet('Capítulos',capCols,capRows)+
+      _ssSheet('Rubros',rubCols,rubRows)+
+      _ssSheet('Insumos',insCols,insRows)+
+      _ssSheet('Composiciones',compCols,compRows)+
+      '</Workbook>';
+    const blob=new Blob([wb],{type:'application/vnd.ms-excel;charset=utf-8'});
+    const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download='AXC_Plantilla_Carga_Presupuesto_'+new Date().toISOString().slice(0,10)+'.xls';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    showToast('Plantilla descargada','success');
+  }catch(e){ console.warn('exportPlantilla',e); showToast('No se pudo generar: '+(e.message||''),'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+// ── Importación ──
+let _impCurrent=null;
+function _impReadSheets(file){
+  return new Promise(function(resolve,reject){
+    if(typeof XLSX==='undefined'){ reject(new Error('No se cargó el lector de Excel. Revisá tu conexión e intentá de nuevo.')); return; }
+    const fr=new FileReader();
+    fr.onload=function(e){ try{ resolve(XLSX.read(new Uint8Array(e.target.result),{type:'array'})); }catch(err){ reject(err); } };
+    fr.onerror=function(){ reject(new Error('No se pudo leer el archivo')); };
+    fr.readAsArrayBuffer(file);
+  });
+}
+function _impNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+function _impSheetRows(wb,kw){
+  const name=wb.SheetNames.find(function(n){ return _impNorm(n).indexOf(kw)>=0; });
+  if(!name) return [];
+  const arr=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,blankrows:false,defval:''});
+  let h=-1; for(let i=0;i<arr.length;i++){ if(String(arr[i][0]||'').trim().toUpperCase()==='ESTADO'){ h=i; break; } }
+  return h<0 ? [] : arr.slice(h+1);
+}
+function _impEsNuevo(v){ const s=String(v||'').trim().toUpperCase(); return s!=='EXISTENTE' && s!=='EJEMPLO'; }
+
+function _impParse(wb){
+  const o={caps:[],rubros:[],insumos:[],comps:[]};
+  _impSheetRows(wb,'capitul').forEach(function(r){ if(!_impEsNuevo(r[0]))return; const c=String(r[1]||'').trim(),n=String(r[2]||'').trim(); if(c&&n)o.caps.push({codigo:c,nombre:n}); });
+  _impSheetRows(wb,'rubro').forEach(function(r){ if(!_impEsNuevo(r[0]))return; const cap=String(r[1]||'').trim(),n=String(r[2]||'').trim(),u=String(r[3]||'').trim(),ref=String(r[5]||'').trim(); if(cap&&n)o.rubros.push({capCod:cap,nombre:n,unidad:u,ref:ref}); });
+  _impSheetRows(wb,'insumo').forEach(function(r){ if(!_impEsNuevo(r[0]))return; const n=String(r[1]||'').trim(),u=String(r[2]||'').trim(),p=_numInt(r[3]),ref=String(r[5]||'').trim(); if(n)o.insumos.push({nombre:n,unidad:u,precio:p,ref:ref}); });
+  _impSheetRows(wb,'composic').forEach(function(r){ if(!_impEsNuevo(r[0]))return; const rk=String(r[1]||'').trim(); if(!rk)return; o.comps.push({rubKey:rk,tipo:String(r[2]||'').trim(),insKey:String(r[3]||'').trim(),unidad:String(r[4]||'').trim(),c1:_numCoef(r[5]),c2:_numCoef(r[6]),merma:_numCoef(r[7]),precio:_numInt(r[8])}); });
+  return o;
+}
+
+function _impAnalyze(p){
+  const issues=[];
+  const capName={}; Object.keys(ed.byCap||{}).forEach(function(s){ if(s==='(Sin capítulo)')return; const m=String(s).match(/^\s*(\S+)\s*([\s\S]*)$/); if(m)capName[m[1]]=(m[2]||'').trim(); });
+  const existRub={}; (ed.arbol||[]).forEach(function(r){ existRub[String(r.codigo)]=r; });
+  const existInsCode={}, existInsName={}; (ed.insList||[]).forEach(function(i){ existInsCode[i.codigo]=i; existInsName[String(i.nombre||'').trim().toLowerCase()]=i; });
+
+  const newCaps=[]; p.caps.forEach(function(c){ if(capName[c.codigo]==null){ capName[c.codigo]=c.nombre; newCaps.push(c); } });
+
+  const rubCnt={}; (ed.arbol||[]).forEach(function(r){ const m=String(r.codigo).match(/^(\S+?)\.(\d+)$/); if(m){ const cc=m[1],n=parseInt(m[2],10); if(!rubCnt[cc]||n>rubCnt[cc])rubCnt[cc]=n; } });
+  const refRub={}; const newRubros=[];
+  p.rubros.forEach(function(r){
+    if(capName[r.capCod]==null){ issues.push('Rubro «'+r.nombre+'»: el capítulo '+r.capCod+' no existe. Agregalo en la hoja Capítulos.'); return; }
+    rubCnt[r.capCod]=(rubCnt[r.capCod]||0)+1;
+    const code=r.capCod+'.'+String(rubCnt[r.capCod]).padStart(3,'0');
+    newRubros.push({codigo:code,nombre:r.nombre,unidad:r.unidad,capitulo:(r.capCod+' '+capName[r.capCod]).trim()});
+    if(r.ref) refRub[r.ref.toLowerCase()]=code;
+  });
+
+  let insMax=0; (ed.insList||[]).forEach(function(i){ const m=String(i.codigo).match(/^INS-(\d+)$/i); if(m){ const n=parseInt(m[1],10); if(n>insMax)insMax=n; } });
+  const refIns={}; const newInsumos=[];
+  p.insumos.forEach(function(i){
+    const ex=existInsName[String(i.nombre).trim().toLowerCase()];
+    if(ex){ if(i.ref)refIns[i.ref.toLowerCase()]=ex.codigo; return; }
+    insMax++; const code='INS-'+String(insMax).padStart(3,'0');
+    newInsumos.push({codigo:code,nombre:i.nombre,unidad:i.unidad,precio:i.precio});
+    if(i.ref)refIns[i.ref.toLowerCase()]=code;
+    existInsName[String(i.nombre).trim().toLowerCase()]={codigo:code,nombre:i.nombre};
+  });
+
+  function resRub(k){ k=String(k||'').trim(); if(existRub[k])return k; if(refRub[k.toLowerCase()])return refRub[k.toLowerCase()]; if(newRubros.find(function(x){return x.codigo===k;}))return k; return null; }
+  function resIns(k){ k=String(k||'').trim(); if(!k)return null; if(existInsCode[k])return k; if(refIns[k.toLowerCase()])return refIns[k.toLowerCase()]; const bn=existInsName[k.toLowerCase()]; if(bn)return bn.codigo; return null; }
+  function insNombre(code){ const e=existInsCode[code]; if(e)return e.nombre; const n=newInsumos.find(function(x){return x.codigo===code;}); return n?n.nombre:code; }
+
+  const newComps=[];
+  p.comps.forEach(function(c){
+    const rub=resRub(c.rubKey);
+    if(!rub){ issues.push('Composición: no se encontró el rubro «'+c.rubKey+'» (usá su código real o la Ref de la hoja Rubros).'); return; }
+    const tipo=(_impNorm(c.tipo).indexOf('mano')>=0)?'mano_obra':'insumo';
+    let cod=null, mat='', precio=null;
+    if(tipo==='insumo'){ const ic=resIns(c.insKey); if(!ic){ issues.push('Composición (rubro '+rub+'): no se encontró el insumo «'+c.insKey+'».'); return; } cod=ic; mat=insNombre(ic); }
+    else { mat=c.insKey||'Mano de obra'; precio=c.precio||0; }
+    if(!(c.c1>0)){ issues.push('Composición (rubro '+rub+'): Rend.(c1) debe ser > 0.'); return; }
+    newComps.push({rubCode:rub,tipo:tipo,codigo_catalogo:cod,material:mat,unidad:c.unidad||'',coef1:c.c1,coef2:(c.c2>0?c.c2:1),merma_pct:(c.merma||0)/100,precio_unit:precio});
+  });
+
+  return {newCaps:newCaps,newRubros:newRubros,newInsumos:newInsumos,newComps:newComps,issues:issues};
+}
+
+function renderImportPreview(a){
+  const tot=a.newCaps.length+a.newRubros.length+a.newInsumos.length+a.newComps.length;
+  let h='<div style="font-size:13px;line-height:1.8"><b>Se crearán:</b><br>'+
+    '• Capítulos: <b>'+a.newCaps.length+'</b><br>'+
+    '• Rubros: <b>'+a.newRubros.length+'</b><br>'+
+    '• Insumos: <b>'+a.newInsumos.length+'</b><br>'+
+    '• Componentes de composición: <b>'+a.newComps.length+'</b></div>'+
+    '<div style="margin-top:10px;background:#eef7ee;border:1px solid #bcdcbc;border-radius:8px;padding:8px 11px;font-size:12px;color:#1B5524">✔ No se modifica ni elimina ningún dato existente.</div>';
+  document.getElementById('impSummary').innerHTML=h;
+  const iss=document.getElementById('impIssues');
+  iss.innerHTML = a.issues.length ? ('<div style="margin-top:10px;background:#fdecec;border:1px solid #e7a3a3;border-radius:8px;padding:9px 11px;font-size:12px;color:#8B1F1F"><b>⚠ '+a.issues.length+' fila(s) con problemas (se omiten):</b><br>'+a.issues.slice(0,12).map(_xse).join('<br>')+(a.issues.length>12?'<br>…':'')+'</div>') : '';
+  const apply=document.getElementById('impApply');
+  apply.disabled = (tot===0);
+  apply.textContent = tot===0 ? 'Nada para crear' : ('Confirmar y crear '+tot);
+}
+
+async function _impApply(a){
+  for(const c of a.newCaps){ try{ await sb.from('capitulos').upsert({codigo:c.codigo,nombre:c.nombre,activo:true},{onConflict:'codigo'}); }catch(e){} }
+  for(const r of a.newRubros){
+    const ins=await sb.from('rubros').insert({codigo:r.codigo,nombre:r.nombre,unidad:r.unidad||null,capitulo:r.capitulo,tiene_receta:false,activo:true,fuente:'import'});
+    if(ins.error) throw new Error('Rubro '+r.codigo+': '+ins.error.message);
+  }
+  for(const i of a.newInsumos){
+    const nowIso=new Date().toISOString();
+    const pp={nombre:i.nombre,precio_referencia:i.precio||0,unidad_medida:i.unidad||null,categoria:'insumo',search_terms:String(i.nombre).toLowerCase().split(/\s+/).filter(Boolean),activo:true,creado_por:_userTag(),codigo:i.codigo,created_at:nowIso,updated_at:nowIso,creado_en:nowIso};
+    let prod=await sb.from('productos_catalogo').insert(pp).select('id').single();
+    if(prod.error){ const mx=await sb.from('productos_catalogo').select('id').order('id',{ascending:false}).limit(1).maybeSingle(); const nid=(mx.data&&mx.data.id?Number(mx.data.id):0)+1; prod=await sb.from('productos_catalogo').insert(Object.assign({id:nid},pp)).select('id').single(); }
+    if(prod.error) throw new Error('Insumo '+i.codigo+': '+prod.error.message);
+    const insR=await sb.from('insumos').insert({codigo:i.codigo,nombre:i.nombre,unidad_compra:i.unidad||null,unidad_base:i.unidad||null,precio_base:i.precio||0,moneda:'PYG',producto_id:String(prod.data.id),activo:true});
+    if(insR.error) throw new Error('Insumo '+i.codigo+': '+insR.error.message);
+  }
+  const byRub={}; a.newComps.forEach(function(c){ (byRub[c.rubCode]=byRub[c.rubCode]||[]).push(c); });
+  for(const rub of Object.keys(byRub)){
+    let recetaId=null;
+    const got=await sb.from('recetas').select('id').eq('rubro_codigo',rub).eq('activo',true).order('created_at').limit(1);
+    if(got.data&&got.data.length) recetaId=got.data[0].id;
+    if(!recetaId){
+      const rr=ed.arbolByCod[rub]||a.newRubros.find(function(x){return x.codigo===rub;});
+      const cr=await sb.from('recetas').insert({nombre:(rr&&rr.nombre)||rub,unidad:(rr&&rr.unidad)||'',rubro_codigo:rub,origen:'import',activo:true,creado_por:_userTag()}).select('id').single();
+      if(cr.error) throw new Error('Receta '+rub+': '+cr.error.message);
+      recetaId=cr.data.id;
+    }
+    let orden=0;
+    for(const c of byRub[rub]){
+      orden++;
+      const it=await sb.from('receta_items').insert({receta_id:recetaId,material:c.material||'',unidad:c.unidad||'',coef1:c.coef1,coef2:c.coef2,merma_pct:c.merma_pct,tipo_componente:c.tipo,codigo_catalogo:c.codigo_catalogo,producto_id:null,precio_unit:(c.precio_unit!=null?c.precio_unit:null),orden:orden,activo:true});
+      if(it.error) throw new Error('Componente en '+rub+': '+it.error.message);
+    }
+    await sb.from('rubros').update({tiene_receta:true}).eq('codigo',rub);
+  }
+}
+
+
 document.getElementById('btnComp').addEventListener('click', openComposiciones);
 document.getElementById('compClose').addEventListener('click', closeComposiciones);
 document.getElementById('compSearch').addEventListener('input', function(e){ comp.search=e.target.value; renderCompTree(); });
@@ -2757,6 +3010,36 @@ document.getElementById('inSave').addEventListener('click', saveNewInsumo);
 document.getElementById('inNom').addEventListener('input', _checkInsDup);
 document.getElementById('insOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewInsumo(); });
 document.getElementById('compExport').addEventListener('click', exportArbol);
+document.getElementById('compPlantilla').addEventListener('click', exportPlantilla);
+document.getElementById('compImportar').addEventListener('click', function(){ document.getElementById('compImportFile').click(); });
+document.getElementById('compImportFile').addEventListener('change', async function(ev){
+  const file=ev.target.files&&ev.target.files[0]; ev.target.value='';
+  if(!file) return;
+  showToast('Leyendo planilla…','success');
+  try{
+    await loadArbol(); await loadInsList();
+    const wb=await _impReadSheets(file);
+    const parsed=_impParse(wb);
+    _impCurrent=_impAnalyze(parsed);
+    renderImportPreview(_impCurrent);
+    document.getElementById('impOverlay').classList.add('show');
+  }catch(err){ console.warn('import',err); showToast('No se pudo leer: '+(err.message||''),'error'); }
+});
+document.getElementById('impClose').addEventListener('click', function(){ document.getElementById('impOverlay').classList.remove('show'); });
+document.getElementById('impCancel').addEventListener('click', function(){ document.getElementById('impOverlay').classList.remove('show'); });
+document.getElementById('impOverlay').addEventListener('click', function(e){ if(e.target===this) document.getElementById('impOverlay').classList.remove('show'); });
+document.getElementById('impApply').addEventListener('click', async function(){
+  if(!_impCurrent) return;
+  const btn=this; const old=btn.textContent; btn.disabled=true; btn.textContent='Creando…';
+  try{
+    await _impApply(_impCurrent);
+    await _reloadArbolForce(); ed.insList=null; await loadInsList(); _fillCompInsDatalist();
+    document.getElementById('impOverlay').classList.remove('show');
+    renderCompTree(); if(comp.rubro) renderCompEditor();
+    showToast('Planilla importada','success');
+  }catch(e){ console.warn('apply',e); showToast('Error al importar: '+(e.message||''),'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+});
 document.getElementById('compInsMgr').addEventListener('click', openInsMgr);
 document.getElementById('insMgrClose').addEventListener('click', closeInsMgr);
 document.getElementById('insMgrOverlay').addEventListener('click', function(e){ if(e.target===this) closeInsMgr(); });
