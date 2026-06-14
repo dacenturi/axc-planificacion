@@ -611,6 +611,7 @@ body{
         <div class="sub">Análisis de precio unitario por rubro · basado en el árbol de codificaciones</div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
+        <button type="button" class="comp-head-btn" id="compExport">⬇ Exportar árbol</button>
         <button type="button" class="comp-head-btn" id="compInsMgr">📦 Insumos</button>
         <button type="button" class="comp-x" id="compClose">&times;</button>
       </div>
@@ -2595,6 +2596,150 @@ async function bajaInsumo(codigo){
 }
 
 
+
+// ════════════════════════════════════════════════════════
+// EXPORTAR ÁRBOL CODIFICADO → Excel multi-hoja (SpreadsheetML, sin dependencias)
+// Hojas: Resumen · Capítulos · Rubros · Composiciones (APU) · Insumos
+// ════════════════════════════════════════════════════════
+function _xse(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _ssSheet(name, cols, rows){
+  const colCount=cols.length;
+  let maxCols=colCount; rows.forEach(function(r){ if(r.length>maxCols) maxCols=r.length; });
+  let xml='<Worksheet ss:Name="'+_xse(name)+'"><Table ss:ExpandedColumnCount="'+maxCols+'" ss:ExpandedRowCount="'+rows.length+'" x:FullColumns="1" x:FullRows="1" ss:DefaultRowHeight="15">';
+  cols.forEach(function(c){ xml+='<Column ss:AutoFitWidth="0" ss:Width="'+(c.w||80)+'"/>'; });
+  rows.forEach(function(r){
+    xml+='<Row>';
+    r.forEach(function(c){
+      const isN=(c.t==='n');
+      const t=isN?'Number':'String';
+      const val=isN?(isFinite(Number(c.v))?Number(c.v):0):_xse(c.v);
+      xml+='<Cell'+(c.s?' ss:StyleID="'+c.s+'"':'')+'><Data ss:Type="'+t+'">'+val+'</Data></Cell>';
+    });
+    xml+='</Row>';
+  });
+  xml+='</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions></Worksheet>';
+  return xml;
+}
+
+async function exportArbol(){
+  const btn=document.getElementById('compExport'); const old=btn.textContent; btn.disabled=true; btn.textContent='Generando…';
+  try{
+    await loadArbol(); await loadInsList();
+    // Recetas + items (composiciones)
+    let recs=[], items=[];
+    try{
+      const r1=await sb.from('recetas').select('id,rubro_codigo').eq('activo',true);
+      recs=r1.data||[];
+      const r2=await sb.from('receta_items').select('*').eq('activo',true).order('orden');
+      items=r2.data||[];
+    }catch(e){ console.warn('export recetas',e); }
+    const recRubro={}; recs.forEach(function(x){ recRubro[x.id]=x.rubro_codigo; });
+    const itemsByRubro={};
+    items.forEach(function(it){ const rc=recRubro[it.receta_id]; if(rc==null) return; (itemsByRubro[rc]=itemsByRubro[rc]||[]).push(it); });
+
+    function priceOf(it){ if((it.tipo_componente||'insumo')==='insumo'){ const p=ed.precioByIns[it.codigo_catalogo]; if(p!=null&&p>0) return p; return Number(it.precio_unit)||0; } return Number(it.precio_unit)||0; }
+    function qtyOf(it){ const c1=Number(it.coef1)||0,c2=Number(it.coef2)||0,m=Number(it.merma_pct)||0; if(c2<=0) return 0; return c1*(1+m)/c2; }
+    function unitCost(rc){ return (itemsByRubro[rc]||[]).reduce(function(s,it){ return s+qtyOf(it)*priceOf(it); },0); }
+    function insName(it){ if((it.tipo_componente||'insumo')==='insumo'){ const i=(ed.insList||[]).find(function(x){return x.codigo===it.codigo_catalogo;}); return it.material||(i?i.nombre:'')||''; } return it.material||''; }
+    function tipoLbl(it){ return (it.tipo_componente||'insumo')==='mano_obra' ? 'Mano de obra' : 'Material'; }
+
+    // Capítulos ordenados
+    const caps=Object.keys(ed.byCap||{}).filter(function(c){return c!=='(Sin capítulo)';}).sort(function(a,b){ return String(a).localeCompare(String(b), undefined, {numeric:true}); });
+    if((ed.byCap||{})['(Sin capítulo)']) caps.push('(Sin capítulo)');
+    const rubrosOrden=(ed.arbol||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}); });
+    const conReceta=rubrosOrden.filter(function(r){ return (itemsByRubro[r.codigo]||[]).length>0; }).length;
+
+    // ── Hoja Resumen ──
+    const fecha=new Date().toLocaleString('es-PY');
+    const resumen=[
+      [{v:'AXC CONSTRUCTORA — Árbol de codificación · Presupuesto', s:'title'}],
+      [{v:'Generado: '+fecha+'   ·   Conexdata · www.conexdata.com.py', s:'sub'}],
+      [{v:''}],
+      [{v:'Indicador', s:'hdr'},{v:'Cantidad', s:'hdr'}],
+      [{v:'Capítulos'},{v:caps.length, t:'n'}],
+      [{v:'Rubros'},{v:rubrosOrden.length, t:'n'}],
+      [{v:'Rubros con composición'},{v:conReceta, t:'n'}],
+      [{v:'Insumos en catálogo'},{v:(ed.insList||[]).length, t:'n'}]
+    ];
+
+    // ── Hoja Capítulos ──
+    const capRows=[[{v:'Código',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Rubros',s:'hdr'}]];
+    caps.forEach(function(cap){
+      const m=String(cap).match(/^\s*(\S+)\s*([\s\S]*)$/);
+      const cod=m?m[1]:cap; const nom=m?(m[2]||'').trim():'';
+      capRows.push([{v:cod,s:'code'},{v:nom},{v:(ed.byCap[cap]||[]).length, t:'n'}]);
+    });
+
+    // ── Hoja Rubros ──
+    const rubRows=[[{v:'Cap.',s:'hdr'},{v:'Capítulo',s:'hdr'},{v:'Código',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Composición',s:'hdr'},{v:'Componentes',s:'hdr'},{v:'Costo unit. Gs',s:'hdr'}]];
+    rubrosOrden.forEach(function(r){
+      const m=String(r.capitulo||'').match(/^\s*(\S+)\s*([\s\S]*)$/);
+      const capCod=m?m[1]:''; const capNom=m?(m[2]||'').trim():(r.capitulo||'');
+      const comps=(itemsByRubro[r.codigo]||[]).length;
+      rubRows.push([
+        {v:capCod,s:'code'},{v:capNom},{v:r.codigo,s:'code'},{v:r.nombre||''},{v:r.unidad||''},
+        {v:comps>0?'Sí':'No'},{v:comps,t:'n'},{v:unitCost(r.codigo),t:'n',s:'money'}
+      ]);
+    });
+
+    // ── Hoja Composiciones (APU) ──
+    const compRows=[[
+      {v:'Rubro',s:'hdr'},{v:'Rubro nombre',s:'hdr'},{v:'Unid. rubro',s:'hdr'},{v:'Tipo',s:'hdr'},
+      {v:'Cód. insumo',s:'hdr'},{v:'Insumo / Descripción',s:'hdr'},{v:'Unidad',s:'hdr'},
+      {v:'Rend.(c1)',s:'hdr'},{v:'Div.(c2)',s:'hdr'},{v:'Merma',s:'hdr'},
+      {v:'Precio Gs',s:'hdr'},{v:'Cant/unid',s:'hdr'},{v:'Costo línea Gs',s:'hdr'}
+    ]];
+    rubrosOrden.forEach(function(r){
+      (itemsByRubro[r.codigo]||[]).forEach(function(it){
+        compRows.push([
+          {v:r.codigo,s:'code'},{v:r.nombre||''},{v:r.unidad||''},{v:tipoLbl(it)},
+          {v:it.codigo_catalogo||'',s:'code'},{v:insName(it)},{v:it.unidad||''},
+          {v:Number(it.coef1)||0,t:'n'},{v:Number(it.coef2)||0,t:'n'},{v:Number(it.merma_pct)||0,t:'n',s:'pct'},
+          {v:priceOf(it),t:'n',s:'money'},{v:qtyOf(it),t:'n',s:'qty'},{v:qtyOf(it)*priceOf(it),t:'n',s:'money'}
+        ]);
+      });
+    });
+
+    // ── Hoja Insumos ──
+    const insRows=[[{v:'Código',s:'hdr'},{v:'Nombre',s:'hdr'},{v:'Unidad',s:'hdr'},{v:'Precio ref. Gs',s:'hdr'}]];
+    (ed.insList||[]).slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo), undefined, {numeric:true}); }).forEach(function(i){
+      insRows.push([{v:i.codigo,s:'code'},{v:i.nombre||''},{v:i.unidad||''},{v:Number(i.precio)||0,t:'n',s:'money'}]);
+    });
+
+    const styles=
+      '<Styles>'+
+      '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'+
+      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:FontName="Calibri"/><Interior ss:Color="#1F3864" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'+
+      '<Style ss:ID="title"><Font ss:Bold="1" ss:Size="15" ss:Color="#1F3864" ss:FontName="Calibri"/></Style>'+
+      '<Style ss:ID="sub"><Font ss:Italic="1" ss:Color="#666666" ss:FontName="Calibri"/></Style>'+
+      '<Style ss:ID="code"><Font ss:Bold="1" ss:Color="#0E7C86" ss:FontName="Consolas"/></Style>'+
+      '<Style ss:ID="money"><NumberFormat ss:Format="#,##0"/></Style>'+
+      '<Style ss:ID="pct"><NumberFormat ss:Format="0.0%"/></Style>'+
+      '<Style ss:ID="qty"><NumberFormat ss:Format="#,##0.0000"/></Style>'+
+      '</Styles>';
+
+    const wb=
+      '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'+
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">'+
+      styles+
+      _ssSheet('Resumen', [{w:280},{w:90}], resumen)+
+      _ssSheet('Capítulos', [{w:60},{w:300},{w:60}], capRows)+
+      _ssSheet('Rubros', [{w:50},{w:230},{w:75},{w:300},{w:70},{w:90},{w:90},{w:100}], rubRows)+
+      _ssSheet('Composiciones (APU)', [{w:75},{w:240},{w:70},{w:90},{w:80},{w:240},{w:60},{w:70},{w:70},{w:60},{w:90},{w:90},{w:100}], compRows)+
+      _ssSheet('Insumos', [{w:90},{w:320},{w:80},{w:100}], insRows)+
+      '</Workbook>';
+
+    const blob=new Blob([wb],{type:'application/vnd.ms-excel;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download='AXC_Arbol_Codificacion_Presupuesto_'+new Date().toISOString().slice(0,10)+'.xls';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    showToast('Árbol exportado a Excel', 'success');
+  }catch(e){ console.warn('exportArbol',e); showToast('No se pudo exportar: '+(e.message||''), 'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+
 document.getElementById('btnComp').addEventListener('click', openComposiciones);
 document.getElementById('compClose').addEventListener('click', closeComposiciones);
 document.getElementById('compSearch').addEventListener('input', function(e){ comp.search=e.target.value; renderCompTree(); });
@@ -2611,6 +2756,7 @@ document.getElementById('inCancel').addEventListener('click', closeNewInsumo);
 document.getElementById('inSave').addEventListener('click', saveNewInsumo);
 document.getElementById('inNom').addEventListener('input', _checkInsDup);
 document.getElementById('insOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewInsumo(); });
+document.getElementById('compExport').addEventListener('click', exportArbol);
 document.getElementById('compInsMgr').addEventListener('click', openInsMgr);
 document.getElementById('insMgrClose').addEventListener('click', closeInsMgr);
 document.getElementById('insMgrOverlay').addEventListener('click', function(e){ if(e.target===this) closeInsMgr(); });
