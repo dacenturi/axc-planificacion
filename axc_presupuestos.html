@@ -657,6 +657,24 @@ body{
   </div>
 </div>
 
+<div class="mini-overlay" id="insOverlay" style="z-index:10002">
+  <div class="mini-modal">
+    <div class="mini-head"><span>Nuevo insumo</span><button type="button" class="mini-x" id="inClose">&times;</button></div>
+    <div class="mini-body">
+      <label class="pm-label">Código <span style="color:#8893a5;font-weight:400">· se genera solo</span></label>
+      <input id="inCod" class="pm-input cr-code" readonly>
+      <label class="pm-label" style="margin-top:10px">Nombre *</label>
+      <input id="inNom" class="pm-input" placeholder="Ej. CEMENTO YGUAZU CP2 (BOLSA 50 KG)" maxlength="160" autocomplete="off">
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <div style="flex:0 0 140px"><label class="pm-label">Unidad de compra</label><input id="inUni" class="pm-input" placeholder="UNID, BOLSA, M3…" maxlength="30"></div>
+        <div style="flex:1"><label class="pm-label">Precio referencia (Gs) *</label><input id="inPrecio" class="pm-input" inputmode="numeric" placeholder="0" style="text-align:right"></div>
+      </div>
+      <div id="inDupWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
+      <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="inCancel">Cancelar</button><button type="button" class="pm-btn" id="inSave">Crear y usar</button></div>
+    </div>
+  </div>
+</div>
+
 <div class="mini-overlay" id="mgOverlay">
   <div class="mini-modal" style="width:min(460px,94vw)">
     <div class="mini-head"><span id="mgTitle">Gestionar</span>
@@ -756,6 +774,9 @@ body{
   .cr-step{font-size:12px;font-weight:800;color:#1F3864;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:8px;margin-bottom:7px}
   .cr-step-n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#5a3fa0;color:#fff;font-size:11px;flex-shrink:0}
   .cr-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:#1F3864;letter-spacing:.5px}
+  .ci-codwrap{display:flex;gap:4px;align-items:center}
+  .ci-newins{flex:none;width:24px;height:24px;border:1px solid #5a3fa0;background:#f3effb;color:#5a3fa0;border-radius:6px;font-size:13px;line-height:1;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center}
+  .ci-newins:hover{background:#5a3fa0;color:#fff}
   .mini-overlay{display:none;position:fixed;inset:0;background:rgba(20,30,55,.45);z-index:9999;align-items:center;justify-content:center}
   .mini-overlay.show{display:flex}
   .mini-modal{background:#fff;border-radius:14px;width:min(420px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
@@ -1959,7 +1980,7 @@ function _rowHtml(it,i){
   if(isMat){
     const ins=(ed.insList||[]).find(function(x){return x.codigo===it.codigo_catalogo;});
     const nm=it.material||(ins?ins.nombre:'');
-    mid='<input class="ci-cod" data-i="'+i+'" list="compInsList" value="'+escapeHtml(it.codigo_catalogo||'')+'" placeholder="código insumo">'+
+    mid='<div class="ci-codwrap"><input class="ci-cod" data-i="'+i+'" list="compInsList" value="'+escapeHtml(it.codigo_catalogo||'')+'" placeholder="código insumo"><button type="button" class="ci-newins" data-i="'+i+'" title="Crear insumo nuevo">＋</button></div>'+
         '<span class="ci-name" data-i="'+i+'">'+escapeHtml(nm||'')+'</span>';
   } else {
     mid='<input class="ci-mat" data-i="'+i+'" value="'+escapeHtml(it.material||'')+'" placeholder="Ej. Oficial albañil">';
@@ -2047,6 +2068,7 @@ function _bindEditor(){
   right.querySelectorAll('.ci-c2').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); comp.items[i].coef2=_numCoef(el.value); _recalcRow(i); }); });
   right.querySelectorAll('.ci-merma').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); comp.items[i].merma_pct=_numCoef(el.value)/100; _recalcRow(i); }); });
   right.querySelectorAll('.ci-precio').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); if(comp.items[i].tipo!=='insumo'){ comp.items[i].precio_unit=_numInt(el.value); _recalcRow(i); } }); });
+  right.querySelectorAll('.ci-newins').forEach(function(el){ el.addEventListener('click', function(){ openNewInsumo(+el.getAttribute('data-i')); }); });
   right.querySelectorAll('.ci-del').forEach(function(el){ el.addEventListener('click', function(){ const i=+el.getAttribute('data-i'); comp.items[i]._removed=true; renderCompEditor(); }); });
   const nm=document.getElementById('compRubNombre'); if(nm) nm.addEventListener('input', function(){ comp.rubro.nombre=nm.value; });
   const un=document.getElementById('compRubUnidad'); if(un) un.addEventListener('input', function(){ comp.rubro.unidad=un.value; });
@@ -2217,6 +2239,89 @@ async function saveNewRubro(){
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
+
+// ── Nuevo insumo (➕ desde una fila de la composición) ──
+// Código INS-### autogenerado sin colisión · valida duplicado por nombre ·
+// crea producto en productos_catalogo y lo enlaza en insumos (insert defensivo del id).
+function _nextInsCode(){
+  let max=0;
+  (ed.insList||[]).forEach(function(i){ const m=String(i.codigo).match(/^INS-(\d+)$/i); if(m){ const n=parseInt(m[1],10); if(n>max) max=n; } });
+  return 'INS-'+String(max+1).padStart(3,'0');
+}
+function openNewInsumo(rowIdx){
+  comp._newInsForRow = rowIdx;
+  document.getElementById('inCod').value=_nextInsCode();
+  document.getElementById('inNom').value=''; document.getElementById('inUni').value=''; document.getElementById('inPrecio').value='';
+  document.getElementById('inDupWarn').style.display='none';
+  document.getElementById('insOverlay').classList.add('show');
+  setTimeout(function(){ document.getElementById('inNom').focus(); }, 50);
+}
+function closeNewInsumo(){ document.getElementById('insOverlay').classList.remove('show'); }
+function _checkInsDup(){
+  const nom=(document.getElementById('inNom').value||'').trim().toLowerCase();
+  const w=document.getElementById('inDupWarn');
+  if(!nom){ w.style.display='none'; return null; }
+  const hit=(ed.insList||[]).find(function(i){ return String(i.nombre||'').trim().toLowerCase()===nom; });
+  if(hit){ w.style.display='block'; w.innerHTML='Ya existe <b>'+escapeHtml(hit.codigo)+'</b> con ese nombre. Si es el mismo insumo, mejor usá el existente desde el selector.'; return hit; }
+  w.style.display='none'; return null;
+}
+function _applyInsToRow(code, nombre, unidad){
+  const i=comp._newInsForRow;
+  if(i==null || !comp.items[i]) return;
+  comp.items[i].tipo='insumo';
+  comp.items[i].codigo_catalogo=code;
+  comp.items[i].material=nombre||code;
+  if(unidad) comp.items[i].unidad=unidad;
+  comp.items[i].producto_id=null;
+  renderCompEditor();
+}
+async function saveNewInsumo(){
+  const nom=(document.getElementById('inNom').value||'').trim();
+  const uni=(document.getElementById('inUni').value||'').trim();
+  const precio=_numInt(document.getElementById('inPrecio').value);
+  if(!nom){ showToast('Falta el nombre del insumo','error'); return; }
+  if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
+  const dup=(ed.insList||[]).find(function(i){ return String(i.nombre||'').trim().toLowerCase()===nom.toLowerCase(); });
+  if(dup){
+    if(confirm('Ya existe «'+dup.nombre+'» ('+dup.codigo+').\n\n¿Usar el insumo existente en lugar de crear uno nuevo?')){
+      _applyInsToRow(dup.codigo, dup.nombre, dup.unidad); closeNewInsumo(); showToast('Usando '+dup.codigo,'success'); return;
+    }
+  }
+  const btn=document.getElementById('inSave'); const old=btn.textContent; btn.disabled=true; btn.textContent='Creando…';
+  try{
+    // código libre, revalidado contra la base por si el catálogo creció
+    let code=_nextInsCode();
+    for(let g=0; g<60; g++){
+      const chk=await sb.from('insumos').select('codigo').eq('codigo', code).maybeSingle();
+      if(!chk.data) break;
+      const m=code.match(/^INS-(\d+)$/i); const n=(m?parseInt(m[1],10):0)+1; code='INS-'+String(n).padStart(3,'0');
+    }
+    const nowIso=new Date().toISOString();
+    const prodPayload={ nombre:nom, precio_referencia:precio, unidad_medida:uni||null, categoria:'insumo',
+      search_terms: nom.toLowerCase().split(/\s+/).filter(Boolean), activo:true, creado_por:_userTag(),
+      codigo:code, created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
+    let prod=await sb.from('productos_catalogo').insert(prodPayload).select('id').single();
+    if(prod.error){
+      // fallback: id manual si la tabla no autogenera
+      const mx=await sb.from('productos_catalogo').select('id').order('id',{ascending:false}).limit(1).maybeSingle();
+      const nextId=(mx.data && mx.data.id ? Number(mx.data.id) : 0)+1;
+      prod=await sb.from('productos_catalogo').insert(Object.assign({id:nextId}, prodPayload)).select('id').single();
+    }
+    if(prod.error) throw prod.error;
+    const prodId=prod.data.id;
+    const insPayload={ codigo:code, nombre:nom, unidad_compra:uni||null, unidad_base:uni||null,
+      precio_base:precio, moneda:'PYG', producto_id:String(prodId), activo:true };
+    const insR=await sb.from('insumos').insert(insPayload);
+    if(insR.error) throw insR.error;
+    ed.insList=null; await loadInsList(); _fillCompInsDatalist();
+    _applyInsToRow(code, nom, uni);
+    closeNewInsumo();
+    showToast('Insumo «'+code+'» creado', 'success');
+  }catch(e){ console.warn('saveNewInsumo', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+
 document.getElementById('btnComp').addEventListener('click', openComposiciones);
 document.getElementById('compClose').addEventListener('click', closeComposiciones);
 document.getElementById('compSearch').addEventListener('input', function(e){ comp.search=e.target.value; renderCompTree(); });
@@ -2227,6 +2332,11 @@ document.getElementById('crSave').addEventListener('click', saveNewRubro);
 document.getElementById('crCapSel').addEventListener('change', _onCapSelChange);
 document.getElementById('crCapCod').addEventListener('input', _recalcRubCode);
 document.getElementById('compRubOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewRubro(); });
+document.getElementById('inClose').addEventListener('click', closeNewInsumo);
+document.getElementById('inCancel').addEventListener('click', closeNewInsumo);
+document.getElementById('inSave').addEventListener('click', saveNewInsumo);
+document.getElementById('inNom').addEventListener('input', _checkInsDup);
+document.getElementById('insOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewInsumo(); });
 
 
 // ── Pestañas Presupuestos / Reporte ──
