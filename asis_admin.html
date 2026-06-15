@@ -73,6 +73,12 @@
   .modal-card input,.modal-card select{width:100%;padding:11px;border:1.5px solid var(--line);border-radius:10px;font-family:inherit;font-size:14px;outline:none}
   .modal-card input:focus,.modal-card select:focus{border-color:var(--cyan)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .obras-check{max-height:150px;overflow-y:auto;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:2px}
+  .obras-check label{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:500;color:var(--ink);text-transform:none;letter-spacing:0;margin:6px 0;cursor:pointer}
+  .obras-check input{width:auto;margin:0}
+  .obras-check.dis{opacity:.45;pointer-events:none}
+  .todas-row{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--cyan);text-transform:none;letter-spacing:0;margin:2px 0 6px;cursor:pointer}
+  .todas-row input{width:auto;margin:0}
   .gps-btn{background:var(--cyan);color:#fff;border:none;padding:11px;border-radius:10px;font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;width:100%;margin-top:8px}
   .modal-foot{display:flex;gap:10px;margin-top:20px}
   .modal-foot button{flex:1;padding:13px;border:none;border-radius:10px;font-family:inherit;font-weight:600;font-size:14px;cursor:pointer}
@@ -184,7 +190,9 @@
       <div><label>Área</label><input id="e_area" placeholder="Obra"></div>
     </div>
     <label>Supervisor</label><input id="e_supervisor">
-    <label>Obra asignada</label><select id="e_ubicacion"></select>
+    <label>Obras asignadas * <small style="color:var(--muted);text-transform:none;letter-spacing:0">— dónde puede marcar</small></label>
+    <label class="todas-row"><input type="checkbox" id="e_todas"> Todas las obras (incluye las futuras)</label>
+    <div class="obras-check" id="e_obras_list"></div>
     <div class="grid2">
       <div><label>Fecha de ingreso</label><input id="e_ingreso" type="date"></div>
       <div><label>Estado</label><select id="e_activo"><option value="true">Activo</option><option value="false">Inactivo</option></select></div>
@@ -308,8 +316,16 @@ document.querySelectorAll('.tab').forEach(t=>{
 async function cargarObras(){
   const { data } = await sb.from('asis_ubicaciones').select('id,nombre').eq('activo',true).order('nombre');
   obrasCache = data || [];
-  const sel = document.getElementById('e_ubicacion');
-  sel.innerHTML = '<option value="">Sin asignar</option>' + obrasCache.map(o=>`<option value="${o.id}">${o.nombre}</option>`).join('');
+}
+function renderObrasAsignadas(selectedIds){
+  const cont = document.getElementById('e_obras_list');
+  const sel = new Set(selectedIds||[]);
+  if(!obrasCache.length){ cont.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px">No hay obras geocercadas todavía. Cargalas en la pestaña Obras.</div>'; return; }
+  cont.innerHTML = obrasCache.map(o=>`<label><input type="checkbox" class="e_obra_chk" value="${o.id}" ${sel.has(o.id)?'checked':''}> ${o.nombre}</label>`).join('');
+}
+function toggleTodas(){
+  const todas = document.getElementById('e_todas').checked;
+  document.getElementById('e_obras_list').classList.toggle('dis', todas);
 }
 async function cargarObrasTabla(){
   const tb = document.getElementById('obraBody');
@@ -388,26 +404,33 @@ async function cargarEmpleados(){
   const tb = document.getElementById('empBody');
   tb.innerHTML = '<tr><td colspan="6" class="empty">Cargando…</td></tr>';
   const { data, error } = await sb.from('asis_empleados')
-    .select('*, asis_ubicaciones(nombre)').order('nombre');
+    .select('*, asis_empleado_obras(ubicacion_id)').order('nombre');
   if(error || !data || !data.length){ tb.innerHTML = '<tr><td colspan="6" class="empty">Sin empleados cargados</td></tr>'; return; }
-  tb.innerHTML = data.map(e=>`
+  tb.innerHTML = data.map(e=>{
+    const obras = e.todas_obras ? '<b style="color:var(--cyan)">Todas</b>'
+                : (e.asis_empleado_obras && e.asis_empleado_obras.length)
+                  ? `${e.asis_empleado_obras.length} obra(s)`
+                  : '<span style="color:var(--muted)">Sin asignar</span>';
+    return `
     <tr>
       <td>${e.codigo}</td><td><b>${e.nombre}</b></td><td>${e.cargo||'—'}</td>
-      <td>${e.asis_ubicaciones?e.asis_ubicaciones.nombre:'<span style="color:var(--muted)">Sin asignar</span>'}</td>
+      <td>${obras}</td>
       <td><span class="pill ${e.activo?'on':'off'}">${e.activo?'Activo':'Inactivo'}</span></td>
       <td><span class="row-act" onclick='editarEmp(${JSON.stringify(e)})'>Editar</span></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 function nuevoEmp(){
   editEmpId = null;
   document.getElementById('empTitle').textContent = 'Nuevo empleado';
   ['e_codigo','e_pin','e_cedula','e_telefono','e_cargo','e_area','e_supervisor','e_ingreso'].forEach(id=>document.getElementById(id).value='');
   llenarSelectResid();
-  document.getElementById('e_ubicacion').value='';
+  document.getElementById('e_todas').checked = false;
+  renderObrasAsignadas([]); toggleTodas();
   document.getElementById('e_activo').value='true';
   abrirModal('modalEmp');
 }
-function editarEmp(e){
+async function editarEmp(e){
   editEmpId = e.id;
   document.getElementById('empTitle').textContent = 'Editar empleado';
   document.getElementById('e_codigo').value = e.codigo;
@@ -420,15 +443,20 @@ function editarEmp(e){
   document.getElementById('e_area').value = e.area||'';
   document.getElementById('e_supervisor').value = e.supervisor||'';
   document.getElementById('e_ingreso').value = e.fecha_ingreso||'';
-  document.getElementById('e_ubicacion').value = e.ubicacion_id||'';
   document.getElementById('e_activo').value = String(e.activo);
+  document.getElementById('e_todas').checked = !!e.todas_obras;
   abrirModal('modalEmp');
+  renderObrasAsignadas([]); toggleTodas();
+  const { data:asg } = await sb.from('asis_empleado_obras').select('ubicacion_id').eq('empleado_id', e.id);
+  renderObrasAsignadas((asg||[]).map(a=>a.ubicacion_id)); toggleTodas();
 }
 async function guardarEmp(){
   const pin = document.getElementById('e_pin').value.trim();
   const nombre = document.getElementById('e_nombre').value.trim();
   let codigo = document.getElementById('e_codigo').value.trim();
   if(!codigo && nombre) codigo = 'RES-'+slug(nombre);
+  const todas = document.getElementById('e_todas').checked;
+  const obrasSel = Array.from(document.querySelectorAll('.e_obra_chk:checked')).map(c=>c.value);
   const payload = {
     codigo: codigo,
     nombre: nombre,
@@ -439,16 +467,31 @@ async function guardarEmp(){
     area: document.getElementById('e_area').value.trim()||null,
     supervisor: document.getElementById('e_supervisor').value.trim()||null,
     fecha_ingreso: document.getElementById('e_ingreso').value||null,
-    ubicacion_id: document.getElementById('e_ubicacion').value||null,
+    todas_obras: todas,
     activo: document.getElementById('e_activo').value==='true'
   };
   if(!payload.codigo||!payload.nombre||pin.length!==4){
     alert('Código, nombre y PIN de 4 dígitos son obligatorios.'); return;
   }
-  let res;
-  if(editEmpId) res = await sb.from('asis_empleados').update(payload).eq('id',editEmpId);
-  else res = await sb.from('asis_empleados').insert(payload);
-  if(res.error){ alert('Error: '+res.error.message); return; }
+  if(!todas && obrasSel.length===0){
+    alert('Asigná al menos una obra, o marcá "Todas las obras".'); return;
+  }
+  let empId = editEmpId;
+  if(editEmpId){
+    const res = await sb.from('asis_empleados').update(payload).eq('id',editEmpId);
+    if(res.error){ alert('Error: '+res.error.message); return; }
+  } else {
+    const res = await sb.from('asis_empleados').insert(payload).select('id').single();
+    if(res.error){ alert('Error: '+res.error.message); return; }
+    empId = res.data.id;
+  }
+  // Sincronizar obras asignadas (se reemplazan)
+  await sb.from('asis_empleado_obras').delete().eq('empleado_id', empId);
+  if(!todas && obrasSel.length){
+    const rows = obrasSel.map(uid=>({ empleado_id: empId, ubicacion_id: uid }));
+    const ins = await sb.from('asis_empleado_obras').insert(rows);
+    if(ins.error){ alert('Empleado guardado, pero hubo un error asignando obras: '+ins.error.message); }
+  }
   cerrarModal('modalEmp'); cargarEmpleados();
 }
 
@@ -501,6 +544,7 @@ document.getElementById('useGps').onclick = usarGps;
 document.getElementById('refreshMarc').onclick = cargarMarcaciones;
 document.getElementById('filtroFecha').onchange = cargarMarcaciones;
 document.getElementById('filtroTipo').onchange = cargarMarcaciones;
+document.getElementById('e_todas').addEventListener('change', toggleTodas);
 document.getElementById('e_pin').addEventListener('input',e=>{ e.target.value=e.target.value.replace(/\D/g,''); });
 document.getElementById('e_nombre').addEventListener('change',e=>{
   const c=document.getElementById('e_codigo'); if(!c.value.trim() && e.target.value) c.value='RES-'+slug(e.target.value);
