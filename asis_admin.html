@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
 <style>
   :root{
     --navy:#0A1A29; --navy2:#13283c; --orange:#EE992F; --cyan:#0EA5E9;
@@ -81,6 +82,10 @@
   .obras-check.dis{opacity:.45;pointer-events:none}
   .todas-row{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--cyan);text-transform:none;letter-spacing:0;margin:2px 0 6px;cursor:pointer}
   .todas-row input{width:auto;margin:0}
+  .ref-row{display:flex;gap:12px;align-items:center;margin-top:4px}
+  .ref-img{width:64px;height:64px;border-radius:10px;object-fit:cover;border:1.5px solid var(--line);background:#f0f5f9}
+  .ref-btn{background:#eef2f6;border:1.5px solid var(--line);border-radius:9px;padding:10px 14px;font-family:inherit;font-weight:600;font-size:13px;cursor:pointer}
+  .ref-status{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.4}
   .gps-btn{background:var(--cyan);color:#fff;border:none;padding:11px;border-radius:10px;font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;width:100%;margin-top:8px}
   .map-search{display:flex;gap:8px;margin-top:10px}
   .map-search input{flex:1;padding:11px;border:1.5px solid var(--line);border-radius:10px;font-family:inherit;font-size:14px;outline:none}
@@ -172,7 +177,7 @@
       <select id="filtroTipo"><option value="">Todos los tipos</option><option value="entrada">Entrada</option><option value="salida">Salida</option></select>
     </div>
     <table>
-      <thead><tr><th>Hora</th><th>Empleado</th><th>Obra</th><th>Tipo</th><th>Distancia</th><th>Geocerca</th><th>Foto</th></tr></thead>
+      <thead><tr><th>Hora</th><th>Empleado</th><th>Obra</th><th>Tipo</th><th>Distancia</th><th>Geocerca</th><th>Rostro</th><th>Foto</th></tr></thead>
       <tbody id="marcBody"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
     </table>
   </div>
@@ -197,6 +202,15 @@
       <div><label>Área</label><input id="e_area" placeholder="Obra"></div>
     </div>
     <label>Supervisor</label><input id="e_supervisor">
+    <label>Foto de referencia <small style="color:var(--muted);text-transform:none;letter-spacing:0">— para verificación facial (opcional)</small></label>
+    <div class="ref-row">
+      <img id="e_ref_preview" class="ref-img" alt="">
+      <div style="flex:1">
+        <input type="file" id="e_ref_file" accept="image/*" capture="user" style="display:none">
+        <button type="button" class="ref-btn" id="e_ref_btn">📷 Subir / tomar foto</button>
+        <div class="ref-status" id="e_ref_status">Sin foto de referencia</div>
+      </div>
+    </div>
     <label>Obras asignadas * <small style="color:var(--muted);text-transform:none;letter-spacing:0">— dónde puede marcar</small></label>
     <label class="todas-row"><input type="checkbox" id="e_todas"> Todas las obras (incluye las futuras)</label>
     <div class="obras-check" id="e_obras_list"></div>
@@ -271,6 +285,38 @@ if(window.L){
 }
 
 function slug(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]/g,'').toUpperCase().slice(0,12); }
+
+/* ---------- Reconocimiento facial (face-api.js) ---------- */
+let refDescriptor = null, refFotoFile = null, editEmpFotoRef = null, faceReady = false;
+const FACE_MODELS = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+async function loadFace(){
+  if(faceReady) return;
+  await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODELS);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODELS);
+  await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODELS);
+  faceReady = true;
+}
+async function descriptorDe(el){
+  const det = await faceapi.detectSingleFace(el, new faceapi.TinyFaceDetectorOptions({ inputSize:416 }))
+    .withFaceLandmarks().withFaceDescriptor();
+  return det ? Array.from(det.descriptor) : null;
+}
+async function onRefFile(e){
+  const f = e.target.files[0]; if(!f) return;
+  refFotoFile = f; refDescriptor = null;
+  const st = document.getElementById('e_ref_status');
+  const img = document.getElementById('e_ref_preview');
+  img.src = URL.createObjectURL(f);
+  st.textContent = 'Analizando rostro…';
+  try{
+    await loadFace();
+    await img.decode();
+    const d = await descriptorDe(img);
+    if(!d){ st.textContent = '⚠ No se detectó un rostro claro. Probá otra foto (cara de frente, buena luz).'; return; }
+    refDescriptor = d;
+    st.textContent = '✓ Rostro detectado. Se guarda al guardar el empleado.';
+  }catch(err){ st.textContent = 'Error al analizar la foto: ' + (err.message||err); }
+}
 
 /* ---------- AUTH ---------- */
 async function checkSession(){
@@ -499,12 +545,15 @@ async function cargarEmpleados(){
                 : (e.asis_empleado_obras && e.asis_empleado_obras.length)
                   ? `${e.asis_empleado_obras.length} obra(s)`
                   : '<span style="color:var(--muted)">Sin asignar</span>';
+    const rostro = e.face_descriptor ? ' 📷' : '';
+    const ej = { ...e, tiene_rostro: !!e.face_descriptor };
+    delete ej.face_descriptor; delete ej.asis_empleado_obras;
     return `
     <tr>
-      <td>${e.codigo}</td><td><b>${e.nombre}</b></td><td>${e.cargo||'—'}</td>
+      <td>${e.codigo}</td><td><b>${e.nombre}</b>${rostro}</td><td>${e.cargo||'—'}</td>
       <td>${obras}</td>
       <td><span class="pill ${e.activo?'on':'off'}">${e.activo?'Activo':'Inactivo'}</span></td>
-      <td><span class="row-act" onclick='editarEmp(${JSON.stringify(e)})'>Editar</span></td>
+      <td><span class="row-act" onclick='editarEmp(${JSON.stringify(ej)})'>Editar</span></td>
     </tr>`;
   }).join('');
 }
@@ -515,6 +564,10 @@ function nuevoEmp(){
   llenarSelectResid();
   document.getElementById('e_todas').checked = false;
   renderObrasAsignadas([]); toggleTodas();
+  refFotoFile = null; refDescriptor = null; editEmpFotoRef = null;
+  document.getElementById('e_ref_preview').src = '';
+  document.getElementById('e_ref_file').value = '';
+  document.getElementById('e_ref_status').textContent = 'Sin foto de referencia';
   document.getElementById('e_activo').value='true';
   abrirModal('modalEmp');
 }
@@ -533,6 +586,12 @@ async function editarEmp(e){
   document.getElementById('e_ingreso').value = e.fecha_ingreso||'';
   document.getElementById('e_activo').value = String(e.activo);
   document.getElementById('e_todas').checked = !!e.todas_obras;
+  refFotoFile = null; refDescriptor = null; editEmpFotoRef = e.foto_ref_url || null;
+  document.getElementById('e_ref_file').value = '';
+  document.getElementById('e_ref_preview').src = e.foto_ref_url || '';
+  document.getElementById('e_ref_status').textContent = (e.face_descriptor || e.tiene_rostro)
+    ? '✓ Tiene rostro de referencia. Subí otra foto solo si querés cambiarlo.'
+    : 'Sin foto de referencia';
   abrirModal('modalEmp');
   renderObrasAsignadas([]); toggleTodas();
   const { data:asg } = await sb.from('asis_empleado_obras').select('ubicacion_id').eq('empleado_id', e.id);
@@ -563,6 +622,17 @@ async function guardarEmp(){
   }
   if(!todas && obrasSel.length===0){
     alert('Asigná al menos una obra, o marcá "Todas las obras".'); return;
+  }
+  // Foto de referencia: si subieron una nueva con rostro detectado, la subimos
+  if(refFotoFile && refDescriptor){
+    const path = `referencias/${codigo}_${Date.now()}.jpg`;
+    const up = await sb.storage.from('asistencia-fotos').upload(path, refFotoFile, { contentType: refFotoFile.type || 'image/jpeg', upsert:true });
+    if(up.error){ alert('No se pudo subir la foto de referencia: '+up.error.message); return; }
+    payload.foto_ref_url = sb.storage.from('asistencia-fotos').getPublicUrl(path).data.publicUrl;
+    payload.face_descriptor = JSON.stringify(refDescriptor);
+  } else if(editEmpId && editEmpFotoRef){
+    // mantener la existente (no se toca face_descriptor)
+    payload.foto_ref_url = editEmpFotoRef;
   }
   let empId = editEmpId;
   if(editEmpId){
@@ -597,24 +667,27 @@ async function cargarMarcaciones(){
   const desde = fecha+'T00:00:00';
   const hasta = fecha+'T23:59:59';
   let q = sb.from('asis_marcaciones')
-    .select('id,tipo,marcado_at,distancia_metros,dentro_geocerca,foto_url, asis_empleados(nombre,codigo), asis_ubicaciones(nombre)')
+    .select('id,tipo,marcado_at,distancia_metros,dentro_geocerca,rostro_verificado,foto_url, asis_empleados(nombre,codigo), asis_ubicaciones(nombre)')
     .gte('marcado_at',desde).lte('marcado_at',hasta).order('marcado_at',{ascending:false});
   if(tipo) q = q.eq('tipo',tipo);
   const { data, error } = await q;
-  if(error){ tb.innerHTML = `<tr><td colspan="7" class="empty">Error: ${error.message}</td></tr>`; return; }
-  if(!data || !data.length){ tb.innerHTML = '<tr><td colspan="7" class="empty">Sin marcaciones para esta fecha</td></tr>'; return; }
+  if(error){ tb.innerHTML = `<tr><td colspan="8" class="empty">Error: ${error.message}</td></tr>`; return; }
+  if(!data || !data.length){ tb.innerHTML = '<tr><td colspan="8" class="empty">Sin marcaciones para esta fecha</td></tr>'; return; }
   tb.innerHTML = data.map(m=>{
     const h = new Date(m.marcado_at).toLocaleTimeString('es-PY',{hour:'2-digit',minute:'2-digit'});
     const dist = (m.distancia_metros!=null)? Math.round(m.distancia_metros)+' m' : '—';
     const geo = m.dentro_geocerca===true ? '<span class="geo-ok">✓ Dentro</span>'
               : m.dentro_geocerca===false ? '<span class="geo-bad">✗ Fuera</span>' : '—';
+    const rostro = m.rostro_verificado===true ? '<span class="geo-ok">✓ Coincide</span>'
+                 : m.rostro_verificado===false ? '<span class="geo-bad">⚠ Revisar</span>'
+                 : '<span style="color:var(--muted)">—</span>';
     const foto = m.foto_url ? `<img class="thumb" src="${m.foto_url}" onclick="verFoto('${m.foto_url}')">` : '—';
     return `<tr>
       <td><b>${h}</b></td>
       <td>${m.asis_empleados?m.asis_empleados.nombre:'?'}<br><small style="color:var(--muted)">${m.asis_empleados?m.asis_empleados.codigo:''}</small></td>
       <td>${m.asis_ubicaciones?m.asis_ubicaciones.nombre:'—'}</td>
       <td><span class="pill ${m.tipo==='entrada'?'in':'out'}">${m.tipo}</span></td>
-      <td>${dist}</td><td>${geo}</td><td>${foto}</td>
+      <td>${dist}</td><td>${geo}</td><td>${rostro}</td><td>${foto}</td>
     </tr>`;
   }).join('');
 }
@@ -639,6 +712,8 @@ document.getElementById('refreshMarc').onclick = cargarMarcaciones;
 document.getElementById('filtroFecha').onchange = cargarMarcaciones;
 document.getElementById('filtroTipo').onchange = cargarMarcaciones;
 document.getElementById('e_todas').addEventListener('change', toggleTodas);
+document.getElementById('e_ref_btn').onclick = () => document.getElementById('e_ref_file').click();
+document.getElementById('e_ref_file').addEventListener('change', onRefFile);
 document.getElementById('e_pin').addEventListener('input',e=>{ e.target.value=e.target.value.replace(/\D/g,''); });
 document.getElementById('e_nombre').addEventListener('change',e=>{
   const c=document.getElementById('e_codigo'); if(!c.value.trim() && e.target.value) c.value='RES-'+slug(e.target.value);
