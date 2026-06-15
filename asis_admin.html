@@ -384,18 +384,34 @@ async function guardarObra(){
     alert('Completá código, nombre y coordenadas.'); return;
   }
   let res;
-  if(editObraId) res = await sb.from('asis_ubicaciones').update(payload).eq('id',editObraId);
-  else res = await sb.from('asis_ubicaciones').insert(payload);
+  if(editObraId) res = await sb.from('asis_ubicaciones').update(payload).eq('id',editObraId).select();
+  else res = await sb.from('asis_ubicaciones').insert(payload).select();
   if(res.error){ alert('Error: '+res.error.message); return; }
+  if(!res.data || !res.data.length){
+    alert('No se pudo guardar la obra. Falta permiso de escritura (RLS).\nCorré el archivo asis_permisos_admin.sql en Supabase y volvé a intentar.');
+    return;
+  }
   cerrarModal('modalObra'); cargarObrasTabla(); cargarObras();
 }
 function usarGps(){
-  if(!navigator.geolocation){ alert('GPS no disponible'); return; }
+  if(!navigator.geolocation){ alert('Este navegador no soporta ubicación.'); return; }
+  const btn = document.getElementById('useGps');
+  const txt = btn.textContent; btn.textContent = 'Obteniendo ubicación…'; btn.disabled = true;
   navigator.geolocation.getCurrentPosition(
-    p=>{ document.getElementById('o_lat').value = p.coords.latitude.toFixed(6);
-         document.getElementById('o_lng').value = p.coords.longitude.toFixed(6); },
-    ()=>alert('No se pudo obtener la ubicación. Permití el GPS.'),
-    { enableHighAccuracy:true, timeout:10000 }
+    p=>{
+      document.getElementById('o_lat').value = p.coords.latitude.toFixed(6);
+      document.getElementById('o_lng').value = p.coords.longitude.toFixed(6);
+      btn.textContent = txt; btn.disabled = false;
+    },
+    err=>{
+      let m;
+      if(err.code===1) m='Permiso de ubicación BLOQUEADO. Tocá el ícono de la izquierda de la barra de direcciones → Ubicación → Permitir, recargá y probá de nuevo.';
+      else if(err.code===2) m='Ubicación no disponible. En una PC no hay GPS: escribí Latitud y Longitud a mano (sacalas de Google Maps con clic derecho sobre el punto).';
+      else m='Tardó demasiado en responder. Probá otra vez, o ingresá las coordenadas a mano desde Google Maps.';
+      alert(m);
+      btn.textContent = txt; btn.disabled = false;
+    },
+    { enableHighAccuracy:true, timeout:10000, maximumAge:0 }
   );
 }
 
@@ -478,8 +494,12 @@ async function guardarEmp(){
   }
   let empId = editEmpId;
   if(editEmpId){
-    const res = await sb.from('asis_empleados').update(payload).eq('id',editEmpId);
+    const res = await sb.from('asis_empleados').update(payload).eq('id',editEmpId).select();
     if(res.error){ alert('Error: '+res.error.message); return; }
+    if(!res.data || !res.data.length){
+      alert('No se pudo guardar el empleado. Falta permiso de escritura (RLS).\nCorré asis_permisos_admin.sql en Supabase y reintentá.');
+      return;
+    }
   } else {
     const res = await sb.from('asis_empleados').insert(payload).select('id').single();
     if(res.error){ alert('Error: '+res.error.message); return; }
