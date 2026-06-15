@@ -163,6 +163,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
 <script>
 /* =====================================================================
    CONFIG  —  pegá la misma URL y anon key que usás en tus otros archivos AXC
@@ -214,6 +215,11 @@ async function cargarMisObras(){
       return;
     }
     saludo.className='saludo'; saludo.textContent = `Hola ${data.empleado} 👋 elegí tu obra y marcá`;
+    empDescriptor = null;
+    if(data.face_descriptor){
+      try{ empDescriptor = new Float32Array(JSON.parse(data.face_descriptor)); }catch(_){ empDescriptor = null; }
+      loadFace().catch(()=>{});  // precargar modelos en segundo plano
+    }
     sel.disabled = false;
     sel.innerHTML = '<option value="">Seleccioná tu obra…</option>' +
       obras.map(o => `<option value="${o.id}">${o.nombre}</option>`).join('');
@@ -234,6 +240,24 @@ function habilitarMarca(on){
 let pendiente = null;   // 'entrada' | 'salida'
 let stream = null;
 let fotoBlob = null;
+let posCache = null;    // GPS ya verificado al abrir la cámara
+let empDescriptor = null;  // descriptor facial de referencia del empleado
+let faceReady = false;
+const FACE_MODELS = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+const FACE_THRESHOLD = 0.6;  // distancia máxima para considerar "coincide"
+
+async function loadFace(){
+  if(faceReady || !window.faceapi) return;
+  await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODELS);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODELS);
+  await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODELS);
+  faceReady = true;
+}
+async function descriptorDe(el){
+  const det = await faceapi.detectSingleFace(el, new faceapi.TinyFaceDetectorOptions({ inputSize:416 }))
+    .withFaceLandmarks().withFaceDescriptor();
+  return det ? det.descriptor : null;
+}
 
 /* ---------- Validación previa ---------- */
 function validar(){
@@ -250,6 +274,38 @@ function validar(){
 async function abrirCamara(tipo){
   const err = validar();
   if(err){ mostrarResultado('err','Faltan datos', err); return; }
+  const obra = document.getElementById('obra').value;
+
+  // 1) Obtener GPS
+  loader(true,'Verificando tu ubicación…');
+  const pos = await obtenerGPS();
+  if(pos.lat == null){
+    loader(false);
+    mostrarResultado('err','Sin ubicación','No se pudo obtener tu GPS. Activá la ubicación del celular y permití el acceso, luego intentá de nuevo.');
+    return;
+  }
+
+  // 2) Pre-chequear geocerca ANTES de abrir la cámara
+  try{
+    const { data, error } = await sb.rpc('asis_verificar_geocerca', { p_ubicacion: obra, p_lat: pos.lat, p_lng: pos.lng });
+    loader(false);
+    if(error){ mostrarResultado('err','Error', error.message || 'No se pudo verificar.'); return; }
+    if(!data || !data.ok){ mostrarResultado('err','No disponible', (data && data.msg) || 'No se pudo verificar la ubicación.'); return; }
+    if(!data.dentro){
+      const detalle = data.distancia!=null
+        ? `Estás a ${data.distancia} m de la obra. El máximo permitido es ${data.radio} m.`
+        : 'No se pudo confirmar tu ubicación.';
+      mostrarResultado('warn','Fuera de rango — no se puede marcar', detalle + '<br><br>Acercate a la obra e intentá de nuevo.');
+      return;
+    }
+  }catch(e){
+    loader(false);
+    mostrarResultado('err','Error','No se pudo verificar la ubicación. Intentá de nuevo.');
+    return;
+  }
+
+  // 3) Dentro del rango → guardar posición y abrir cámara
+  posCache = pos;
   pendiente = tipo;
   fotoBlob = null;
   document.getElementById('camTipo').textContent = tipo === 'entrada' ? 'Marcando entrada' : 'Marcando salida';
@@ -279,8 +335,7 @@ function capturar(){
   const c = document.getElementById('snap');
   c.width = v.videoWidth; c.height = v.videoHeight;
   const ctx = c.getContext('2d');
-  // Espejar para que la selfie se vea natural
-  ctx.translate(c.width,0); ctx.scale(-1,1);
+  // Sin espejar: la imagen real sirve para comparar el rostro
   ctx.drawImage(v,0,0,c.width,c.height);
   c.toBlob(b => { fotoBlob = b; }, 'image/jpeg', 0.7);
   v.style.display='none'; c.style.display='block';
@@ -315,12 +370,11 @@ async function confirmar(){
   const codigo = document.getElementById('codigo').value.trim();
   const pin    = document.getElementById('pin').value.trim();
   cerrarCamara();
-  loader(true,'Obteniendo ubicación…');
+  loader(true,'Subiendo foto…');
 
   try{
-    const pos = await obtenerGPS();
+    const pos = posCache || await obtenerGPS();
 
-    loader(true,'Subiendo foto…');
     const path = `${codigo}/${Date.now()}.jpg`;
     const up = await sb.storage.from(BUCKET).upload(path, fotoBlob, { contentType:'image/jpeg' });
     let fotoUrl = null;
@@ -329,10 +383,28 @@ async function confirmar(){
     }
 
     loader(true,'Registrando marcación…');
+
+    // Verificación facial (aviso, no bloquea)
+    let rostroOk = null, rostroDist = null;
+    if(empDescriptor){
+      loader(true,'Verificando rostro…');
+      try{
+        await loadFace();
+        const dSel = await descriptorDe(document.getElementById('snap'));
+        if(dSel){
+          rostroDist = faceapi.euclideanDistance(empDescriptor, dSel);
+          rostroOk = rostroDist <= FACE_THRESHOLD;
+        }
+      }catch(_){ /* si falla, queda sin verificar */ }
+      loader(true,'Registrando marcación…');
+    }
+
     const { data, error } = await sb.rpc('asis_marcar', {
       p_codigo: codigo, p_pin: pin, p_ubicacion: obra, p_tipo: tipo,
       p_lat: pos.lat, p_lng: pos.lng, p_foto_url: fotoUrl,
-      p_dispositivo: navigator.userAgent.slice(0,180)
+      p_dispositivo: navigator.userAgent.slice(0,180),
+      p_rostro_verificado: rostroOk,
+      p_rostro_distancia: (rostroDist!=null ? Number(rostroDist.toFixed(3)) : null)
     });
     loader(false);
 
@@ -341,7 +413,8 @@ async function confirmar(){
 
     // Éxito
     const dentro = data.dentro;
-    const estado = dentro === false ? 'warn' : 'ok';
+    const rostro = data.rostro;  // true / false / null
+    const estado = (dentro === false || rostro === false) ? 'warn' : 'ok';
     const titulo = tipo === 'entrada' ? 'Entrada registrada' : 'Salida registrada';
     let detalle = `<div class="rrow"><span>Empleado</span><span>${data.empleado}</span></div>`;
     detalle += `<div class="rrow"><span>Obra</span><span>${data.obra}</span></div>`;
@@ -350,7 +423,13 @@ async function confirmar(){
       detalle += `<div class="rrow"><span>Distancia a la obra</span><span>${data.distancia} m</span></div>`;
       detalle += `<div class="rrow"><span>Geocerca</span><span>${dentro ? '✅ Dentro' : '⚠️ Fuera de rango'}</span></div>`;
     }
-    mostrarResultado(estado, titulo, dentro===false ? 'Marcaste fuera del radio de la obra.' : '¡Listo!', detalle);
+    if(rostro !== null && rostro !== undefined){
+      detalle += `<div class="rrow"><span>Rostro</span><span>${rostro ? '✅ Coincide' : '⚠️ No coincide'}</span></div>`;
+    }
+    const sub = rostro === false
+      ? 'El rostro no coincide con la foto de referencia. La marcación quedó registrada para revisión.'
+      : '¡Listo!';
+    mostrarResultado(estado, titulo, sub, detalle);
 
     // Limpiar PIN y obras por seguridad (re-cargar para la próxima marca)
     document.getElementById('pin').value = '';
@@ -390,6 +469,7 @@ function resetObras(){
   const sel = document.getElementById('obra');
   sel.disabled = true; sel.innerHTML = '<option value="">Primero cargá tus obras…</option>';
   document.getElementById('saludo').textContent = '';
+  empDescriptor = null;
   habilitarMarca(false);
 }
 document.getElementById('codigo').addEventListener('input', resetObras);
