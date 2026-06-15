@@ -112,6 +112,7 @@
     </div>
     <div>
       <span class="user" id="whoami"></span>
+      <a class="logout" href="index.html" style="text-decoration:none">← Portal</a>
       <a class="logout" href="asis_dashboard.html" style="text-decoration:none">📊 Dashboard</a>
       <button class="logout" id="logoutBtn">Salir</button>
     </div>
@@ -172,7 +173,8 @@
       <div><label>Código *</label><input id="e_codigo" placeholder="EMP-003"></div>
       <div><label>PIN (4 dígitos) *</label><input id="e_pin" maxlength="4" inputmode="numeric" placeholder="0000"></div>
     </div>
-    <label>Nombre completo *</label><input id="e_nombre" placeholder="Nombre y apellido">
+    <label>Nombre completo * <small style="color:var(--muted);text-transform:none;letter-spacing:0">— desde Residentes de Planificación</small></label>
+    <select id="e_nombre"><option value="">Elegí un residente…</option></select>
     <div class="grid2">
       <div><label>Cédula</label><input id="e_cedula"></div>
       <div><label>Teléfono</label><input id="e_telefono" placeholder="0981..."></div>
@@ -202,7 +204,8 @@
       <div><label>Código *</label><input id="o_codigo" placeholder="OBR-003"></div>
       <div><label>Estado</label><select id="o_activo"><option value="true">Activa</option><option value="false">Inactiva</option></select></div>
     </div>
-    <label>Nombre *</label><input id="o_nombre">
+    <label>Nombre * <small style="color:var(--muted);text-transform:none;letter-spacing:0">— desde Obras de Planificación</small></label>
+    <select id="o_nombre"><option value="">Elegí una obra…</option></select>
     <div class="grid2">
       <div><label>Cliente</label><input id="o_cliente"></div>
       <div><label>Responsable</label><input id="o_responsable"></div>
@@ -233,7 +236,9 @@ const SUPABASE_URL  = "https://zvucnezwhgfgupasgqnd.supabase.co";
 const SUPABASE_ANON = "PEGAR_AQUI_TU_ANON_KEY";   // <-- clave pública (anon)
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
-let editEmpId = null, editObraId = null, obrasCache = [];
+let editEmpId = null, editObraId = null, obrasCache = [], listasObras = [], listasResid = [];
+
+function slug(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]/g,'').toUpperCase().slice(0,12); }
 
 /* ---------- AUTH ---------- */
 async function checkSession(){
@@ -253,9 +258,31 @@ function entrarApp(email){
   document.getElementById('loginView').style.display = 'none';
   document.getElementById('appView').classList.add('on');
   document.getElementById('whoami').textContent = email;
-  cargarObras(); cargarEmpleados(); document.getElementById('filtroFecha').value = hoyISO();
+  cargarObras(); cargarEmpleados(); cargarListas(); document.getElementById('filtroFecha').value = hoyISO();
 }
 async function logout(){ await sb.auth.signOut(); location.reload(); }
+
+/* ---------- LISTAS DE PLANIFICACIÓN (tabla compartida `listas`) ---------- */
+async function cargarListas(){
+  const { data, error } = await sb.from('listas').select('tipo,valor,activo').in('tipo',['obras','residentes']).order('valor');
+  if(error){ console.error('listas:', error.message); return; }
+  const act = (data||[]).filter(r=>r.activo!==false);
+  listasObras = act.filter(r=>r.tipo==='obras').map(r=>r.valor);
+  listasResid = act.filter(r=>r.tipo==='residentes').map(r=>r.valor);
+  llenarSelectObras(); llenarSelectResid();
+}
+function llenarSelectObras(extra){
+  const sel = document.getElementById('o_nombre');
+  let opts = listasObras.slice();
+  if(extra && !opts.includes(extra)) opts.unshift(extra);
+  sel.innerHTML = '<option value="">Elegí una obra…</option>' + opts.map(v=>`<option>${v}</option>`).join('');
+}
+function llenarSelectResid(extra){
+  const sel = document.getElementById('e_nombre');
+  let opts = listasResid.slice();
+  if(extra && !opts.includes(extra)) opts.unshift(extra);
+  sel.innerHTML = '<option value="">Elegí un residente…</option>' + opts.map(v=>`<option>${v}</option>`).join('');
+}
 
 /* ---------- TABS ---------- */
 document.querySelectorAll('.tab').forEach(t=>{
@@ -293,7 +320,8 @@ async function cargarObrasTabla(){
 function nuevaObra(){
   editObraId = null;
   document.getElementById('obraTitle').textContent = 'Nueva obra';
-  ['o_codigo','o_nombre','o_cliente','o_responsable','o_direccion','o_lat','o_lng'].forEach(id=>document.getElementById(id).value='');
+  ['o_codigo','o_cliente','o_responsable','o_direccion','o_lat','o_lng'].forEach(id=>document.getElementById(id).value='');
+  llenarSelectObras();
   document.getElementById('o_radio').value = '50';
   document.getElementById('o_activo').value = 'true';
   abrirModal('modalObra');
@@ -302,6 +330,7 @@ function editarObra(o){
   editObraId = o.id;
   document.getElementById('obraTitle').textContent = 'Editar obra';
   document.getElementById('o_codigo').value = o.codigo;
+  llenarSelectObras(o.nombre);
   document.getElementById('o_nombre').value = o.nombre;
   document.getElementById('o_cliente').value = o.cliente||'';
   document.getElementById('o_responsable').value = o.responsable||'';
@@ -313,9 +342,12 @@ function editarObra(o){
   abrirModal('modalObra');
 }
 async function guardarObra(){
+  const nombre = document.getElementById('o_nombre').value.trim();
+  let codigo = document.getElementById('o_codigo').value.trim();
+  if(!codigo && nombre) codigo = 'OBR-'+slug(nombre);
   const payload = {
-    codigo: document.getElementById('o_codigo').value.trim(),
-    nombre: document.getElementById('o_nombre').value.trim(),
+    codigo: codigo,
+    nombre: nombre,
     cliente: document.getElementById('o_cliente').value.trim()||null,
     responsable: document.getElementById('o_responsable').value.trim()||null,
     direccion: document.getElementById('o_direccion').value.trim()||null,
@@ -361,7 +393,8 @@ async function cargarEmpleados(){
 function nuevoEmp(){
   editEmpId = null;
   document.getElementById('empTitle').textContent = 'Nuevo empleado';
-  ['e_codigo','e_pin','e_nombre','e_cedula','e_telefono','e_cargo','e_area','e_supervisor','e_ingreso'].forEach(id=>document.getElementById(id).value='');
+  ['e_codigo','e_pin','e_cedula','e_telefono','e_cargo','e_area','e_supervisor','e_ingreso'].forEach(id=>document.getElementById(id).value='');
+  llenarSelectResid();
   document.getElementById('e_ubicacion').value='';
   document.getElementById('e_activo').value='true';
   abrirModal('modalEmp');
@@ -371,6 +404,7 @@ function editarEmp(e){
   document.getElementById('empTitle').textContent = 'Editar empleado';
   document.getElementById('e_codigo').value = e.codigo;
   document.getElementById('e_pin').value = e.pin;
+  llenarSelectResid(e.nombre);
   document.getElementById('e_nombre').value = e.nombre;
   document.getElementById('e_cedula').value = e.cedula||'';
   document.getElementById('e_telefono').value = e.telefono||'';
@@ -384,9 +418,12 @@ function editarEmp(e){
 }
 async function guardarEmp(){
   const pin = document.getElementById('e_pin').value.trim();
+  const nombre = document.getElementById('e_nombre').value.trim();
+  let codigo = document.getElementById('e_codigo').value.trim();
+  if(!codigo && nombre) codigo = 'RES-'+slug(nombre);
   const payload = {
-    codigo: document.getElementById('e_codigo').value.trim(),
-    nombre: document.getElementById('e_nombre').value.trim(),
+    codigo: codigo,
+    nombre: nombre,
     pin: pin,
     cedula: document.getElementById('e_cedula').value.trim()||null,
     telefono: document.getElementById('e_telefono').value.trim()||null,
@@ -457,6 +494,12 @@ document.getElementById('refreshMarc').onclick = cargarMarcaciones;
 document.getElementById('filtroFecha').onchange = cargarMarcaciones;
 document.getElementById('filtroTipo').onchange = cargarMarcaciones;
 document.getElementById('e_pin').addEventListener('input',e=>{ e.target.value=e.target.value.replace(/\D/g,''); });
+document.getElementById('e_nombre').addEventListener('change',e=>{
+  const c=document.getElementById('e_codigo'); if(!c.value.trim() && e.target.value) c.value='RES-'+slug(e.target.value);
+});
+document.getElementById('o_nombre').addEventListener('change',e=>{
+  const c=document.getElementById('o_codigo'); if(!c.value.trim() && e.target.value) c.value='OBR-'+slug(e.target.value);
+});
 
 checkSession();
 </script>
