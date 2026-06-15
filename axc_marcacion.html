@@ -215,6 +215,7 @@ async function cargarMisObras(){
       return;
     }
     saludo.className='saludo'; saludo.textContent = `Hola ${data.empleado} 👋 elegí tu obra y marcá`;
+    empNombre = data.empleado;
     empDescriptor = null;
     if(data.face_descriptor){
       try{ empDescriptor = new Float32Array(JSON.parse(data.face_descriptor)); }catch(_){ empDescriptor = null; }
@@ -242,6 +243,7 @@ let stream = null;
 let fotoBlob = null;
 let posCache = null;    // GPS ya verificado al abrir la cámara
 let empDescriptor = null;  // descriptor facial de referencia del empleado
+let empNombre = null;
 let faceReady = false;
 const FACE_MODELS = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
 const FACE_THRESHOLD = 0.6;  // distancia máxima para considerar "coincide"
@@ -293,9 +295,9 @@ async function abrirCamara(tipo){
     if(!data || !data.ok){ mostrarResultado('err','No disponible', (data && data.msg) || 'No se pudo verificar la ubicación.'); return; }
     if(!data.dentro){
       const detalle = data.distancia!=null
-        ? `Estás a ${data.distancia} m de la obra. El máximo permitido es ${data.radio} m.`
+        ? `No estás dentro del radio permitido de la obra "${data.obra}".<br>Estás a ${data.distancia} m y el máximo permitido es ${data.radio} m.`
         : 'No se pudo confirmar tu ubicación.';
-      mostrarResultado('warn','Fuera de rango — no se puede marcar', detalle + '<br><br>Acercate a la obra e intentá de nuevo.');
+      mostrarResultado('warn','Fuera del radio de la obra', detalle + '<br><br>Acercate a la obra e intentá de nuevo.');
       return;
     }
   }catch(e){
@@ -370,11 +372,40 @@ async function confirmar(){
   const codigo = document.getElementById('codigo').value.trim();
   const pin    = document.getElementById('pin').value.trim();
   cerrarCamara();
-  loader(true,'Subiendo foto…');
+  loader(true,'Verificando rostro…');
 
   try{
-    const pos = posCache || await obtenerGPS();
+    // 1) VERIFICACIÓN FACIAL (condición para marcar, si hay foto de referencia)
+    let rostroOk = null, rostroDist = null;
+    if(empDescriptor){
+      try{
+        await loadFace();
+        const dSel = await descriptorDe(document.getElementById('snap'));
+        if(!dSel){
+          loader(false);
+          mostrarResultado('err','No se detectó tu rostro',
+            'No pudimos ver tu cara en la foto. Sacate la selfie de frente, con buena luz y sin gorra ni lentes oscuros, e intentá de nuevo.');
+          return;
+        }
+        rostroDist = faceapi.euclideanDistance(empDescriptor, dSel);
+        rostroOk = rostroDist <= FACE_THRESHOLD;
+        if(!rostroOk){
+          loader(false);
+          mostrarResultado('err','Rostro no habilitado',
+            `El rostro no coincide con el habilitado para ${empNombre || 'este código'}.<br>No se puede marcar la asistencia de otra persona.<br><br>Si sos vos, repetí la selfie de frente y con buena luz.`);
+          return;
+        }
+      }catch(e){
+        loader(false);
+        mostrarResultado('err','No se pudo verificar el rostro',
+          'Hubo un problema con el reconocimiento facial. Intentá de nuevo.');
+        return;
+      }
+    }
 
+    // 2) Ubicación (ya verificada al abrir la cámara) + subir foto
+    const pos = posCache || await obtenerGPS();
+    loader(true,'Subiendo foto…');
     const path = `${codigo}/${Date.now()}.jpg`;
     const up = await sb.storage.from(BUCKET).upload(path, fotoBlob, { contentType:'image/jpeg' });
     let fotoUrl = null;
@@ -382,23 +413,8 @@ async function confirmar(){
       fotoUrl = sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
     }
 
+    // 3) Registrar marcación
     loader(true,'Registrando marcación…');
-
-    // Verificación facial (aviso, no bloquea)
-    let rostroOk = null, rostroDist = null;
-    if(empDescriptor){
-      loader(true,'Verificando rostro…');
-      try{
-        await loadFace();
-        const dSel = await descriptorDe(document.getElementById('snap'));
-        if(dSel){
-          rostroDist = faceapi.euclideanDistance(empDescriptor, dSel);
-          rostroOk = rostroDist <= FACE_THRESHOLD;
-        }
-      }catch(_){ /* si falla, queda sin verificar */ }
-      loader(true,'Registrando marcación…');
-    }
-
     const { data, error } = await sb.rpc('asis_marcar', {
       p_codigo: codigo, p_pin: pin, p_ubicacion: obra, p_tipo: tipo,
       p_lat: pos.lat, p_lng: pos.lng, p_foto_url: fotoUrl,
@@ -469,7 +485,7 @@ function resetObras(){
   const sel = document.getElementById('obra');
   sel.disabled = true; sel.innerHTML = '<option value="">Primero cargá tus obras…</option>';
   document.getElementById('saludo').textContent = '';
-  empDescriptor = null;
+  empDescriptor = null; empNombre = null;
   habilitarMarca(false);
 }
 document.getElementById('codigo').addEventListener('input', resetObras);
