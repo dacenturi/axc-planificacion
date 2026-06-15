@@ -310,6 +310,9 @@ body{
 .pp-name.vacio{color:var(--text-muted);font-weight:500;font-style:italic}
 .pp-meta{font-size:12px;color:var(--text-soft);margin-top:2px}
 .pp-pill{font-size:11px;font-weight:700;padding:4px 12px;border-radius:var(--radius-pill);white-space:nowrap;text-transform:uppercase;letter-spacing:.4px}
+.pp-total{text-align:right;white-space:nowrap;min-width:96px}
+.pp-total-v{display:block;font-weight:800;color:var(--brand,#1F3864);font-size:14px}
+.pp-total-l{display:block;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:#9aa4b2}
 .pp-pill.borrador{background:var(--state-archivado-bg);color:var(--state-archivado-tx)}
 .pp-pill.activo{background:var(--state-aprobado-bg);color:var(--state-aprobado-tx)}
 .pp-pill.cerrado{background:var(--state-observado-bg);color:var(--state-observado-tx)}
@@ -748,8 +751,9 @@ body{
       <label>Obra <select id="roObra"></select></label>
       <label>Sector <select id="roSector"></select></label>
       <label>Presupuesto <select id="roPP"></select></label>
+      <label style="flex-direction:row;align-items:center;gap:7px;cursor:pointer"><input type="checkbox" id="roVerComp" style="width:16px;height:16px;cursor:pointer"> Ver composición (insumos)</label>
     </div>
-    <div class="comp-body" style="padding:16px 20px">
+    <div class="ro-scroll">
       <div id="roKpis" class="ro-kpis"></div>
       <div id="roBody"></div>
     </div>
@@ -817,6 +821,14 @@ body{
   .ro-controls{display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px 20px;background:#f4f6fa;border-bottom:1px solid #e3e8ef;flex-shrink:0}
   .ro-controls label{font-size:12px;color:#5a6677;font-weight:600;display:flex;flex-direction:column;gap:3px}
   .ro-controls select{font-size:13px;padding:7px 10px;border:1px solid #cfd6e0;border-radius:8px;min-width:180px;background:#fff;color:#1c2430}
+  .ro-scroll{flex:1;overflow-y:auto;padding:16px 20px;min-height:0;-webkit-overflow-scrolling:touch}
+  .ro-tbl tr.ro-comp td{background:#fbfcfe;padding:0}
+  .ro-comp-inner{border-left:3px solid #0E7C86}
+  .ro-comp-inner table{width:100%;border-collapse:collapse;font-size:11px}
+  .ro-comp-inner th{background:#dfe7ef;color:#1F3864;text-align:left;padding:3px 8px;font-weight:600}
+  .ro-comp-inner th.n{text-align:right}.ro-comp-inner td{padding:3px 8px;border-bottom:1px solid #eef1f5}
+  .ro-comp-inner td.n{text-align:right}.ro-comp-inner td.cod{font-family:Consolas,monospace;color:#0E7C86}
+  .ro-comp-cap{font-size:10px;color:#0E7C86;font-weight:700;padding:4px 9px}
   .ro-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:16px}
   .ro-kpi{background:#fff;border:1px solid #e6e9ee;border-left:4px solid #C9A961;border-radius:9px;padding:10px 13px}
   .ro-kpi .l{font-size:10.5px;letter-spacing:.5px;color:#8a93a0;text-transform:uppercase}
@@ -1036,8 +1048,39 @@ async function loadList(){
     state.list.sort(function(a,b){ return _ppn(b.codigo) - _ppn(a.codigo) || String(b.codigo).localeCompare(String(a.codigo)); });
     state.filtered = state.list.slice();
     renderKpis(); renderList();
+    _enrichListTotals();
     document.getElementById('pageSubtitle').textContent = state.list.length + ' presupuesto(s)';
   }catch(e){ console.warn('loadList', e); showToast('No se pudieron cargar los presupuestos', 'error'); }
+}
+
+// Formato de fecha corto (con o sin hora)
+function _fmtF(iso, withTime){
+  if(!iso) return '';
+  try{ const o={day:'2-digit',month:'2-digit',year:'2-digit'}; if(withTime){o.hour='2-digit';o.minute='2-digit';} return new Date(iso).toLocaleString('es-PY',o); }
+  catch(e){ return ''; }
+}
+
+// Calcula el monto total de cada presupuesto en segundo plano y lo pinta en las tarjetas
+async function _enrichListTotals(){
+  try{
+    const [rub, ins, insc] = await Promise.all([
+      sb.from('presupuesto_rubros').select('presupuesto,precio_total,tiene_receta'),
+      sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,cantidad'),
+      sb.from('insumos').select('codigo,producto_id')
+    ]);
+    const pidByCod={}; (insc.data||[]).forEach(function(i){ pidByCod[i.codigo]=i.producto_id; });
+    const pids=[]; const seen={}; Object.keys(pidByCod).forEach(function(c){ const v=pidByCod[c]; if(v!=null && !seen[String(v)]){ seen[String(v)]=1; pids.push(v); } });
+    let precioByPid={};
+    if(pids.length){ const pr=await sb.from('productos_catalogo').select('id,precio_referencia').in('id', pids); (pr.data||[]).forEach(function(p){ precioByPid[String(p.id)]=Number(p.precio_referencia)||0; }); }
+    const precioByCod={}; Object.keys(pidByCod).forEach(function(cod){ const pid=pidByCod[cod]; precioByCod[cod]= pid!=null ? (precioByPid[String(pid)]||0) : 0; });
+    const tot={};
+    (rub.data||[]).forEach(function(r){ if(!r.tiene_receta){ tot[r.presupuesto]=(tot[r.presupuesto]||0)+(Number(r.precio_total)||0); } });
+    (ins.data||[]).forEach(function(m){ tot[m.presupuesto]=(tot[m.presupuesto]||0)+(Number(m.cantidad)||0)*(precioByCod[m.codigo_insumo]||0); });
+    state._totals=tot;
+    document.querySelectorAll('.pp-total').forEach(function(el){ const cod=el.getAttribute('data-cod'); const v=Math.round(tot[cod]||0); el.innerHTML='<span class="pp-total-v">₲ '+fmtGs(v)+'</span><span class="pp-total-l">total</span>'; });
+    let gran=0; Object.keys(tot).forEach(function(k){ gran+=tot[k]; });
+    const kEl=document.getElementById('kpiMonto'); if(kEl) kEl.textContent='₲ '+fmtGs(Math.round(gran));
+  }catch(e){ console.warn('enrichTotals', e); const kEl=document.getElementById('kpiMonto'); if(kEl) kEl.textContent='—'; document.querySelectorAll('.pp-total-v').forEach(function(el){ el.textContent=''; }); }
 }
 
 function renderKpis(){
@@ -1046,7 +1089,8 @@ function renderKpis(){
   document.getElementById('ppKpis').innerHTML =
     '<div class="pp-kpi"><div class="pp-kpi-label">Presupuestos</div><div class="pp-kpi-value">'+tot+'</div></div>' +
     '<div class="pp-kpi"><div class="pp-kpi-label">Publicados</div><div class="pp-kpi-value">'+act+'</div></div>' +
-    '<div class="pp-kpi"><div class="pp-kpi-label">Borradores</div><div class="pp-kpi-value">'+(tot-act)+'</div></div>';
+    '<div class="pp-kpi"><div class="pp-kpi-label">Borradores</div><div class="pp-kpi-value">'+(tot-act)+'</div></div>' +
+    '<div class="pp-kpi"><div class="pp-kpi-label">Monto total presupuestado</div><div class="pp-kpi-value" id="kpiMonto" style="font-size:20px">…</div></div>';
 }
 
 function renderList(){
@@ -1061,14 +1105,17 @@ function renderList(){
       ? '<div class="pp-name">'+escapeHtml(p.descripcion)+'</div>'
       : '<div class="pp-name vacio">Sin descripción</div>';
     const meta = [ p.obra ? escapeHtml(p.obra) : 'Sin obra', p._rub + ' rubro' + (p._rub===1?'':'s') ].filter(Boolean).join(' · ');
-    const _autor = p.actualizado_por || p.creado_por || '';
-    const _fIso = p.actualizado_en || p.creado_en || '';
-    let _fTxt=''; if(_fIso){ try{ _fTxt=new Date(_fIso).toLocaleString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){} }
-    const _editado = (p.actualizado_en && p.creado_en && p.actualizado_en!==p.creado_en) ? 'Modificado' : 'Creado';
-    const by = (_autor||_fTxt) ? '<div class="pp-meta" style="margin-top:3px;color:#9aa4b2;font-size:11px">'+(_autor?('👤 '+escapeHtml(_autor)):'')+(_autor&&_fTxt?' · ':'')+(_fTxt?(_editado+' '+_fTxt):'')+'</div>' : '';
+    // línea de control: creó · creado · modificado · publicado
+    const bits=[];
+    if(p.creado_por) bits.push('👤 '+escapeHtml(p.creado_por));
+    if(p.creado_en) bits.push('🆕 '+_fmtF(p.creado_en,false));
+    if(p.actualizado_en && p.actualizado_en!==p.creado_en) bits.push('✏️ '+_fmtF(p.actualizado_en,true)+(p.actualizado_por&&p.actualizado_por!==p.creado_por?(' ('+escapeHtml(p.actualizado_por)+')'):''));
+    if(p.publicado_en) bits.push('📢 Publicado '+_fmtF(p.publicado_en,false));
+    const by = bits.length ? '<div class="pp-meta" style="margin-top:3px;color:#9aa4b2;font-size:11px;display:flex;flex-wrap:wrap;gap:4px 10px">'+bits.join('<span style="color:#d7dce3">·</span> ')+'</div>' : '';
     return '<div class="pp-row" data-cod="'+escapeHtml(p.codigo)+'">' +
       '<div class="pp-code">'+escapeHtml(p.codigo)+'</div>' +
       '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+'</div>' +
+      '<div class="pp-total" data-cod="'+escapeHtml(p.codigo)+'"><span class="pp-total-v">…</span></div>' +
       '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
       '<span class="pp-chev">›</span></div>';
   }).join('');
@@ -1546,8 +1593,10 @@ async function saveBudget(){
     // Metadata de auditoría en la cabecera (best-effort: las columnas pueden no existir aún)
     try{
       const _now=new Date().toISOString(); const _u=_userTag();
+      const _prev = (state.list||[]).find(function(p){ return p.codigo===codigo; }) || {};
       const _meta={ actualizado_por:_u, actualizado_en:_now };
       if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
+      if(activo && !_prev.publicado_en){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
     // Rubros: reemplazo completo
@@ -1797,6 +1846,7 @@ document.getElementById('roPrint').addEventListener('click', printReporteObra);
 document.getElementById('roObra').addEventListener('change', function(){ _roRefreshSector(); _roRefreshPP(); renderReporteObra(); });
 document.getElementById('roSector').addEventListener('change', renderReporteObra);
 document.getElementById('roPP').addEventListener('change', renderReporteObra);
+document.getElementById('roVerComp').addEventListener('change', renderReporteObra);
 document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
@@ -2067,11 +2117,13 @@ function _roCompute(){
     // consumo (dinero) por rubro_codigo desde OC (reservado + ejecutado)
     const consByRub={};
     items.forEach(function(it){ const rk=_resolveRub(it.producto_id); if(!rk) return; if(_EJE.indexOf(it.estado)>=0||_RES.indexOf(it.estado)>=0){ consByRub[rk]=(consByRub[rk]||0)+it.subtotal; } });
-    // presupuestado (dinero) de insumos por rubro (recetas)
-    const insMoneyByRub={};
+    // presupuestado (dinero) de insumos por rubro (recetas) + detalle de insumos
+    const insMoneyByRub={}; const insListByRub={};
     REP.insumos.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(m){
       const rk=m.rubro_codigo||''; if(!rk) return;
-      insMoneyByRub[rk]=(insMoneyByRub[rk]||0)+(Number(m.cantidad)||0)*(Number(RO.prices[m.codigo_insumo])||0);
+      const pu=Number(RO.prices[m.codigo_insumo])||0; const q=Number(m.cantidad)||0;
+      insMoneyByRub[rk]=(insMoneyByRub[rk]||0)+q*pu;
+      (insListByRub[rk]=insListByRub[rk]||[]).push({ cod:m.codigo_insumo, mat:m.material||'', unid:m.unidad||'', cant:q, pu:pu, sub:Math.round(q*pu) });
     });
     const caps={}; let tP=0, tC=0;
     REP.rubros.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(r){
@@ -2085,7 +2137,7 @@ function _roCompute(){
       const cap = (rk && RO.capByRub[rk]) ? RO.capByRub[rk] : '(Sin capítulo)';
       (caps[cap]=caps[cap]||{pres:0,cons:0,rows:[]});
       caps[cap].pres+=pres; caps[cap].cons+=cons;
-      caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, cons:cons, disp:disp });
+      caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, cons:cons, disp:disp, insumos:(esReceta?(insListByRub[rk]||[]):[]) });
       tP+=pres; tC+=cons; nRub++; if(esReceta) nRec++; else nSrv++;
       bySector[sector]=bySector[sector]||{pres:0,cons:0}; bySector[sector].pres+=pres; bySector[sector].cons+=cons;
     });
@@ -2104,6 +2156,7 @@ function _roKpisHtml(D){
 
 function _roDetailHtml(D){
   if(!D.presupuestos.length) return '<div style="padding:24px;text-align:center;color:#8a93a0">No hay rubros para esta selección.</div>';
+  const verComp = !!(document.getElementById('roVerComp') && document.getElementById('roVerComp').checked);
   // Resumen por sector
   const secKeys=Object.keys(D.bySector).sort();
   let resSec='<div class="ro-section-t">Resumen por sector</div><table class="ro-tbl"><thead><tr><th>Sector</th><th class="n">Presupuestado</th><th class="n">Consumo</th><th class="n">Disponible</th><th class="n">% cons.</th></tr></thead><tbody>';
@@ -2124,6 +2177,12 @@ function _roDetailHtml(D){
         det+='<tr><td class="cod">'+escapeHtml(r.ref||'—')+'</td><td>'+escapeHtml(r.desc)+' <span class="ro-bad '+(r.receta?'rec':'srv')+'">'+(r.receta?'receta':'servicio')+'</span></td>'+
           '<td>'+escapeHtml(r.sector)+'</td><td class="c">'+escapeHtml(r.unid)+'</td><td class="n">'+_qty(r.cant)+'</td>'+
           '<td class="n">₲ '+_money(r.pres)+'</td><td class="n">₲ '+_money(r.cons)+'</td><td class="n '+(r.disp<0?'ro-neg':'')+'">₲ '+_money(r.disp)+'</td><td class="n">'+pct.toFixed(0)+'%</td></tr>';
+        if(verComp && r.receta && r.insumos && r.insumos.length){
+          let inner='<div class="ro-comp-inner"><div class="ro-comp-cap">🧱 Composición de '+escapeHtml(r.ref||r.desc)+'</div><table><thead><tr><th>Insumo</th><th>Material</th><th class="c">Unid</th><th class="n">Cantidad</th><th class="n">P.unit</th><th class="n">Subtotal</th></tr></thead><tbody>';
+          r.insumos.forEach(function(it){ inner+='<tr><td class="cod">'+escapeHtml(it.cod)+'</td><td>'+escapeHtml(it.mat)+'</td><td class="c">'+escapeHtml(it.unid)+'</td><td class="n">'+_qty(it.cant)+'</td><td class="n">'+(it.pu>0?('₲ '+_money(it.pu)):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n">₲ '+_money(it.sub)+'</td></tr>'; });
+          inner+='</tbody></table></div>';
+          det+='<tr class="ro-comp"><td></td><td colspan="8">'+inner+'</td></tr>';
+        }
       });
     });
     det+='</tbody></table></div>';
@@ -2163,6 +2222,7 @@ function printReporteObra(){
     '.ro-pp{margin-bottom:16px;border:1px solid #e6e9ee;border-radius:9px;overflow:hidden}'+
     '.ro-pp-head{background:#1F3864;color:#fff;padding:8px 12px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}.ro-pp-head .c{font-weight:800}.ro-pp-head .d{opacity:.85}'+
     '.ro-bad{font-size:8.5px;padding:1px 5px;border-radius:4px;font-weight:700}.ro-bad.rec{background:#e6f4ea;color:#1B5524}.ro-bad.srv{background:#eaf0fb;color:#1F3864}.ro-neg{color:#c0392b;font-weight:800}'+
+    '.ro-comp td{background:#fbfcfe;padding:0!important}.ro-comp-inner{border-left:3px solid #0E7C86}.ro-comp-inner table{width:100%;border-collapse:collapse;font-size:10px}.ro-comp-inner th{background:#dfe7ef;color:#1F3864;text-align:left;padding:2px 7px}.ro-comp-inner th.n{text-align:right}.ro-comp-inner td{padding:2px 7px;border-bottom:1px solid #eef1f5}.ro-comp-inner td.n{text-align:right}.ro-comp-inner td.cod{font-family:Consolas,monospace;color:#0E7C86}.ro-comp-cap{font-size:9px;color:#0E7C86;font-weight:700;padding:3px 8px}'+
     '.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 16px;display:flex;gap:10px;align-items:center;font-size:13px}'+
     '.bar button{margin-left:auto;background:#C9A961;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer}'+
     '.foot{margin-top:22px;border-top:1px solid #e6e9ee;padding-top:9px;font-size:10px;color:#9aa4b2;display:flex;justify-content:space-between}'+
