@@ -4422,6 +4422,14 @@ body{
     <div class="decision-body">
       <label for="decisionMotivo">Motivo</label>
       <textarea class="decision-textarea" id="decisionMotivo" placeholder="Ej. El precio del item X está fuera del rango habitual..."></textarea>
+
+      <!-- Adjuntos de respaldo (solo aprobación) -->
+      <div id="decisionAdjWrap" style="display:none;margin-top:14px">
+        <label style="display:block">Adjuntos de respaldo <span style="font-weight:400;color:var(--text-muted,#8a93a6)">(opcional · PDF o imágenes · máx. 10 MB c/u)</span></label>
+        <input type="file" id="decisionAdjInput" multiple accept=".pdf,image/*,.jpg,.jpeg,.png,.webp" style="display:none">
+        <button type="button" id="decisionAdjBtn" class="btn-modal-cancel" style="width:100%;justify-content:center;border-style:dashed;margin-top:4px">📎 Agregar archivo(s)</button>
+        <div id="decisionAdjList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
     </div>
     <div class="decision-foot">
       <button class="btn-modal-cancel" id="decisionCancel">Cancelar</button>
@@ -8178,6 +8186,13 @@ function openDecisionModal(action, ocId){
   const btnConfirm = document.getElementById('decisionConfirm');
   btnConfirm.className = 'btn-action ' + (isApprove ? 'approve' : (isReject ? 'reject' : 'observe'));
   document.getElementById('decisionConfirmLabel').textContent = isApprove ? 'Confirmar aprobación' : (isReject ? 'Confirmar rechazo' : 'Confirmar observación');
+  // Adjuntos de respaldo: solo disponibles al aprobar
+  detail.decisionAtts = [];
+  const _adjWrap = document.getElementById('decisionAdjWrap');
+  if(_adjWrap) _adjWrap.style.display = isApprove ? 'block' : 'none';
+  const _adjInput = document.getElementById('decisionAdjInput');
+  if(_adjInput) _adjInput.value = '';
+  _renderDecisionAtts();
   document.getElementById('decisionModal').classList.add('open');
   setTimeout(()=>document.getElementById('decisionMotivo').focus(), 100);
 }
@@ -8218,6 +8233,35 @@ document.getElementById('decisionConfirm').addEventListener('click', async ()=>{
       .eq('id', ocId);
     if(error) throw error;
 
+    // Subir adjuntos de respaldo si se agregaron al aprobar (reutiliza bucket oc-adjuntos)
+    const _atts = detail.decisionAtts || [];
+    if(isApprove && _atts.length){
+      showToast(`Subiendo ${_atts.length} adjunto(s) de respaldo…`, 'info');
+      let _okAdj = 0;
+      for(const att of _atts){
+        try{
+          const safeName = att.name.replace(/[^\w\d.\-]/g, '_');
+          const path = `${ocId}/${Date.now()}_${safeName}`;
+          const {error: upErr} = await sb.storage.from('oc-adjuntos').upload(path, att.file, {upsert:false});
+          if(upErr) throw upErr;
+          const {error: insErr} = await sb.from('oc_adjuntos').insert({
+            oc_id: ocId,
+            nombre_archivo: att.name,
+            tipo: 'Aprobación',
+            url_storage: path,
+            tamano_kb: Math.round(att.size/1024),
+            subido_por: userName,
+          });
+          if(insErr) throw insErr;
+          _okAdj++;
+        }catch(eAtt){
+          console.warn('Error subiendo adjunto de aprobación:', att.name, eAtt);
+          showToast(`No se pudo subir "${att.name}": ${eAtt.message||''}`, 'error');
+        }
+      }
+      if(_okAdj > 0) showToast(`✓ ${_okAdj} adjunto(s) de respaldo guardado(s)`, 'success');
+    }
+
     showToast(isApprove ? '✅ Orden aprobada' : `OC ${newEstado.toLowerCase()}`, 'success');
     closeDecisionModal();
     await loadOCs();
@@ -8227,6 +8271,55 @@ document.getElementById('decisionConfirm').addEventListener('click', async ()=>{
     showToast('Error: '+(e.message||''), 'error');
   }
 });
+
+// ─── Adjuntos de respaldo en el modal de decisión (solo aprobación) ───
+function _renderDecisionAtts(){
+  const list = document.getElementById('decisionAdjList');
+  if(!list) return;
+  const atts = detail.decisionAtts || [];
+  list.innerHTML = atts.map((a, i) => `
+    <div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--border,#e2e6ee);border-radius:8px;padding:6px 10px;font-size:13px">
+      <span style="font-size:15px">${/\.pdf$/i.test(a.name) ? '📄' : '🖼️'}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.name.replace(/"/g,'&quot;')}">${a.name.replace(/</g,'&lt;')}</span>
+      <span style="color:#8a93a6;font-size:11px;white-space:nowrap">${fmtSize(a.size)}</span>
+      <button type="button" data-rmadj="${i}" title="Quitar" style="border:none;background:none;cursor:pointer;color:#c0392b;font-size:14px;padding:0 2px;line-height:1">✕</button>
+    </div>`).join('');
+}
+
+(function _wireDecisionAdj(){
+  const btn = document.getElementById('decisionAdjBtn');
+  const input = document.getElementById('decisionAdjInput');
+  const list = document.getElementById('decisionAdjList');
+  if(!btn || !input || !list) return;
+  btn.addEventListener('click', ()=> input.click());
+  input.addEventListener('change', ()=>{
+    const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+    const okExt = ['pdf','jpg','jpeg','png','webp','gif'];
+    const files = Array.from(input.files || []);
+    detail.decisionAtts = detail.decisionAtts || [];
+    files.forEach(file => {
+      const ext = (file.name.split('.').pop()||'').toLowerCase();
+      const isImg = (file.type||'').startsWith('image/');
+      if(ext !== 'pdf' && !isImg && !okExt.includes(ext)){
+        showToast(`"${file.name}" no es PDF ni imagen; no se agregó`, 'error');
+        return;
+      }
+      if(file.size > MAX_SIZE){
+        showToast(`"${file.name}" supera los 10 MB y no se agregó`, 'error');
+        return;
+      }
+      detail.decisionAtts.push({ file, name: file.name, size: file.size });
+    });
+    input.value = '';
+    _renderDecisionAtts();
+  });
+  list.addEventListener('click', (e)=>{
+    const rm = e.target.closest('[data-rmadj]');
+    if(!rm) return;
+    const i = parseInt(rm.getAttribute('data-rmadj'), 10);
+    if(detail.decisionAtts && i >= 0){ detail.decisionAtts.splice(i, 1); _renderDecisionAtts(); }
+  });
+})();
 
 // ─── Guardar edits del detalle (admin) ──────────────────
 async function saveDetailEdits(){
