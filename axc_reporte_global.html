@@ -2630,19 +2630,49 @@ async function exportPDF(modo){
       else { nameColW = 68; resColW = 32; sectorColW = 28; }
       const availW = lpw - 2*lMX - nameColW - resColW - sectorColW;
       const cellW = Math.min(14, availW / numDays); // sin mínimo: SIEMPRE entra
-      const cellH = 7.5;
+      const cellH = 6.5;   // compacto: más filas por hoja
       const showDayDate = true;
       const ganttX = lMX + nameColW + resColW + sectorColW;
       const headerH = 10;
 
-      // Filas por página: calcular según altura disponible
+      // Filas de ALTURA VARIABLE: el nombre (y la razón) se ajustan en varias
+      // líneas para que entren TODOS los datos, sin cortar con "...".
       const usableH = lph - lMT - lMB - headerH - 27; // 27mm para título + leyenda + nota
-      const maxRowsPerPage = Math.floor(usableH / cellH);
-
-      // (El orden ya viene de _sortGanttActs, idéntico a la vista HTML.
-      //  No re-ordenamos por residente para no divergir de lo que se ve en pantalla.)
-
-      const totalParts = Math.ceil(sortedActs.length / maxRowsPerPage);
+      const NAME_LH = 2.9, RAZON_LH = 2.3, ROW_TOPBASE = 3.0, ROW_PAD = 2.6, ROW_MIN = 6.0;
+      const _truncW = (txt, w) => {
+        if(doc.getTextWidth(txt) <= w) return txt;
+        const f = w / doc.getTextWidth(txt);
+        return txt.slice(0, Math.max(4, Math.floor(txt.length * f) - 1)) + '...';
+      };
+      // Pre-cálculo: líneas de cada actividad + alto de fila
+      const metas = sortedActs.map((a, idx) => {
+        const numeroFila = idx + 1;
+        const imprPrefix = a.imprevista ? '[IMPR] ' : '';
+        const fullName = numeroFila + '. ' + imprPrefix + (a.descripcion || '(sin descripción)');
+        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.8);
+        let nameLines = doc.splitTextToSize(fullName, nameColW - 4);
+        if(nameLines.length > 6){ nameLines = nameLines.slice(0,6); nameLines[5] = nameLines[5].slice(0, Math.max(1, nameLines[5].length-3)) + '...'; }
+        const razonTxt = (a.razon || '').trim();
+        let razonLines = [];
+        if(razonTxt){
+          doc.setFont('helvetica', 'italic'); doc.setFontSize(4.8);
+          razonLines = doc.splitTextToSize('Razon: ' + razonTxt, (ganttX - lMX) - 6);
+          if(razonLines.length > 3){ razonLines = razonLines.slice(0,3); razonLines[2] = razonLines[2].slice(0, Math.max(1, razonLines[2].length-3)) + '...'; }
+        }
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5);
+        const resShown = _truncW(a.residente || '(s/r)', resColW - 4);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(6.2);
+        const obraShown = _truncW((a.obra || '-') + (a.sector ? ' | ' + a.sector : ''), sectorColW - 4);
+        const rowH = Math.max(ROW_MIN, ROW_PAD + nameLines.length * NAME_LH + razonLines.length * RAZON_LH);
+        return { a, numeroFila, nameLines, razonLines, resShown, obraShown, rowH };
+      });
+      // Agrupar en páginas según la altura acumulada disponible
+      const pages = [];
+      { let cur = [], curH = 0;
+        metas.forEach(m => { if(curH + m.rowH > usableH && cur.length){ pages.push(cur); cur = []; curH = 0; } cur.push(m); curH += m.rowH; });
+        if(cur.length) pages.push(cur);
+      }
+      const totalParts = Math.max(1, pages.length);
 
       for(let part = 0; part < totalParts; part++){
         // Página landscape
@@ -2719,60 +2749,44 @@ async function exportPDF(modo){
           doc.text(dayLetters[d.getDay()] || '', ganttX + i*cellW + cellW/2, ganttTopY + 8, { align: 'center' });
         });
 
-        // ─── Filas de la parte actual ───
-        const partActs = sortedActs.slice(part * maxRowsPerPage, (part+1) * maxRowsPerPage);
-        // Número global de la primera fila de esta parte (1-indexado).
-        // Mantiene continuidad de numeración entre páginas/partes del Gantt.
-        const rowNumOffset = part * maxRowsPerPage;
-        const rowsStartY = ganttTopY + headerH;
-        partActs.forEach((a, rIdx) => {
-          const rowY = rowsStartY + rIdx * cellH;
-          const numeroFila = rowNumOffset + rIdx + 1;  // 1, 2, 3, ...
+        // ─── Filas de la parte actual (altura variable) ───
+        const pageMetas = pages[part];
+        let rowY = ganttTopY + headerH;
+        pageMetas.forEach((m, rIdx) => {
+          const a = m.a;
+          const rowH = m.rowH;
           // Alternar background suave
           if(rIdx % 2 === 1){
             doc.setFillColor(248, 249, 251);
-            doc.rect(lMX, rowY, lpw - 2*lMX, cellH, 'F');
+            doc.rect(lMX, rowY, lpw - 2*lMX, rowH, 'F');
           }
-          // Texto descripción con número de fila como prefijo
-          const desc = a.descripcion || '(sin descripción)';
-          const maxDescW = nameColW - 6;
-          const numPrefix = numeroFila + '. ';
-          const imprPrefix = a.imprevista ? '[IMPR] ' : '';
-          let descShown = desc;
-          // Truncar considerando el espacio que ocupan los prefijos
-          if(doc.getTextWidth(numPrefix + imprPrefix + desc) > maxDescW){
-            const espacioParaTexto = maxDescW - doc.getTextWidth(numPrefix + imprPrefix);
-            const factor = espacioParaTexto / doc.getTextWidth(desc);
-            descShown = desc.slice(0, Math.max(8, Math.floor(desc.length * factor) - 1)) + '...';
-          }
+          const ty = rowY + ROW_TOPBASE;
+          // Nombre de la actividad — TODAS las líneas (sin cortar)
           doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal');
-          doc.setFontSize(7);
-          doc.setTextColor(...(a.imprevista ? [255,107,53] : BLACK));
-          doc.text(numPrefix + imprPrefix + descShown, lMX + 2, rowY + 4.8);
-
-          // Residente (columna nueva)
-          doc.setFont('helvetica', 'bold');
           doc.setFontSize(6.8);
+          doc.setTextColor(...(a.imprevista ? [255,107,53] : BLACK));
+          m.nameLines.forEach((ln, i) => doc.text(ln, lMX + 2, ty + i * NAME_LH));
+
+          // Residente
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(6.5);
           doc.setTextColor(...NAVY);
-          const resName = a.residente || '(s/r)';
-          let resShown = resName;
-          if(doc.getTextWidth(resName) > resColW - 4){
-            const factor = (resColW - 4) / doc.getTextWidth(resName);
-            resShown = resName.slice(0, Math.max(6, Math.floor(resName.length * factor) - 1)) + '...';
-          }
-          doc.text(resShown, lMX + nameColW + 2, rowY + 4.8);
+          doc.text(m.resShown, lMX + nameColW + 2, ty);
 
           // Obra/Sector
           doc.setFont('helvetica', 'normal');
-          doc.setFontSize(6.5);
+          doc.setFontSize(6.2);
           doc.setTextColor(...GRAY_TEXT);
-          const obraSec = (a.obra || '-') + (a.sector ? ` | ${a.sector}` : '');
-          let obraShown = obraSec;
-          if(doc.getTextWidth(obraSec) > sectorColW - 4){
-            const factor = (sectorColW - 4) / doc.getTextWidth(obraSec);
-            obraShown = obraSec.slice(0, Math.max(6, Math.floor(obraSec.length * factor) - 1)) + '...';
+          doc.text(m.obraShown, lMX + nameColW + resColW + 2, ty);
+
+          // ── Razón de no cumplimiento, en rojo, bajo la actividad (todas las líneas) ──
+          if(m.razonLines.length){
+            let ry = ty + m.nameLines.length * NAME_LH + 0.2;
+            doc.setFont('helvetica', 'italic');
+            doc.setFontSize(4.8);
+            doc.setTextColor(220, 38, 38);
+            m.razonLines.forEach((ln, i) => doc.text(ln, lMX + 2, ry + i * RAZON_LH));
           }
-          doc.text(obraShown, lMX + nameColW + resColW + 2, rowY + 4.8);
 
           // ╔═══════════════════════════════════════════════════════════╗
           // ║ Bloques marcados (rendering DÍA POR DÍA, estándar          ║
@@ -2833,7 +2847,7 @@ async function exportPDF(modo){
             const bx = ganttX + di*cellW + 0.8;
             const by = rowY + 1.2;
             const bw = Math.max(0.5, cellW - 1.6);
-            const bh = cellH - 2.4;
+            const bh = Math.min(rowH - 2.4, 4.2);
 
             if(esPlanifPendiente){
               // Solo borde dorado, fondo transparente → "falta cargar dato"
@@ -2852,12 +2866,13 @@ async function exportPDF(modo){
               doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'F');
             }
           });
+          rowY += rowH;
         });
 
         // Borde general del Gantt
         doc.setDrawColor(...GRAY_BORD);
         doc.setLineWidth(0.2);
-        doc.rect(lMX, ganttTopY, lpw - 2*lMX, headerH + partActs.length * cellH);
+        doc.rect(lMX, ganttTopY, lpw - 2*lMX, rowY - ganttTopY);
 
         // ─── Leyenda al pie (estándar contratista, 20/05/2026) ───
         // Una sola línea con los 5 estados estandarizados:
@@ -3381,9 +3396,9 @@ async function exportPDF(modo){
     } // fin if(!kg): gráficos + razones (no van en el Reporte Kanban-Gantt)
 
     // ═══════════════════════════════════════════════════════════
-    // PÁGINA EXTRA: DIAGRAMA DE GANTT (A4 landscape)
+    // PÁGINA EXTRA: TABLERO KANBAN (primero) — A4 landscape
     // ═══════════════════════════════════════════════════════════
-    await drawGanttPages(doc, acts, () => { curPage++; return curPage; });
+    drawKanbanPages(doc, acts, () => { curPage++; return curPage; });
 
     // ═══════════════════════════════════════════════════════════
     // PÁGINA EXTRA: TABLERO KANBAN (A4 landscape) — 08/06/2026
@@ -3425,7 +3440,7 @@ async function exportPDF(modo){
       const boardTopY = 46;        // 30 (MT) + 16 (título + subtítulo)
       const colHeadH = 8;
       const cardsTop = boardTopY + colHeadH + 3;
-      const cardH = 25, cardGap = 3;
+      const cardH = 21, cardGap = 2.5;   // compacto: más tarjetas por hoja
       const usableH = lph - lMB - cardsTop;
       const cardsPerCol = Math.max(1, Math.floor((usableH + cardGap) / (cardH + cardGap)));
       const maxCount = Math.max(1, ...cols.map(c => buckets[c.key].length));
@@ -3442,30 +3457,30 @@ async function exportPDF(modo){
         }
         const pad = 2.6;
         const innerW = w - pad * 2;
-        let cy = y + 4;
+        let cy = y + 3.3;
         // Obra
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(...NAVY);
         const obraLines = doc.splitTextToSize(String(a.obra || '—'), innerW);
         doc.text(obraLines[0] + (obraLines.length > 1 ? '…' : ''), x + pad, cy);
-        cy += 4;
+        cy += 3.4;
         // Actividad (máx 2 líneas)
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...BLACK);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8); doc.setTextColor(...BLACK);
         const actLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
         const shown = actLines.slice(0, 2);
         if(actLines.length > 2) shown[1] = shown[1].slice(0, -1) + '…';
-        shown.forEach(l => { doc.text(l, x + pad, cy); cy += 3.5; });
+        shown.forEach(l => { doc.text(l, x + pad, cy); cy += 3.1; });
         // Residente (si hay)
         if(a.residente){
           doc.setFontSize(6.5); doc.setTextColor(...GRAY_TEXT);
           doc.text(doc.splitTextToSize('Resid.: ' + a.residente, innerW)[0], x + pad, cy);
-          cy += 3.3;
+          cy += 2.9;
         }
         // Estado + atraso
         const est = _estadoLabel(a);
         const dias = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? `  -  ${a.dias_atraso}d atraso` : '';
         doc.setFontSize(6.5); doc.setTextColor(...GRAY_TEXT);
         doc.text(doc.splitTextToSize(est + dias, innerW)[0], x + pad, cy);
-        cy += 3.3;
+        cy += 2.9;
         // Fechas
         const iniISO = _getFechaIniClip(a);
         const finISO = _getFechaFinClip(a);
@@ -3528,7 +3543,10 @@ async function exportPDF(modo){
         doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align: 'right' });
       }
     }
-    drawKanbanPages(doc, acts, () => { curPage++; return curPage; });
+    // ═══════════════════════════════════════════════════════════
+    // DIAGRAMA DE GANTT (después del Kanban) — A4 landscape
+    // ═══════════════════════════════════════════════════════════
+    await drawGanttPages(doc, acts, () => { curPage++; return curPage; });
 
     if(!kg){
     // ═══════════════════════════════════════════════════════════
