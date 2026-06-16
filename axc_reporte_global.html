@@ -3410,6 +3410,7 @@ async function exportPDF(modo){
       const kacts = (allActs || []).slice();
       if(!kacts.length) return;
 
+      // Agrupar por estado (mismas columnas que el board)
       const baseCols = _KANBAN_COLS.slice();
       const buckets = {};
       baseCols.concat([_KANBAN_CANCEL]).forEach(c => { buckets[c.key] = []; });
@@ -3422,126 +3423,121 @@ async function exportPDF(modo){
       }
       const cols = baseCols.slice();
       if(buckets[_KANBAN_CANCEL.key].length) cols.push(_KANBAN_CANCEL);
-
-      const COLW = {
-        por_ejecutar: [110, 120, 130],
-        en_espera:    [148, 163, 184],
-        en_proceso:   [59, 130, 246],
-        retrasado:    [249, 115, 22],
-        terminado:    [34, 197, 94],
-        cancelado:    [107, 114, 128]
+      const colColorMap = {
+        por_ejecutar:[139,148,158], en_espera:[148,163,184], en_proceso:[59,130,246],
+        retrasado:[249,115,22], terminado:[34,197,94], cancelado:[107,114,128]
       };
 
-      const lpw = 297, lph = 210, lMX = 12, lMB = 14;
-      const N = cols.length;
-      const colGap = 4;
-      const availW = lpw - 2 * lMX;
-      const colW = (availW - (N - 1) * colGap) / N;
-      const boardTopY = 46;        // 30 (MT) + 16 (título + subtítulo)
-      const colHeadH = 8;
-      const cardsTop = boardTopY + colHeadH + 3;
-      const cardH = 21, cardGap = 2.5;   // compacto: más tarjetas por hoja
-      const usableH = lph - lMB - cardsTop;
-      const cardsPerCol = Math.max(1, Math.floor((usableH + cardGap) / (cardH + cardGap)));
-      const maxCount = Math.max(1, ...cols.map(c => buckets[c.key].length));
-      const totalParts = Math.max(1, Math.ceil(maxCount / cardsPerCol));
+      const lpw = 297, lph = 210, lMX = 12;
+      const cW = { num:9, act:114, res:42, obra:52, ini:18, fin:18, atr:18 };
+      const order = ['num','act','res','obra','ini','fin','atr'];
+      const cX = {}; { let x = lMX; order.forEach(k => { cX[k] = x; x += cW[k]; }); }
+      const tableW = lpw - 2*lMX;
+      const rowH = 4.8, secH = 6.2, colHeadH = 5;
+      const bottomY = lph - 11;
+      let y = 0, pgNum = 0, globalIdx = 0;
 
-      function kbCard(x, y, w, a){
-        doc.setFillColor(...GRAY_LIGHT);
-        doc.setDrawColor(...GRAY_BORD);
-        doc.setLineWidth(0.2);
-        doc.roundedRect(x, y, w, cardH, 1.2, 1.2, 'FD');
-        if(a.imprevista){
-          doc.setFillColor(...ORANGE_IMP);
-          doc.rect(x, y, 1.2, cardH, 'F');
-        }
-        const pad = 2.6;
-        const innerW = w - pad * 2;
-        let cy = y + 3.3;
-        // Obra
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(...NAVY);
-        const obraLines = doc.splitTextToSize(String(a.obra || '—'), innerW);
-        doc.text(obraLines[0] + (obraLines.length > 1 ? '…' : ''), x + pad, cy);
-        cy += 3.4;
-        // Actividad (máx 2 líneas)
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8); doc.setTextColor(...BLACK);
-        const actLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
-        const shown = actLines.slice(0, 2);
-        if(actLines.length > 2) shown[1] = shown[1].slice(0, -1) + '…';
-        shown.forEach(l => { doc.text(l, x + pad, cy); cy += 3.1; });
-        // Residente (si hay)
-        if(a.residente){
-          doc.setFontSize(6.5); doc.setTextColor(...GRAY_TEXT);
-          doc.text(doc.splitTextToSize('Resid.: ' + a.residente, innerW)[0], x + pad, cy);
-          cy += 2.9;
-        }
-        // Estado + atraso
-        const est = _estadoLabel(a);
-        const dias = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? `  -  ${a.dias_atraso}d atraso` : '';
-        doc.setFontSize(6.5); doc.setTextColor(...GRAY_TEXT);
-        doc.text(doc.splitTextToSize(est + dias, innerW)[0], x + pad, cy);
-        cy += 2.9;
-        // Fechas
-        const iniISO = _getFechaIniClip(a);
-        const finISO = _getFechaFinClip(a);
-        const fi = iniISO ? fmtFecha(iniISO) : '—';
-        const ff = finISO ? fmtFecha(finISO) : '—';
-        doc.setFontSize(6.3); doc.setTextColor(...GRAY);
-        doc.text(`${fi} a ${ff}`, x + pad, cy);
+      function footer(){
+        doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
+        doc.line(lMX, lph - 8, lpw - lMX, lph - 8);
+        doc.setTextColor(...GRAY); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
+        doc.text('AXC Constructora - Reporte Global | Tablero Kanban (lista por estado)', lMX, lph - 4);
+        doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align: 'center' });
+        doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align: 'right' });
       }
-
-      for(let part = 0; part < totalParts; part++){
-        doc.addPage('a4', 'landscape');
-        const pgNum = getNextPageNum();
-
-        // Header navy
+      function colHeader(){
+        doc.setFillColor(...NAVY_DARK); doc.rect(lMX, y, tableW, colHeadH, 'F');
+        doc.setTextColor(255,255,255); doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8);
+        doc.text('#', cX.num + 2, y + 3.4);
+        doc.text('Actividad', cX.act + 2, y + 3.4);
+        doc.text('Residente', cX.res + 2, y + 3.4);
+        doc.text('Obra / Sector', cX.obra + 2, y + 3.4);
+        doc.text('Inicio', cX.ini + 2, y + 3.4);
+        doc.text('Fin', cX.fin + 2, y + 3.4);
+        doc.text('Atraso', cX.atr + 2, y + 3.4);
+        y += colHeadH;
+      }
+      function newPage(){
+        doc.addPage('a4', 'landscape'); pgNum = getNextPageNum();
         doc.setFillColor(...NAVY); doc.rect(0, 0, lpw, 22, 'F');
         doc.setFillColor(...GOLD); doc.rect(0, 22, lpw, 1.5, 'F');
         try{ doc.addImage(AXC_LOGO_BASE64, 'JPEG', lMX, 6, 18, 6, undefined, 'FAST'); } catch(_){}
         doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
         doc.text('AXC CONSTRUCTORA', lMX + 22, 11);
         doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GOLD_LIGHT);
-        doc.text(`Tablero Kanban${totalParts > 1 ? ` (parte ${part + 1}/${totalParts})` : ''}`, lMX + 22, 16.5);
+        doc.text('Tablero Kanban — Lista por estado', lMX + 22, 16.5);
         doc.setTextColor(...WHITE); doc.setFontSize(8);
         doc.text(`Página ${pgNum}`, lpw - lMX, 11, { align: 'right' });
         doc.setTextColor(...GOLD_LIGHT);
         doc.text(`App: ${appLabel}`, lpw - lMX, 16.5, { align: 'right' });
-
-        // Título del bloque
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
-        doc.text(kg ? `Reporte Kanban-Gantt  —  Residente: ${kgResidente}` : 'Tablero Kanban - Actividades por estado', lMX, 34);
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GRAY_TEXT);
-        doc.text(kg ? `Tablero Kanban  |  Periodo: ${kgPeriodo}  |  ${kacts.length} actividad${kacts.length === 1 ? '' : 'es'}` : `${kacts.length} actividad${kacts.length === 1 ? '' : 'es'} (segun filtros activos)`, lMX, 39);
-
-        // Columnas
-        cols.forEach((c, ci) => {
-          const x = lMX + ci * (colW + colGap);
-          const colColor = COLW[c.key] || [110, 120, 130];
-          // Cabecera de columna
-          doc.setFillColor(...colColor);
-          doc.roundedRect(x, boardTopY, colW, colHeadH, 1.2, 1.2, 'F');
-          doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5);
-          doc.text(c.titulo, x + 2.6, boardTopY + 5.4);
-          doc.text(String(buckets[c.key].length), x + colW - 2.6, boardTopY + 5.4, { align: 'right' });
-          // Tarjetas de esta parte
-          const items = buckets[c.key].slice(part * cardsPerCol, (part + 1) * cardsPerCol);
-          let y = cardsTop;
-          if(!items.length){
-            doc.setFont('helvetica', 'italic'); doc.setFontSize(7); doc.setTextColor(...GRAY);
-            doc.text('Sin actividades', x + 2.6, y + 4);
-            doc.setFont('helvetica', 'normal');
-          }
-          items.forEach(a => { kbCard(x, y, colW, a); y += cardH + cardGap; });
-        });
-
-        // Footer
-        doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
-        doc.line(lMX, lph - 8, lpw - lMX, lph - 8);
-        doc.setTextColor(...GRAY); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
-        doc.text('AXC Constructora - Reporte Global | Tablero Kanban', lMX, lph - 4);
-        doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align: 'center' });
-        doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align: 'right' });
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(...NAVY);
+        doc.text(kg ? `Reporte Kanban-Gantt — Residente: ${kgResidente}` : 'Tablero Kanban - Actividades por estado', lMX, 31);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GRAY_TEXT);
+        doc.text(kg ? `Periodo: ${kgPeriodo}  |  ${kacts.length} actividad${kacts.length === 1 ? '' : 'es'}` : `${kacts.length} actividad${kacts.length === 1 ? '' : 'es'} (segun filtros activos)`, lMX, 36);
+        y = 41;
+        colHeader();
       }
+      function _trunc(txt, wmm){
+        txt = String(txt == null ? '' : txt);
+        if(doc.getTextWidth(txt) <= wmm) return txt;
+        const f = wmm / doc.getTextWidth(txt);
+        return txt.slice(0, Math.max(3, Math.floor(txt.length * f) - 1)) + '…';
+      }
+
+      newPage();
+
+      cols.forEach(c => {
+        const items = buckets[c.key];
+        if(!items.length) return;
+        const color = colColorMap[c.key] || [110,120,130];
+        const drawSecBar = (cont) => {
+          doc.setFillColor(...color);
+          doc.rect(lMX, y, tableW, secH, 'F');
+          doc.setTextColor(255,255,255); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.2);
+          doc.text(c.titulo.toUpperCase() + (cont ? ' (cont.)' : ''), lMX + 2.5, y + 4.3);
+          doc.text(items.length + ' actividad' + (items.length === 1 ? '' : 'es'), lpw - lMX - 2.5, y + 4.3, { align: 'right' });
+          y += secH;
+        };
+        if(y + secH + rowH > bottomY){ footer(); newPage(); }
+        drawSecBar(false);
+
+        items.forEach((a, i) => {
+          if(y + rowH > bottomY){ footer(); newPage(); drawSecBar(true); }
+          globalIdx++;
+          if(i % 2 === 1){ doc.setFillColor(247, 249, 251); doc.rect(lMX, y, tableW, rowH, 'F'); }
+          if(a.imprevista){ doc.setFillColor(...ORANGE_IMP); doc.rect(lMX, y, 1.1, rowH, 'F'); }
+          const baseY = y + 3.3;
+          // #
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...GRAY_TEXT);
+          doc.text(String(globalIdx), cX.num + 2, baseY);
+          // Actividad
+          doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setTextColor(...BLACK);
+          doc.text(_trunc(a.descripcion || '—', cW.act - 4), cX.act + 2, baseY);
+          // Residente
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(...NAVY);
+          doc.text(_trunc(a.residente || '—', cW.res - 4), cX.res + 2, baseY);
+          // Obra / Sector
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8); doc.setTextColor(...GRAY_TEXT);
+          doc.text(_trunc((a.obra || '—') + (a.sector ? ' | ' + a.sector : ''), cW.obra - 4), cX.obra + 2, baseY);
+          // Fechas
+          const iniISO = _getFechaIniClip(a), finISO = _getFechaFinClip(a);
+          doc.setFontSize(6.8); doc.setTextColor(...GRAY);
+          doc.text(iniISO ? fmtFecha(iniISO) : '—', cX.ini + 2, baseY);
+          doc.text(finISO ? fmtFecha(finISO) : '—', cX.fin + 2, baseY);
+          // Atraso
+          const dias = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? (a.dias_atraso + 'd') : '—';
+          doc.setFont('helvetica', dias === '—' ? 'normal' : 'bold');
+          doc.setTextColor(...(dias === '—' ? GRAY : [220,38,38]));
+          doc.text(dias, cX.atr + 2, baseY);
+          // Línea divisoria
+          doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.1);
+          doc.line(lMX, y + rowH, lpw - lMX, y + rowH);
+          y += rowH;
+        });
+        y += 1.6;
+      });
+
+      footer();
     }
     // ═══════════════════════════════════════════════════════════
     // DIAGRAMA DE GANTT (después del Kanban) — A4 landscape
