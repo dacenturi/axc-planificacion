@@ -2182,7 +2182,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-14';
+    const VERSION   = 'global-pdf-15-compacto';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2237,7 +2237,7 @@ async function exportPDF(modo){
       doc.setTextColor(...GRAY);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.text('AXC Constructora — Reporte Global', MX, pageH - 7);
+      doc.text(`AXC Constructora — ${tipoReporte}`, MX, pageH - 7);
       doc.text(`Página ${pageNum}${totalPagesText ? ' de ' + totalPagesText : ''}`, pageW / 2, pageH - 7, { align: 'center' });
       doc.text(`Conexdata · ${VERSION}`, pageW - MX, pageH - 7, { align: 'right' });
     }
@@ -2267,276 +2267,194 @@ async function exportPDF(modo){
       ? `${fmtFecha(window._filters.fechaDesde)} a ${fmtFecha(window._filters.fechaHasta)}`
       : 'Todas las fechas';
 
+    // ─── Metadatos del reporte (tipo, responsable, período legible, fecha archivo) ───
+    const tipoReporte   = isCont ? 'Planificación Contratista' : 'Planificación Actividades Residente';
+    const tipoReporteUP = isCont ? 'PLANIFICACIÓN — CONTRATISTA' : 'PLANIFICACIÓN — ACTIVIDADES RESIDENTE';
+    const respFilter    = isCont
+      ? describeFilter('contratistas', 'Todos los contratistas')
+      : describeFilter('residentes', 'Todos los residentes');
+    const respNombre    = respFilter.all
+      ? (isCont ? 'Todos los contratistas' : 'Todos los residentes')
+      : (respFilter.n === 1 ? respFilter.label : `${respFilter.n} ${isCont ? 'contratistas' : 'residentes'}`);
+    const periodoLeg    = (window._filters.fechaDesde || window._filters.fechaHasta)
+      ? `${fmtFecha(window._filters.fechaDesde) || 'inicio'} a ${fmtFecha(window._filters.fechaHasta) || 'hoy'}`
+      : 'Todas las fechas';
+    // Fecha para el nombre de archivo: DD_MM_YYYY
+    const _hoyArch     = new Date();
+    const fechaArchivo = `${String(_hoyArch.getDate()).padStart(2,'0')}_${String(_hoyArch.getMonth()+1).padStart(2,'0')}_${_hoyArch.getFullYear()}`;
+    // Helper: sanitiza un texto para usarlo en nombre de archivo
+    const _slug = (s) => String(s || '').trim().replace(/\s+/g, '_').replace(/[\/\\:*?"<>|]/g, '');
+
     if(!kg){
     // ═══════════════════════════════════════════════════════════
-    // PÁGINA 1: PORTADA
+    // PÁGINA 1 — PORTADA EJECUTIVA COMPACTA
+    // Reemplaza portada + filtros + resumen ejecutivo en UNA sola hoja.
     // ═══════════════════════════════════════════════════════════
-    // Banda navy completa en top
-    doc.setFillColor(...NAVY);
-    doc.rect(0, 0, pageW, 70, 'F');
-    doc.setFillColor(...GOLD);
-    doc.rect(0, 70, pageW, 2, 'F');
 
-    // Logo real AXC, centrado en la banda navy
-    // Tamaño objetivo: 60mm × 20mm (ratio ~3:1 del logo 201×66)
-    try{
-      doc.addImage(AXC_LOGO_BASE64, 'JPEG', pageW/2 - 30, 22, 60, 20, undefined, 'FAST');
-    } catch(e){
-      // Fallback: cuadrado dorado con AXC textual
-      doc.setFillColor(...GOLD);
-      doc.rect(pageW/2 - 18, 18, 36, 36, 'F');
-      doc.setTextColor(...NAVY_DARK);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('AXC', pageW/2, 33, { align: 'center' });
-      doc.setFontSize(8);
-      doc.text('CONSTRUCTORA', pageW/2, 42, { align: 'center' });
-    }
-    // Sello de la marca debajo del logo en la banda navy
-    doc.setTextColor(...GOLD_LIGHT);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.text('— PLANIFICACIÓN DE OBRAS —', pageW/2, 50, { align: 'center' });
-
-    // Subtítulo bajo banner
-    doc.setTextColor(...NAVY);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(26);
-    doc.text('Reporte Global', pageW/2, 95, { align: 'center' });
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(14);
-    doc.setTextColor(...GRAY_TEXT);
-    doc.text('Dashboard de Planificación', pageW/2, 105, { align: 'center' });
-
-    // Línea decorativa
-    doc.setDrawColor(...GOLD);
-    doc.setLineWidth(0.8);
-    doc.line(pageW/2 - 25, 112, pageW/2 + 25, 112);
-
-    // Bloque info: tarjeta gris con bordes redondeados
-    const cardX = MX + 20, cardY = 130, cardW = pageW - 2*MX - 40, cardH = 75;
-    doc.setFillColor(...GRAY_LIGHT);
-    doc.setDrawColor(...GRAY_BORD);
-    doc.setLineWidth(0.3);
-    doc.roundedRect(cardX, cardY, cardW, cardH, 3, 3, 'FD');
-    // Items del bloque
-    const cardItems = [
-      ['Aplicación:',  appLabel],
-      ['Total actividades:', `${acts.length} (${actsPlan.length} planificadas · ${actsImprev.length} imprevistas)`],
-      ['Período:',     (window._filters.fechaDesde || window._filters.fechaHasta) ? `${fmtFecha(window._filters.fechaDesde) || 'inicio'} a ${fmtFecha(window._filters.fechaHasta) || 'hoy'}` : 'Todas las fechas'],
-      ['Generado:',    fechaLeg],
-      ['Versión:',     VERSION]
-    ];
-    let cy = cardY + 12;
-    cardItems.forEach(([k, v]) => {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.setTextColor(...NAVY);
-      doc.text(k, cardX + 8, cy);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(...GRAY_TEXT);
-      doc.text(String(v), cardX + 50, cy);
-      cy += 12;
-    });
-
-    // Footer simple en portada
-    doc.setTextColor(...GRAY);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.text('AXC Constructora — Reporte Global', MX, pageH - 7);
-    doc.text(`Conexdata · ${VERSION}`, pageW - MX, pageH - 7, { align: 'right' });
-
-    // ═══════════════════════════════════════════════════════════
-    // PÁGINA 2: FILTROS APLICADOS
-    // ═══════════════════════════════════════════════════════════
-    doc.addPage();
-    drawHeader('Filtros Aplicados', 2);
-    // Subtítulo
-    doc.setTextColor(...NAVY);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('Filtros Aplicados', MX, MT + 8);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9.5);
-    doc.setTextColor(...GRAY_TEXT);
-    doc.text(`Vista filtrada del dashboard al momento de la exportación. ${acts.length} actividades en el resultado.`, MX, MT + 14);
-
-    // Construir tabla de filtros
-    const filtros = [
-      { lbl: 'Aplicación',      val: appLabel + (isCont ? '' : ' (sin columna Contratista)') },
-      { lbl: 'Residentes',      val: describeFilter('residentes', 'Todos los residentes').label },
-      { lbl: 'Obras',           val: describeFilter('obras', 'Todas las obras').label },
-      { lbl: 'Contratistas',    val: describeFilter('contratistas', 'Todos los contratistas').label },
-      { lbl: 'Sectores',        val: describeFilter('sectores', 'Todos los sectores').label },
-      { lbl: 'Razones No Cumple', val: describeFilter('razones', 'Todas las razones').label },
-      { lbl: 'Estado',          val: describeFilter('estado', 'Todos los estados').label },
-      { lbl: 'Criticidad',      val: describeFilter('criticidad', 'Todas las criticidades').label },
-      { lbl: 'Tipo de Actividad', val: describeFilter('tipo', 'Todas (Plan + Imprevistas)').label },
-      { lbl: 'Rango de Fechas', val: (window._filters.fechaDesde || window._filters.fechaHasta)
-                                      ? `Desde ${fmtFecha(window._filters.fechaDesde) || '—'} · Hasta ${fmtFecha(window._filters.fechaHasta) || '—'}`
-                                      : 'Sin filtro de fechas' }
-    ];
-
-    doc.autoTable({
-      startY: MT + 22,
-      head: [['Filtro', 'Valor aplicado']],
-      body: filtros.map(f => [f.lbl, f.val]),
-      theme: 'grid',
-      headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: 9.5, halign: 'left' },
-      bodyStyles: { fontSize: 9.5, textColor: GRAY_TEXT, valign: 'middle' },
-      alternateRowStyles: { fillColor: GRAY_LIGHT },
-      columnStyles: {
-        0: { fontStyle: 'bold', textColor: NAVY, cellWidth: 55 },
-        1: { cellWidth: 'auto' }
-      },
-      margin: { left: MX, right: MX },
-      didParseCell: (data) => {
-        // Resaltar fila Tipo de Actividad con tinte naranja si filtra imprevistas
-        if(data.row.section === 'body' && filtros[data.row.index]?.lbl === 'Tipo de Actividad'){
-          const v = filtros[data.row.index].val;
-          if(v && v !== 'Todas (Plan + Imprevistas)'){
-            data.cell.styles.fillColor = [255, 240, 230];
-            data.cell.styles.textColor = [180, 60, 0];
-          }
-        }
-      }
-    });
-
-    drawFooter(2);
-
-    // ═══════════════════════════════════════════════════════════
-    // PÁGINA 3: RESUMEN EJECUTIVO (KPIs)
-    // ═══════════════════════════════════════════════════════════
-    doc.addPage();
-    drawHeader('Resumen Ejecutivo', 3);
-
-    doc.setTextColor(...NAVY);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('Resumen Ejecutivo', MX, MT + 8);
-
-    // KPIs del plan
-    const okPlan = actsPlan.filter(a => _isOK(a)).length;
-    const failPlan = actsPlan.filter(a => _isFAIL(a)).length;
+    // ── Cálculo de KPIs del plan ──
+    const okPlan        = actsPlan.filter(a => _isOK(a)).length;
+    const failPlan      = actsPlan.filter(a => _isFAIL(a)).length;
     const asignadasPlan = okPlan + failPlan;
-    const pctPlan = asignadasPlan > 0 ? Math.round((okPlan / asignadasPlan) * 100) : null;
-
-    // Imprevistas
-    const impResueltas = actsImprev.filter(a => _isOK(a)).length;
+    const pctPlan       = asignadasPlan > 0 ? Math.round((okPlan / asignadasPlan) * 100) : null;
+    const diasAtrasoTot = actsPlan.reduce((s, a) => s + (Number(a.dias_atraso) || 0), 0);
+    const impResueltas  = actsImprev.filter(a => _isOK(a)).length;
     const impCanceladas = actsImprev.filter(a => (a.cumple||'').toLowerCase() === 'cancelado').length;
     const impPendientes = actsImprev.length - impResueltas - impCanceladas;
-    const impPct = actsImprev.length > 0 ? Math.round((impResueltas / actsImprev.length) * 100) : null;
 
-    // Días de atraso totales
-    const diasAtrasoTot = actsPlan.reduce((sum, a) => sum + (Number(a.dias_atraso) || 0), 0);
+    // ── 1) Banda navy: identidad + tipo de reporte + responsable + período ──
+    doc.setFillColor(...NAVY);
+    doc.rect(0, 0, pageW, 40, 'F');
+    doc.setFillColor(...GOLD);
+    doc.rect(0, 40, pageW, 2, 'F');
+    try{ doc.addImage(AXC_LOGO_BASE64, 'JPEG', MX, 8, 22, 7.3, undefined, 'FAST'); }
+    catch(_){
+      doc.setFillColor(...GOLD); doc.rect(MX, 8, 12, 12, 'F');
+      doc.setTextColor(...NAVY_DARK); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text('AXC', MX+6, 14, {align:'center'});
+    }
+    doc.setTextColor(...GOLD_LIGHT);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    doc.text('AXC CONSTRUCTORA  ·  PLANIFICACIÓN DE OBRAS', MX + 26, 12.5);
+    doc.setTextColor(...WHITE);
+    doc.setFont('helvetica','bold'); doc.setFontSize(17);
+    doc.text(tipoReporteUP, MX, 26);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.setTextColor(...GOLD_LIGHT);
+    doc.text(`${isCont ? 'Contratista' : 'Residente'}: ${respNombre}        Período: ${periodoLeg}`, MX, 34);
+    doc.setFontSize(8); doc.setTextColor(220,225,235);
+    doc.text(`Generado: ${fechaLeg}`, pageW - MX, 12.5, {align:'right'});
 
-    // ─── KPI cards (2 filas × 3 cols + bloque imprevistas debajo) ───
-    function drawKPI(x, y, w, h, label, value, sub, color){
-      doc.setFillColor(...WHITE);
-      doc.setDrawColor(...GRAY_BORD);
-      doc.setLineWidth(0.3);
+    // ── 2) Strip de métricas clave ──
+    const stripY = 47;
+    doc.setFillColor(...GRAY_LIGHT);
+    doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.3);
+    doc.roundedRect(MX, stripY, pageW - 2*MX, 12, 2, 2, 'FD');
+    const stripItems = [
+      ['Actividades plan', String(actsPlan.length)],
+      ['Imprevistas',      String(actsImprev.length)],
+      ['Asignadas',        String(asignadasPlan)],
+      ['% Cumplimiento',   pctPlan !== null ? pctPlan + '%' : '—'],
+      ['Días atraso',      String(diasAtrasoTot)]
+    ];
+    const stripW = (pageW - 2*MX) / stripItems.length;
+    stripItems.forEach((it, i) => {
+      const sx = MX + i*stripW + 5;
+      if(i>0){ doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2); doc.line(MX + i*stripW, stripY+2.5, MX + i*stripW, stripY+9.5); }
+      doc.setFont('helvetica','normal'); doc.setFontSize(6.6); doc.setTextColor(...GRAY);
+      doc.text(it[0].toUpperCase(), sx, stripY + 4.6);
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(...NAVY);
+      doc.text(it[1], sx, stripY + 9.6);
+    });
+
+    // ── 3) Resumen ejecutivo: grilla compacta 3×2 de KPI cards ──
+    let yS = stripY + 21;
+    doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(...NAVY);
+    doc.text('Resumen Ejecutivo', MX, yS);
+    doc.setDrawColor(...GOLD); doc.setLineWidth(0.7);
+    doc.line(MX, yS + 2, MX + 42, yS + 2);
+
+    function drawKPIc(x, y, w, h, label, value, sub, color){
+      doc.setFillColor(...WHITE); doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.3);
       doc.roundedRect(x, y, w, h, 2, 2, 'FD');
-      // Barra superior color
-      doc.setFillColor(...color);
-      doc.rect(x, y, w, 2, 'F');
-      // Label
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.setTextColor(...GRAY);
-      doc.text(label.toUpperCase(), x + 5, y + 8);
-      // Value
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(20);
-      doc.setTextColor(...color);
-      doc.text(String(value), x + 5, y + 22);
-      // Sub
+      doc.setFillColor(...color); doc.rect(x, y, w, 1.8, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GRAY);
+      doc.text(label.toUpperCase(), x + 4, y + 6.8);
+      doc.setFont('helvetica','bold'); doc.setFontSize(17); doc.setTextColor(...color);
+      doc.text(String(value), x + 4, y + 17);
       if(sub){
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(7.5);
-        doc.setTextColor(...GRAY_TEXT);
-        doc.text(sub, x + 5, y + 30);
+        doc.setFont('helvetica','normal'); doc.setFontSize(6.6); doc.setTextColor(...GRAY_TEXT);
+        doc.text(doc.splitTextToSize(sub, w - 8).slice(0,1), x + 4, y + 23);
       }
     }
+    const cgW = (pageW - 2*MX - 2*5) / 3;
+    const cgH = 27;
+    let cgY = yS + 6;
+    drawKPIc(MX,             cgY, cgW, cgH, 'Total Plan',       actsPlan.length, actsImprev.length ? `+ ${actsImprev.length} imprevistas` : 'sin imprevistas', NAVY);
+    drawKPIc(MX + (cgW+5),   cgY, cgW, cgH, 'Cumple',           okPlan, asignadasPlan ? `${Math.round(okPlan/asignadasPlan*100)}% de asignadas` : '—', GREEN);
+    drawKPIc(MX + 2*(cgW+5), cgY, cgW, cgH, 'No Cumple',        failPlan, asignadasPlan ? `${Math.round(failPlan/asignadasPlan*100)}% de asignadas` : '—', RED);
+    cgY += cgH + 5;
+    drawKPIc(MX,             cgY, cgW, cgH, '% Cumplimiento',   pctPlan !== null ? pctPlan + '%' : '—', 'sobre asignadas', GOLD);
+    drawKPIc(MX + (cgW+5),   cgY, cgW, cgH, 'Días Atraso Tot.', diasAtrasoTot, 'acumulados en el plan', AMBER);
+    drawKPIc(MX + 2*(cgW+5), cgY, cgW, cgH, 'Imprevistas',      actsImprev.length, actsImprev.length ? `${impResueltas} resueltas · ${impPendientes} pend.` : 'sin imprevistas', ORANGE_IMP);
 
-    const kpiW = (pageW - 2*MX - 8) / 3; // 3 columnas
-    const kpiH = 35;
-    let kpiY = MT + 18;
+    // ── 4) Distribución por Estado (izq) + Imprevistas (der) ──
+    let yD = cgY + cgH + 12;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(...NAVY);
+    doc.text('Distribución por Estado', MX, yD);
+    doc.setDrawColor(...GOLD); doc.setLineWidth(0.6); doc.line(MX, yD + 2, MX + 48, yD + 2);
 
-    drawKPI(MX,             kpiY, kpiW, kpiH, 'Total Plan',       actsPlan.length, actsImprev.length ? `+ ${actsImprev.length} imprevistas` : '— sin imprevistas', NAVY);
-    drawKPI(MX + kpiW + 4,   kpiY, kpiW, kpiH, 'Cumple',           okPlan, asignadasPlan ? `${Math.round(okPlan/asignadasPlan*100)}% de las asignadas` : '—', GREEN);
-    drawKPI(MX + 2*(kpiW+4), kpiY, kpiW, kpiH, 'No Cumple',        failPlan, asignadasPlan ? `${Math.round(failPlan/asignadasPlan*100)}% de las asignadas` : '—', RED);
+    const estadoMap = new Map();
+    actsPlan.forEach(a => { const l = _estadoLabel(a); estadoMap.set(l, (estadoMap.get(l)||0)+1); });
+    const estadoRows = [...estadoMap.entries()].sort((a,b)=>b[1]-a[1])
+      .map(([e,n]) => [e, n, actsPlan.length ? Math.round(n/actsPlan.length*100)+'%' : '0%']);
 
-    kpiY += kpiH + 6;
-    drawKPI(MX,             kpiY, kpiW, kpiH, '% Cumplimiento',   pctPlan !== null ? pctPlan + '%' : '—', asignadasPlan ? 'sobre actividades asignadas' : 'sin datos', GOLD);
-    drawKPI(MX + kpiW + 4,   kpiY, kpiW, kpiH, 'Días Atraso Tot.', diasAtrasoTot, 'acumulados en el plan',     AMBER);
-    drawKPI(MX + 2*(kpiW+4), kpiY, kpiW, kpiH, 'Imprevistas',     actsImprev.length, actsImprev.length ? `${impResueltas} resueltas · ${impPendientes} pendientes` : '— sin imprevistas en filtro', ORANGE_IMP);
+    const tableW = (pageW - 2*MX) * 0.56;
+    doc.autoTable({
+      startY: yD + 5,
+      head: [['Estado','Cant.','%']],
+      body: estadoRows,
+      theme: 'striped',
+      headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle:'bold', fontSize: 8 },
+      bodyStyles: { fontSize: 8, textColor: GRAY_TEXT, cellPadding: 1.4 },
+      alternateRowStyles: { fillColor: GRAY_LIGHT },
+      columnStyles: { 0:{cellWidth: tableW-40}, 1:{halign:'center', cellWidth:20}, 2:{halign:'center', cellWidth:20} },
+      margin: { left: MX, right: pageW - MX - tableW },
+      tableWidth: tableW
+    });
 
-    kpiY += kpiH + 12;
-
-    // ─── Bloque imprevistas con razones top (si hay) ───
-    if(actsImprev.length > 0){
-      // Marco naranja
-      doc.setFillColor(255, 245, 235);
-      doc.setDrawColor(...ORANGE_IMP);
-      doc.setLineWidth(0.4);
-      doc.roundedRect(MX, kpiY, pageW - 2*MX, 38, 2, 2, 'FD');
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.setTextColor(...ORANGE_IMP);
-      doc.text('IMPREVISTAS DEL PERIODO', MX + 5, kpiY + 8);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(...GRAY_TEXT);
-      doc.text('(no afectan el PPC del plan)', MX + 70, kpiY + 8);
-
-      // Top razones
-      const razonesMap = new Map();
-      actsImprev.forEach(a => {
-        const r = (a.razon || '— Sin razón —').trim() || '— Sin razón —';
-        razonesMap.set(r, (razonesMap.get(r) || 0) + 1);
-      });
-      const topRazones = [...razonesMap.entries()].sort((a,b) => b[1]-a[1]).slice(0, 4);
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8);
-      doc.setTextColor(...NAVY);
-      doc.text('Razones más frecuentes:', MX + 5, kpiY + 18);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
-      doc.setTextColor(...GRAY_TEXT);
-      const razText = topRazones.map(([r, c]) => `${r} (${c})`).join(' · ') || 'Sin razones registradas';
-      const wrapped = doc.splitTextToSize(razText, pageW - 2*MX - 10);
-      doc.text(wrapped.slice(0, 2), MX + 5, kpiY + 24);
-      kpiY += 44;
+    const boxX = MX + tableW + 6;
+    const boxW = pageW - MX - boxX;
+    const boxY = yD + 5;
+    const boxH = Math.max(38, Math.min((doc.lastAutoTable.finalY - boxY), 70));
+    doc.setFillColor(255, 245, 235); doc.setDrawColor(...ORANGE_IMP); doc.setLineWidth(0.4);
+    doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...ORANGE_IMP);
+    doc.text('IMPREVISTAS DEL PERÍODO', boxX + 4, boxY + 7);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...GRAY_TEXT);
+    doc.text('(no afectan el PPC del plan)', boxX + 4, boxY + 11.5);
+    if(actsImprev.length){
+      doc.setFontSize(8); doc.setTextColor(...NAVY);
+      doc.text([
+        `Total: ${actsImprev.length}   ·   Resueltas: ${impResueltas}`,
+        `Pendientes: ${impPendientes}   ·   Canceladas: ${impCanceladas}`
+      ], boxX + 4, boxY + 18);
+      const rMap = new Map();
+      actsImprev.forEach(a => { const r=(a.razon||'— Sin razón —').trim()||'— Sin razón —'; rMap.set(r,(rMap.get(r)||0)+1); });
+      const topR = [...rMap.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3);
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.8); doc.setTextColor(...GRAY);
+      doc.text('RAZONES FRECUENTES', boxX + 4, boxY + 28);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...GRAY_TEXT);
+      const rtxt = topR.map(([r,c])=>`${r} (${c})`).join(' · ') || 'Sin razones';
+      doc.text(doc.splitTextToSize(rtxt, boxW - 8).slice(0,2), boxX + 4, boxY + 32);
+    } else {
+      doc.setFontSize(8.5); doc.setTextColor(...GRAY_TEXT);
+      doc.text('Sin imprevistas en el filtro actual.', boxX + 4, boxY + 19);
     }
 
-    // ─── Distribución por Estado (tabla resumida) ───
-    if(kpiY + 50 < pageH - MB){
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(12);
-      doc.setTextColor(...NAVY);
-      doc.text('Distribución por Estado', MX, kpiY + 4);
-      const estadoMap = new Map();
-      actsPlan.forEach(a => {
-        const lbl = _estadoLabel(a);
-        estadoMap.set(lbl, (estadoMap.get(lbl) || 0) + 1);
-      });
-      const estadoRows = [...estadoMap.entries()]
-        .sort((a,b) => b[1] - a[1])
-        .map(([est, n]) => [est, n, actsPlan.length ? Math.round(n/actsPlan.length*100) + '%' : '0%']);
-      doc.autoTable({
-        startY: kpiY + 8,
-        head: [['Estado', 'Cantidad', '% del plan']],
-        body: estadoRows,
-        theme: 'striped',
-        headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: 9 },
-        bodyStyles: { fontSize: 9, textColor: GRAY_TEXT },
-        columnStyles: { 1: { halign: 'center', cellWidth: 30 }, 2: { halign: 'center', cellWidth: 30 } },
-        margin: { left: MX, right: MX }
-      });
+    // ── 5) Filtros aplicados — resumen compacto de una línea ──
+    const coverFinalY = Math.max(doc.lastAutoTable.finalY, boxY + boxH) + 9;
+    if(coverFinalY < pageH - 24){
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...NAVY);
+      doc.text('Filtros aplicados:', MX, coverFinalY);
+      const filtrosResumen = [
+        `Obras: ${describeFilter('obras','Todas').label}`,
+        `Sectores: ${describeFilter('sectores','Todos').label}`,
+        isCont ? `Contratistas: ${describeFilter('contratistas','Todos').label}` : `Residentes: ${describeFilter('residentes','Todos').label}`,
+        `Estado: ${describeFilter('estado','Todos').label}`,
+        `Criticidad: ${describeFilter('criticidad','Todas').label}`,
+        `Tipo: ${describeFilter('tipo','Plan + Imprevistas').label}`
+      ].join('   ·   ');
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GRAY_TEXT);
+      doc.text(doc.splitTextToSize(filtrosResumen, pageW - 2*MX), MX, coverFinalY + 4.5);
     }
 
-    drawFooter(3);
+    // Footer de la portada
+    doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
+    doc.line(MX, pageH - 12, pageW - MX, pageH - 12);
+    doc.setTextColor(...GRAY); doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    doc.text(`AXC Constructora — ${tipoReporte}`, MX, pageH - 7);
+    doc.text('Página 1', pageW/2, pageH - 7, {align:'center'});
+    doc.text(`Conexdata · ${VERSION}`, pageW - MX, pageH - 7, {align:'right'});
     } // fin if(!kg): portada + filtros + KPIs (no van en el Reporte Kanban-Gantt)
 
     // ═══════════════════════════════════════════════════════════
@@ -2558,7 +2476,7 @@ async function exportPDF(modo){
       { id: 'sector',      title: 'Volumen por Sector',           onlyRes: true }
     ];
 
-    let curPage = kg ? 0 : 3;
+    let curPage = kg ? 0 : 1; // portada compacta = 1 sola hoja
 
     const chartsToPrint = chartDefs.filter(c =>
       window._charts[c.id] && !(c.onlyCont && !isCont) && !(c.onlyRes && isCont)
@@ -3287,15 +3205,18 @@ async function exportPDF(modo){
     }
 
     if(!kg){
-    // ─── Renderizado de páginas de gráficos: 3 charts por página, ejecutivo y denso ───
-    // 45mm alto + 18mm de bloque por título/respiro. Caben 3 charts holgados en una A4.
-    // Más profesional: dashboard denso, no charts gigantes con espacio vacío.
-    const CHART_IMG_W = pageW - 2*MX;
-    const CHART_IMG_H = 45;
-    const CHART_BLOCK_H = CHART_IMG_H + 18;
-    const CHARTS_PER_PAGE = 3;
+    // ─── Gráficos en GRILLA COMPACTA 2 columnas × 3 filas = 6 por hoja ───
+    // La captura es 2:1 (1800×900); al ir a media página (≈88mm) el alto natural
+    // es ≈44mm → SIN deformación y mucho más denso/profesional que a página completa.
+    const GAP_X = 6, GAP_Y = 7;
+    const COLW  = (pageW - 2*MX - GAP_X) / 2;     // ≈88mm
+    const IMGH  = COLW / 2;                        // 2:1 → ≈44mm
+    const CELLH = 5 + IMGH + GAP_Y;                // título + imagen + respiro
+    const ROWS_PER_PAGE = 3;
+    const PER_PAGE = 2 * ROWS_PER_PAGE;            // 6 gráficos por hoja
+    const GRID_Y0  = MT + 14;
 
-    for(let i = 0; i < chartsToPrint.length; i += CHARTS_PER_PAGE){
+    for(let i = 0; i < chartsToPrint.length; i += PER_PAGE){
       doc.addPage();
       curPage++;
       drawHeader('Gráficos del Dashboard', curPage);
@@ -3305,31 +3226,31 @@ async function exportPDF(modo){
       doc.setFontSize(13);
       doc.text('Gráficos del Dashboard', MX, MT + 6);
 
-      // Hasta 3 charts por página, posiciones calculadas
-      for(let j = 0; j < CHARTS_PER_PAGE && (i + j) < chartsToPrint.length; j++){
+      for(let j = 0; j < PER_PAGE && (i + j) < chartsToPrint.length; j++){
         const def = chartsToPrint[i + j];
         const inst = window._charts[def.id];
         if(!inst) continue;
         const dataURL = await captureChartHighRes(inst);
         if(!dataURL) continue;
-        const yTop = MT + 14 + j * CHART_BLOCK_H;
-        // Título del chart — 12pt bold con peso visual fuerte
+        const col  = j % 2;
+        const row  = Math.floor(j / 2);
+        const xCol = MX + col * (COLW + GAP_X);
+        const yTop = GRID_Y0 + row * CELLH;
+        // Título compacto del chart
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(12);
+        doc.setFontSize(9);
         doc.setTextColor(...NAVY);
-        doc.text(def.title, MX, yTop);
-        // Subrayado dorado prominente
+        doc.text(doc.splitTextToSize(def.title, COLW).slice(0,1), xCol, yTop);
         doc.setDrawColor(...GOLD);
-        doc.setLineWidth(0.8);
-        doc.line(MX, yTop + 2, MX + 55, yTop + 2);
-        // Insertar imagen JPEG con compresión MEDIUM
+        doc.setLineWidth(0.7);
+        doc.line(xCol, yTop + 1.6, xCol + Math.min(40, COLW), yTop + 1.6);
         try{
-          doc.addImage(dataURL, 'JPEG', MX, yTop + 5, CHART_IMG_W, CHART_IMG_H, undefined, 'MEDIUM');
+          doc.addImage(dataURL, 'JPEG', xCol, yTop + 4, COLW, IMGH, undefined, 'MEDIUM');
         } catch(e){
           console.warn('Error insertando imagen chart', def.id, e);
-          doc.setFontSize(9);
+          doc.setFontSize(8);
           doc.setTextColor(...GRAY);
-          doc.text('(No se pudo renderizar este gráfico)', MX, yTop + 25);
+          doc.text('(No se pudo renderizar)', xCol, yTop + 20);
         }
       }
       drawFooter(curPage);
@@ -3860,8 +3781,8 @@ async function exportPDF(modo){
 
     // Recalcular total de páginas y reescribir footers
     const totalPages = doc.getNumberOfPages();
-    // Actualizar todos los footers de "Página X" → "Página X de Y" (excepto portada que ya está OK)
-    for(let p = 2; p <= totalPages; p++){
+    // Actualizar footers "Página X" → "Página X de Y" (incluida la portada)
+    for(let p = 1; p <= totalPages; p++){
       doc.setPage(p);
       // Rectángulo blanco sobre el footer viejo
       doc.setFillColor(...WHITE);
@@ -3873,7 +3794,7 @@ async function exportPDF(modo){
       doc.setTextColor(...GRAY);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.text('AXC Constructora — Reporte Global', MX, pageH - 7);
+      doc.text(`AXC Constructora — ${tipoReporte}`, MX, pageH - 7);
       doc.text(`Página ${p} de ${totalPages}`, pageW / 2, pageH - 7, { align: 'center' });
       doc.text(`Conexdata · ${VERSION}`, pageW - MX, pageH - 7, { align: 'right' });
     }
@@ -3889,9 +3810,10 @@ async function exportPDF(modo){
     }
 
     // Guardar
+    const _respArch = _slug(respNombre);
     const filename = kg
-      ? `AXC_Reporte_Kanban-Gantt_${appLabel}_${tsISO}.pdf`
-      : `AXC_Reporte_Global_${appLabel}_${tsISO}.pdf`;
+      ? `${_slug(tipoReporte)}_Kanban-Gantt_${_respArch}_${fechaArchivo}.pdf`
+      : `${_slug(tipoReporte)}_${_respArch}_${fechaArchivo}.pdf`;
     doc.save(filename);
     showToast(`✓ PDF generado: ${filename}`, 'ok');
   } catch(e){
