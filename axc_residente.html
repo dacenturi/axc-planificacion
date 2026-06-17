@@ -1570,6 +1570,18 @@ const ESTADOS_MANUALES = ['En espera', 'Cancelado'];
 const ESTADOS_NO_CUMPLE = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
 const ESTADOS_CALCULADOS = ['En proceso', 'Terminado', 'Cumplido con atraso', 'Retrasado'];
 
+// ═══ CRITERIO ÚNICO DE MEDICIÓN — IDÉNTICO EN LOS 3 ARCHIVOS ════════════
+// Doc de referencia: AXC_Criterio_Unico_Medicion. El % SIEMPRE se mide sobre
+// el estado EFECTIVO (calculado en vivo p/confirmadas vía _estadoEfectivoExport),
+// nunca sobre a.cumple crudo. Los neutros NO entran al denominador del %.
+const KPI_CUMPLE    = ['Terminado', 'Cumplido con atraso', 'Cumple', 'Sí'];
+const KPI_NO_CUMPLE = ['Retrasado', 'Cancelado', 'No Cumple', 'No'];
+const KPI_NEUTRO    = ['En proceso', 'En espera', 'Sin asignar', ''];
+// Razón obligatoria (eje separado del %: En espera es neutro pero pide razón):
+const RAZON_OBLIGATORIA = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
+// Figuran en el reporte de atrasos si sus días de atraso > 0:
+const ATRASO_STATES = ['Cumplido con atraso', 'Retrasado'];
+
 // Calcula contadores de la actividad. Usa solo días dentro del rango planificado.
 function _contadoresActividad(act){
   const D = (act.days || []).filter(v => !!v).length;
@@ -1640,6 +1652,19 @@ function calcularEstadoAuto(act){
 function razonEsObligatoria(act){
   const estado = calcularEstadoAuto(act);
   return ESTADOS_NO_CUMPLE.includes(estado);
+}
+
+// Estado EFECTIVO para Reporte / PDF / Excel (lo que el usuario espera ver):
+// - Confirmada → calcularEstadoAuto (que ya maneja Auto + En espera/Cancelado manual)
+// - NO confirmada → a.cumple crudo (compatibilidad legacy)
+// ★ INTEGRIDAD WEB=PDF: el reporte debe clasificar por este estado, NO por
+//   a.cumple crudo, para coincidir con axc_reporte_global (que usa _estadoLabel).
+function _estadoEfectivoExport(a){
+  if(!a) return '';
+  if(a.confirmada){
+    try { return calcularEstadoAuto(a) || ''; } catch(e){ return a.cumple || ''; }
+  }
+  return a.cumple || '';
 }
 
 // Renderiza la celda de Avance % con barra de progreso visual.
@@ -2310,10 +2335,8 @@ function renderTable(){
       sd = marked.length ? dates[marked[0]] : null;
       ed = marked.length ? dates[marked[marked.length-1]] : null;
     }
-    // isFail: actividad considerada incumplida. Incluye valores legacy ('No Cumple')
-    // y los nuevos estados que implican no-cumplimiento.
-    const _failStates = ['No Cumple','Retrasado','Cancelado'];
-    const isFail=_failStates.includes(a.cumple||'');
+    // isFail: actividad considerada incumplida (criterio único, estado efectivo).
+    const isFail=KPI_NO_CUMPLE.includes(_estadoEfectivoExport(a));
     const tr=document.createElement('tr');
 
     // Visual diferenciador para imprevistas (Fase 2): clase que dispara
@@ -3215,10 +3238,11 @@ function renderReport(){
   const actsImprev = actsVisAll.filter(a => !!a.imprevista);
 
   const total=actsVis.length;
-  const _okStates   = ['Cumple','Terminado','Cumplido con atraso'];
-  const _failStates = ['No Cumple','Retrasado','Cancelado'];
-  const ok=actsVis.filter(a=>_okStates.includes(a.cumple||'')).length;
-  const fail=actsVis.filter(a=>_failStates.includes(a.cumple||'')).length;
+  const _okStates   = KPI_CUMPLE;      // criterio único
+  const _failStates = KPI_NO_CUMPLE;   // criterio único
+  const _eff = a => _estadoEfectivoExport(a);   // ★ estado efectivo (calculado p/confirmadas) → idéntico al PDF
+  const ok=actsVis.filter(a=>_okStates.includes(_eff(a))).length;
+  const fail=actsVis.filter(a=>_failStates.includes(_eff(a))).length;
   const asignadas=ok+fail;
   const pct=asignadas>0?Math.round(ok/asignadas*100):null;
   document.getElementById('kv-t').textContent=total;
@@ -3229,10 +3253,11 @@ function renderReport(){
   // Card de Imprevistas
   const impTotal = actsImprev.length;
   const impResueltas = actsImprev.filter(a => {
-    const c = (a.cumple || '').trim();
-    return c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple';
+    const c = _eff(a);
+    return c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple' || c === 'Sí';
   }).length;
-  const impPendientes = impTotal - impResueltas - actsImprev.filter(a => (a.cumple||'').trim() === 'Cancelado').length;
+  const impCanceladas = actsImprev.filter(a => _eff(a) === 'Cancelado').length;
+  const impPendientes = impTotal - impResueltas - impCanceladas;
   document.getElementById('kv-imp').textContent = impTotal;
   document.getElementById('kv-imp-sub').textContent = impTotal > 0
     ? `${impResueltas} resueltas · ${impPendientes} pendientes`
@@ -3246,19 +3271,20 @@ function renderReport(){
   tbody.innerHTML='';
   // Labels bonitos para cada estado
   const _labelsEstado = {
-    'Cumple':'✓ Cumple', 'No Cumple':'✗ No cumple',
+    'Cumple':'✓ Cumple', 'No Cumple':'✗ No cumple', 'Sí':'✓ Cumple', 'No':'✗ No cumple',
     'En proceso':'⏳ En proceso', 'Terminado':'✓ Terminado',
     'Cumplido con atraso':'⚠ Con atraso',
-    'En espera':'⏸ En espera', 'Retrasado':'⚠ Retrasado', 'Cancelado':'✗ Cancelado'
+    'En espera':'⏸ En espera', 'Retrasado':'⚠ Retrasado', 'Cancelado':'✗ Cancelado',
+    'Sin asignar':'— Sin asignar'
   };
   actsParaTabla.forEach((a,i)=>{
     const m=a.days.map((v,j)=>v?j:-1).filter(j=>j>=0);
     const sd=m.length?dates[m[0]]:null,ed=m.length?dates[m[m.length-1]]:null,dur=m.length;
-    const cumpleVal = a.cumple || '';
+    const cumpleVal = _eff(a);                       // ★ estado efectivo (calculado p/confirmadas)
     const isFail = _failStates.includes(cumpleVal);
     const isOk   = _okStates.includes(cumpleVal);
     const badgeClass = isFail ? 'br' : (isOk ? 'bg' : '');
-    const badgeText  = cumpleVal ? (_labelsEstado[cumpleVal] || cumpleVal) : '— Sin asignar';
+    const badgeText  = _labelsEstado[cumpleVal] || '— Sin asignar';
     const tr=document.createElement('tr');
     // Aplicar clase visual diferenciada si es imprevista (Fase 3 + Fase 2 reutilizado)
     if(a.imprevista) tr.classList.add('row-imprevista');
@@ -3317,7 +3343,7 @@ function renderGantt(){
   html+=`</div></div>`;
 
   // ── Rows (ordenadas por fecha de inicio) ─────────────────────────
-  const _failStatesG = ['No Cumple','Retrasado','Cancelado'];
+  const _failStatesG = KPI_NO_CUMPLE;   // criterio único
   actsGantt.forEach(a=>{
     // Mapear cada tilde a una columna del rango visible.
     // - Hábiles desde a.days[]
@@ -3346,7 +3372,7 @@ function renderGantt(){
     } else {
       markedIdx = a.days.map((v,i)=>v?i:-1).filter(i=>i>=0&&i<n);
     }
-    const isFail=_failStatesG.includes(a.cumple||'');
+    const isFail=_failStatesG.includes(_estadoEfectivoExport(a));
     const nm=a.descripcion?(a.descripcion.length>44?a.descripcion.slice(0,43)+'…':a.descripcion):(a.item?(a.item.length>44?a.item.slice(0,43)+'…':a.item):'(sin nombre)');
 
     // tick lines (column dividers) — domingo levemente azulado
@@ -3731,8 +3757,8 @@ function _drawKpiCard(doc, x, y, w, h, label, value, accentHex){
 // (rango de fechas del header + Obra + Sector + Estado).
 // Devuelve: {total, avancePromedio, ppcOk, ppcFail, ppcPct, diasAtrasoTotal, actsConAtraso, distrib}
 function _calcKpisDelResidente(){
-  const _okStates   = ['Cumple','Terminado','Cumplido con atraso'];
-  const _failStates = ['No Cumple','Retrasado','Cancelado'];
+  const _okStates   = KPI_CUMPLE;      // criterio único
+  const _failStates = KPI_NO_CUMPLE;   // criterio único
   const estadosTabla = ['En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','(Sin estado)'];
   const conteos = Object.fromEntries(estadosTabla.map(s => [s, 0]));
 
@@ -3755,7 +3781,7 @@ function _calcKpisDelResidente(){
   let diasAtrasoTotal = 0, actsConAtraso = 0;
 
   actsVis.forEach(a => {
-    const c = (a.cumple || '').trim();
+    const c = _estadoEfectivoExport(a);   // criterio único: estado efectivo (en vivo)
     // Conteo para distribución
     if(c === 'Cumple') conteos['Terminado']++;
     else if(c === 'No Cumple') conteos['Retrasado']++;
@@ -3794,7 +3820,7 @@ function _calcKpisDelResidente(){
   let impResueltas = 0, impPendientes = 0;
   const razonesCount = {};
   actsImprev.forEach(a => {
-    const c = (a.cumple || '').trim();
+    const c = _estadoEfectivoExport(a);   // criterio único: estado efectivo (en vivo)
     // Resuelta = Terminado / Cumplido con atraso / Cumple
     if(c === 'Terminado' || c === 'Cumplido con atraso' || c === 'Cumple'){
       impResueltas++;
@@ -4024,7 +4050,7 @@ function _filasTablaDetallada(){
   // Solo CONFIRMADAS del plan original + TODAS las imprevistas (las imprevistas
   // son una categoría aparte, ya ocurrieron y se reportan siempre).
   return acts.filter(_passAllFilters).filter(a => !!a.confirmada || !!a.imprevista).map((a, idx) => {
-    const estado = (a.cumple || '').trim() || '—';
+    const estado = _estadoEfectivoExport(a) || '—';   // criterio único
     const descBase = (a.descripcion || a.item || '(sin descripción)').trim();
     // Prefijo [IMPR] para imprevistas — la fuente Helvetica de jsPDF no soporta
     // emojis Unicode (📌), por eso usamos texto plano ASCII.
@@ -4187,7 +4213,7 @@ function _drawDetalleImprevistos(doc){
     const desc = (a.descripcion || a.item || '(sin descripción)').trim();
     const fecha = _fmtFechaCorta(a.fechaIni);
     const razon = (a.razon || '—').trim();
-    const estado = (a.cumple || '').trim() || '—';
+    const estado = _estadoEfectivoExport(a) || '—';   // criterio único
     let avance = '—';
     try {
       const av = (typeof calcularAvancePct === 'function') ? calcularAvancePct(a) : null;
@@ -4926,8 +4952,7 @@ function _classifyRow(a, hdr){
 
   if(hasDesc && hasDays && hasObra && hasResid && hasFecha){
     // Estados que requieren razón: los 3 nuevos + los legacy 'No' / 'No Cumple'
-    const _estadosConRazonRPT = ['En espera', 'Retrasado', 'Cancelado', 'No', 'No Cumple'];
-    const requiereRazon = _estadosConRazonRPT.includes(a.cumple || '');
+    const requiereRazon = RAZON_OBLIGATORIA.includes(_estadoEfectivoExport(a));   // criterio único
     if(requiereRazon && !(a.razon||'').trim()) return 'incomplete';
     return 'complete';
   }
@@ -4945,8 +4970,7 @@ function _rowMissingFields(a, hdr){
   if(!(a.obra_row||'').trim())                                 miss.push('Obra');
   if(!(hdr.hdrResidente||'').trim())                           miss.push('Residente (encabezado)');
   if(!hdr.hdrFechaIni)                                         miss.push('Fecha inicio (encabezado)');
-  const _estadosConRazonMF = ['En espera', 'Retrasado', 'Cancelado', 'No', 'No Cumple'];
-  if(_estadosConRazonMF.includes(a.cumple||'') && !(a.razon||'').trim()) miss.push('Razón del estado');
+  if(RAZON_OBLIGATORIA.includes(_estadoEfectivoExport(a)) && !(a.razon||'').trim()) miss.push('Razón del estado');   // criterio único
   return miss;
 }
 
@@ -5068,8 +5092,7 @@ function _updateValidationUI(){
         if(firstOpt.includes('Obra')) _highlightEl(sel);
       });
     }
-    const _estadosConRazonUI = ['En espera', 'Retrasado', 'Cancelado', 'No', 'No Cumple'];
-    if(_estadosConRazonUI.includes(a.cumple||'') && !(a.razon||'').trim()){
+    if(RAZON_OBLIGATORIA.includes(_estadoEfectivoExport(a)) && !(a.razon||'').trim()){   // criterio único
       tr.querySelectorAll('select').forEach(sel => {
         const firstOpt = sel.options[0]?.text || '';
         if(firstOpt.includes('Razón')) _highlightEl(sel);
