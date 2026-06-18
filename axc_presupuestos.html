@@ -431,7 +431,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.2 · precio congelado + redondeo</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.3 · marcas en catálogo</p>
   </div>
 </div>
 
@@ -731,6 +731,25 @@ body{
       </div>
       <div id="insEditWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="insEditCancel">Cancelar</button><button type="button" class="pm-btn" id="insEditSave">Guardar</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="mini-overlay" id="marcasOverlay" style="z-index:10004">
+  <div class="mini-modal">
+    <div class="mini-head"><span>🏷️ Marcas del insumo</span><button type="button" class="mini-x" id="marcasClose">&times;</button></div>
+    <div class="mini-body">
+      <div id="marcasSub" style="font-size:12px;color:#8893a5;margin-bottom:8px"></div>
+      <div class="insmgr-list" id="marcasList" style="max-height:280px;overflow:auto"></div>
+      <div style="margin-top:12px;border-top:1px solid #e6e9ef;padding-top:10px">
+        <label class="pm-label">Agregar marca</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <input id="marcaNom" class="pm-input" maxlength="160" placeholder="Nombre (ej. Cemento Vallemi CP II 50 kg)" style="flex:1 1 100%">
+          <input id="marcaMarca" class="pm-input" maxlength="60" placeholder="Marca (ej. Vallemi)" style="flex:1 1 160px">
+          <input id="marcaPrecio" class="pm-input" inputmode="numeric" placeholder="Precio Gs" style="flex:1 1 120px;text-align:right">
+          <button type="button" class="pm-btn" id="marcaAdd" style="flex:0 0 auto">＋ Agregar</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -3058,11 +3077,12 @@ function renderInsMgr(){
     return '<div class="ins-row">'+
       '<div class="ins-main"><span class="ins-code">'+escapeHtml(i.codigo)+'</span><span class="ins-name">'+escapeHtml(i.nombre||'')+'</span></div>'+
       '<div class="ins-meta">'+escapeHtml(i.unidad||'')+' · Gs '+fmtGs(i.precio||0)+'</div>'+
-      '<div class="ins-acts"><button type="button" class="ins-edit" data-cod="'+escapeHtml(i.codigo)+'" title="Editar">✏️</button>'+
+      '<div class="ins-acts"><button type="button" class="ins-marcas" data-cod="'+escapeHtml(i.codigo)+'" title="Marcas del catálogo">🏷️</button><button type="button" class="ins-edit" data-cod="'+escapeHtml(i.codigo)+'" title="Editar">✏️</button>'+
         '<button type="button" class="ins-del" data-cod="'+escapeHtml(i.codigo)+'" title="Dar de baja">✕</button></div>'+
     '</div>';
   }).join('');
   box.querySelectorAll('.ins-edit').forEach(function(b){ b.addEventListener('click',function(){ openInsEdit(b.getAttribute('data-cod')); }); });
+  box.querySelectorAll('.ins-marcas').forEach(function(b){ b.addEventListener('click',function(){ openMarcas(b.getAttribute('data-cod')); }); });
   box.querySelectorAll('.ins-del').forEach(function(b){ b.addEventListener('click',function(){ bajaInsumo(b.getAttribute('data-cod')); }); });
 }
 
@@ -3109,6 +3129,101 @@ async function saveInsEdit(){
     _audit('insumo', _insEditCod, 'editar', {nombre: nom, precio: precio});
   }catch(e){ console.warn('saveInsEdit',e); showToast('No se pudo actualizar: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+// ── Marcas del insumo (productos del catálogo que comparten el código) ──
+let _marcasCod=null, _marcasUni='', _marcasDefaultPid=null;
+async function openMarcas(codigo){
+  _marcasCod=codigo;
+  const i=(ed.insList||[]).find(function(x){return x.codigo===codigo;});
+  _marcasUni = i ? (i.unidad||'') : '';
+  _marcasDefaultPid=null;
+  try{ const r=await sb.from('insumos').select('producto_id').eq('codigo',codigo).maybeSingle(); _marcasDefaultPid=(r.data&&r.data.producto_id!=null)?String(r.data.producto_id):null; }catch(e){}
+  document.getElementById('marcasSub').textContent='Código '+codigo+(i&&i.nombre?' · '+i.nombre:'')+'. Las marcas comparten este código y aparecen en el selector 🏷️ del presupuesto.';
+  document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
+  await renderMarcas();
+  document.getElementById('marcasOverlay').classList.add('show');
+}
+function closeMarcas(){ document.getElementById('marcasOverlay').classList.remove('show'); }
+async function renderMarcas(){
+  const box=document.getElementById('marcasList');
+  box.innerHTML='<div class="mg-empty">Cargando…</div>';
+  let prods=[];
+  try{ const q=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,activo').eq('codigo',_marcasCod).order('precio_referencia'); prods=q.data||[]; }catch(e){ console.warn('renderMarcas',e); }
+  if(!prods.length){ box.innerHTML='<div class="mg-empty">Sin marcas para este código. Agregá la primera abajo.</div>'; return; }
+  box.innerHTML=prods.map(function(p){
+    const isDef = _marcasDefaultPid!=null && String(p.id)===_marcasDefaultPid;
+    const baja = p.activo===false;
+    return '<div class="ins-row"'+(baja?' style="opacity:.5"':'')+'>'+
+      '<div class="ins-main"><span class="ins-name">'+escapeHtml((p.marca?p.marca+' · ':'')+(p.nombre||''))+'</span>'+(isDef?'<span style="margin-left:6px;font-size:11px;background:#1F3864;color:#fff;border-radius:10px;padding:1px 7px">predeterminada</span>':'')+(baja?'<span style="margin-left:6px;font-size:11px;color:#c0392b">baja</span>':'')+'</div>'+
+      '<div class="ins-meta">Gs '+fmtGs(Number(p.precio_referencia)||0)+'</div>'+
+      '<div class="ins-acts">'+
+        ((isDef||baja)?'':'<button type="button" class="mc-def" data-pid="'+p.id+'" title="Hacer predeterminada">★</button>')+
+        '<button type="button" class="mc-edit" data-pid="'+p.id+'" data-precio="'+(Number(p.precio_referencia)||0)+'" title="Editar precio">✏️</button>'+
+        (isDef?'':'<button type="button" class="mc-del" data-pid="'+p.id+'" title="Dar de baja">✕</button>')+
+      '</div></div>';
+  }).join('');
+  box.querySelectorAll('.mc-def').forEach(function(b){ b.addEventListener('click',function(){ setMarcaDefault(b.getAttribute('data-pid')); }); });
+  box.querySelectorAll('.mc-edit').forEach(function(b){ b.addEventListener('click',function(){ editMarcaPrecio(b.getAttribute('data-pid'), Number(b.getAttribute('data-precio'))||0); }); });
+  box.querySelectorAll('.mc-del').forEach(function(b){ b.addEventListener('click',function(){ bajaMarca(b.getAttribute('data-pid')); }); });
+}
+async function addMarca(){
+  const nom=(document.getElementById('marcaNom').value||'').trim();
+  const marca=(document.getElementById('marcaMarca').value||'').trim();
+  const precio=_numInt(document.getElementById('marcaPrecio').value);
+  if(!nom){ showToast('Falta el nombre de la marca','error'); return; }
+  if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
+  const btn=document.getElementById('marcaAdd'); const old=btn.textContent; btn.disabled=true; btn.textContent='…';
+  try{
+    const nowIso=new Date().toISOString();
+    const payload={ nombre:nom, marca:marca||null, precio_referencia:precio, unidad_medida:_marcasUni||null, categoria:'insumo', codigo:_marcasCod, search_terms:((marca+' '+nom).toLowerCase().split(/\s+/).filter(Boolean)), activo:true, creado_por:_userTag(), created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
+    let prod=await sb.from('productos_catalogo').insert(payload).select('id').single();
+    if(prod.error){
+      const mx=await sb.from('productos_catalogo').select('id').order('id',{ascending:false}).limit(1).maybeSingle();
+      const nextId=(mx.data&&mx.data.id?Number(mx.data.id):0)+1;
+      prod=await sb.from('productos_catalogo').insert(Object.assign({id:nextId},payload)).select('id').single();
+    }
+    if(prod.error) throw prod.error;
+    document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
+    await renderMarcas();
+    showToast('Marca agregada','success');
+    _audit('marca', _marcasCod, 'agregar', {nombre:nom, marca:marca, precio:precio});
+  }catch(e){ console.warn('addMarca',e); showToast('No se pudo agregar: '+(e.message||''),'error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+async function setMarcaDefault(pid){
+  try{
+    const u=await sb.from('insumos').update({producto_id:String(pid)}).eq('codigo',_marcasCod);
+    if(u.error) throw u.error;
+    _marcasDefaultPid=String(pid);
+    ed.insList=null; await loadInsList();
+    await renderMarcas(); renderInsMgr();
+    showToast('Marca predeterminada actualizada','success');
+    _audit('marca', _marcasCod, 'predeterminada', {producto_id:pid});
+  }catch(e){ console.warn('setMarcaDefault',e); showToast('No se pudo: '+(e.message||''),'error'); }
+}
+function editMarcaPrecio(pid, actual){
+  const v=prompt('Nuevo precio de referencia (Gs):', actual||0);
+  if(v==null) return;
+  const precio=_numInt(v);
+  if(!(precio>0)){ showToast('Precio inválido','error'); return; }
+  sb.from('productos_catalogo').update({precio_referencia:precio, updated_at:new Date().toISOString()}).eq('id',Number(pid)).then(async function(r){
+    if(r.error){ showToast('No se pudo: '+(r.error.message||''),'error'); return; }
+    if(_marcasDefaultPid!=null && String(pid)===_marcasDefaultPid){ ed.insList=null; await loadInsList(); }
+    await renderMarcas(); renderInsMgr();
+    showToast('Precio actualizado','success');
+    _audit('marca', _marcasCod, 'precio', {producto_id:pid, precio:precio});
+  });
+}
+async function bajaMarca(pid){
+  if(!confirm('¿Dar de baja esta marca? Deja de aparecer en el selector, sin tocar presupuestos ya guardados.')) return;
+  try{
+    const u=await sb.from('productos_catalogo').update({activo:false, updated_at:new Date().toISOString()}).eq('id',Number(pid));
+    if(u.error) throw u.error;
+    await renderMarcas();
+    showToast('Marca dada de baja','success');
+    _audit('marca', _marcasCod, 'baja', {producto_id:pid});
+  }catch(e){ console.warn('bajaMarca',e); showToast('No se pudo: '+(e.message||''),'error'); }
 }
 
 // ── Insumo: baja inteligente ──
@@ -3625,6 +3740,9 @@ document.getElementById('insEditCancel').addEventListener('click', closeInsEdit)
 document.getElementById('insEditSave').addEventListener('click', saveInsEdit);
 document.getElementById('insEditNom').addEventListener('input', _checkInsEditDup);
 document.getElementById('insEditOverlay').addEventListener('click', function(e){ if(e.target===this) closeInsEdit(); });
+document.getElementById('marcasClose').addEventListener('click', closeMarcas);
+document.getElementById('marcasOverlay').addEventListener('click', function(e){ if(e.target===this) closeMarcas(); });
+document.getElementById('marcaAdd').addEventListener('click', addMarca);
 
 
 // ── Pestañas Presupuestos / Reporte ──
