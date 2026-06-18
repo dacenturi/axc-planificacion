@@ -132,7 +132,7 @@
           <button id="semNext">›</button>
         </div>
         <label>Empleado</label>
-        <select id="selEmp"><option value="ALL">Todos</option></select>
+        <select id="selEmp"></select>
         <button class="btn-cfg" id="btnCfg">⚙ Jornada</button>
         <button class="btn-cfg" id="btnFer" style="background:var(--orange)">🎌 Feriados</button>
         <button class="btn-xls" id="btnXls">⤓ Excel</button>
@@ -157,7 +157,7 @@
         <thead><tr>
           <th style="text-align:left">Empleado</th>
           <th>Lun</th><th>Mar</th><th>Mié</th><th>Jue</th><th>Vie</th><th>Sáb</th><th>Dom</th>
-          <th>Almuerzo (min)</th><th>Auto</th>
+          <th>Ingreso</th><th>Toler.<br>(min)</th><th>Almuerzo<br>(min)</th><th>Auto</th>
         </tr></thead>
         <tbody id="cfgBody"></tbody>
       </table>
@@ -193,9 +193,15 @@
       </div>
       <label>Horas (opcional — anula el cálculo de entrada/salida)</label>
       <input type="number" step="0.25" min="0" id="ajHorasManual" placeholder="Se calcula de entrada/salida">
+      <div id="ajTardBox" style="margin-top:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;display:none">
+        <div style="font-size:12.5px;color:#b45309;font-weight:600" id="ajTardTxt"></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;text-transform:none;letter-spacing:0;color:var(--ink);font-size:13px;font-weight:500">
+          <input type="checkbox" id="ajTardJust" style="width:16px;height:16px"> No descontar esta tardanza (justificada por el supervisor)
+        </label>
+      </div>
     </div>
-    <label>Nota</label>
-    <input type="text" id="ajNota" placeholder="Motivo de la corrección">
+    <label>Nota / justificativo</label>
+    <input type="text" id="ajNota" placeholder="Motivo de la corrección o de la justificación">
     <div class="modal-actions">
       <button class="btn-ghost" id="ajQuitar">Quitar corrección</button>
       <div><button class="btn-cerrar" id="ajClose">Cancelar</button> <button class="btn-save" id="ajSave">Guardar</button></div>
@@ -231,7 +237,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 const TZ='America/Asuncion';
 const DIAS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
 const CFG_FIELDS=['h_lun','h_mar','h_mie','h_jue','h_vie','h_sab','h_dom'];
-const DEF={h_lun:8,h_mar:8,h_mie:8,h_jue:8,h_vie:8,h_sab:4,h_dom:0,almuerzo_min:60,almuerzo_auto:true};
+const DEF={h_lun:8,h_mar:8,h_mie:8,h_jue:8,h_vie:8,h_sab:4,h_dom:0,almuerzo_min:60,almuerzo_auto:true,hora_entrada:'08:00',tolerancia_min:0};
 
 let empleados=[], cfgMap={}, ubicMap={}, lunes=null, dataCache=null;
 let feriadosMap={}, feriadosAll=[], userEmail='', ajEmp=null, ajDk=null;
@@ -279,7 +285,7 @@ async function cargarBase(){
   ubicMap={}; (u.data||[]).forEach(r=>ubicMap[r.id]=r.nombre);
   feriadosAll=f.data||[]; feriadosMap={}; feriadosAll.forEach(x=>feriadosMap[x.fecha]=x.descripcion||'Feriado');
   const sel=document.getElementById('selEmp');
-  sel.innerHTML='<option value="ALL">Todos</option>'+empleados.map(x=>`<option value="${x.id}">${x.nombre}</option>`).join('');
+  sel.innerHTML=empleados.map(x=>`<option value="${x.id}">${x.nombre}</option>`).join('');
 }
 function cfgDe(empId){ return Object.assign({},DEF,cfgMap[empId]||{}); }
 
@@ -299,7 +305,6 @@ function horasEntreTimes(e,s,cfg){
 
 /* ---------- Cálculo de horas de un día ---------- */
 function calcDia(marcas, cfg, diaIdx){
-  // marcas: [{tipo, iso}] ordenadas
   const ms=marcas.slice().sort((a,b)=>new Date(a.iso)-new Date(b.iso));
   let abierto=null, total=0, pares=0;
   for(const m of ms){
@@ -307,14 +312,18 @@ function calcDia(marcas, cfg, diaIdx){
     else if(m.tipo==='salida' && abierto!==null){ total+=(new Date(m.iso)-abierto); abierto=null; pares++; }
   }
   let horas=total/3600000;
-  // descuento de almuerzo automático
   if(cfg.almuerzo_auto && pares===1 && horas>6){ horas-=cfg.almuerzo_min/60; }
   if(horas<0) horas=0;
-  const entrada = ms.length? horaDeISO(ms[0].iso):'—';
-  const salida  = (ms.length && ms[ms.length-1].tipo==='salida')? horaDeISO(ms[ms.length-1].iso) : (ms.length>1?horaDeISO(ms[ms.length-1].iso):'—');
+  const primera = ms[0]||null;
+  const ultima  = ms.length? ms[ms.length-1]:null;
+  const entrada = primera? horaDeISO(primera.iso):'—';
+  const salida  = (ultima && ultima.tipo==='salida')? horaDeISO(ultima.iso) : (ms.length>1?horaDeISO(ultima.iso):'—');
   const obras=[...new Set(marcas.map(m=>m.obra).filter(Boolean))];
   const incompleto = abierto!==null || (ms.length && pares===0);
-  return {horas,entrada,salida,obras,incompleto,nMarcas:ms.length};
+  return {horas,entrada,salida,obras,incompleto,nMarcas:ms.length,
+          entradaISO: primera?primera.iso:null,
+          obraEntrada: primera?primera.obra:null,
+          obraSalida: ultima?ultima.obra:null};
 }
 
 /* ---------- Traer marcaciones de la semana ---------- */
@@ -345,6 +354,8 @@ async function construir(){
 
   const result=empleados.map(emp=>{
     const cfg=cfgDe(emp.id);
+    const horaEnt=(cfg.hora_entrada||'08:00').slice(0,5);
+    const tol=Number(cfg.tolerancia_min||0);
     const dias=dayKeys.map((dk,i)=>{
       const futuro = dk>hoyKey;
       const fer = feriadosMap[dk];
@@ -355,11 +366,20 @@ async function construir(){
 
       let horas=c.horas, entrada=c.entrada, salida=c.salida, obras=c.obras, incompleto=c.incompleto;
       let esperadas=espBase, saldo=null, estado='', estCls='est-libre';
+      let tardanza=0; // minutos
+      const tardJust = !!(aj && aj.tardanza_justificada);
+
+      // tardanza: solo días laborales con entrada real y sin feriado/justificado
+      if(!futuro && espBase>0 && !fer && c.entradaISO && !(aj&&aj.tipo==='justificado')){
+        const limite = new Date(`${dk}T${horaEnt}:00-03:00`).getTime() + tol*60000;
+        const real = new Date(c.entradaISO).getTime();
+        tardanza = Math.max(0, Math.round((real-limite)/60000));
+      }
 
       if(aj && aj.tipo==='justificado'){
         esperadas=0; horas=0; entrada='—'; salida='—'; saldo=0;
         estado='Justificado'; estCls='est-just';
-      } else if(aj){ // corrección de horas
+      } else if(aj && (aj.entrada||aj.salida||aj.horas_manual!=null)){ // corrección de horas
         if(aj.horas_manual!=null) horas=Number(aj.horas_manual);
         else if(aj.entrada && aj.salida) horas=horasEntreTimes(aj.entrada,aj.salida,cfg);
         if(aj.entrada) entrada=String(aj.entrada).slice(0,5);
@@ -380,108 +400,126 @@ async function construir(){
         saldo=0; estado='Libre'; estCls='est-libre';
       }
 
-      return {fecha:addDays(lunes,i),dk,diaIdx:i,futuro,fer,aj,esperadas,horas,entrada,salida,obras,incompleto,saldo,estado,estCls};
+      // si la tardanza está justificada, se le perdona ese tiempo en el saldo
+      if(saldo!=null && tardJust && tardanza>0){ saldo += tardanza/60; }
+      const tardanzaCobrable = tardJust? 0 : tardanza;
+
+      return {fecha:addDays(lunes,i),dk,diaIdx:i,futuro,fer,aj,esperadas,horas,entrada,salida,obras,
+              obraEntrada:c.obraEntrada,obraSalida:c.obraSalida,incompleto,saldo,estado,estCls,
+              tardanza,tardJust,tardanzaCobrable};
     });
     const trabajadas=dias.reduce((s,d)=>s+(d.futuro?0:d.horas),0);
     const espTot=dias.reduce((s,d)=>s+(d.futuro?0:d.esperadas),0);
     const saldo=dias.reduce((s,d)=>s+((d.futuro||d.saldo==null)?0:d.saldo),0);
+    const extra=dias.reduce((s,d)=>s+((!d.futuro&&d.saldo>0)?d.saldo:0),0);
+    const deficit=dias.reduce((s,d)=>s+((!d.futuro&&d.saldo<0)?-d.saldo:0),0);
+    const tardMin=dias.reduce((s,d)=>s+(d.tardanzaCobrable||0),0);
     const diasTrab=dias.filter(d=>!d.futuro && d.horas>0).length;
     const ausencias=dias.filter(d=>d.estado==='Ausente').length;
-    return {emp,cfg,dias,trabajadas,espTot,saldo,diasTrab,ausencias};
+    return {emp,cfg,dias,trabajadas,espTot,saldo,extra,deficit,tardMin,diasTrab,ausencias};
   });
   return result;
 }
 
-/* ---------- Render ---------- */
+/* ---------- Render (planilla única por empleado) ---------- */
 async function render(){
   document.getElementById('cont').innerHTML='<div class="empty">Cargando…</div>';
   document.getElementById('semLbl').textContent=`${ddmm(lunes)} al ${ddmm(addDays(lunes,6))} · ${lunes.getFullYear()}`;
   dataCache=await construir();
-  const sel=document.getElementById('selEmp').value;
-
-  if(sel==='ALL'){ renderResumen(dataCache); }
-  else { const r=dataCache.find(x=>x.emp.id===sel); renderDetalle(r); }
+  let sel=document.getElementById('selEmp').value;
+  if(!dataCache.find(x=>x.emp.id===sel)){ sel=dataCache[0]?dataCache[0].emp.id:null; if(sel) document.getElementById('selEmp').value=sel; }
+  renderDetalle(dataCache.find(x=>x.emp.id===sel));
 
   document.getElementById('nota').innerHTML =
-    'Horas trabajadas = suma de pares entrada→salida del día. El <b>saldo</b> compara contra la jornada esperada (⚙ Jornada). '+
-    'Verde = horas extra, rojo = a descontar. Estados: <b>Ausente</b> (día laboral sin marcación), <b>Feriado</b> (no computa ausencia), '+
-    '<b>Justificado</b> (permiso/licencia, no descuenta), <b>Corregido</b> (carga manual). Usá el ✎ de cada día para corregir o cargar manualmente.';
+    'Horas trabajadas = pares entrada→salida del día (menos almuerzo). <b>Tardanza</b> = minutos después de la hora de ingreso (⚙ Jornada). '+
+    'El supervisor puede <b>justificar</b> una tardanza con el ✎ para que no se descuente. '+
+    'Estados: <b>Ausente</b>, <b>Feriado</b>, <b>Justificado</b> (permiso/licencia), <b>Corregido</b> (carga manual).';
 }
 
-function kpis(tot){
+function kpis(r){
   const el=document.getElementById('kpis');
   el.innerHTML=`
-    <div class="kpi"><div class="v">${fmtH(tot.trab)}</div><div class="l">Horas trabajadas</div></div>
-    <div class="kpi"><div class="v">${fmtH(tot.esp)}</div><div class="l">Horas esperadas</div></div>
-    <div class="kpi ${tot.saldo>=0?'pos':'neg'}"><div class="v">${fmtHM(tot.saldo)}</div><div class="l">Saldo (extra / descuento)</div></div>
-    <div class="kpi"><div class="v">${tot.personas}</div><div class="l">Personas</div></div>`;
-}
-
-function renderResumen(rows){
-  kpis({trab:rows.reduce((s,r)=>s+r.trabajadas,0), esp:rows.reduce((s,r)=>s+r.espTot,0),
-        saldo:rows.reduce((s,r)=>s+r.saldo,0), personas:rows.length});
-  let h=`<table><thead><tr>
-    <th>Empleado</th><th class="num">Días trab.</th><th class="num">Ausencias</th><th class="num">Trabajadas</th>
-    <th class="num">Esperadas</th><th class="num">Saldo</th><th>Estado</th></tr></thead><tbody>`;
-  rows.forEach(r=>{
-    const cls=r.saldo>0.01?'pos':(r.saldo<-0.01?'neg':'zero');
-    const estado=r.saldo>0.01?'Horas extra':(r.saldo<-0.01?'A descontar':'Al día');
-    h+=`<tr>
-      <td class="nombre"><b>${r.emp.nombre}</b><small>${r.emp.codigo} · ${r.emp.cargo||''}</small></td>
-      <td class="num">${r.diasTrab}</td>
-      <td class="num ${r.ausencias?'neg':'zero'}">${r.ausencias||0}</td>
-      <td class="num">${fmtH(r.trabajadas)}</td>
-      <td class="num">${fmtH(r.espTot)}</td>
-      <td class="num ${cls}">${fmtHM(r.saldo)}</td>
-      <td class="${cls}">${estado}</td></tr>`;
-  });
-  h+=`</tbody></table>`;
-  document.getElementById('cont').innerHTML=h;
+    <div class="kpi"><div class="v">${fmtH(r.trabajadas)}</div><div class="l">Horas trabajadas</div></div>
+    <div class="kpi pos"><div class="v">${fmtH(r.extra)}</div><div class="l">Horas extra</div></div>
+    <div class="kpi neg"><div class="v">${r.tardMin} min</div><div class="l">Tardanza (a descontar)</div></div>
+    <div class="kpi ${r.saldo>=0?'pos':'neg'}"><div class="v">${fmtHM(r.saldo)}</div><div class="l">Saldo neto</div></div>`;
 }
 
 function renderDetalle(r){
   if(!r){ document.getElementById('cont').innerHTML='<div class="empty">Sin datos</div>'; return; }
-  kpis({trab:r.trabajadas, esp:r.espTot, saldo:r.saldo, personas:1});
+  kpis(r);
   let h=`<table><thead><tr>
-    <th>Día</th><th>Entrada</th><th>Salida</th><th>Obra(s)</th>
-    <th class="num">Trab.</th><th class="num">Esp.</th><th class="num">Saldo</th><th>Estado</th><th></th></tr></thead><tbody>`;
+    <th>Día</th>
+    <th>Entrada<br><small>obra</small></th>
+    <th>Salida<br><small>obra</small></th>
+    <th class="num">Tardanza</th>
+    <th class="num">Trab.</th><th class="num">Esp.</th><th class="num">Saldo</th>
+    <th>Estado</th><th></th></tr></thead><tbody>`;
   r.dias.forEach((d,i)=>{
     const cls=d.saldo===null?'zero':(d.saldo>0.01?'pos':(d.saldo<-0.01?'neg':'zero'));
-    const obrasH=d.obras.length? d.obras.map(o=>`<span class="chip">${o}</span>`).join('') : '<span class="chip none">—</span>';
     const saldoTxt = d.futuro? '—' : fmtHM(d.saldo);
     const hint = d.incompleto? ' <small style="color:var(--red)">(sin salida)</small>':'';
     const ferTit = d.fer? ` title="${feriadosMap[d.dk]||'Feriado'}"`:'';
+    const obraE = d.obraEntrada? `<small style="color:var(--muted)">${d.obraEntrada}</small>`:'';
+    const obraS = d.obraSalida? `<small style="color:var(--muted)">${d.obraSalida}</small>`:'';
+    let tardH='—';
+    if(d.tardanza>0){ tardH = d.tardJust
+        ? `<span class="neg" style="text-decoration:line-through;opacity:.6">${d.tardanza}'</span> <small style="color:var(--green)">justif.</small>`
+        : `<span class="neg">${d.tardanza}'</span>`; }
+    else if(!d.futuro && d.esperadas>0 && d.estado!=='Ausente'){ tardH='<span class="pos">0\'</span>'; }
     h+=`<tr>
       <td><b>${DIAS[d.diaIdx]}</b> ${ddmm(d.fecha)}</td>
-      <td class="hora-cell">${d.entrada}</td>
-      <td class="hora-cell">${d.salida}${hint}</td>
-      <td>${obrasH}</td>
+      <td class="hora-cell">${d.entrada}<br>${obraE}</td>
+      <td class="hora-cell">${d.salida}${hint}<br>${obraS}</td>
+      <td class="num">${tardH}</td>
       <td class="num">${fmtH(d.horas)}</td>
       <td class="num">${d.esperadas? fmtH(d.esperadas):'—'}</td>
       <td class="num ${cls}">${saldoTxt}</td>
       <td><span class="est ${d.estCls}"${ferTit}>${d.estado}</span></td>
-      <td><button class="acc-btn" data-i="${i}" title="Corregir / cargar manual">✎</button></td></tr>`;
+      <td><button class="acc-btn" data-i="${i}" title="Corregir / justificar">✎</button></td></tr>`;
   });
-  h+=`<tr class="totrow"><td>TOTAL SEMANA</td><td></td><td></td><td></td>
+  h+=`<tr class="totrow"><td>TOTAL SEMANA</td><td></td><td></td>
+      <td class="num ${r.tardMin>0?'neg':'zero'}">${r.tardMin}'</td>
       <td class="num">${fmtH(r.trabajadas)}</td><td class="num">${fmtH(r.espTot)}</td>
       <td class="num ${r.saldo>0.01?'pos':(r.saldo<-0.01?'neg':'zero')}">${fmtHM(r.saldo)}</td><td></td><td></td></tr>`;
   h+=`</tbody></table>`;
+
+  // pie resumen profesional
+  h+=`<div style="padding:16px;border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px">
+    ${pie('Días trabajados', r.diasTrab)}
+    ${pie('Ausencias', r.ausencias, r.ausencias?'neg':'')}
+    ${pie('Horas trabajadas', fmtH(r.trabajadas))}
+    ${pie('Horas esperadas', fmtH(r.espTot))}
+    ${pie('Horas extra', fmtH(r.extra), 'pos')}
+    ${pie('Horas faltantes', fmtH(r.deficit), r.deficit>0.01?'neg':'')}
+    ${pie('Tardanza total', r.tardMin+' min', r.tardMin?'neg':'')}
+    ${pie('Saldo neto', fmtHM(r.saldo), r.saldo>=0?'pos':'neg')}
+  </div>`;
+
   document.getElementById('cont').innerHTML=h;
   document.querySelectorAll('#cont .acc-btn').forEach(b=>{
     b.onclick=()=>abrirAjuste(r.emp, r.dias[+b.dataset.i]);
   });
 }
+function pie(label,val,cls){ return `<div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">${label}</div><div style="font-size:20px;font-weight:700" class="${cls||''}">${val}</div></div>`; }
 
 /* ---------- Corrección manual por día ---------- */
 function abrirAjuste(emp, d){
   ajEmp=emp.id; ajDk=d.dk;
   document.getElementById('ajSub').textContent=`${emp.nombre} · ${DIAS[d.diaIdx]} ${ddmm(d.fecha)}`;
   const aj=d.aj;
-  document.getElementById('ajTipo').value = aj? aj.tipo : 'horas';
+  document.getElementById('ajTipo').value = (aj&&aj.tipo==='justificado')? 'justificado' : 'horas';
   document.getElementById('ajEnt').value = aj&&aj.entrada? String(aj.entrada).slice(0,5) : (d.entrada!=='—'?d.entrada:'');
   document.getElementById('ajSal').value = aj&&aj.salida? String(aj.salida).slice(0,5) : (d.salida!=='—'?d.salida:'');
   document.getElementById('ajHorasManual').value = aj&&aj.horas_manual!=null? aj.horas_manual : '';
   document.getElementById('ajNota').value = aj&&aj.nota? aj.nota : '';
+  // tardanza
+  const box=document.getElementById('ajTardBox');
+  if(d.tardanza>0){
+    box.style.display='block';
+    document.getElementById('ajTardTxt').textContent=`Llegó ${d.tardanza} min tarde respecto al horario de ingreso.`;
+    document.getElementById('ajTardJust').checked = !!d.tardJust;
+  } else { box.style.display='none'; document.getElementById('ajTardJust').checked=false; }
   toggleAjTipo();
   document.getElementById('ajQuitar').style.display = aj? 'inline-block':'none';
   document.getElementById('modalAjuste').classList.add('on');
@@ -497,6 +535,7 @@ async function guardarAjuste(){
     entrada: tipo==='horas'&&ent? ent:null,
     salida:  tipo==='horas'&&sal? sal:null,
     horas_manual: tipo==='horas'&&hm!==''? parseFloat(hm):null,
+    tardanza_justificada: document.getElementById('ajTardJust').checked,
     nota: document.getElementById('ajNota').value||null, cargado_por:userEmail };
   const {error}=await sb.from('asis_ajuste_dia').upsert(payload,{onConflict:'empleado_id,fecha'});
   if(error){ alert('No se pudo guardar: '+error.message); return; }
@@ -551,20 +590,28 @@ function exportar(){
   const sel=document.getElementById('selEmp').value;
   const wb=XLSX.utils.book_new();
   const semana=`${ddmm(lunes)}-${ddmm(addDays(lunes,6))}-${lunes.getFullYear()}`;
-  if(sel==='ALL'){
-    const aoa=[['Planilla semanal',semana],[],['Empleado','Código','Cargo','Días trab.','Ausencias','Trabajadas (h)','Esperadas (h)','Saldo (h)','Estado']];
-    dataCache.forEach(r=>aoa.push([r.emp.nombre,r.emp.codigo,r.emp.cargo||'',r.diasTrab,r.ausencias,+r.trabajadas.toFixed(2),+r.espTot.toFixed(2),+r.saldo.toFixed(2),
-      r.saldo>0.01?'Horas extra':(r.saldo<-0.01?'A descontar':'Al día')]));
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Resumen');
-  } else {
-    const r=dataCache.find(x=>x.emp.id===sel);
-    const aoa=[[`Planilla — ${r.emp.nombre}`,semana],[],['Día','Fecha','Entrada','Salida','Obra(s)','Trabajadas (h)','Esperadas (h)','Saldo (h)','Estado']];
-    r.dias.forEach(d=>aoa.push([DIAS[d.diaIdx],keyLocal(d.fecha),d.entrada,d.salida,d.obras.join(', '),
-      +d.horas.toFixed(2),+d.esperadas.toFixed(2),d.futuro?'':+(d.saldo||0).toFixed(2),d.estado]));
-    aoa.push(['','','','','TOTAL',+r.trabajadas.toFixed(2),+r.espTot.toFixed(2),+r.saldo.toFixed(2),'']);
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Planilla');
-  }
-  XLSX.writeFile(wb,`Planilla_${semana}.xlsx`);
+  const r=dataCache.find(x=>x.emp.id===sel) || dataCache[0];
+  if(!r){ alert('Sin datos'); return; }
+  const aoa=[
+    [`Planilla de asistencia — ${r.emp.nombre}`, r.emp.codigo],
+    [`Semana ${semana}`],[],
+    ['Día','Fecha','Entrada','Obra entrada','Salida','Obra salida','Tardanza (min)','Justificada','Trabajadas (h)','Esperadas (h)','Saldo (h)','Estado']
+  ];
+  r.dias.forEach(d=>aoa.push([DIAS[d.diaIdx],keyLocal(d.fecha),d.entrada,d.obraEntrada||'',d.salida,d.obraSalida||'',
+    d.tardanza||0, d.tardJust?'Sí':'', +d.horas.toFixed(2), +d.esperadas.toFixed(2),
+    d.futuro?'':+(d.saldo||0).toFixed(2), d.estado]));
+  aoa.push([]);
+  aoa.push(['','','','','','TOTALES','','','','','','']);
+  aoa.push(['Días trabajados', r.diasTrab]);
+  aoa.push(['Ausencias', r.ausencias]);
+  aoa.push(['Horas trabajadas', +r.trabajadas.toFixed(2)]);
+  aoa.push(['Horas esperadas', +r.espTot.toFixed(2)]);
+  aoa.push(['Horas extra', +r.extra.toFixed(2)]);
+  aoa.push(['Horas faltantes', +r.deficit.toFixed(2)]);
+  aoa.push(['Tardanza total (min)', r.tardMin]);
+  aoa.push(['Saldo neto (h)', +r.saldo.toFixed(2)]);
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Planilla');
+  XLSX.writeFile(wb,`Planilla_${r.emp.nombre.replace(/\s+/g,'_')}_${semana}.xlsx`);
 }
 
 /* ---------- Modal Jornada ---------- */
@@ -577,6 +624,8 @@ function abrirCfg(){
       <td style="text-align:left"><b>${e.nombre}</b><br><small style="color:var(--muted)">${e.codigo}</small></td>
       <td>${inp('h_lun')}</td><td>${inp('h_mar')}</td><td>${inp('h_mie')}</td><td>${inp('h_jue')}</td>
       <td>${inp('h_vie')}</td><td>${inp('h_sab')}</td><td>${inp('h_dom')}</td>
+      <td><input type="time" data-emp="${e.id}" data-f="hora_entrada" value="${String(c.hora_entrada||'08:00').slice(0,5)}" style="width:84px"></td>
+      <td><input type="number" min="0" step="1" data-emp="${e.id}" data-f="tolerancia_min" value="${c.tolerancia_min||0}"></td>
       <td><input type="number" min="0" step="5" data-emp="${e.id}" data-f="almuerzo_min" value="${c.almuerzo_min}"></td>
       <td style="text-align:center"><input type="checkbox" data-emp="${e.id}" data-f="almuerzo_auto" ${c.almuerzo_auto?'checked':''}></td>
     </tr>`;
@@ -587,6 +636,7 @@ function aplicarStd(v){
   document.querySelectorAll('#cfgBody input[type=number]').forEach(i=>{
     const f=i.dataset.f;
     if(f==='almuerzo_min'){ i.value=60; return; }
+    if(f==='tolerancia_min'){ return; }
     if(['h_lun','h_mar','h_mie','h_jue','h_vie'].includes(f)) i.value=v?8:0;
     else if(f==='h_sab') i.value=v?4:0;
     else if(f==='h_dom') i.value=0;
@@ -597,7 +647,12 @@ async function guardarCfg(){
   document.querySelectorAll('#cfgBody input').forEach(i=>{
     const id=i.dataset.emp, f=i.dataset.f;
     rows[id]=rows[id]||{empleado_id:id};
-    rows[id][f]= i.type==='checkbox'? i.checked : (f==='almuerzo_min'? parseInt(i.value||'0',10) : parseFloat(i.value||'0'));
+    let val;
+    if(i.type==='checkbox') val=i.checked;
+    else if(f==='hora_entrada') val=i.value||'08:00';
+    else if(f==='almuerzo_min'||f==='tolerancia_min') val=parseInt(i.value||'0',10);
+    else val=parseFloat(i.value||'0');
+    rows[id][f]=val;
   });
   const payload=Object.values(rows);
   const {error}=await sb.from('asis_config_jornada').upsert(payload,{onConflict:'empleado_id'});
