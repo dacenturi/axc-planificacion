@@ -431,7 +431,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.4 · marcas vinculadas</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.5 · alta de producto con foto</p>
   </div>
 </div>
 
@@ -749,11 +749,27 @@ body{
       </div>
       <details style="margin-top:12px;border-top:1px solid #e6e9ef;padding-top:10px">
         <summary style="cursor:pointer;color:#1F3864;font-weight:600;font-size:13px">¿No existe en el catálogo? Crear nuevo producto</summary>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-          <input id="marcaNom" class="pm-input" maxlength="160" placeholder="Nombre (ej. Cemento Vallemi CP II 50 kg)" style="flex:1 1 100%">
-          <input id="marcaMarca" class="pm-input" maxlength="60" placeholder="Marca (ej. Vallemi)" style="flex:1 1 160px">
-          <input id="marcaPrecio" class="pm-input" inputmode="numeric" placeholder="Precio Gs" style="flex:1 1 120px;text-align:right">
-          <button type="button" class="pm-btn" id="marcaAdd" style="flex:0 0 auto">＋ Crear y vincular</button>
+        <div style="margin-top:10px">
+          <div id="marcaImgArea" style="border:2px dashed #C8A028;border-radius:10px;background:#FAF6EC;padding:14px;text-align:center;cursor:pointer">
+            <div id="marcaImgEmpty">
+              <div style="font-size:26px;opacity:.5">📷</div>
+              <div style="font-size:13px;font-weight:600;color:#1F3864">Arrastrá una foto o hacé click</div>
+              <div style="font-size:11px;color:#8893a5;margin-top:2px">JPG, PNG, WEBP — Máx 5 MB</div>
+            </div>
+            <img id="marcaImgPreview" alt="" style="display:none;max-height:120px;border-radius:8px">
+            <input type="file" id="marcaImgInput" accept="image/jpeg,image/png,image/webp" style="display:none">
+          </div>
+          <button type="button" id="marcaImgClear" style="display:none;margin-top:6px;border:none;background:none;color:#c0392b;cursor:pointer;font-size:12px">🗑️ Quitar foto</button>
+          <label class="pm-label" style="margin-top:10px">Nombre del producto *</label>
+          <input id="marcaNom" class="pm-input" maxlength="200" placeholder="Ej. Cemento Vallemi CP II 50 kg">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <div style="flex:1 1 140px"><label class="pm-label">Precio de referencia (₲)</label><input id="marcaPrecio" class="pm-input" inputmode="numeric" placeholder="Ej. 75000" style="text-align:right"></div>
+            <div style="flex:1 1 140px"><label class="pm-label">Unidad de medida</label><select id="marcaUnidad" class="pm-input"><option value="">Sin especificar</option><option value="Unidad">Unidad</option><option value="Bolsa">Bolsa</option><option value="Caja">Caja</option><option value="Kg">Kilogramo (Kg)</option><option value="Litro">Litro</option><option value="Metro">Metro lineal</option><option value="m²">Metro cuadrado (m²)</option><option value="m³">Metro cúbico (m³)</option><option value="Rollo">Rollo</option><option value="Pack">Pack</option></select></div>
+          </div>
+          <label class="pm-label" style="margin-top:8px">Marca</label>
+          <input id="marcaMarca" class="pm-input" maxlength="80" placeholder="Ej. Vallemi, Itaipú…">
+          <div id="marcaProgress" style="display:none;margin-top:8px;font-size:12px;color:#8893a5"></div>
+          <button type="button" class="pm-btn" id="marcaAdd" style="margin-top:10px">＋ Crear y vincular</button>
         </div>
       </details>
     </div>
@@ -3142,6 +3158,24 @@ async function saveInsEdit(){
 }
 
 // ── Marcas del insumo (tabla de vínculo insumo_marcas ↔ catálogo) ──
+const PRODUCT_BUCKET='productos-imagenes';
+let _marcaImgFile=null;
+function _marcaResetImg(){
+  _marcaImgFile=null;
+  const i=document.getElementById('marcaImgInput'); if(i) i.value='';
+  const pv=document.getElementById('marcaImgPreview'); if(pv){ pv.style.display='none'; pv.src=''; }
+  const em=document.getElementById('marcaImgEmpty'); if(em) em.style.display='';
+  const cl=document.getElementById('marcaImgClear'); if(cl) cl.style.display='none';
+}
+function _marcaSetImg(file){
+  if(!file) return;
+  if(file.size>5*1024*1024){ showToast('La imagen supera 5 MB','error'); return; }
+  if(['image/jpeg','image/png','image/webp'].indexOf(file.type)<0){ showToast('Formato no válido (JPG, PNG o WEBP)','error'); return; }
+  _marcaImgFile=file;
+  const r=new FileReader();
+  r.onload=function(){ const pv=document.getElementById('marcaImgPreview'); if(pv){ pv.src=r.result; pv.style.display='block'; } const em=document.getElementById('marcaImgEmpty'); if(em) em.style.display='none'; const cl=document.getElementById('marcaImgClear'); if(cl) cl.style.display='inline-block'; };
+  r.readAsDataURL(file);
+}
 let _marcasCod=null, _marcasUni='', _marcasDefaultPid=null, _marcasSearchSeq=0, _marcasSearchTmr=null;
 async function openMarcas(codigo){
   _marcasCod=codigo;
@@ -3151,6 +3185,8 @@ async function openMarcas(codigo){
   try{ const r=await sb.from('insumos').select('producto_id').eq('codigo',codigo).maybeSingle(); _marcasDefaultPid=(r.data&&r.data.producto_id!=null)?String(r.data.producto_id):null; }catch(e){}
   document.getElementById('marcasSub').textContent='Código '+codigo+(i&&i.nombre?' · '+i.nombre:'')+'. Vinculá productos del catálogo como marcas válidas; la predeterminada define el precio del presupuesto.';
   document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
+  const _mu=document.getElementById('marcaUnidad'); if(_mu) _mu.value='';
+  _marcaResetImg();
   document.getElementById('marcaSearch').value=''; document.getElementById('marcaSearchResults').innerHTML='';
   await renderMarcas();
   document.getElementById('marcasOverlay').classList.add('show');
@@ -3220,13 +3256,16 @@ async function vincularMarca(pid){
 async function addMarca(){
   const nom=(document.getElementById('marcaNom').value||'').trim();
   const marca=(document.getElementById('marcaMarca').value||'').trim();
-  const precio=_numInt(document.getElementById('marcaPrecio').value);
-  if(!nom){ showToast('Falta el nombre del producto','error'); return; }
-  if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
+  const unidad=(document.getElementById('marcaUnidad').value||'').trim();
+  const precioRaw=document.getElementById('marcaPrecio').value;
+  const precio = (precioRaw==='' || precioRaw==null) ? null : _numInt(precioRaw);
+  if(nom.length<3){ showToast('El nombre debe tener al menos 3 caracteres','error'); return; }
+  if(precio!=null && (precio<0 || precio>999999999)){ showToast('Precio fuera de rango','error'); return; }
   const btn=document.getElementById('marcaAdd'); const old=btn.textContent; btn.disabled=true; btn.textContent='…';
+  const prog=document.getElementById('marcaProgress'); if(prog){ prog.style.display='block'; prog.textContent='Creando producto…'; }
   try{
     const nowIso=new Date().toISOString();
-    const payload={ nombre:nom, marca:marca||null, precio_referencia:precio, unidad_medida:_marcasUni||null, categoria:'insumo', search_terms:((marca+' '+nom).toLowerCase().split(/\s+/).filter(Boolean)), activo:true, creado_por:_userTag(), created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
+    const payload={ nombre:nom, marca:marca||null, precio_referencia:precio, unidad_medida:unidad||null, url_imagen:'', categoria:'insumo', search_terms:((marca+' '+nom).toLowerCase().split(/\s+/).filter(Boolean)), activo:true, creado_por:_userTag(), created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
     let prod=await sb.from('productos_catalogo').insert(payload).select('id').single();
     if(prod.error){
       const mx=await sb.from('productos_catalogo').select('id').order('id',{ascending:false}).limit(1).maybeSingle();
@@ -3234,10 +3273,25 @@ async function addMarca(){
       prod=await sb.from('productos_catalogo').insert(Object.assign({id:nextId},payload)).select('id').single();
     }
     if(prod.error) throw prod.error;
+    const newId=prod.data.id;
+    if(_marcaImgFile){
+      if(prog) prog.textContent='Subiendo imagen…';
+      const ext=(_marcaImgFile.name.split('.').pop()||'jpg').toLowerCase();
+      const safeExt=['jpg','jpeg','png','webp'].indexOf(ext)>=0?ext:'jpg';
+      const path='producto_'+newId+'_'+Date.now()+'.'+safeExt;
+      const up=await sb.storage.from(PRODUCT_BUCKET).upload(path,_marcaImgFile,{cacheControl:'31536000',upsert:false,contentType:_marcaImgFile.type});
+      if(up.error) throw up.error;
+      const pub=sb.storage.from(PRODUCT_BUCKET).getPublicUrl(path);
+      const urlImg=(pub.data&&pub.data.publicUrl)||'';
+      if(urlImg) await sb.from('productos_catalogo').update({url_imagen:urlImg}).eq('id',newId);
+    }
+    if(prog) prog.style.display='none';
     document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
-    await vincularMarca(prod.data.id);
+    const _mu=document.getElementById('marcaUnidad'); if(_mu) _mu.value='';
+    _marcaResetImg();
+    await vincularMarca(newId);
     showToast('Producto creado y vinculado','success');
-  }catch(e){ console.warn('addMarca',e); showToast('No se pudo crear: '+(e.message||''),'error'); }
+  }catch(e){ console.warn('addMarca',e); if(prog) prog.style.display='none'; showToast('No se pudo crear: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 async function setMarcaDefault(pid){
@@ -3795,6 +3849,17 @@ document.getElementById('marcasClose').addEventListener('click', closeMarcas);
 document.getElementById('marcasOverlay').addEventListener('click', function(e){ if(e.target===this) closeMarcas(); });
 document.getElementById('marcaAdd').addEventListener('click', addMarca);
 document.getElementById('marcaSearch').addEventListener('input', function(e){ const v=e.target.value; clearTimeout(_marcasSearchTmr); _marcasSearchTmr=setTimeout(function(){ searchMarcaCatalogo(v); }, 300); });
+(function(){
+  const area=document.getElementById('marcaImgArea'), inp=document.getElementById('marcaImgInput'), clr=document.getElementById('marcaImgClear');
+  if(area&&inp){
+    area.addEventListener('click', function(){ inp.click(); });
+    inp.addEventListener('change', function(e){ if(e.target.files&&e.target.files[0]) _marcaSetImg(e.target.files[0]); });
+    area.addEventListener('dragover', function(e){ e.preventDefault(); area.style.background='#F4ECCF'; });
+    area.addEventListener('dragleave', function(){ area.style.background='#FAF6EC'; });
+    area.addEventListener('drop', function(e){ e.preventDefault(); area.style.background='#FAF6EC'; if(e.dataTransfer.files&&e.dataTransfer.files[0]) _marcaSetImg(e.dataTransfer.files[0]); });
+  }
+  if(clr) clr.addEventListener('click', function(ev){ ev.stopPropagation(); _marcaResetImg(); });
+})();
 
 
 // ── Pestañas Presupuestos / Reporte ──
