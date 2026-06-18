@@ -431,7 +431,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.3 · marcas en catálogo</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.4 · marcas vinculadas</p>
   </div>
 </div>
 
@@ -740,16 +740,22 @@ body{
     <div class="mini-head"><span>🏷️ Marcas del insumo</span><button type="button" class="mini-x" id="marcasClose">&times;</button></div>
     <div class="mini-body">
       <div id="marcasSub" style="font-size:12px;color:#8893a5;margin-bottom:8px"></div>
-      <div class="insmgr-list" id="marcasList" style="max-height:280px;overflow:auto"></div>
+      <label class="pm-label">Marcas vinculadas</label>
+      <div class="insmgr-list" id="marcasList" style="max-height:200px;overflow:auto;margin-top:4px"></div>
       <div style="margin-top:12px;border-top:1px solid #e6e9ef;padding-top:10px">
-        <label class="pm-label">Agregar marca</label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+        <label class="pm-label">Vincular un producto que ya está en el catálogo</label>
+        <input id="marcaSearch" class="pm-input" placeholder="Buscar por nombre (ej. cemento vallemi)…" style="margin-top:4px" autocomplete="off">
+        <div class="insmgr-list" id="marcaSearchResults" style="max-height:200px;overflow:auto;margin-top:6px"></div>
+      </div>
+      <details style="margin-top:12px;border-top:1px solid #e6e9ef;padding-top:10px">
+        <summary style="cursor:pointer;color:#1F3864;font-weight:600;font-size:13px">¿No existe en el catálogo? Crear nuevo producto</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
           <input id="marcaNom" class="pm-input" maxlength="160" placeholder="Nombre (ej. Cemento Vallemi CP II 50 kg)" style="flex:1 1 100%">
           <input id="marcaMarca" class="pm-input" maxlength="60" placeholder="Marca (ej. Vallemi)" style="flex:1 1 160px">
           <input id="marcaPrecio" class="pm-input" inputmode="numeric" placeholder="Precio Gs" style="flex:1 1 120px;text-align:right">
-          <button type="button" class="pm-btn" id="marcaAdd" style="flex:0 0 auto">＋ Agregar</button>
+          <button type="button" class="pm-btn" id="marcaAdd" style="flex:0 0 auto">＋ Crear y vincular</button>
         </div>
-      </div>
+      </details>
     </div>
   </div>
 </div>
@@ -1587,17 +1593,21 @@ async function openMarcaPopup(idx, btn){
   const prev = document.getElementById('marcaPop'); if(prev) prev.remove();
   let prods = [];
   try{
-    const q = await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,codigo,unidad_medida').eq('codigo', code).eq('activo', true).order('precio_referencia');
-    prods = q.data || [];
+    const lk = await sb.from('insumo_marcas').select('producto_id').eq('codigo_insumo', code).eq('activo', true);
+    const ids = (lk.data||[]).map(function(l){ return Number(l.producto_id); }).filter(function(n){ return !isNaN(n); });
+    if(ids.length){
+      const q = await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,unidad_medida').in('id', ids).order('precio_referencia');
+      prods = q.data || [];
+    }
   }catch(e){ console.warn('marcas', e); }
   if(!prods.length){
     const pid = r.producto_id || (ed.prodIdByIns||{})[code];
-    if(pid){ try{ const q2=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,codigo,unidad_medida').eq('id', Number(pid)).maybeSingle(); if(q2.data) prods=[q2.data]; }catch(e){} }
+    if(pid){ try{ const q2=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,unidad_medida').eq('id', Number(pid)).maybeSingle(); if(q2.data) prods=[q2.data]; }catch(e){} }
   }
   const pop = document.createElement('div'); pop.id='marcaPop';
   pop.style.cssText='position:absolute;z-index:99999;background:#fff;border:1px solid #C8A028;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:8px;min-width:240px;max-width:340px;font-size:13px';
   let h='<div style="font-weight:700;color:#1F3864;margin-bottom:6px">'+escapeHtml(code)+' · elegí marca</div>';
-  if(!prods.length){ h+='<div style="color:#8893a5;padding:6px 2px">No hay productos en el catálogo con el código '+escapeHtml(code)+'. Cargá las marcas en el catálogo usando ese mismo código.</div>'; }
+  if(!prods.length){ h+='<div style="color:#8893a5;padding:6px 2px">No hay marcas vinculadas a este insumo. Vinculalas en 📦 Insumos → 🏷️.</div>'; }
   prods.forEach(function(p){
     const nom = (p.marca? escapeHtml(p.marca)+' · ':'')+escapeHtml(p.nombre||'');
     h+='<div class="marca-op" data-pid="'+p.id+'" data-precio="'+(Number(p.precio_referencia)||0)+'" style="display:flex;justify-content:space-between;gap:10px;padding:6px;border-radius:6px;cursor:pointer">'+
@@ -3131,52 +3141,92 @@ async function saveInsEdit(){
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
-// ── Marcas del insumo (productos del catálogo que comparten el código) ──
-let _marcasCod=null, _marcasUni='', _marcasDefaultPid=null;
+// ── Marcas del insumo (tabla de vínculo insumo_marcas ↔ catálogo) ──
+let _marcasCod=null, _marcasUni='', _marcasDefaultPid=null, _marcasSearchSeq=0, _marcasSearchTmr=null;
 async function openMarcas(codigo){
   _marcasCod=codigo;
   const i=(ed.insList||[]).find(function(x){return x.codigo===codigo;});
   _marcasUni = i ? (i.unidad||'') : '';
   _marcasDefaultPid=null;
   try{ const r=await sb.from('insumos').select('producto_id').eq('codigo',codigo).maybeSingle(); _marcasDefaultPid=(r.data&&r.data.producto_id!=null)?String(r.data.producto_id):null; }catch(e){}
-  document.getElementById('marcasSub').textContent='Código '+codigo+(i&&i.nombre?' · '+i.nombre:'')+'. Las marcas comparten este código y aparecen en el selector 🏷️ del presupuesto.';
+  document.getElementById('marcasSub').textContent='Código '+codigo+(i&&i.nombre?' · '+i.nombre:'')+'. Vinculá productos del catálogo como marcas válidas; la predeterminada define el precio del presupuesto.';
   document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
+  document.getElementById('marcaSearch').value=''; document.getElementById('marcaSearchResults').innerHTML='';
   await renderMarcas();
   document.getElementById('marcasOverlay').classList.add('show');
 }
 function closeMarcas(){ document.getElementById('marcasOverlay').classList.remove('show'); }
+async function _marcasVinculadas(){
+  let links=[];
+  try{ const q=await sb.from('insumo_marcas').select('producto_id,es_default,activo').eq('codigo_insumo',_marcasCod).eq('activo',true); links=q.data||[]; }catch(e){ console.warn('links',e); }
+  const ids=links.map(function(l){ return Number(l.producto_id); }).filter(function(n){ return !isNaN(n); });
+  let info={};
+  if(ids.length){ try{ const p=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia').in('id',ids); (p.data||[]).forEach(function(x){ info[String(x.id)]=x; }); }catch(e){} }
+  return links.map(function(l){ const p=info[String(l.producto_id)]||{}; return { pid:String(l.producto_id), nombre:p.nombre||('(producto '+l.producto_id+')'), marca:p.marca||'', precio:Number(p.precio_referencia)||0, es_default:!!l.es_default }; });
+}
 async function renderMarcas(){
   const box=document.getElementById('marcasList');
   box.innerHTML='<div class="mg-empty">Cargando…</div>';
-  let prods=[];
-  try{ const q=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,activo').eq('codigo',_marcasCod).order('precio_referencia'); prods=q.data||[]; }catch(e){ console.warn('renderMarcas',e); }
-  if(!prods.length){ box.innerHTML='<div class="mg-empty">Sin marcas para este código. Agregá la primera abajo.</div>'; return; }
-  box.innerHTML=prods.map(function(p){
-    const isDef = _marcasDefaultPid!=null && String(p.id)===_marcasDefaultPid;
-    const baja = p.activo===false;
-    return '<div class="ins-row"'+(baja?' style="opacity:.5"':'')+'>'+
-      '<div class="ins-main"><span class="ins-name">'+escapeHtml((p.marca?p.marca+' · ':'')+(p.nombre||''))+'</span>'+(isDef?'<span style="margin-left:6px;font-size:11px;background:#1F3864;color:#fff;border-radius:10px;padding:1px 7px">predeterminada</span>':'')+(baja?'<span style="margin-left:6px;font-size:11px;color:#c0392b">baja</span>':'')+'</div>'+
-      '<div class="ins-meta">Gs '+fmtGs(Number(p.precio_referencia)||0)+'</div>'+
+  const list=await _marcasVinculadas();
+  if(!list.length){ box.innerHTML='<div class="mg-empty">Sin marcas vinculadas. Buscá un producto abajo o creá uno nuevo.</div>'; return; }
+  list.sort(function(a,b){ return (b.es_default?1:0)-(a.es_default?1:0) || a.precio-b.precio; });
+  box.innerHTML=list.map(function(m){
+    const isDef = (_marcasDefaultPid!=null && m.pid===_marcasDefaultPid) || m.es_default;
+    return '<div class="ins-row">'+
+      '<div class="ins-main"><span class="ins-name">'+escapeHtml((m.marca?m.marca+' · ':'')+m.nombre)+'</span>'+(isDef?'<span style="margin-left:6px;font-size:11px;background:#1F3864;color:#fff;border-radius:10px;padding:1px 7px">predeterminada</span>':'')+'</div>'+
+      '<div class="ins-meta">Gs '+fmtGs(m.precio)+'</div>'+
       '<div class="ins-acts">'+
-        ((isDef||baja)?'':'<button type="button" class="mc-def" data-pid="'+p.id+'" title="Hacer predeterminada">★</button>')+
-        '<button type="button" class="mc-edit" data-pid="'+p.id+'" data-precio="'+(Number(p.precio_referencia)||0)+'" title="Editar precio">✏️</button>'+
-        (isDef?'':'<button type="button" class="mc-del" data-pid="'+p.id+'" title="Dar de baja">✕</button>')+
+        (isDef?'':'<button type="button" class="mc-def" data-pid="'+m.pid+'" title="Hacer predeterminada">★</button>')+
+        '<button type="button" class="mc-edit" data-pid="'+m.pid+'" data-precio="'+m.precio+'" title="Editar precio del producto">✏️</button>'+
+        (isDef?'':'<button type="button" class="mc-del" data-pid="'+m.pid+'" title="Desvincular (no borra el producto)">✕</button>')+
       '</div></div>';
   }).join('');
   box.querySelectorAll('.mc-def').forEach(function(b){ b.addEventListener('click',function(){ setMarcaDefault(b.getAttribute('data-pid')); }); });
   box.querySelectorAll('.mc-edit').forEach(function(b){ b.addEventListener('click',function(){ editMarcaPrecio(b.getAttribute('data-pid'), Number(b.getAttribute('data-precio'))||0); }); });
-  box.querySelectorAll('.mc-del').forEach(function(b){ b.addEventListener('click',function(){ bajaMarca(b.getAttribute('data-pid')); }); });
+  box.querySelectorAll('.mc-del').forEach(function(b){ b.addEventListener('click',function(){ desvincularMarca(b.getAttribute('data-pid')); }); });
+}
+async function searchMarcaCatalogo(q){
+  const box=document.getElementById('marcaSearchResults');
+  const seq=++_marcasSearchSeq;
+  const query=(q||'').trim();
+  if(query.length<2){ box.innerHTML='<div class="mg-empty" style="padding:6px">Escribí al menos 2 letras…</div>'; return; }
+  box.innerHTML='<div class="mg-empty" style="padding:6px">Buscando…</div>';
+  let prods=[];
+  try{ const safe=query.replace(/[%_]/g,function(c){return '\\'+c;}); const r=await sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia').eq('activo',true).ilike('nombre','%'+safe+'%').order('nombre').limit(25); prods=r.data||[]; }catch(e){ console.warn('searchMarca',e); }
+  if(seq!==_marcasSearchSeq) return;
+  let yaPids={};
+  try{ const lk=await sb.from('insumo_marcas').select('producto_id').eq('codigo_insumo',_marcasCod).eq('activo',true); (lk.data||[]).forEach(function(l){ yaPids[String(l.producto_id)]=1; }); }catch(e){}
+  if(!prods.length){ box.innerHTML='<div class="mg-empty" style="padding:6px">Sin resultados para «'+escapeHtml(query)+'».</div>'; return; }
+  box.innerHTML=prods.map(function(p){
+    const ya=yaPids[String(p.id)];
+    return '<div class="ins-row">'+
+      '<div class="ins-main"><span class="ins-name">'+escapeHtml((p.marca?p.marca+' · ':'')+(p.nombre||''))+'</span></div>'+
+      '<div class="ins-meta">Gs '+fmtGs(Number(p.precio_referencia)||0)+'</div>'+
+      '<div class="ins-acts">'+(ya?'<span style="font-size:11px;color:#1f8a3a">✓ vinculado</span>':'<button type="button" class="mc-link" data-pid="'+p.id+'">＋ vincular</button>')+'</div></div>';
+  }).join('');
+  box.querySelectorAll('.mc-link').forEach(function(b){ b.addEventListener('click',function(){ vincularMarca(b.getAttribute('data-pid')); }); });
+}
+async function vincularMarca(pid){
+  try{
+    const haceDefault = (_marcasDefaultPid==null);
+    const ins=await sb.from('insumo_marcas').upsert({ codigo_insumo:_marcasCod, producto_id:Number(pid), es_default:haceDefault, activo:true, creado_por:_userTag() }, { onConflict:'codigo_insumo,producto_id' });
+    if(ins.error) throw ins.error;
+    if(haceDefault){ await sb.from('insumos').update({producto_id:String(pid)}).eq('codigo',_marcasCod); _marcasDefaultPid=String(pid); ed.insList=null; await loadInsList(); }
+    await renderMarcas(); await searchMarcaCatalogo(document.getElementById('marcaSearch').value); renderInsMgr();
+    showToast('Marca vinculada','success');
+    _audit('marca', _marcasCod, 'vincular', {producto_id:pid});
+  }catch(e){ console.warn('vincularMarca',e); showToast('No se pudo vincular: '+(e.message||''),'error'); }
 }
 async function addMarca(){
   const nom=(document.getElementById('marcaNom').value||'').trim();
   const marca=(document.getElementById('marcaMarca').value||'').trim();
   const precio=_numInt(document.getElementById('marcaPrecio').value);
-  if(!nom){ showToast('Falta el nombre de la marca','error'); return; }
+  if(!nom){ showToast('Falta el nombre del producto','error'); return; }
   if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
   const btn=document.getElementById('marcaAdd'); const old=btn.textContent; btn.disabled=true; btn.textContent='…';
   try{
     const nowIso=new Date().toISOString();
-    const payload={ nombre:nom, marca:marca||null, precio_referencia:precio, unidad_medida:_marcasUni||null, categoria:'insumo', codigo:_marcasCod, search_terms:((marca+' '+nom).toLowerCase().split(/\s+/).filter(Boolean)), activo:true, creado_por:_userTag(), created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
+    const payload={ nombre:nom, marca:marca||null, precio_referencia:precio, unidad_medida:_marcasUni||null, categoria:'insumo', search_terms:((marca+' '+nom).toLowerCase().split(/\s+/).filter(Boolean)), activo:true, creado_por:_userTag(), created_at:nowIso, updated_at:nowIso, creado_en:nowIso };
     let prod=await sb.from('productos_catalogo').insert(payload).select('id').single();
     if(prod.error){
       const mx=await sb.from('productos_catalogo').select('id').order('id',{ascending:false}).limit(1).maybeSingle();
@@ -3185,16 +3235,17 @@ async function addMarca(){
     }
     if(prod.error) throw prod.error;
     document.getElementById('marcaNom').value=''; document.getElementById('marcaMarca').value=''; document.getElementById('marcaPrecio').value='';
-    await renderMarcas();
-    showToast('Marca agregada','success');
-    _audit('marca', _marcasCod, 'agregar', {nombre:nom, marca:marca, precio:precio});
-  }catch(e){ console.warn('addMarca',e); showToast('No se pudo agregar: '+(e.message||''),'error'); }
+    await vincularMarca(prod.data.id);
+    showToast('Producto creado y vinculado','success');
+  }catch(e){ console.warn('addMarca',e); showToast('No se pudo crear: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 async function setMarcaDefault(pid){
   try{
     const u=await sb.from('insumos').update({producto_id:String(pid)}).eq('codigo',_marcasCod);
     if(u.error) throw u.error;
+    await sb.from('insumo_marcas').update({es_default:false}).eq('codigo_insumo',_marcasCod);
+    await sb.from('insumo_marcas').update({es_default:true}).eq('codigo_insumo',_marcasCod).eq('producto_id',Number(pid));
     _marcasDefaultPid=String(pid);
     ed.insList=null; await loadInsList();
     await renderMarcas(); renderInsMgr();
@@ -3203,7 +3254,7 @@ async function setMarcaDefault(pid){
   }catch(e){ console.warn('setMarcaDefault',e); showToast('No se pudo: '+(e.message||''),'error'); }
 }
 function editMarcaPrecio(pid, actual){
-  const v=prompt('Nuevo precio de referencia (Gs):', actual||0);
+  const v=prompt('Nuevo precio de referencia del producto (Gs):', actual||0);
   if(v==null) return;
   const precio=_numInt(v);
   if(!(precio>0)){ showToast('Precio inválido','error'); return; }
@@ -3215,15 +3266,15 @@ function editMarcaPrecio(pid, actual){
     _audit('marca', _marcasCod, 'precio', {producto_id:pid, precio:precio});
   });
 }
-async function bajaMarca(pid){
-  if(!confirm('¿Dar de baja esta marca? Deja de aparecer en el selector, sin tocar presupuestos ya guardados.')) return;
+async function desvincularMarca(pid){
+  if(!confirm('¿Desvincular esta marca del insumo? No borra el producto del catálogo, solo deja de ofrecerse para este insumo.')) return;
   try{
-    const u=await sb.from('productos_catalogo').update({activo:false, updated_at:new Date().toISOString()}).eq('id',Number(pid));
+    const u=await sb.from('insumo_marcas').update({activo:false}).eq('codigo_insumo',_marcasCod).eq('producto_id',Number(pid));
     if(u.error) throw u.error;
-    await renderMarcas();
-    showToast('Marca dada de baja','success');
-    _audit('marca', _marcasCod, 'baja', {producto_id:pid});
-  }catch(e){ console.warn('bajaMarca',e); showToast('No se pudo: '+(e.message||''),'error'); }
+    await renderMarcas(); await searchMarcaCatalogo(document.getElementById('marcaSearch').value);
+    showToast('Marca desvinculada','success');
+    _audit('marca', _marcasCod, 'desvincular', {producto_id:pid});
+  }catch(e){ console.warn('desvincularMarca',e); showToast('No se pudo: '+(e.message||''),'error'); }
 }
 
 // ── Insumo: baja inteligente ──
@@ -3743,6 +3794,7 @@ document.getElementById('insEditOverlay').addEventListener('click', function(e){
 document.getElementById('marcasClose').addEventListener('click', closeMarcas);
 document.getElementById('marcasOverlay').addEventListener('click', function(e){ if(e.target===this) closeMarcas(); });
 document.getElementById('marcaAdd').addEventListener('click', addMarca);
+document.getElementById('marcaSearch').addEventListener('input', function(e){ const v=e.target.value; clearTimeout(_marcasSearchTmr); _marcasSearchTmr=setTimeout(function(){ searchMarcaCatalogo(v); }, 300); });
 
 
 // ── Pestañas Presupuestos / Reporte ──
