@@ -3834,7 +3834,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v3.0
+      Conexdata · AXC Planificación v3.2 · precio congelado en OC
     </p>
   </div>
 </div>
@@ -6578,8 +6578,8 @@ async function cartBudgetLoad(pp){
   cartBudget.pp = pp; cartBudget.mats = null; cartBudget.rubros = null; cartBudget.ocItems = []; cartBudgetRender();
   await loadProductoMap();
   try{
-    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo').eq('presupuesto', pp).order('material');
-    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Number(m.cantidad)||0, rubro_codigo:m.rubro_codigo||'' }; });
+    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id').eq('presupuesto', pp).order('material');
+    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Number(m.cantidad)||0, rubro_codigo:m.rubro_codigo||'', precio_cong:(m.precio_unitario!=null?Number(m.precio_unitario):null), prod_cong:(m.producto_id!=null?String(m.producto_id):'') }; });
     // Rubros de servicio (control por dinero): precio_total>0 y sin receta. Agrupados por clave de rubro.
     const rb = await sb.from('presupuesto_rubros').select('rubro_codigo,descripcion,unidad,precio_total,tiene_receta,sector').eq('presupuesto', pp).order('orden');
     const ragg = {}; const rorder = [];
@@ -12191,22 +12191,30 @@ function pbtEnsureData(){
 async function pbtBuildInverse(){
   if(pbtUI.invReady) return;
   try{
-    if(typeof loadInsumoMap === 'function') await loadInsumoMap();
     const inv = {};
-    const map = cartBudget.insMap || {};   // { producto_id: codigo_insumo }
-    Object.keys(map).forEach(function(pid){
-      const ci = map[pid];
-      if(!ci) return;
-      (inv[ci] = inv[ci] || []).push(String(pid));
+    // Marcas válidas por insumo desde insumo_marcas (modelo nuevo).
+    let links = [];
+    try{
+      const q = await sb.from('insumo_marcas').select('codigo_insumo,producto_id,es_default').eq('activo', true);
+      links = q.data || [];
+    }catch(e){ console.warn('insumo_marcas', e); }
+    links.forEach(function(l){
+      const ci = l.codigo_insumo; if(!ci) return;
+      const arr = (inv[ci] = inv[ci] || []);
+      const pid = String(l.producto_id);
+      if(l.es_default) arr.unshift(pid); else arr.push(pid);   // predeterminada primero
     });
     pbtUI.prodByIns = inv;
-    // Hidratar nombre/precio de todos los producto_id involucrados.
-    const ids = Object.keys(map).map(function(p){ return Number(p); }).filter(function(n){ return !isNaN(n); });
+    // Hidratar nombre/precio de todos los producto_id involucrados (en tandas).
+    const uniq = Array.from(new Set(links.map(function(l){ return Number(l.producto_id); }).filter(function(n){ return !isNaN(n); })));
     const info = {};
-    if(ids.length){
-      const { data } = await sb.from('productos_catalogo')
-        .select('id,nombre,precio_referencia,url_imagen').in('id', ids);
-      (data || []).forEach(function(p){ info[String(p.id)] = p; });
+    for(let i=0;i<uniq.length;i+=300){
+      const chunk = uniq.slice(i, i+300);
+      try{
+        const { data } = await sb.from('productos_catalogo')
+          .select('id,nombre,precio_referencia,url_imagen,marca,unidad_medida').in('id', chunk);
+        (data || []).forEach(function(p){ info[String(p.id)] = p; });
+      }catch(e){ console.warn('prodInfo', e); }
     }
     pbtUI.prodInfo = info;
     pbtUI.invReady = true;
@@ -12355,9 +12363,10 @@ function pbtRubroInsumos(r, rk, ins){
     const checked = line ? 'checked' : '';
     const qtyVal = line ? line.cantidad : '';
     const prods = pbtUI.prodByIns[ci] || [];
-    const curPid = line ? String(line.producto_id) : (prods[0] || '');
+    const frozenPid = (m.prod_cong && prods.indexOf(m.prod_cong) >= 0) ? m.prod_cong : '';
+    const curPid = line ? String(line.producto_id) : (frozenPid || prods[0] || '');
     const info = pbtUI.prodInfo[curPid];
-    const precioVal = line ? line.precio_unit : (info ? (Number(info.precio_referencia)||0) : 0);
+    const precioVal = line ? line.precio_unit : ((m.precio_cong != null && m.precio_cong !== '') ? Number(m.precio_cong) : (info ? (Number(info.precio_referencia)||0) : 0));
     const coef = rec && rec.ins[ci] ? rec.ins[ci] : null;
 
     let matSelect = '';
@@ -12453,11 +12462,17 @@ function pbtNoPresupPanel(){
 
 /* ── interacciones ── */
 function pbtParts(v){ const p = String(v||'').split('|'); return { rk: p[0]||'', ci: p[1]||'' }; }
+function pbtMat(ci, rk){ return (cartBudget.mats||[]).find(function(x){ return x.codigo_insumo===ci && (x.rubro_codigo||'')===(rk||''); }) || null; }
+function pbtDefaultPid(ci, rk){
+  const prods = pbtUI.prodByIns[ci] || [];
+  const m = pbtMat(ci, rk);
+  if(m && m.prod_cong && prods.indexOf(m.prod_cong) >= 0) return m.prod_cong;   // marca congelada del presupuesto
+  return prods[0] || '';
+}
 
 function pbtSetCheck(rk, ci, checked){
   if(checked){
-    const prods = pbtUI.prodByIns[ci] || [];
-    const pid = prods[0]; if(!pid){ return; }
+    const pid = pbtDefaultPid(ci, rk); if(!pid){ return; }
     let q = pbtBaseDisp(ci, rk);
     if(q < 0) q = 0;
     pbtUpsertLine(ci, rk, Number(pid), q);
@@ -12471,7 +12486,9 @@ function pbtUpsertLine(ci, rk, pid, qty){
   const info = pbtUI.prodInfo[String(pid)] || {};
   const r = (cartBudget.allRubros || []).find(function(x){ return String(x.rubro_codigo||'').trim() === rk; });
   let line = pbtFindLine(ci, rk);
-  const precio = line ? Number(line.precio_unit)||0 : (Number(info.precio_referencia)||0);
+  const _mc = pbtMat(ci, rk);
+  const _precioCong = (_mc && _mc.precio_cong != null && _mc.precio_cong !== '') ? Number(_mc.precio_cong) : null;
+  const precio = line ? Number(line.precio_unit)||0 : (_precioCong != null ? _precioCong : (Number(info.precio_referencia)||0));
   const cantidad = Math.max(0, Number(qty)||0);
   if(!line){
     line = { _pbt:true, _codigo_insumo:ci, _rubroManual:true, es_mano_obra:false };
@@ -12577,7 +12594,7 @@ function pbtCalcReceta(rk){
     let q = coef ? pbtRecipeQty(coef.coef1, coef.coef2, coef.merma, avance) : 0;
     const cap = pbtBaseDisp(ci, rk);
     if(q > cap) q = Math.max(0, cap);
-    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(prods[0]), q); }
+    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(pbtDefaultPid(ci, rk)), q); }
   });
   // Mano de obra de la receta → ítems por monto.
   if(rec && rec.mo && rec.mo.length){
@@ -12600,7 +12617,7 @@ function pbtTodoSaldo(rk){
     const ci = m.codigo_insumo;
     const prods = pbtUI.prodByIns[ci] || []; if(!prods.length) return;
     const q = Math.max(0, pbtBaseDisp(ci, rk));
-    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(prods[0]), q); }
+    if(q > 0){ const line = pbtFindLine(ci, rk); pbtUpsertLine(ci, rk, line ? Number(line.producto_id) : Number(pbtDefaultPid(ci, rk)), q); }
   });
   pbtSync();
 }
