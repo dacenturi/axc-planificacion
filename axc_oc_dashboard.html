@@ -1072,7 +1072,7 @@ body{
           <span class="chart-title-icon gold">📊</span>
           <span>Suma de Valor por Proveedor</span>
         </div>
-        <span class="chart-meta">Top 10</span>
+        <span class="chart-meta">Top 10 · Aprobado vs Solicitado</span>
       </div>
       <div class="chart-wrap">
         <canvas id="chartProveedor"></canvas>
@@ -1676,9 +1676,25 @@ function renderRubroChart(){
 }
 
 function renderProveedorChart(){
-  const items = state.filtered.filter(it => it.oc_estado === 'Aprobado');
-  let data = groupSum(items, 'oc_proveedor');
-  data = data.slice(0, 10); // Top 10
+  // ★ 19/06/2026: barras APILADAS por estado para ver, por proveedor, cuánto
+  // está Aprobado y cuánto está Solicitado (pendiente de aprobar). Se excluye
+  // Rechazado; cualquier estado pendiente (Solicitado/Observado) suma a "Solicitado".
+  const map = new Map(); // proveedor -> { aprob, solic }
+  state.filtered.forEach(it => {
+    const est = it.oc_estado;
+    if(est === 'Rechazado') return;
+    const prov = it.oc_proveedor || '(sin)';
+    const v = Number(it.subtotal) || 0;
+    if(!map.has(prov)) map.set(prov, { aprob:0, solic:0 });
+    const o = map.get(prov);
+    if(est === 'Aprobado') o.aprob += v;
+    else                   o.solic += v;   // Solicitado / Observado / pendientes
+  });
+  let data = [...map.entries()]
+    .map(([label, o]) => ({ label, aprob:o.aprob, solic:o.solic, total:o.aprob + o.solic }))
+    .filter(d => d.total > 0)
+    .sort((a,b) => b.total - a.total)
+    .slice(0, 10); // Top 10 por total
 
   destroyChart('proveedor');
   const canvas = document.getElementById('chartProveedor');
@@ -1692,33 +1708,51 @@ function renderProveedorChart(){
     type: 'bar',
     data: {
       labels: data.map(d => d.label.length > 22 ? d.label.slice(0,20)+'…' : d.label),
-      datasets: [{
-        data: data.map(d => d.value),
-        backgroundColor: CT.gold,
-        hoverBackgroundColor: CT.goldHover,
-        borderRadius: 4,
-        borderSkipped: false,
-      }],
+      datasets: [
+        {
+          label: 'Aprobado',
+          data: data.map(d => d.aprob),
+          backgroundColor: CT.green,
+          borderRadius: 4,
+          borderSkipped: false,
+          stack: 'oc',
+        },
+        {
+          label: 'Solicitado (pendiente)',
+          data: data.map(d => d.solic),
+          backgroundColor: CT.gold,
+          hoverBackgroundColor: CT.goldHover,
+          borderRadius: 4,
+          borderSkipped: false,
+          stack: 'oc',
+        },
+      ],
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true,
+          position: 'top',
+          labels: { color: CT.textSoft, font: { size: 10, family: 'Inter' }, boxWidth: 12, padding: 10 },
+        },
         tooltip: {
           backgroundColor: CT.navy,
           titleColor: '#fff',
           bodyColor: '#fff',
           padding: 10,
           callbacks: {
-            label: ctx => `${fmtMoney(ctx.parsed.x)}`,
-            title: (items)=>data[items[0].dataIndex].label,
+            title: (items) => data[items[0].dataIndex].label,
+            label: ctx => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.x)}`,
+            footer: (items) => `Total: ${fmtMoney(data[items[0].dataIndex].total)}`,
           },
         },
       },
       scales: {
         x: {
+          stacked: true,
           beginAtZero: true,
           grid: { color: CT.grid },
           ticks: {
@@ -1727,6 +1761,7 @@ function renderProveedorChart(){
           },
         },
         y: {
+          stacked: true,
           grid: { display: false },
           ticks: { color: CT.textSoft, font: { size: 11, family: 'Inter' } },
         },
@@ -2412,7 +2447,7 @@ async function exportPDF(){
       pdfRows.push({ type:'oc', sub:0 });
       g.items.forEach(it => {
         tableRows.push([
-          '', '', '', '', pdfSafe('   ' + (it.producto_nombre||'').slice(0,34)),
+          '', '', '', '', pdfSafe('   ' + (it.producto_nombre||'').slice(0,30)),
           String(it.cantidad||0), fmtPdfMoney(it.subtotal), '',
         ]);
         pdfRows.push({ type:'item', sub:(Number(it.subtotal)||0) });
@@ -2439,7 +2474,7 @@ async function exportPDF(){
       },
       columnStyles: {
         0: { cellWidth: 14 },
-        1: { cellWidth: 18, fontStyle:'bold' },
+        1: { cellWidth: 22, fontStyle:'bold', fontSize: 7 },
         2: { cellWidth: 24 },
         3: { cellWidth: 28 },
         4: { cellWidth: 'auto' },
