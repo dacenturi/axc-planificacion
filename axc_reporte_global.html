@@ -629,8 +629,8 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
         <div id="gantt-content"></div>
         <div class="gantt-note" style="margin-top:12px;padding:10px 12px;background:rgba(88,166,255,.08);border-left:3px solid #58a6ff;border-radius:4px;font-size:11px;color:var(--text2);line-height:1.5">
           <strong style="color:#58a6ff">ℹ Sobre la lectura del Gantt:</strong>
-          este diagrama muestra <strong>únicamente las actividades con planificación confirmada</strong> (🔒).
-          Los días verdes/rojos reflejan el cumplimiento tildado día por día. Las actividades sin confirmar no aparecen acá porque su planificación aún puede modificarse — para verlas, consultá la pestaña Tabla o los KPIs de arriba.
+          este diagrama muestra <strong>todas las actividades del filtro</strong>, según los filtros del sidebar y la app activa.
+          En las actividades confirmadas (🔒), los días verdes/rojos reflejan el cumplimiento tildado día por día; los días con solo borde dorado están planificados pero aún sin cargar cumplimiento. Las actividades sin confirmar (planificación tentativa) se muestran con borde dorado en sus días planificados.
         </div>
       </div>
     </div>
@@ -1750,6 +1750,27 @@ function _getFechaFin(a){
   return null;
 }
 
+// ★ 19/06/2026 ★ Rango planificado de RESPALDO para el Gantt.
+// Devuelve los días hábiles (saltando domingos) entre fecha_inicio y
+// fecha_fin como ISO[]. Se usa SOLO cuando la actividad no tiene días
+// tildados en a.days[] ni domingos en a.domingos[], para que el Gantt
+// igualmente dibuje TODAS las actividades (no solo las confirmadas /
+// con grilla cargada). Si no hay fecha_fin, devuelve el día de inicio.
+function _ganttRangoPlanISO(a){
+  if(!a || !a.fecha_inicio) return [];
+  const ini = new Date(a.fecha_inicio + 'T00:00:00');
+  if(isNaN(ini.getTime())) return [];
+  const finISO = a.fecha_fin || a.fecha_inicio;
+  const fin = new Date(finISO + 'T00:00:00');
+  if(isNaN(fin.getTime())) return [ a.fecha_inicio ];
+  const out = [];
+  for(let d = new Date(ini); d <= fin; d.setDate(d.getDate()+1)){
+    if(d.getDay() === 0) continue;            // saltar domingos (días hábiles)
+    out.push(d.toISOString().slice(0,10));
+  }
+  return out.length ? out : [ a.fecha_inicio ];
+}
+
 // ★ 21/05/2026 ★ Devuelve TODOS los días planificados (tildados en la grilla
 // hábil + domingos trabajados) como ISO 'YYYY-MM-DD', opcionalmente recortados
 // al rango [desde, hasta]. Base común de _getFechaIniClip / _getFechaFinClip.
@@ -1926,25 +1947,27 @@ function _ganttCellTitle(a, cls, fechaTxt){
 
 function renderGantt(){
   const cont = document.getElementById('gantt-content');
-  // ★ REGLA 20/05/2026 ★ El Gantt SOLO muestra actividades con planificación
-  // confirmada (a.confirmada === true). Razones:
-  //   • Solo las confirmadas pueden tener cumplimiento[] tildado día por día
-  //   • Las no confirmadas son planificaciones tentativas (pueden cambiar)
-  //   • Esto resuelve la confusión KPIs vs Gantt: KPIs cuentan todo el plan,
-  //     Gantt solo lo confirmado para reflejar cumplimiento real.
+  // ★ REGLA 19/06/2026 ★ El Gantt muestra TODAS las actividades del filtro
+  // (no solo las confirmadas). Razones:
+  //   • Las confirmadas se dibujan día por día según a.cumplimiento[]
+  //     (verde/rojo/borde dorado pendiente), igual que antes.
+  //   • Las NO confirmadas (planificación tentativa) se dibujan como
+  //     planificadas (borde dorado), usando sus días tildados o, si no
+  //     tienen grilla cargada, el rango fecha_inicio→fecha_fin.
+  //   • Así el Gantt refleja la planificación completa, no solo lo confirmado.
   const totalEnFiltro = window._filteredActs.length;
   const acts = window._filteredActs.filter(a =>
-    a.confirmada &&
     a.fecha_inicio && (
       (Array.isArray(a.days) && a.days.some(d => d)) ||
-      (Array.isArray(a.domingos) && a.domingos.length > 0)
+      (Array.isArray(a.domingos) && a.domingos.length > 0) ||
+      _ganttRangoPlanISO(a).length > 0
     )
   );
   if(!acts.length){
     cont.innerHTML = '<div class="empty"><span class="empty-ico">📅</span>' +
-      'No hay actividades <strong>confirmadas</strong> en el filtro actual.' +
+      'No hay actividades en el filtro actual.' +
       (totalEnFiltro > 0
-        ? '<br><span style="font-size:11px;opacity:.75">Hay ' + totalEnFiltro + ' actividad(es) en el filtro, pero ninguna tiene planificación confirmada todavía (🔒). Confirmá las planificaciones desde la app para que aparezcan acá.</span>'
+        ? '<br><span style="font-size:11px;opacity:.75">Hay ' + totalEnFiltro + ' actividad(es) en el filtro, pero ninguna tiene fechas planificadas para dibujar.</span>'
         : ''
       ) +
       '</div>';
@@ -1964,11 +1987,16 @@ function renderGantt(){
     if(!maxISO || iso > maxISO) maxISO = iso;
   };
   acts.forEach(a => {
+    let hasReal = false;
     if(Array.isArray(a.days)){
-      a.days.forEach((v,i) => { if(v) _bump(_idxToISO(a, i)); });
+      a.days.forEach((v,i) => { if(v){ _bump(_idxToISO(a, i)); hasReal = true; } });
     }
     if(Array.isArray(a.domingos)){
-      a.domingos.forEach(iso => _bump(iso));
+      a.domingos.forEach(iso => { if(iso){ _bump(iso); hasReal = true; } });
+    }
+    // Sin días tildados → usar el rango planificado de respaldo
+    if(!hasReal){
+      _ganttRangoPlanISO(a).forEach(iso => _bump(iso));
     }
   });
   // ★ 20/05/2026 ★ Si hay filtro de fechas activo, el rango del Gantt
@@ -2025,25 +2053,35 @@ function renderGantt(){
 
     // Construir array `marked` con elementos { di, srcIdx }
     //   di     = índice de la columna del Gantt en `dates[]`
-    //   srcIdx = índice en a.days[] / a.cumplimiento[] (-1 si es domingo extra)
+    //   srcIdx = índice en a.days[] / a.cumplimiento[] (-1 si no es día real)
+    //   kind   = 'day' (día tildado) | 'dom' (domingo extra) | 'plan' (rango plan.)
     const marked = [];
+    let hasReal = false;
     if(Array.isArray(a.days)){
       a.days.forEach((v,i) => {
         if(!v) return;
         const realISO = _idxToISO(a, i);
         if(!realISO) return;
         const colIdx = datesISO.indexOf(realISO);
-        if(colIdx >= 0) marked.push({ di: colIdx, srcIdx: i });
+        if(colIdx >= 0){ marked.push({ di: colIdx, srcIdx: i, kind:'day' }); hasReal = true; }
       });
     }
     if(Array.isArray(a.domingos)){
       a.domingos.forEach(iso => {
         const colIdx = datesISO.indexOf(iso);
-        if(colIdx >= 0) marked.push({ di: colIdx, srcIdx: -1 });
+        if(colIdx >= 0){ marked.push({ di: colIdx, srcIdx: -1, kind:'dom' }); hasReal = true; }
+      });
+    }
+    // ★ 19/06/2026 ★ Sin días tildados → dibujar el rango planificado de
+    // respaldo (fecha_inicio→fecha_fin) como bloques "pendiente".
+    if(!hasReal){
+      _ganttRangoPlanISO(a).forEach(iso => {
+        const colIdx = datesISO.indexOf(iso);
+        if(colIdx >= 0) marked.push({ di: colIdx, srcIdx: -1, kind:'plan' });
       });
     }
     marked.sort((x,y) => x.di - y.di);
-    // Deduplicar por di (preferir el primero con srcIdx real)
+    // Deduplicar por di (preferir el primero)
     const dedup = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
 
     if(!dedup.length) return; // no hay nada que dibujar
@@ -2056,29 +2094,25 @@ function renderGantt(){
       : [a.residente, a.obra];
     const subInfo = subFields.filter(Boolean).join(' · ');
 
-    // Construir los bloques uno por día tildado
-    const blocks = dedup.map(({ di, srcIdx }) => {
-      const esExtra = (srcIdx === -1);
+    // Construir los bloques uno por día
+    const blocks = dedup.map(({ di, srcIdx, kind }) => {
       // Estado de cumplimiento POR DÍA (modelo v2.4 — actividad confirmada).
       // NO se aplica fallback al estado global `a.cumple`: si el usuario no
       // tildó cumple/no_cumple en ese día específico, queda como pendiente
       // (borde dorado). El estado global se refleja en los KPIs, no en el
       // tildado día-por-día del Gantt.
-      const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
-        ? a.cumplimiento[srcIdx]
-        : null;
-      const esPlanifPendiente = !esExtra
-        && cumpDia !== 'cumple'
-        && cumpDia !== 'no_cumple'
-        && !isImp;
-
       let cls = '';
-      if(esPlanifPendiente)             cls = 'pendiente';
-      else if(esExtra)                  cls = 'dom';
-      else if(cumpDia === 'no_cumple')  cls = 'no-cumple';
-      else if(cumpDia === 'cumple')     cls = 'cumple';
-      else if(isImp)                    cls = 'imprev';
-      else                              cls = 'pendiente'; // fallback defensivo
+      if(kind === 'dom')        cls = 'dom';          // domingo trabajado (azul)
+      else if(kind === 'plan')  cls = 'pendiente';    // rango planificado tentativo
+      else {                                          // kind === 'day'
+        const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+          ? a.cumplimiento[srcIdx]
+          : null;
+        if(isImp)                         cls = 'imprev';
+        else if(cumpDia === 'no_cumple')  cls = 'no-cumple';
+        else if(cumpDia === 'cumple')     cls = 'cumple';
+        else                              cls = 'pendiente';
+      }
 
       const left = di * CELL + BLOQUE_OFFSET;
       const d = dates[di];
@@ -2461,19 +2495,31 @@ async function exportPDF(modo){
     // Replica el patrón vectorial de los Gantt del residente/contratista.
     // Si hay muchas actividades, se pagina ("Parte 1/2", "Parte 2/2"...).
     async function drawGanttPages(doc, allActs, getNextPageNum){
-      // ★ REGLA 20/05/2026 ★ Solo actividades con planificación confirmada.
-      // Las no confirmadas son tentativas y no se exportan al Gantt PDF.
+      // ★ REGLA 19/06/2026 ★ El Gantt PDF exporta TODAS las actividades del
+      // filtro (no solo las confirmadas), igual que la vista HTML. Las que no
+      // tienen grilla de días cargada usan su rango fecha_inicio→fecha_fin.
       const ganttActs = allActs.filter(a =>
-        a.confirmada &&
-        _getFechaActividad(a) && Array.isArray(a.days) && a.days.some(d => d)
+        a.fecha_inicio && (
+          (Array.isArray(a.days) && a.days.some(d => d)) ||
+          (Array.isArray(a.domingos) && a.domingos.length > 0) ||
+          _ganttRangoPlanISO(a).length > 0
+        )
       );
       if(!ganttActs.length) return;
 
       // Calcular rango global de fechas
       let minDate = null, maxDate = null;
       ganttActs.forEach(a => {
-        const ini = _getFechaActividad(a);
-        const fin = _getFechaFin(a) || ini;
+        let ini = _getFechaActividad(a);
+        let fin = _getFechaFin(a) || ini;
+        // Respaldo: actividades sin días tildados → rango planificado
+        if(!ini || !fin){
+          const rango = _ganttRangoPlanISO(a);
+          if(rango.length){
+            ini = ini || rango[0];
+            fin = fin || rango[rango.length - 1];
+          }
+        }
         if(ini && (!minDate || ini < minDate)) minDate = ini;
         if(fin && (!maxDate || fin > maxDate)) maxDate = fin;
       });
@@ -2606,7 +2652,7 @@ async function exportPDF(modo){
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
         // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
-        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'} confirmada${sortedActs.length===1?'':'s'}`, lMX, lMT + 9);
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
 
         // ─── Cabecera de columna única ───
         const ganttTopY = lMT + 14;
@@ -2699,40 +2745,51 @@ async function exportPDF(modo){
           const _idxToISO = (act, i) => _idxAISO(act, i);
           const _datesISO = dates.map(d => d.toISOString().slice(0,10));
 
-          // Construir array `marked` con { di, srcIdx }
+          // Construir array `marked` con { di, srcIdx, kind }
           const marked = [];
+          let hasReal = false;
           if(Array.isArray(a.days)){
             a.days.forEach((v,i) => {
               if(!v) return;
               const realISO = _idxToISO(a, i);
               if(!realISO) return;
               const colIdx = _datesISO.indexOf(realISO);
-              if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: i });
+              if(colIdx >= 0 && colIdx < numDays){ marked.push({ di: colIdx, srcIdx: i, kind:'day' }); hasReal = true; }
             });
           }
           if(Array.isArray(a.domingos)){
             a.domingos.forEach(iso => {
               const colIdx = _datesISO.indexOf(iso);
-              if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: -1 });
+              if(colIdx >= 0 && colIdx < numDays){ marked.push({ di: colIdx, srcIdx: -1, kind:'dom' }); hasReal = true; }
+            });
+          }
+          // ★ 19/06/2026 ★ Sin días tildados → rango planificado de respaldo
+          if(!hasReal){
+            _ganttRangoPlanISO(a).forEach(iso => {
+              const colIdx = _datesISO.indexOf(iso);
+              if(colIdx >= 0 && colIdx < numDays) marked.push({ di: colIdx, srcIdx: -1, kind:'plan' });
             });
           }
           marked.sort((x,y) => x.di - y.di);
           const dedupMarked = marked.filter((v,i,arr) => i === 0 || v.di !== arr[i-1].di);
 
-          dedupMarked.forEach(({ di, srcIdx }) => {
-            const esExtra = (srcIdx === -1);
+          dedupMarked.forEach(({ di, srcIdx, kind }) => {
             // Estado de cumplimiento POR DÍA (modelo v2.4).
             // NO se aplica fallback al estado global `a.cumple`: si el usuario
             // no tildó cumple/no_cumple en ese día específico, queda como
             // pendiente (borde dorado). El estado global se refleja en KPIs,
             // no en el tildado día-por-día del Gantt.
-            const cumpDia = (srcIdx >= 0 && Array.isArray(a.cumplimiento))
+            const cumpDia = (kind === 'day' && srcIdx >= 0 && Array.isArray(a.cumplimiento))
               ? a.cumplimiento[srcIdx]
               : null;
-            const esPlanifPendiente = !esExtra
+            // "Pendiente" (solo borde dorado): día tildado/planificado sin
+            // cumplimiento cargado, o rango planificado tentativo.
+            const esPlanifPendiente = (kind === 'plan') || (
+              kind === 'day'
               && cumpDia !== 'cumple'
               && cumpDia !== 'no_cumple'
-              && !isImp;
+              && !isImp
+            );
 
             const bx = ganttX + di*cellW + 0.8;
             const by = rowY + 1.2;
@@ -2740,14 +2797,14 @@ async function exportPDF(modo){
             const bh = Math.min(rowH - 2.4, 4.2);
 
             if(esPlanifPendiente){
-              // Solo borde dorado, fondo transparente → "falta cargar dato"
+              // Solo borde dorado, fondo transparente → "falta cargar dato" / tentativa
               doc.setDrawColor(...GOLD);
               doc.setLineWidth(0.6);
               doc.roundedRect(bx, by, bw, bh, 0.6, 0.6, 'D');
             } else {
               // Bloque relleno con color según estado
               let color;
-              if(esExtra)                      color = [59,130,246];   // azul
+              if(kind === 'dom')              color = [59,130,246];   // azul (domingo)
               else if(cumpDia === 'no_cumple') color = [220,38,38];    // rojo
               else if(cumpDia === 'cumple')    color = [34,197,94];    // verde
               else if(isImp)                   color = [255,107,53];   // naranja imprevista
