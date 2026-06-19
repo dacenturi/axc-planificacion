@@ -154,14 +154,14 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
 .g-dhdr-wrap{display:flex}
 .g-dh{min-width:32px;font-size:9px;text-align:center;color:var(--text2);padding:4px 2px;border-left:1px solid var(--border2)}
 .g-dh.sat{background:rgba(88,166,255,.08);color:var(--blue)}
-.g-row{display:flex;align-items:center;min-height:30px;border-bottom:1px solid var(--border2)}
+.g-row{display:flex;align-items:stretch;min-height:30px;border-bottom:1px solid var(--border2)}
 .g-row:hover{background:rgba(240,165,0,.04)}
-.g-lbl{min-width:280px;flex-shrink:0;padding:4px 10px;font-size:11px;overflow:hidden;display:flex;flex-direction:column;gap:2px}
-.g-lbl strong{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
-.g-lbl small{color:var(--text3);font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.g-bars-wrap{position:relative;flex:1;height:30px}
+.g-lbl{min-width:280px;flex-shrink:0;padding:5px 10px;font-size:11px;display:flex;flex-direction:column;justify-content:center;gap:2px}
+.g-lbl strong{font-weight:600;color:var(--text);line-height:1.3;word-break:break-word}
+.g-lbl small{color:var(--text3);font-size:9.5px;line-height:1.25;word-break:break-word}
+.g-bars-wrap{position:relative;flex:1;align-self:stretch;min-height:30px}
 .g-tick{position:absolute;top:0;bottom:0;width:1px;background:var(--border2)}
-.g-blk{position:absolute;top:5px;height:20px;border-radius:4px;background:rgba(139,148,158,.65);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:filter .15s}
+.g-blk{position:absolute;top:50%;transform:translateY(-50%);height:20px;border-radius:4px;background:rgba(139,148,158,.65);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:filter .15s}
 .g-blk:hover{filter:brightness(1.15)}
 .g-blk.ok{background:var(--green)}
 .g-blk.bad{background:var(--red)}
@@ -2088,7 +2088,7 @@ function renderGantt(){
 
     const ticks = dates.map((d,i) => `<div class="g-tick" style="left:${i*CELL}px"></div>`).join('');
     const desc = a.descripcion || '(sin descripción)';
-    const shortDesc = desc.length > 42 ? desc.slice(0,41) + '…' : desc;
+    const shortDesc = desc;   // ★ 19/06/2026: descripción completa (sin recortar)
     const subFields = window._currentApp === 'contratista'
       ? [a.residente, a.obra, a.contratista]
       : [a.residente, a.obra];
@@ -2586,7 +2586,11 @@ async function exportPDF(modo){
         const nameTxt = imprPrefix + (a.descripcion || '(sin descripción)');
         doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
         let nameLines = doc.splitTextToSize(nameTxt, labelW);
-        if(nameLines.length > 3){ nameLines = nameLines.slice(0,3); nameLines[2] = nameLines[2].slice(0, Math.max(1, nameLines[2].length-3)) + '...'; }
+        // ★ 19/06/2026: mostrar la descripción COMPLETA (sin recortar a 3 líneas).
+        // Tope de seguridad alto (8) sólo para evitar una fila más alta que la
+        // página ante un texto patológicamente largo; las descripciones reales
+        // entran en 2-4 líneas.
+        if(nameLines.length > 8){ nameLines = nameLines.slice(0,8); nameLines[7] = nameLines[7].slice(0, Math.max(1, nameLines[7].length-3)) + '...'; }
         // Sub-info en línea (obra · responsable · sector) — itálica gris
         const subParts = [];
         if(a.obra) subParts.push(a.obra);
@@ -3338,11 +3342,10 @@ async function exportPDF(modo){
       const boardTopY = 40;
       const colHeadH = 7;
       const cardsTop = boardTopY + colHeadH + 2.5;
-      const cardH = 11, cardGap = 1.5;          // tarjeta MUY compacta (4 líneas)
+      const cardGap = 1.5;
       const usableH = lph - lMB - cardsTop;
-      const cardsPerCol = Math.max(1, Math.floor((usableH + cardGap) / (cardH + cardGap)));
-      const maxCount = Math.max(1, ...cols.map(c => buckets[c.key].length));
-      const totalParts = Math.max(1, Math.ceil(maxCount / cardsPerCol));
+      const cardPad = 2.3;
+      const cardInnerW = colW - cardPad * 2;
 
       function _trunc(txt, w){
         txt = String(txt == null ? '' : txt);
@@ -3351,23 +3354,56 @@ async function exportPDF(modo){
         return txt.slice(0, Math.max(2, Math.floor(txt.length * f) - 1)) + '…';
       }
 
-      function kbCard(x, y, w, a){
+      // ★ 19/06/2026: tarjetas de ALTURA VARIABLE para mostrar la descripción
+      // COMPLETA (antes se recortaba a 1 línea). Cada tarjeta calcula sus
+      // líneas de descripción y su alto; cada columna pagina de forma
+      // independiente según el alto acumulado.
+      const cardHeightFor = D => Math.max(11, 9.2 + D * 2.4);
+      const prep = {};
+      cols.forEach(c => {
+        prep[c.key] = buckets[c.key].map(a => {
+          // Medir con la misma fuente con la que se dibuja (negrita si imprevista)
+          doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.1);
+          let descLines = doc.splitTextToSize(String(a.descripcion || '—'), cardInnerW);
+          // Tope de seguridad alto (8) por si una descripción es patológicamente
+          // larga; las reales entran en 1-4 líneas.
+          if(descLines.length > 8){ descLines = descLines.slice(0,8); descLines[7] = descLines[7].slice(0, Math.max(1, descLines[7].length-2)) + '…'; }
+          return { a, descLines, h: cardHeightFor(descLines.length) };
+        });
+      });
+      const colPages = {};
+      let totalParts = 1;
+      cols.forEach(c => {
+        const pages = []; let cur = []; let curH = 0;
+        prep[c.key].forEach(card => {
+          const add = card.h + (cur.length ? cardGap : 0);
+          if(curH + add > usableH && cur.length){ pages.push(cur); cur = []; curH = 0; }
+          cur.push(card); curH += card.h + cardGap;
+        });
+        if(cur.length) pages.push(cur);
+        if(!pages.length) pages.push([]);
+        colPages[c.key] = pages;
+        totalParts = Math.max(totalParts, pages.length);
+      });
+
+      function kbCard(x, y, w, card){
+        const a = card.a;
+        const h = card.h;
         doc.setFillColor(...GRAY_LIGHT);
         doc.setDrawColor(...GRAY_BORD);
         doc.setLineWidth(0.2);
-        doc.roundedRect(x, y, w, cardH, 1.2, 1.2, 'FD');
-        if(a.imprevista){ doc.setFillColor(...ORANGE_IMP); doc.rect(x, y, 1.2, cardH, 'F'); }
-        const pad = 2.3;
+        doc.roundedRect(x, y, w, h, 1.2, 1.2, 'FD');
+        if(a.imprevista){ doc.setFillColor(...ORANGE_IMP); doc.rect(x, y, 1.2, h, 'F'); }
+        const pad = cardPad;
         const innerW = w - pad * 2;
         let cy = y + 2.7;
         // Obra (negrita navy)
         doc.setFont('helvetica', 'bold'); doc.setFontSize(6.4); doc.setTextColor(...NAVY);
         doc.text(_trunc(a.obra || '—', innerW), x + pad, cy);
         cy += 2.6;
-        // Actividad (1 línea) — el estado ya lo indica la columna
+        // Actividad — descripción COMPLETA (varias líneas)
         doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.1); doc.setTextColor(...BLACK);
-        doc.text(_trunc(String(a.descripcion || '—'), innerW), x + pad, cy);
-        cy += 2.5;
+        card.descLines.forEach(ln => { doc.text(ln, x + pad, cy); cy += 2.4; });
         // Residente + atraso
         const dias = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? ('  ·  ' + a.dias_atraso + 'd') : '';
         doc.setFont('helvetica', 'normal'); doc.setFontSize(5.7); doc.setTextColor(...GRAY_TEXT);
@@ -3408,14 +3444,14 @@ async function exportPDF(modo){
           doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
           doc.text(_trunc(c.titulo, colW - 12), x + 2.4, boardTopY + 4.8);
           doc.text(String(buckets[c.key].length), x + colW - 2.4, boardTopY + 4.8, { align: 'right' });
-          const items = buckets[c.key].slice(part * cardsPerCol, (part + 1) * cardsPerCol);
+          const items = colPages[c.key][part] || [];
           let y = cardsTop;
           if(!items.length){
             doc.setFont('helvetica', 'italic'); doc.setFontSize(6.5); doc.setTextColor(...GRAY);
             doc.text('Sin actividades', x + 2.4, y + 4);
             doc.setFont('helvetica', 'normal');
           }
-          items.forEach(a => { kbCard(x, y, colW, a); y += cardH + cardGap; });
+          items.forEach(card => { kbCard(x, y, colW, card); y += card.h + cardGap; });
         });
 
         // Footer
