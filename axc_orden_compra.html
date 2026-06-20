@@ -3885,7 +3885,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v4.2 · fix botón cargar materiales
+      Conexdata · AXC Planificación v4.3 · PDF proveedor consolidado
     </p>
   </div>
 </div>
@@ -8812,6 +8812,10 @@ function fmtPdfMoney(n){
   if(n==null||isNaN(n)) return 'Gs. 0';
   return 'Gs. ' + Math.round(Number(n)).toLocaleString('es-PY');
 }
+function _pdfNum(n){
+  const v = Number(n)||0;
+  return v.toLocaleString('es-PY', { maximumFractionDigits: 2 });
+}
 
 // Strip de caracteres no ASCII safe para Helvetica
 function pdfSafe(s){
@@ -8988,22 +8992,42 @@ async function generatePDF(oc, incluirAdjuntos){
     doc.setTextColor(31, 56, 100);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
-    doc.text(`Items (${items.length})`, M, y);
+    // Conteo consolidado (materiales distintos) para el encabezado del PDF al proveedor.
+    const _nConsol = (function(){ const s={}; items.forEach(function(it){ const k=(it.producto_id!=null&&String(it.producto_id)!=='')?('P:'+it.producto_id):('N:'+String(it.producto_nombre||'').trim().toLowerCase()); s[k]=1; }); return Object.keys(s).length; })();
+    doc.text(`Items (${_nConsol})`, M, y);
     doc.setDrawColor(200, 160, 40);
     doc.setLineWidth(0.4);
     doc.line(M, y+1, M+22, y+1);
 
     y += 4;
 
-    const rows = items.map((it, idx) => [
+    // Consolidación para el PROVEEDOR: un material repetido (en varios rubros)
+    // se suma en una sola línea. El detalle por rubro se conserva en la base.
+    const _consol = [];
+    const _cmap = {};
+    items.forEach(function(it){
+      const key = (it.producto_id != null && String(it.producto_id) !== '')
+        ? ('P:' + String(it.producto_id))
+        : ('N:' + String(it.producto_nombre || '').trim().toLowerCase() + '|' + (it.es_mano_obra ? 'mo' : 'mat'));
+      if(!_cmap[key]){
+        _cmap[key] = { producto_nombre: it.producto_nombre || '-', cantidad: 0, precio_unit: Number(it.precio_unit)||0, subtotal: 0, es_mano_obra: !!it.es_mano_obra };
+        _consol.push(_cmap[key]);
+      }
+      _cmap[key].cantidad += (Number(it.cantidad)||0);
+      _cmap[key].subtotal += (Number(it.subtotal)||0);
+    });
+    // Precio unitario representativo: si todos coinciden lo deja; si varía, recalcula promedio ponderado.
+    _consol.forEach(function(c){ if(c.cantidad > 0){ const pu = c.subtotal / c.cantidad; if(Math.abs(pu - c.precio_unit) > 0.5) c.precio_unit = Math.round(pu); } });
+
+    const rows = _consol.map((it, idx) => [
       String(idx + 1),
       pdfSafe(it.producto_nombre || '-'),
-      String(it.cantidad || 0),
+      String(_pdfNum(it.cantidad)),
       fmtPdfMoney(it.precio_unit),
       fmtPdfMoney(it.subtotal),
     ]);
 
-    const total = items.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
+    const total = _consol.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
 
     doc.autoTable({
       startY: y,
