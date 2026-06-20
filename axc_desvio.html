@@ -115,17 +115,17 @@ tfoot td:first-child{ text-align:left; }
     <div class="kpis">
       <div class="kpi"><div class="lab">Presupuestado</div><div class="val" id="kPres">₲ 0</div><div class="sub" id="kPresSub">precio congelado</div></div>
       <div class="kpi"><div class="lab">Comprado</div><div class="val" id="kComp">₲ 0</div><div class="sub" id="kCompSub">OCs reales</div></div>
-      <div class="kpi"><div class="lab">Desvío</div><div class="val" id="kDesv">₲ 0</div><div class="sub" id="kDesvSub">comprado − presupuestado</div></div>
-      <div class="kpi"><div class="lab">Desvío %</div><div class="val" id="kDesvPct">—</div><div class="sub">sobre lo presupuestado</div></div>
+      <div class="kpi"><div class="lab">Avance de compra</div><div class="val" id="kAvance">—</div><div class="sub">del presupuesto ya comprado</div></div>
+      <div class="kpi"><div class="lab">Sobreprecio real</div><div class="val" id="kSobre">—</div><div class="sub" id="kSobreSub">precio pagado vs presupuestado</div></div>
     </div>
 
     <div class="tablecard">
       <div id="tableArea"><div class="empty">Elegí un presupuesto para ver el análisis.</div></div>
     </div>
     <div class="note">
-      El desvío compara el <b>precio congelado</b> del presupuesto contra el <b>precio real</b> de las órdenes de compra cargadas contra ese presupuesto.
-      Desvío positivo (rojo) = se compró por encima de lo presupuestado; negativo (verde) = por debajo (ahorro).
-      No incluye mano de obra ni compras sin presupuesto.
+      El <b>Avance de compra</b> indica cuánto del presupuesto ya se ejecutó (comprado ÷ presupuestado): un avance bajo significa que faltan compras, no un ahorro.
+      El <b>Sobreprecio real</b> compara, solo sobre lo ya comprado, el precio pagado contra el precio presupuestado (congelado): positivo (rojo) = pagaste de más; negativo (verde) = pagaste menos.
+      En la tabla, la columna <b>Desvío</b> por insumo es por precio unitario. No incluye mano de obra ni compras sin presupuesto.
     </div>
   </div>
 </div>
@@ -188,25 +188,54 @@ async function loadDesvio(pp){
       sb.from('presupuesto_rubros').select('rubro_codigo,descripcion').eq('presupuesto', pp)
     ]);
     S.rubroDesc = {}; (rub||[]).forEach(function(r){ if(r.rubro_codigo) S.rubroDesc[String(r.rubro_codigo)] = r.descripcion||''; });
-    S.rows = (rows||[]).map(function(r){ return {
+    S.rows = (rows||[]).map(function(r){
+      const cantC = Number(r.cant_comp)||0, puC = Number(r.precio_unit_comp)||0, puP = Number(r.precio_unit_pres)||0;
+      return {
       rubro:String(r.rubro_codigo||''), codigo:r.codigo_insumo||'', material:r.material||r.codigo_insumo||'',
-      cantP:Number(r.cant_pres)||0, puP:Number(r.precio_unit_pres)||0, montoP:Number(r.monto_pres)||0,
-      cantC:Number(r.cant_comp)||0, puC:Number(r.precio_unit_comp)||0, montoC:Number(r.monto_comp)||0,
-      dUnit:Number(r.desvio_unit_gs)||0, dPct:(r.desvio_unit_pct==null?null:Number(r.desvio_unit_pct)), dMonto:Number(r.desvio_monto_gs)||0
+      cantP:Number(r.cant_pres)||0, puP:puP, montoP:Number(r.monto_pres)||0,
+      cantC:cantC, puC:puC, montoC:Number(r.monto_comp)||0,
+      dUnit:(puC - puP), dPct:(puP>0?((puC-puP)/puP*100):null),
+      // Desvío de PRECIO sobre lo comprado (aísla el efecto precio del efecto cantidad).
+      dMonto: cantC * (puC - puP)
     }; });
     render(); renderKpis();
   }catch(e){ console.warn('desvio', e); area.innerHTML='<div class="empty">No se pudo cargar el análisis ('+esc(e.message||'')+').</div>'; }
 }
 
 function totals(rows){
-  return rows.reduce(function(a,r){ a.p+=r.montoP; a.c+=r.montoC; return a; }, {p:0,c:0});
+  return rows.reduce(function(a,r){
+    a.p += r.montoP; a.c += r.montoC;
+    // "Comprado a precio presupuestado": cantidad realmente comprada × precio congelado.
+    // Sirve para aislar el efecto PRECIO del efecto CANTIDAD.
+    a.cAtPres += (Number(r.cantC)||0) * (Number(r.puP)||0);
+    return a;
+  }, {p:0, c:0, cAtPres:0});
 }
 function renderKpis(){
-  const t=totals(S.rows); const d=t.c-t.p; const pct = t.p>0 ? (d/t.p*100) : null;
+  const t = totals(S.rows);
   document.getElementById('kPres').textContent = fmtGs(t.p);
   document.getElementById('kComp').textContent = fmtGs(t.c);
-  const kd=document.getElementById('kDesv'); kd.textContent = (d>0?'+':'')+fmtGs(d).replace('₲ ','₲ '); kd.className='val '+(d>0?'r':(d<0?'g':''));
-  const kp=document.getElementById('kDesvPct'); kp.textContent = fmtPct(pct); kp.className='val '+(pct>0?'r':(pct<0?'g':''));
+
+  // Avance de compra = comprado / presupuestado (cuánto del presupuesto ya se ejecutó).
+  const avance = t.p > 0 ? (t.c / t.p * 100) : null;
+  const ka = document.getElementById('kAvance');
+  ka.textContent = (avance==null) ? '—' : (Math.round(avance*10)/10).toLocaleString('es-PY',{maximumFractionDigits:1})+'%';
+  ka.className = 'val';
+  const falta = t.p - t.c;
+  document.getElementById('kAvance').nextElementSibling.textContent =
+    (avance==null) ? 'del presupuesto ya comprado' : ('faltan ' + fmtGs(Math.max(0,falta)) + ' por comprar');
+
+  // Sobreprecio real = lo que pagaste − lo que costaría a precio presupuestado (SOLO sobre lo comprado).
+  const sobre = t.c - t.cAtPres;
+  const sobrePct = t.cAtPres > 0 ? (sobre / t.cAtPres * 100) : null;
+  const ks = document.getElementById('kSobre');
+  if(t.c <= 0){ ks.textContent = '—'; ks.className='val'; document.getElementById('kSobreSub').textContent='aún no hay compras'; }
+  else {
+    ks.textContent = (sobre>0?'+':'') + fmtGs(sobre);
+    ks.className = 'val ' + (sobre>0?'r':(sobre<0?'g':''));
+    document.getElementById('kSobreSub').textContent =
+      (sobrePct==null?'precio pagado vs presupuestado':((sobrePct>0?'+':'')+(Math.round(sobrePct*10)/10).toLocaleString('es-PY',{maximumFractionDigits:1})+'% sobre lo comprado'));
+  }
 }
 
 function rubroName(rk){ if(!rk) return 'Sin rubro'; return rk+(S.rubroDesc[rk]?(' · '+S.rubroDesc[rk]):''); }
@@ -270,7 +299,7 @@ function renderByInsumo(){
   });
   const arr=Object.keys(groups).map(function(k){ const g=groups[k];
     g.puP = g.cantP>0?g.montoP/g.cantP:0; g.puC = g.cantC>0?g.montoC/g.cantC:0;
-    g.dMonto = g.montoC-g.montoP; g.dPct = g.puP>0?((g.puC-g.puP)/g.puP*100):null; return g;
+    g.dMonto = (g.cantC||0) * ((g.puC||0) - (g.puP||0)); g.dPct = g.puP>0?((g.puC-g.puP)/g.puP*100):null; return g;
   });
   arr.sort(function(a,b){ return Math.abs(b.dMonto)-Math.abs(a.dMonto); });
   let body='';
@@ -318,7 +347,7 @@ function exportPDF(){
   } else {
     const groups={};
     S.rows.forEach(function(r){ const k=r.codigo||r.material; if(!groups[k]) groups[k]={ codigo:r.codigo, material:r.material, cantP:0,montoP:0,cantC:0,montoC:0 }; const g=groups[k]; g.cantP+=r.cantP; g.montoP+=r.montoP; g.cantC+=r.cantC; g.montoC+=r.montoC; });
-    const arr=Object.keys(groups).map(function(k){ const g=groups[k]; g.puP=g.cantP>0?g.montoP/g.cantP:0; g.puC=g.cantC>0?g.montoC/g.cantC:0; g.dMonto=g.montoC-g.montoP; g.dPct=g.puP>0?((g.puC-g.puP)/g.puP*100):null; return g; });
+    const arr=Object.keys(groups).map(function(k){ const g=groups[k]; g.puP=g.cantP>0?g.montoP/g.cantP:0; g.puC=g.cantC>0?g.montoC/g.cantC:0; g.dMonto=(g.cantC||0)*((g.puC||0)-(g.puP||0)); g.dPct=g.puP>0?((g.puC-g.puP)/g.puP*100):null; return g; });
     arr.sort(function(a,b){ return Math.abs(b.dMonto)-Math.abs(a.dMonto); });
     arr.forEach(function(g){ body.push([g.codigo+' · '+g.material, g.cantP?fmtNum(g.cantP):'—', g.puP?fmtGs(g.puP):'—', g.montoP?fmtGs(g.montoP):'—', g.cantC?fmtNum(g.cantC):'—', g.puC?fmtGs(g.puC):'—', g.montoC?fmtGs(g.montoC):'—', g.dMonto?((g.dMonto>0?'+':'')+fmtGs(g.dMonto)):'—', fmtPct(g.dPct)]); });
   }
