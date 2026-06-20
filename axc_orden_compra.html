@@ -3885,7 +3885,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v4.3 · PDF proveedor consolidado
+      Conexdata · AXC Planificación v4.4 · otra marca desde catálogo
     </p>
   </div>
 </div>
@@ -12463,6 +12463,14 @@ function pbtInjectStyles(){
     '.pbt-price{width:96px;font-family:inherit;font-size:12px;padding:5px 7px;border:1px solid #e3dcc9;border-radius:7px;text-align:right}',
     '.pbt-msel{font-family:inherit;font-size:11.5px;padding:5px 7px;border:1px solid #e3dcc9;border-radius:6px;background:#fff;width:100%;max-width:260px;margin-top:0}',
     '.pbt-marca{font-family:inherit;font-size:11.5px;padding:4px 7px;border:1px solid #e3dcc9;border-radius:6px;background:#fff;width:100%;max-width:260px;margin-top:0}',
+    '.pbt-marcawrap{position:relative;max-width:260px}',
+    '.pbt-marcaresults{display:none;position:absolute;left:0;right:0;top:100%;z-index:40;background:#fff;border:1px solid #d9c98f;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.14);max-height:210px;overflow:auto;margin-top:3px}',
+    '.pbt-mr-item{display:flex;justify-content:space-between;gap:8px;padding:7px 10px;font-size:11.5px;cursor:pointer;border-bottom:1px solid #f2efe6}',
+    '.pbt-mr-item:last-child{border-bottom:none}',
+    '.pbt-mr-item:hover{background:#fbf7ea}',
+    '.pbt-mr-nm{color:#1f2937;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.pbt-mr-pr{color:#8a6d10;white-space:nowrap;font-weight:600}',
+    '.pbt-mr-empty{padding:8px 10px;font-size:11.5px;color:#8893a5}',
     '.pbt-marca::placeholder{color:#b5bcc9}',
     '.pbt-saldo{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;font-weight:600}',
     '.pbt-dot{width:9px;height:9px;border-radius:50%;display:inline-block}',
@@ -12789,7 +12797,10 @@ function pbtRubroInsumos(r, rk, ins){
     } else {
       matSelect = '<span class="pbt-noprod">⚠ sin producto de catálogo vinculado</span>';
     }
-    const marca = '<input class="pbt-marca" data-pbt-marca="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" placeholder="otra marca (opcional)" value="' + pbtEsc(line && line.producto_real ? line.producto_real : '') + '">';
+    const marca = '<div class="pbt-marcawrap">' +
+        '<input class="pbt-marca" data-pbt-marcasearch="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '" placeholder="＋ otra marca del catálogo (2+ letras)…" autocomplete="off">' +
+        '<div class="pbt-marcaresults" data-pbt-marcaresults="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '"></div>' +
+      '</div>';
     const canCheck = prods.length > 0;
 
     const coefCells = '';   // coeficientes ocultos en la vista de compra (se usan en "Calcular receta")
@@ -12909,6 +12920,48 @@ function pbtNoPresupPanel(){
 }
 
 /* ── interacciones ── */
+let _pbtMarcaTmr = null;
+function pbtMarcaSearch(rk, ci, q, inputEl){
+  const box = inputEl.parentNode.querySelector('[data-pbt-marcaresults]');
+  if(!box) return;
+  const safe = (q||'').trim();
+  if(safe.length < 2){ box.style.display='none'; box.innerHTML=''; return; }
+  clearTimeout(_pbtMarcaTmr);
+  _pbtMarcaTmr = setTimeout(async function(){
+    box.style.display='block'; box.innerHTML='<div class="pbt-mr-empty">Buscando…</div>';
+    try{
+      const esc2 = safe.replace(/[%_]/g,' ');
+      const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%' + esc2 + '%').order('nombre').limit(20);
+      if(!data || !data.length){ box.innerHTML='<div class="pbt-mr-empty">Sin resultados en el catálogo</div>'; return; }
+      box.innerHTML = data.map(function(p){
+        const pr = Number(p.precio_referencia)||0;
+        return '<div class="pbt-mr-item" data-pbt-marcapick="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '|' + pbtEsc(String(p.id)) + '" data-nm="' + pbtEsc(p.nombre||'') + '" data-pr="' + pr + '">' +
+          '<span class="pbt-mr-nm">' + pbtEsc(p.nombre||'') + '</span>' +
+          '<span class="pbt-mr-pr">' + (pr ? ('₲ ' + Math.round(pr).toLocaleString('es-PY')) : '') + '</span>' +
+        '</div>';
+      }).join('');
+    }catch(e){ console.warn('marcaSearch', e); box.innerHTML='<div class="pbt-mr-empty">Error al buscar</div>'; }
+  }, 250);
+}
+async function pbtMarcaPick(rk, ci, pid, nombre, precio){
+  pid = String(pid);
+  // 1) Vincular la marca al insumo para próximas compras (insumo_marcas).
+  try{ await sb.from('insumo_marcas').upsert({ codigo_insumo: ci, producto_id: Number(pid), es_default: false, activo: true }, { onConflict: 'codigo_insumo,producto_id' }); }
+  catch(e){ console.warn('vincular marca', e); }
+  // 2) En memoria: sumar el producto al insumo y su info.
+  const arr = (pbtUI.prodByIns[ci] = pbtUI.prodByIns[ci] || []);
+  if(arr.indexOf(pid) < 0) arr.push(pid);
+  if(!pbtUI.prodInfo[pid]) pbtUI.prodInfo[pid] = { id: Number(pid), nombre: nombre, precio_referencia: precio, url_imagen: '' };
+  // 3) Usar ese producto en la línea de compra (sigue debitando del mismo insumo).
+  const cur = pbtFindLine(ci, rk);
+  const cant = cur ? (Number(cur.cantidad)||0) : 0;
+  if(cur) cur.producto_real = '';
+  pbtUpsertLine(ci, rk, Number(pid), cant > 0 ? cant : 1);
+  const ln = pbtFindLine(ci, rk); if(ln) ln.producto_real = '';
+  if(typeof showToast === 'function') showToast('Marca vinculada: ' + nombre, 'success');
+  pbtSync();
+}
+
 function pbtParts(v){ const p = String(v||'').split('|'); return { rk: p[0]||'', ci: p[1]||'' }; }
 function pbtMat(ci, rk){ return (cartBudget.mats||[]).find(function(x){ return x.codigo_insumo===ci && (x.rubro_codigo||'')===(rk||''); }) || null; }
 function pbtDefaultPid(ci, rk){
@@ -12964,6 +13017,12 @@ function pbtSync(){
 
 function pbtOnTreeClick(e){
   const t = e.target;
+  const _pick = t.closest('[data-pbt-marcapick]');
+  if(_pick){
+    const parts = (_pick.getAttribute('data-pbt-marcapick')||'').split('|');
+    pbtMarcaPick(parts[0], parts[1], parts[2], _pick.getAttribute('data-nm')||'', Number(_pick.getAttribute('data-pr'))||0);
+    return;
+  }
   if(t.closest('[data-pbt-expandall]')){
     const rubros = document.querySelectorAll('#pbtTree .pbt-rubro');
     let anyClosed = false; rubros.forEach(function(r){ if(!r.classList.contains('open')) anyClosed = true; });
@@ -13017,13 +13076,9 @@ function pbtOnTreeChange(e){
 
 function pbtOnTreeInput(e){
   const t = e.target;
-  if(t.matches('[data-pbt-marca]')){
-    const p = pbtParts(t.getAttribute('data-pbt-marca')); const line = pbtFindLine(p.ci, p.rk); if(!line) return;
-    const v = (t.value||'').trim();
-    line.producto_real = v;
-    const info = pbtUI.prodInfo[String(line.producto_id)] || {};
-    line.producto_nombre = v ? v : (info.nombre || line.producto_nombre);
-    if(typeof saveDraft === 'function') saveDraft();
+  if(t.matches('[data-pbt-marcasearch]')){
+    const p = pbtParts(t.getAttribute('data-pbt-marcasearch'));
+    pbtMarcaSearch(p.rk, p.ci, t.value, t);
     return;
   }
   if(t.id === 'pbtNpSearch'){ pbtNpSearch(t.value); return; }
