@@ -174,6 +174,20 @@ tr:last-child td{border-bottom:none}
 .rep-saldo.neg{color:var(--red)}
 .rep-row-cred td{background:rgba(63,185,80,.06)}
 .rep-total td{font-weight:800;border-top:2px solid var(--border);background:var(--bg3)}
+.rd-line{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border2);font-size:12px}
+.rd-line:last-child{border-bottom:none}
+.rd-line .f{font-weight:600}
+.rd-line .t{margin-left:auto;font-variant-numeric:tabular-nums}
+.rd-bnr{background:rgba(240,165,0,.1);border:1px solid var(--accent);border-radius:9px;padding:9px 12px;font-size:12px;margin-bottom:12px;display:none}
+.rd-bnr.show{display:block}
+.cat-dd{position:fixed;z-index:80;background:var(--bg2);border:1px solid var(--border3);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.45);max-height:260px;overflow-y:auto;display:none;min-width:260px}
+.cat-dd.show{display:block}
+.cat-it{padding:8px 11px;cursor:pointer;border-bottom:1px solid var(--border2)}
+.cat-it:last-child{border-bottom:none}
+.cat-it:hover{background:var(--bg3)}
+.cat-it .nm{font-weight:600;font-size:12px}
+.cat-it .pr{color:var(--text2);font-size:11px;margin-top:1px}
+.cat-empty{padding:10px 11px;color:var(--text3);font-size:12px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -198,6 +212,7 @@ tr:last-child td{border-bottom:none}
   <nav class="tabs">
     <div class="tab active" data-tab="config" onclick="switchTab('config')">⚙️ Configuración</div>
     <div class="tab" data-tab="comprobantes" onclick="switchTab('comprobantes')">🧾 Comprobantes</div>
+    <div class="tab" data-tab="rendicion" onclick="switchTab('rendicion')">🧮 Rendición</div>
     <div class="tab" data-tab="reporte" onclick="switchTab('reporte')">📊 Reporte</div>
   </nav>
 
@@ -224,6 +239,7 @@ tr:last-child td{border-bottom:none}
               <div><h2>Acreditar fondo a residente</h2><div class="desc">Registra un depósito que sube el saldo de la caja.</div></div>
             </div>
             <div class="card-b">
+              <div class="rd-bnr" id="repo-bnr"></div>
               <div class="fld"><label>Residente</label><select id="ac-res"></select></div>
               <div class="fld"><label>Monto (₲)</label><input id="ac-monto" class="money-in" inputmode="numeric" placeholder="0"></div>
               <div class="fld"><label>Medio</label><select id="ac-medio">
@@ -275,7 +291,7 @@ tr:last-child td{border-bottom:none}
             <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);font-weight:600;margin:6px 0 4px">Detalle (líneas)</label>
             <div class="lines">
               <table>
-                <thead><tr><th>Concepto</th><th style="width:64px">Cant</th><th style="width:56px">Un</th><th style="width:96px;text-align:right">Costo ₲</th><th style="width:96px;text-align:right">Subtotal</th><th style="width:26px"></th></tr></thead>
+                <thead><tr><th>Concepto <span style="color:var(--text3);font-weight:400;text-transform:none">(buscá en catálogo)</span></th><th style="width:64px">Cant</th><th style="width:56px">Un</th><th style="width:96px;text-align:right">Costo ₲</th><th style="width:96px;text-align:right">Subtotal</th><th style="width:26px"></th></tr></thead>
                 <tbody id="lines-body"></tbody>
               </table>
             </div>
@@ -300,6 +316,30 @@ tr:last-child td{border-bottom:none}
             <div><h2>Comprobantes cargados</h2><div class="desc">Aprobá, rechazá o anulá. Solo los aprobados descuentan saldo.</div></div>
           </div>
           <div class="card-b" id="cmp-list"><div class="empty">Cargando…</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== RENDICIÓN ====== -->
+    <section class="panel" id="panel-rendicion">
+      <div class="grid2">
+        <div class="card">
+          <div class="card-h"><div class="ic" style="background:rgba(240,165,0,.14);color:var(--accent)">🧮</div>
+            <div><h2>Preparar rendición</h2><div class="desc">Agrupa los gastos aprobados aún no rendidos y hace el corte.</div></div></div>
+          <div class="card-b">
+            <div class="frow">
+              <div class="fld"><label>Residente</label><select id="rd-res" onchange="loadRendicionData()"></select></div>
+              <div class="fld"><label>Fecha de corte</label><input id="rd-corte" type="date"></div>
+            </div>
+            <div id="rd-summary" class="rep-meta"></div>
+            <div id="rd-pending"><div class="empty">Elegí un residente.</div></div>
+            <button class="btn-primary" id="rd-btn" onclick="presentarRendicion()">Presentar rendición</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="ic" style="background:rgba(88,166,255,.14);color:var(--blue)">📑</div>
+            <div><h2>Rendiciones</h2><div class="desc">El admin cierra el corte; recién ahí se acredita el nuevo fondo.</div></div></div>
+          <div class="card-b" id="rd-list"><div class="empty">Elegí un residente.</div></div>
         </div>
       </div>
     </section>
@@ -366,7 +406,8 @@ function closeSettings(){ document.getElementById('set-bg').classList.remove('op
 (function(){ let s='dark'; try{ s=localStorage.getItem(THEME_KEY)||'dark'; }catch(e){} applyTheme(VALID.includes(s)?s:'dark'); })();
 
 const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Arq. Patricia','Arq. Willians','Ing. Albert','Ing. Azucena','Lic. Dahiana'];
-let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, LISTAS={};
+let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, LISTAS={}, SECTORES_RAW=[];
+let CAT_TIMER=null, CAT_ACTIVE_TR=null;
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -379,7 +420,8 @@ function switchTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===t));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   gs('panel-'+t).classList.add('active');
-  gs('hdr-sub').textContent = t==='config' ? 'Configuración · topes y acreditaciones' : (t==='comprobantes' ? 'Comprobantes · carga y aprobación' : 'Reporte · saldo corrido y consolidado');
+  const subs={config:'Configuración · topes y acreditaciones',comprobantes:'Comprobantes · carga y aprobación',rendicion:'Rendición · corte y reposición',reporte:'Reporte · saldo corrido y consolidado'};
+  gs('hdr-sub').textContent = subs[t]||'';
 }
 
 // ===== boot =====
@@ -407,7 +449,7 @@ function switchTab(t){
 
 async function loadAll(){
   await Promise.all([loadResidentes(), loadConfig(), loadSaldos(), loadListas()]);
-  renderTopes(); fillResSelect(); fillComprobanteCatalogos(); fillReporteFiltros();
+  renderTopes(); fillResSelect(); fillComprobanteCatalogos(); fillReporteFiltros(); fillRendicionResidentes();
   await Promise.all([loadAcreditaciones(), loadComprobantes()]);
 }
 
@@ -428,9 +470,10 @@ async function loadSaldos(){
   (data||[]).forEach(s=>SALDOS[s.residente]={saldo:Number(s.saldo),ultimo:Number(s.ultimo_fondo),pct:Number(s.alerta_pct)}); }catch(e){}
 }
 async function loadListas(){
-  LISTAS={}; try{
+  LISTAS={}; SECTORES_RAW=[]; try{
     const { data } = await _SB.from('listas').select('*').order('valor',{ascending:true});
-    (data||[]).forEach(r=>{ if(!LISTAS[r.tipo]) LISTAS[r.tipo]=[]; LISTAS[r.tipo].push(r.valor); });
+    (data||[]).forEach(r=>{ if(!LISTAS[r.tipo]) LISTAS[r.tipo]=[]; LISTAS[r.tipo].push(r.valor);
+      if(r.tipo==='sectores') SECTORES_RAW.push({valor:r.valor, obra_ref:r.obra_ref||''}); });
   }catch(e){}
 }
 
@@ -471,10 +514,16 @@ async function acreditar(){
   const res=gs('ac-res').value, monto=parseInt(onlyDigits(gs('ac-monto').value)||'0',10), medio=gs('ac-medio').value, ref=gs('ac-ref').value.trim(), fecha=gs('ac-fecha').value||todayISO();
   if(!res){ toast('Elegí un residente','err'); return; }
   if(!monto||monto<=0){ toast('Ingresá un monto válido','err'); return; }
+  // Regla de rendición: no se puede acreditar si hay una rendición PRESENTADA sin cerrar.
+  const { data:pend }=await _SB.from('caja_chica_rendiciones').select('id').eq('residente',res).eq('estado','presentada').limit(1);
+  if(pend && pend.length){ toast('Hay una rendición presentada sin cerrar para '+res+'. Cerrá el corte antes de acreditar.','err'); return; }
   const btn=gs('ac-btn'); btn.disabled=true; btn.textContent='Acreditando…';
-  const { error }=await _SB.from('caja_chica_acreditaciones').insert({residente:res,fecha,monto,medio,referencia:ref||null,creado_por:CURRENT_USER.email});
+  const payload={residente:res,fecha,monto,medio,referencia:ref||null,creado_por:CURRENT_USER.email};
+  if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ payload.rendicion_id=PENDING_REND_LINK.rid; }
+  const { error }=await _SB.from('caja_chica_acreditaciones').insert(payload);
   btn.disabled=false; btn.textContent='Acreditar fondo';
   if(error){ toast('Error: '+error.message,'err'); return; }
+  if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ PENDING_REND_LINK=null; gs('repo-bnr').classList.remove('show'); }
   toast(`Acreditado ₲ ${fmt(monto)} a ${res}`,'ok'); gs('ac-monto').value=''; gs('ac-ref').value='';
   await loadSaldos(); renderTopes(); await loadAcreditaciones();
 }
@@ -487,13 +536,63 @@ async function loadAcreditaciones(){
 }
 
 // ----- Comprobantes -----
+// Sector ligado a obra (misma lógica que la OC: obra_ref normalizado)
+function _normObra(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function _obraKey(s){ return _normObra(s).replace(/s$/,''); }
+function _obraMatch(a,b){ a=_obraKey(a); b=_obraKey(b); return !!a && a===b; }
+function filtrarSectorComprobante(obra){
+  const sel=gs('c-sector');
+  if(!obra){ sel.innerHTML='<option value="">Primero elegí una obra</option>'; return; }
+  const secs=SECTORES_RAW.filter(s=>_obraMatch(s.obra_ref,obra));
+  if(!secs.length){ sel.innerHTML='<option value="">Sin sectores para esta obra</option>'; return; }
+  sel.innerHTML='<option value="">— Sector —</option>'+secs.map(s=>`<option value="${String(s.valor).replace(/"/g,'&quot;')}">${s.valor}</option>`).join('');
+}
+
+// Autocompletado de concepto desde productos_catalogo (catálogo de la OC)
+function ensureCatDD(){
+  if(gs('cat-dd')) return;
+  const d=document.createElement('div'); d.id='cat-dd'; d.className='cat-dd'; document.body.appendChild(d);
+  document.addEventListener('click',e=>{ if(CAT_ACTIVE_TR && !CAT_ACTIVE_TR.contains(e.target) && !d.contains(e.target)) hideCatDD(); });
+  window.addEventListener('scroll',hideCatDD,true);
+  window.addEventListener('resize',hideCatDD);
+}
+function hideCatDD(){ const d=gs('cat-dd'); if(d) d.classList.remove('show'); CAT_ACTIVE_TR=null; }
+function positionCatDD(input){ const d=gs('cat-dd'); const r=input.getBoundingClientRect(); d.style.left=r.left+'px'; d.style.top=(r.bottom+4)+'px'; d.style.width=Math.max(r.width,260)+'px'; }
+async function catSearch(input,tr){
+  const q=input.value.trim();
+  if(q.length<2){ hideCatDD(); return; }
+  CAT_ACTIVE_TR=tr; ensureCatDD();
+  try{
+    const { data }=await _SB.from('productos_catalogo')
+      .select('id,nombre,precio_referencia,unidad_medida,marca').eq('activo',true)
+      .ilike('nombre','%'+q.replace(/[%_]/g,c=>'\\'+c)+'%').order('nombre').limit(8);
+    renderCatDD(data||[],input,tr);
+  }catch(e){ hideCatDD(); }
+}
+function renderCatDD(items,input,tr){
+  const d=gs('cat-dd'); positionCatDD(input);
+  if(!items.length){ d.innerHTML='<div class="cat-empty">Sin coincidencias en el catálogo</div>'; d.classList.add('show'); return; }
+  d.innerHTML=items.map((it,i)=>`<div class="cat-it" data-i="${i}"><div class="nm">${String(it.nombre||'').replace(/</g,'&lt;')}</div><div class="pr">${it.marca?String(it.marca).replace(/</g,'&lt;')+' · ':''}₲ ${fmt(Math.round(Number(it.precio_referencia)||0))}${it.unidad_medida?(' · '+it.unidad_medida):''}</div></div>`).join('');
+  d.querySelectorAll('.cat-it').forEach(el=>el.addEventListener('mousedown',ev=>{ ev.preventDefault(); pickCatItem(tr,items[Number(el.dataset.i)]); }));
+  d.classList.add('show');
+}
+function pickCatItem(tr,it){
+  tr.querySelector('.li-con').value=it.nombre||'';
+  const precio=Math.round(Number(it.precio_referencia)||0);
+  const cu=tr.querySelector('.li-cu'); cu.value=precio?Number(precio).toLocaleString('es-PY'):'';
+  if(it.unidad_medida){ tr.querySelector('.li-un').value=it.unidad_medida; }
+  hideCatDD();
+  tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
+}
+
 function optList(arr,ph){ return `<option value="">${ph}</option>`+(arr||[]).map(v=>`<option value="${String(v).replace(/"/g,'&quot;')}">${v}</option>`).join(''); }
 function fillComprobanteCatalogos(){
   gs('c-res').innerHTML=`<option value="">— Residente —</option>`+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
   gs('c-prov').innerHTML=optList(LISTAS.proveedores,'— Proveedor —');
   gs('c-vend').innerHTML=optList(LISTAS.vendedores,'— Vendedor —');
   gs('c-obra').innerHTML=optList(LISTAS.obras,'— Obra —');
-  gs('c-sector').innerHTML=optList(LISTAS.sectores,'— Sector —');
+  gs('c-obra').onchange=()=>filtrarSectorComprobante(gs('c-obra').value);
+  filtrarSectorComprobante(gs('c-obra').value);
   gs('c-rubro').innerHTML=optList(LISTAS.rubros,'— Rubro —');
   gs('c-contr').innerHTML=optList(LISTAS.contratistas,'— Contratista —');
 }
@@ -508,6 +607,9 @@ function addLine(){
     <td><button class="li-del" title="Quitar">✕</button></td>`;
   tb.appendChild(tr);
   const cant=tr.querySelector('.li-cant'), cu=tr.querySelector('.li-cu');
+  const con=tr.querySelector('.li-con');
+  con.addEventListener('input',()=>{ clearTimeout(CAT_TIMER); CAT_TIMER=setTimeout(()=>catSearch(con,tr),250); });
+  con.addEventListener('focus',()=>{ if(con.value.trim().length>=2) catSearch(con,tr); });
   const recompute=()=>{ const c=parseFloat((cant.value||'0').replace(',','.'))||0; const u=parseInt(onlyDigits(cu.value)||'0',10); const sub=Math.round(c*u); tr.querySelector('.li-sub').textContent='₲ '+fmt(sub); cu.value=u?Number(u).toLocaleString('es-PY'):''; recalcTotal(); };
   cant.addEventListener('input',recompute); cu.addEventListener('input',recompute);
   tr.querySelector('.li-del').addEventListener('click',()=>{ tr.remove(); if(!gs('lines-body').children.length) addLine(); recalcTotal(); });
@@ -779,6 +881,88 @@ function exportarReporte(){
     XLSX.writeFile(wb, REPORTE_DATA.filename);
     toast('Excel generado','ok');
   }catch(e){ toast('Error al exportar: '+(e.message||e),'err'); }
+}
+
+// ----- Rendición -----
+let PENDING_REND_LINK=null; // {rid,res} para vincular la próxima acreditación
+let RD_PENDING=[];          // movimientos aprobados sin rendir (del residente activo)
+
+function fillRendicionResidentes(){
+  gs('rd-res').innerHTML=`<option value="">— Residente —</option>`+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  gs('rd-corte').value=todayISO();
+}
+
+async function loadRendicionData(){
+  const res=gs('rd-res').value;
+  const pend=gs('rd-pending'), list=gs('rd-list'), sum=gs('rd-summary');
+  if(!res){ pend.innerHTML='<div class="empty">Elegí un residente.</div>'; list.innerHTML='<div class="empty">Elegí un residente.</div>'; sum.textContent=''; RD_PENDING=[]; return; }
+  const corte=gs('rd-corte').value||todayISO();
+
+  // gastos aprobados sin rendir (hasta el corte)
+  const { data:movs }=await _SB.from('caja_chica_movimientos')
+    .select('id,fecha,nro_factura,total,numero_orden,obra').eq('residente',res).eq('estado','aprobado').is('rendicion_id',null)
+    .order('fecha',{ascending:true});
+  RD_PENDING=(movs||[]).filter(m=>!corte || (m.fecha||'')<=corte);
+  const totalPend=RD_PENDING.reduce((a,m)=>a+Number(m.total),0);
+  const s=SALDOS[res]; const saldo=s?s.saldo:0;
+  sum.innerHTML=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b> · Gastos aprobados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
+  pend.innerHTML = RD_PENDING.length
+    ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
+    : '<div class="empty">No hay gastos aprobados pendientes de rendir.</div>';
+  gs('rd-btn').disabled = !RD_PENDING.length;
+
+  // historial de rendiciones del residente
+  const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
+  if(!rends || !rends.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
+  list.innerHTML=rends.map(r=>{
+    let acts='';
+    if(r.estado==='presentada') acts=`<div class="cmp-acts"><button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button></div>`;
+    else if(r.estado==='cerrada') acts=`<div class="cmp-acts"><button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button></div>`;
+    return `<div class="cmp">
+      <div class="cmp-top"><span class="cmp-fac">Rendición</span><span class="st ${r.estado==='cerrada'?'aprobado':(r.estado==='presentada'?'solicitado':'borrador')}">${r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
+      <div class="cmp-meta">Corte: ${r.fecha_corte||'—'}${r.cerrada_en?(' · cerrada '+(r.cerrada_en||'').slice(0,10)):''}</div>
+      ${acts}</div>`;
+  }).join('');
+}
+
+async function presentarRendicion(){
+  const res=gs('rd-res').value, corte=gs('rd-corte').value||todayISO();
+  if(!res){ toast('Elegí un residente','err'); return; }
+  if(!RD_PENDING.length){ toast('No hay gastos aprobados para rendir','err'); return; }
+  // evitar dos presentadas a la vez
+  const { data:ya }=await _SB.from('caja_chica_rendiciones').select('id').eq('residente',res).eq('estado','presentada').limit(1);
+  if(ya && ya.length){ toast('Ya hay una rendición presentada sin cerrar para '+res,'err'); return; }
+  const total=RD_PENDING.reduce((a,m)=>a+Number(m.total),0);
+  const ids=RD_PENDING.map(m=>m.id);
+  const btn=gs('rd-btn'); btn.disabled=true; btn.textContent='Presentando…';
+  const now=new Date().toISOString();
+  const { data:rend, error }=await _SB.from('caja_chica_rendiciones').insert({residente:res,fecha_corte:corte,estado:'presentada',total_rendido:total,presentada_por:CURRENT_USER.email,presentada_en:now,creado_por:CURRENT_USER.email}).select('id').single();
+  if(error){ btn.disabled=false; btn.textContent='Presentar rendición'; toast('Error: '+error.message,'err'); return; }
+  const rid=rend.id;
+  await _SB.from('caja_chica_movimientos').update({rendicion_id:rid}).in('id',ids);
+  await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'rendir',estado_nuevo:'presentada',detalle:`Corte ${corte} · ${ids.length} comprob. · ₲ ${fmt(total)}`,hecho_por:CURRENT_USER.email});
+  btn.disabled=false; btn.textContent='Presentar rendición';
+  toast(`Rendición presentada · ₲ ${fmt(total)}`,'ok');
+  await loadRendicionData();
+}
+
+async function cerrarRendicion(id){
+  if(!confirm('¿Cerrar el corte de esta rendición? Después podrás acreditar el nuevo fondo.')) return;
+  const now=new Date().toISOString();
+  const { error }=await _SB.from('caja_chica_rendiciones').update({estado:'cerrada',cerrada_por:CURRENT_USER.email,cerrada_en:now}).eq('id',id);
+  if(error){ toast('Error: '+error.message,'err'); return; }
+  await _SB.from('caja_chica_historial').insert({rendicion_id:id,accion:'cerrar',estado_nuevo:'cerrada',hecho_por:CURRENT_USER.email});
+  toast('Rendición cerrada. Ya podés acreditar el nuevo fondo.','ok');
+  await loadRendicionData();
+}
+
+function acreditarReposicion(rid,res){
+  PENDING_REND_LINK={rid,res};
+  switchTab('config');
+  gs('ac-res').value=res;
+  const bnr=gs('repo-bnr'); bnr.textContent='Reposición vinculada a la rendición de '+res+'. Cargá el monto y acreditá.'; bnr.classList.add('show');
+  gs('ac-monto').focus();
+  toast('Cargá el monto de reposición; se vinculará a la rendición.','ok');
 }
 
 async function doLogout(){ await _SB.auth.signOut(); window.location.href='index.html'; }
