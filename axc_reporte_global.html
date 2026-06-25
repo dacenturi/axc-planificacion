@@ -2235,7 +2235,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-20-interventores-crit-soft';
+    const VERSION   = 'global-pdf-21-gantt-grouped';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2547,8 +2547,24 @@ async function exportPDF(modo){
       const numDays = dates.length;
       if(numDays === 0) return;
 
-      // Ordenar igual que la vista HTML (respeta el selector: por defecto fecha de inicio asc)
-      const sortedActs = _sortGanttActs(ganttActs);
+      // Ordenar igual que la vista HTML (respeta el selector: por defecto fecha de inicio asc).
+      // ★ En el reporte de Interventores (intv) se fuerza el orden: primero por
+      //   CONTRATISTA y luego por FECHA DE INICIO de la actividad, para agrupar
+      //   visualmente las actividades de cada contratista.
+      let sortedActs;
+      if(intv){
+        sortedActs = ganttActs.slice().sort((a,b) => {
+          const ca = ((a.contratista||'').trim() || '\uffff').toLowerCase();
+          const cb = ((b.contratista||'').trim() || '\uffff').toLowerCase();
+          if(ca !== cb) return ca < cb ? -1 : 1;
+          const fa = _getFechaActividad(a) || a.fecha_inicio || '';
+          const fb = _getFechaActividad(b) || b.fecha_inicio || '';
+          if(fa !== fb) return fa < fb ? -1 : 1;
+          return (a.descripcion||'').localeCompare(b.descripcion||'', 'es');
+        });
+      } else {
+        sortedActs = _sortGanttActs(ganttActs);
+      }
 
       // ─── Setup PDF para landscape ───
       const lpw = 297, lph = 210; // landscape A4
@@ -2582,8 +2598,13 @@ async function exportPDF(modo){
       };
       // Pre-cálculo: líneas de cada actividad + alto de fila
       const labelW = leftColW - (TXT_X - lMX) - 2;
+      let _grpCount = -1, _grpPrev = null; // grupos por contratista (solo intv)
       const metas = sortedActs.map((a, idx) => {
         const numeroFila = idx + 1;
+        // Índice de grupo por contratista (para banding visual en el reporte de Interventores)
+        const contrKey = (a.contratista || '').trim() || '— Sin contratista —';
+        if(contrKey !== _grpPrev){ _grpCount++; _grpPrev = contrKey; }
+        const groupIdx = _grpCount;
         const imprPrefix = a.imprevista ? '[IMPR] ' : '';
         const nameTxt = imprPrefix + (a.descripcion || '(sin descripción)');
         doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
@@ -2612,7 +2633,7 @@ async function exportPDF(modo){
           if(razonLines.length > 2){ razonLines = razonLines.slice(0,2); razonLines[1] = razonLines[1].slice(0, Math.max(1, razonLines[1].length-3)) + '...'; }
         }
         const rowH = Math.max(ROW_MIN, ROW_PAD + nameLines.length * NAME_LH + subLines.length * SUB_LH + razonLines.length * RAZON_LH);
-        return { a, numeroFila, nameLines, subLines, razonLines, rowH };
+        return { a, numeroFila, nameLines, subLines, razonLines, rowH, groupIdx, contrKey };
       });
       // Agrupar en páginas según la altura acumulada disponible
       const pages = [];
@@ -2658,7 +2679,7 @@ async function exportPDF(modo){
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
         // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
-        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}`, lMX, lMT + 9);
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}${intv ? '  |  Orden: Contratista, luego fecha de inicio' : ''}`, lMX, lMT + 9);
 
         // ─── Cabecera de columna única ───
         const ganttTopY = lMT + 14;
@@ -2694,10 +2715,26 @@ async function exportPDF(modo){
         pageMetas.forEach((m, rIdx) => {
           const a = m.a;
           const rowH = m.rowH;
-          // Alternar background suave
-          if(rIdx % 2 === 1){
-            doc.setFillColor(248, 249, 251);
-            doc.rect(lMX, rowY, lpw - 2*lMX, rowH, 'F');
+          if(intv){
+            // ★ Interventores: fondo gris alternado POR GRUPO de contratista
+            //   (todas las filas de un mismo contratista comparten el tono),
+            //   más una línea separadora sutil al cambiar de contratista.
+            if(m.groupIdx % 2 === 1){
+              doc.setFillColor(241, 243, 247);
+              doc.rect(lMX, rowY, lpw - 2*lMX, rowH, 'F');
+            }
+            const prev = pageMetas[rIdx - 1];
+            if(prev && prev.groupIdx !== m.groupIdx){
+              doc.setDrawColor(...GOLD);
+              doc.setLineWidth(0.5);
+              doc.line(lMX, rowY + 0.2, lpw - lMX, rowY + 0.2);
+            }
+          } else {
+            // Alternar background suave por fila (reportes normales / kg)
+            if(rIdx % 2 === 1){
+              doc.setFillColor(248, 249, 251);
+              doc.rect(lMX, rowY, lpw - 2*lMX, rowH, 'F');
+            }
           }
           const ty = rowY + ROW_TOPBASE;
           // Badge numerado (círculo dorado) alineado con la 1ª línea del nombre
