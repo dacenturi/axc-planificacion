@@ -2235,7 +2235,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-19-interventores-pro';
+    const VERSION   = 'global-pdf-20-interventores-crit-soft';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -3345,8 +3345,9 @@ async function exportPDF(modo){
         'Sin asignar'         : [148,163,184]
       };
       const _estColor = e => EST_COLOR[e] || [148,163,184];
-      // ── Color de CRITICIDAD (chip) ──
-      const CRIT_COLOR = { 'Alta':[220,38,38], 'Media':[245,158,11], 'Baja':[34,197,94] };
+      // ── CRITICIDAD: fondo MUY claro + color de texto (sin chip pesado) ──
+      const CRIT_BG  = { 'Alta':[253,237,237], 'Media':[254,247,233], 'Baja':[237,250,241] };
+      const CRIT_TXT = { 'Alta':[183,40,40],   'Media':[178,118,12],  'Baja':[33,140,78] };
 
       // ── Total de días de la actividad (planificados/trabajados) ──
       function _totalDias(a){
@@ -3386,9 +3387,8 @@ async function exportPDF(modo){
       const colGap = 3.5;
       const availW = lpw - 2*lMX;
       const colW = (availW - (COLS_PER_PAGE-1)*colGap) / COLS_PER_PAGE;
-      const legY1 = 40;               // leyenda estado
-      const legY2 = 43.6;             // leyenda criticidad
-      const boardTopY = 47;
+      const legY1 = 41;               // leyenda estado (única)
+      const boardTopY = 45;
       const colHeadH = 7.2;
       const cardsTop = boardTopY + colHeadH + 2.3;
       const cardGap = 1.4;
@@ -3407,15 +3407,16 @@ async function exportPDF(modo){
       function buildCard(a){
         const crit = _criticidadLabel(a);
         const critOn = (crit === 'Alta' || crit === 'Media' || crit === 'Baja');
-        // ancho de obra: reservar espacio para chip de criticidad si aplica
-        doc.setFont('helvetica','bold'); doc.setFontSize(5.2);
-        const critW = critOn ? (doc.getTextWidth(crit) + 3.4) : 0;
+        const bg = critOn ? (CRIT_BG[crit] || GRAY_LIGHT) : GRAY_LIGHT;
+        // ancho del texto de criticidad (se reserva a la derecha de la obra)
+        doc.setFont('helvetica','bold'); doc.setFontSize(5.0);
+        const critW = critOn ? (doc.getTextWidth(crit) + 1.5) : 0;
         doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(5.8);
         let descLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
         if(descLines.length > 6){ descLines = descLines.slice(0,6); descLines[5] = descLines[5].slice(0, Math.max(1, descLines[5].length-2)) + '…'; }
         // alto compacto: padTop(2.4)+obra(2.4)+desc(n*2.2)+resid(2.2)+fechas(2.2)+padBot(1.3)
         const h = Math.max(11, 2.4 + 2.4 + descLines.length*2.2 + 2.2 + 2.2 + 1.3);
-        return { a, descLines, h, crit, critOn, critW, totalDias: _totalDias(a), estado: _estadoLabel(a) };
+        return { a, descLines, h, crit, critOn, critW, bg, totalDias: _totalDias(a), estado: _estadoLabel(a) };
       }
       const cardsByCont = {};
       contratistas.forEach(c => { cardsByCont[c] = grupos.get(c).map(buildCard); });
@@ -3423,7 +3424,8 @@ async function exportPDF(modo){
       // ── Dibujo de una tarjeta ──
       function drawCard(x, y, card){
         const a = card.a, h = card.h;
-        doc.setFillColor(...GRAY_LIGHT);
+        // Fondo MUY claro según criticidad (o gris neutro si no tiene)
+        doc.setFillColor(...card.bg);
         doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
         doc.roundedRect(x, y, colW, h, 1.2, 1.2, 'FD');
         // Barra lateral = color de ESTADO (imprevista pisa con naranja)
@@ -3432,17 +3434,13 @@ async function exportPDF(modo){
         const px = x + cardPad + 1.0;
         const rightX = x + colW - cardPad + 0.4;
         let cy = y + 2.6;
-        // Chip de criticidad (arriba-derecha)
+        // Criticidad: SOLO texto (sin chip), arriba-derecha, color tenue
         if(card.critOn){
-          const cc = CRIT_COLOR[card.crit] || [148,163,184];
-          doc.setFont('helvetica','bold'); doc.setFontSize(5.0);
-          const cw = doc.getTextWidth(card.crit) + 3.2;
-          doc.setFillColor(...cc);
-          doc.roundedRect(rightX - cw, y + 1.4, cw, 3.0, 0.8, 0.8, 'F');
-          doc.setTextColor(255,255,255);
-          doc.text(card.crit, rightX - cw/2, y + 3.5, { align:'center' });
+          const ct = CRIT_TXT[card.crit] || GRAY_TEXT;
+          doc.setFont('helvetica','bold'); doc.setFontSize(5.0); doc.setTextColor(...ct);
+          doc.text(card.crit, rightX, y + 3.2, { align:'right' });
         }
-        // Obra (negrita navy) — recortada para no chocar con el chip
+        // Obra (negrita navy) — recortada para no chocar con el texto de criticidad
         doc.setFont('helvetica','bold'); doc.setFontSize(6.0); doc.setTextColor(...NAVY);
         doc.text(_trunc(a.obra || '—', innerW - card.critW - 0.5), px, cy);
         cy += 2.4;
@@ -3486,9 +3484,8 @@ async function exportPDF(modo){
         colGroups.push(contratistas.slice(i, i + COLS_PER_PAGE));
       }
 
-      // ── Leyendas (estado lateral + criticidad) ──
+      // ── Leyenda (solo estado: color de la barra lateral) ──
       function drawLegends(){
-        // Estado (color de la barra lateral)
         doc.setFontSize(6.0); doc.setFont('helvetica','normal');
         let lx = lMX;
         doc.setFont('helvetica','bold'); doc.setTextColor(...GRAY_TEXT);
@@ -3502,16 +3499,6 @@ async function exportPDF(modo){
           doc.setFillColor(...c); doc.roundedRect(lx, legY1 - 2.4, 3.0, 2.4, 0.5, 0.5, 'F');
           doc.setTextColor(...GRAY_TEXT); doc.text(l, lx + 4.0, legY1);
           lx += 4.0 + doc.getTextWidth(l) + 5;
-        });
-        // Criticidad (chip)
-        let cx = lMX;
-        doc.setFont('helvetica','bold'); doc.setTextColor(...GRAY_TEXT);
-        doc.text('Criticidad (chip):', cx, legY2); cx += doc.getTextWidth('Criticidad (chip):') + 4;
-        doc.setFont('helvetica','normal');
-        [[[220,38,38],'Alta'], [[245,158,11],'Media'], [[34,197,94],'Baja']].forEach(([c,l]) => {
-          doc.setFillColor(...c); doc.roundedRect(cx, legY2 - 2.4, 3.0, 2.4, 0.5, 0.5, 'F');
-          doc.setTextColor(...GRAY_TEXT); doc.text(l, cx + 4.0, legY2);
-          cx += 4.0 + doc.getTextWidth(l) + 5;
         });
       }
 
@@ -3529,7 +3516,7 @@ async function exportPDF(modo){
         doc.text(`Página ${pgNum}`, lpw - lMX, 11, { align:'right' });
         doc.setTextColor(...GOLD_LIGHT); doc.text(`App: ${appLabel}`, lpw - lMX, 16.5, { align:'right' });
         doc.setFont('helvetica','bold'); doc.setFontSize(12.5); doc.setTextColor(...NAVY);
-        doc.text('Tablero Kanban - Actividades por Contratista', lMX, 31);
+        doc.text('Tablero Kanban - Actividades por Interventores', lMX, 31);
         doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...GRAY_TEXT);
         doc.text(`${contratistas.length} contratista${contratistas.length===1?'':'s'}  ·  ${iacts.length} actividad${iacts.length===1?'':'es'} (segun filtros activos)`, lMX, 36);
         drawLegends();
