@@ -528,6 +528,7 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary" onclick="exportPDF()" title="Generar reporte PDF con filtros aplicados, KPIs y gráficos">📄 Exportar PDF</button>
+        <button class="btn btn-secondary" onclick="exportPDF('int')" title="Tarjetas por Contratista (actividades, días y estados) + Diagrama Gantt">👷 Exportar Interventores PDF</button>
       </div>
     </div>
 
@@ -2198,6 +2199,7 @@ const AXC_LOGO_BASE64 = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gHY
 
 async function exportPDF(modo){
   const kg = (modo === 'kg');   // 'kg' = Reporte Kanban-Gantt (solo Gantt + Kanban)
+  const intv = (modo === 'int'); // 'int' = Reporte Interventores (Tarjetas por Contratista + Gantt)
   const acts = window._filteredActs;
   if(!acts.length){
     showToast('⚠️ No hay datos para exportar con los filtros actuales', 'warn');
@@ -2233,7 +2235,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-15-compacto';
+    const VERSION   = 'global-pdf-16-interventores';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2336,7 +2338,7 @@ async function exportPDF(modo){
     // Helper: sanitiza un texto para usarlo en nombre de archivo
     const _slug = (s) => String(s || '').trim().replace(/\s+/g, '_').replace(/[\/\\:*?"<>|]/g, '');
 
-    if(!kg){
+    if(!kg && !intv){
     // ═══════════════════════════════════════════════════════════
     // PÁGINA 1 — PORTADA EJECUTIVA COMPACTA
     // Reemplaza portada + filtros + resumen ejecutivo en UNA sola hoja.
@@ -2479,7 +2481,7 @@ async function exportPDF(modo){
       { id: 'sector',      title: 'Volumen por Sector',           onlyRes: true }
     ];
 
-    let curPage = kg ? 0 : 1; // portada compacta = 1 sola hoja
+    let curPage = (kg || intv) ? 0 : 1; // portada compacta = 1 sola hoja
 
     const chartsToPrint = chartDefs.filter(c =>
       window._charts[c.id] && !(c.onlyCont && !isCont) && !(c.onlyRes && isCont)
@@ -3234,7 +3236,7 @@ async function exportPDF(modo){
       }
     }
 
-    if(!kg){
+    if(!kg && !intv){
     // (Sección "Gráficos del Dashboard" retirada a pedido — el reporte de gerencia
     //  conserva Portada, Análisis de Razones, Kanban y Gantt.)
 
@@ -3302,9 +3304,319 @@ async function exportPDF(modo){
     } // fin if(!kg): gráficos + razones (no van en el Reporte Kanban-Gantt)
 
     // ═══════════════════════════════════════════════════════════
-    // PÁGINA EXTRA: TABLERO KANBAN (primero) — A4 landscape
+    // PÁGINA EXTRA: TABLERO INTERVENTORES (tarjetas por Contratista) — A4 landscape
+    // Sólo en el reporte de Interventores. Va PRIMERO (antes del Gantt).
     // ═══════════════════════════════════════════════════════════
-    drawKanbanPages(doc, acts, () => { curPage++; return curPage; });
+    if(intv){
+      drawInterventoresPages(doc, acts, () => { curPage++; return curPage; });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PÁGINA EXTRA: TABLERO KANBAN (primero) — A4 landscape
+    // (No se incluye en el reporte de Interventores)
+    // ═══════════════════════════════════════════════════════════
+    if(!intv){
+      drawKanbanPages(doc, acts, () => { curPage++; return curPage; });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PÁGINA EXTRA: TABLERO INTERVENTORES (A4 landscape) — 25/06/2026
+    // Tarjetas agrupadas por CONTRATISTA. Cada contratista es una sección
+    // (cabecera con su nombre + resumen) y dentro van sus actividades como
+    // mini-tarjetas que muestran: obra, descripción, estado y la TIRA de
+    // días con su color de estado (cumplido / no cumplido / planificado /
+    // domingo extra / imprevista). Pagina por alto cuando se llena la hoja.
+    // ═══════════════════════════════════════════════════════════
+    function drawInterventoresPages(doc, allActs, getNextPageNum){
+      const iacts = (allActs || []).slice();
+      if(!iacts.length) return;
+
+      // ── Colores de estado (para badge) ──
+      const EST_COLOR = {
+        'Terminado'           : [34,197,94],
+        'Cumple'              : [34,197,94],
+        'Cumplido con atraso' : [245,158,11],
+        'En proceso'          : [59,130,246],
+        'En espera'           : [148,163,184],
+        'Retrasado'           : [249,115,22],
+        'No Cumple'           : [220,38,38],
+        'Cancelado'           : [107,114,128],
+        'Sin asignar'         : [148,163,184]
+      };
+      const _estColor = e => EST_COLOR[e] || [148,163,184];
+
+      // ── Días de la actividad con su estado (cumple/no_cumple/pend/dom/impr) ──
+      // Reusa el mismo criterio que el Gantt: días tildados, domingos
+      // trabajados, o rango planificado de respaldo si no hay nada tildado.
+      function _diasConEstado(a){
+        const out = [];
+        let hasReal = false;
+        const isImp = !!a.imprevista;
+        if(Array.isArray(a.days)){
+          a.days.forEach((v,i) => {
+            if(!v) return;
+            const iso = _idxAISO(a, i);
+            if(!iso) return;
+            let st = 'pend';
+            if(isImp) st = 'impr';
+            else if(Array.isArray(a.cumplimiento) && a.cumplimiento[i] === 'cumple')    st = 'cumple';
+            else if(Array.isArray(a.cumplimiento) && a.cumplimiento[i] === 'no_cumple') st = 'no_cumple';
+            out.push({ iso, st }); hasReal = true;
+          });
+        }
+        if(Array.isArray(a.domingos)){
+          a.domingos.forEach(iso => { if(iso){ out.push({ iso, st:'dom' }); hasReal = true; } });
+        }
+        if(!hasReal){
+          _ganttRangoPlanISO(a).forEach(iso => out.push({ iso, st: isImp ? 'impr' : 'pend' }));
+        }
+        // ordenar por fecha y deduplicar por iso
+        out.sort((x,y) => x.iso < y.iso ? -1 : x.iso > y.iso ? 1 : 0);
+        const seen = new Set();
+        return out.filter(d => { if(seen.has(d.iso)) return false; seen.add(d.iso); return true; });
+      }
+
+      // ── Agrupar por contratista ──
+      const grupos = new Map();
+      iacts.forEach(a => {
+        const k = (a.contratista || '').trim() || '— Sin contratista —';
+        if(!grupos.has(k)) grupos.set(k, []);
+        grupos.get(k).push(a);
+      });
+      const contratistas = Array.from(grupos.keys()).sort((a,b) => a.localeCompare(b, 'es'));
+
+      // ── Geometría landscape ──
+      const lpw = 297, lph = 210, lMX = 12, lMB = 12;
+      const COLS = 4;
+      const colGap = 4;
+      const availW = lpw - 2*lMX;
+      const cardW = (availW - (COLS-1)*colGap) / COLS;
+      const cardPad = 2.6;
+      const innerW = cardW - cardPad*2;
+      const cardRowGap = 3;
+      const sectGap = 4;            // espacio entre secciones de contratista
+      const headH = 7.5;           // alto de la cabecera de sección
+      const topStartY = 41;        // primer Y útil tras título de página
+      const pageBottom = lph - lMB;
+
+      // Tira de días: celdas con número de día dentro
+      const DAY_W = 5.0, DAY_H = 4.4, DAY_GAP = 0.8;
+      const cellsPerRow = Math.max(1, Math.floor((innerW + DAY_GAP) / (DAY_W + DAY_GAP)));
+
+      const _trunc = (txt, w) => {
+        txt = String(txt == null ? '' : txt);
+        if(doc.getTextWidth(txt) <= w) return txt;
+        const f = w / doc.getTextWidth(txt);
+        return txt.slice(0, Math.max(2, Math.floor(txt.length * f) - 1)) + '…';
+      };
+
+      // ── Pre-cálculo de cada mini-tarjeta (líneas + alto) ──
+      function buildCard(a){
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.2);
+        const obra = _trunc(a.obra || '—', innerW);
+        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.0);
+        let descLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
+        if(descLines.length > 4){ descLines = descLines.slice(0,4); descLines[3] = descLines[3].slice(0, Math.max(1, descLines[3].length-2)) + '…'; }
+        const sector = (a.sector || '').trim();
+        const dias = _diasConEstado(a);
+        const stripRows = Math.max(1, Math.ceil(dias.length / cellsPerRow));
+        const estado = _estadoLabel(a);
+        // alto: pad + obra(2.6) + desc(n*2.4) + sector(2.4) + estado badge(3.6) + fechas(2.6) + label días(2.4) + tira(rows*(DAY_H+0.8)) + pad
+        let h = cardPad + 2.6 + descLines.length*2.4 + (sector?2.4:0) + 3.8 + 2.6 + 2.4 + stripRows*(DAY_H+1.0) + cardPad;
+        return { a, obra, descLines, sector, dias, stripRows, estado, h };
+      }
+
+      // ── Render de una mini-tarjeta en (x,y) ──
+      function drawCard(x, y, card){
+        const a = card.a, h = card.h;
+        doc.setFillColor(...GRAY_LIGHT);
+        doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
+        doc.roundedRect(x, y, cardW, h, 1.4, 1.4, 'FD');
+        // acento lateral por estado
+        const ec = _estColor(card.estado);
+        doc.setFillColor(...(a.imprevista ? ORANGE_IMP : ec));
+        doc.rect(x, y, 1.3, h, 'F');
+        let cy = y + cardPad + 1.6;
+        // Obra
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.2); doc.setTextColor(...NAVY);
+        doc.text(card.obra, x + cardPad + 1.2, cy);
+        cy += 2.6;
+        // Descripción
+        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.0);
+        doc.setTextColor(...(a.imprevista ? ORANGE_IMP : BLACK));
+        card.descLines.forEach(ln => { doc.text(ln, x + cardPad + 1.2, cy); cy += 2.4; });
+        // Sector
+        if(card.sector){
+          doc.setFont('helvetica', 'italic'); doc.setFontSize(5.4); doc.setTextColor(...GRAY_TEXT);
+          doc.text(_trunc('Sector: ' + card.sector, innerW), x + cardPad + 1.2, cy);
+          cy += 2.4;
+        }
+        // Badge de estado
+        const badgeLabel = (a.imprevista ? 'IMPREVISTA · ' : '') + card.estado;
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(5.6);
+        const bw = Math.min(innerW, doc.getTextWidth(badgeLabel) + 4);
+        const bgc = a.imprevista ? ORANGE_IMP : ec;
+        doc.setFillColor(...bgc);
+        doc.roundedRect(x + cardPad + 1.2, cy - 2.5, bw, 3.4, 1.0, 1.0, 'F');
+        doc.setTextColor(255,255,255);
+        doc.text(badgeLabel, x + cardPad + 1.2 + bw/2, cy - 0.2, { align:'center' });
+        cy += 2.8;
+        // Fechas
+        const f0 = card.dias.length ? card.dias[0].iso : null;
+        const f1 = card.dias.length ? card.dias[card.dias.length-1].iso : null;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(5.4); doc.setTextColor(...GRAY);
+        doc.text((f0 ? fmtFecha(f0) : '—') + ' a ' + (f1 ? fmtFecha(f1) : '—'), x + cardPad + 1.2, cy);
+        cy += 2.5;
+        // Label "Días:"
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(5.2); doc.setTextColor(...GRAY_TEXT);
+        doc.text('Dias (' + card.dias.length + '):', x + cardPad + 1.2, cy);
+        cy += 2.0;
+        // Tira de días con su estado
+        const stripX0 = x + cardPad + 1.2;
+        card.dias.forEach((d, i) => {
+          const col = i % cellsPerRow;
+          const row = Math.floor(i / cellsPerRow);
+          const dx = stripX0 + col*(DAY_W + DAY_GAP);
+          const dy = cy + row*(DAY_H + 1.0);
+          let fill = null, txtC = [255,255,255];
+          if(d.st === 'cumple')         fill = [34,197,94];
+          else if(d.st === 'no_cumple') fill = [220,38,38];
+          else if(d.st === 'dom')       fill = [59,130,246];
+          else if(d.st === 'impr')      fill = [255,107,53];
+          else { fill = null; txtC = NAVY; } // pend → borde dorado
+          if(fill){
+            doc.setFillColor(...fill);
+            doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'F');
+          } else {
+            doc.setDrawColor(...GOLD); doc.setLineWidth(0.5);
+            doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'D');
+          }
+          // número de día dentro de la celda
+          const dd = (d.iso || '').slice(8,10) || '?';
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(4.4); doc.setTextColor(...txtC);
+          doc.text(String(parseInt(dd,10) || dd), dx + DAY_W/2, dy + DAY_H/2 + 1.4, { align:'center' });
+        });
+      }
+
+      // ── Cabecera de página ──
+      function pageHeader(partNum, totalParts){
+        const pgNum = getNextPageNum();
+        doc.setFillColor(...NAVY); doc.rect(0, 0, lpw, 22, 'F');
+        doc.setFillColor(...GOLD); doc.rect(0, 22, lpw, 1.5, 'F');
+        try{ doc.addImage(AXC_LOGO_BASE64, 'JPEG', lMX, 6, 18, 6, undefined, 'FAST'); } catch(_){}
+        doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+        doc.text('AXC CONSTRUCTORA', lMX + 22, 11);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GOLD_LIGHT);
+        doc.text(`Interventores — Contratistas${totalParts>1 ? ` (parte ${partNum}/${totalParts})` : ''}`, lMX + 22, 16.5);
+        doc.setTextColor(...WHITE); doc.setFontSize(8);
+        doc.text(`Página ${pgNum}`, lpw - lMX, 11, { align:'right' });
+        doc.setTextColor(...GOLD_LIGHT); doc.text(`App: ${appLabel}`, lpw - lMX, 16.5, { align:'right' });
+        // Título del bloque
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(...NAVY);
+        doc.text('Tablero de Interventores - Actividades por Contratista', lMX, 31);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GRAY_TEXT);
+        doc.text(`${contratistas.length} contratista${contratistas.length===1?'':'s'}  ·  ${iacts.length} actividad${iacts.length===1?'':'es'} (segun filtros activos)`, lMX, 36);
+        // Footer
+        doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
+        doc.line(lMX, lph - 8, lpw - lMX, lph - 8);
+        doc.setTextColor(...GRAY); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
+        doc.text('AXC Constructora - Reporte Global | Interventores', lMX, lph - 4);
+        doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align:'center' });
+        doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align:'right' });
+        return pgNum;
+      }
+
+      // ── Cabecera de sección (contratista) ──
+      function sectionHeader(x, y, w, nombre, acts, cont){
+        const ok = acts.filter(a => _isOK(a)).length;
+        const fail = acts.filter(a => _isFAIL(a)).length;
+        const den = ok + fail;
+        const pct = den ? Math.round(ok/den*100) : null;
+        doc.setFillColor(...NAVY); doc.roundedRect(x, y, w, headH, 1.4, 1.4, 'F');
+        doc.setFillColor(...GOLD); doc.rect(x, y, 1.6, headH, 'F');
+        doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5);
+        doc.text(_trunc((cont?'(cont.) ':'') + nombre, w*0.55), x + 4, y + 5);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...GOLD_LIGHT);
+        const resumen = `${acts.length} act.   ·   OK ${ok}   ·   No cumple ${fail}` + (pct!==null ? `   ·   ${pct}% cumpl.` : '');
+        doc.text(resumen, x + w - 3, y + 5, { align:'right' });
+      }
+
+      // ── Leyenda (una vez, al pie de la primera página de cada hoja) ──
+      function drawLegend(){
+        const ly = pageBottom - 2.5;
+        let lx = lMX;
+        doc.setFontSize(6.5);
+        // pendiente (borde dorado)
+        doc.setDrawColor(...GOLD); doc.setLineWidth(0.5);
+        doc.roundedRect(lx, ly - 2.6, 3.4, 2.6, 0.5, 0.5, 'D');
+        doc.setTextColor(...GRAY_TEXT); doc.text('Planificado', lx + 4.6, ly);
+        lx += 4.6 + doc.getTextWidth('Planificado') + 7;
+        [[ [34,197,94],'Cumplido'], [[220,38,38],'No cumplido'], [[255,107,53],'Imprevista'], [[59,130,246],'Domingo extra']].forEach(([c,l]) => {
+          doc.setFillColor(...c); doc.roundedRect(lx, ly - 2.6, 3.4, 2.6, 0.5, 0.5, 'F');
+          doc.setTextColor(...GRAY_TEXT); doc.text(l, lx + 4.6, ly);
+          lx += 4.6 + doc.getTextWidth(l) + 7;
+        });
+      }
+
+      // ── Flujo de paginado ──
+      let part = 0;
+      // El total de partes no se conoce de antemano (depende del alto); usamos
+      // un placeholder 1 y, como ya hay numeración de página global, no es crítico.
+      pageHeader(part+1, 1);
+      let y = topStartY;
+      let legendDrawn = false;
+      const reservaLeyenda = 6; // espacio reservado para la leyenda al pie
+
+      function newPage(){
+        if(!legendDrawn){ drawLegend(); legendDrawn = true; }
+        part++;
+        pageHeader(part+1, 1);
+        y = topStartY;
+        legendDrawn = false;
+      }
+
+      contratistas.forEach(nombre => {
+        const acts = grupos.get(nombre);
+        // ordenar actividades por fecha de inicio efectiva
+        acts.sort((a,b) => {
+          const fa = _getFechaActividad(a) || a.fecha_inicio || '';
+          const fb = _getFechaActividad(b) || b.fecha_inicio || '';
+          return fa < fb ? -1 : fa > fb ? 1 : 0;
+        });
+        const cards = acts.map(buildCard);
+
+        let primeraFilaSeccion = true;
+        let idx = 0;
+        while(idx < cards.length){
+          // ¿Hay espacio para cabecera (si es 1ª fila) + 1 fila de tarjetas?
+          // Tomar la fila (hasta COLS tarjetas) y su alto
+          const fila = cards.slice(idx, idx + COLS);
+          const filaH = Math.max(...fila.map(c => c.h));
+          const needHead = primeraFilaSeccion ? (headH + 2) : 0;
+          if(y + needHead + filaH + reservaLeyenda > pageBottom){
+            newPage();
+            // tras salto de página, si la sección continúa, redibujar su cabecera
+            sectionHeader(lMX, y, availW, nombre, acts, !primeraFilaSeccion || idx>0);
+            y += headH + 2;
+            primeraFilaSeccion = false;
+          } else if(primeraFilaSeccion){
+            sectionHeader(lMX, y, availW, nombre, acts, false);
+            y += headH + 2;
+            primeraFilaSeccion = false;
+          }
+          // dibujar la fila de tarjetas
+          fila.forEach((card, j) => {
+            const x = lMX + j*(cardW + colGap);
+            drawCard(x, y, card);
+          });
+          y += filaH + cardRowGap;
+          idx += COLS;
+        }
+        y += sectGap;
+      });
+
+      if(!legendDrawn){ drawLegend(); legendDrawn = true; }
+    }
 
     // ═══════════════════════════════════════════════════════════
     // PÁGINA EXTRA: TABLERO KANBAN (A4 landscape) — 08/06/2026
@@ -3468,7 +3780,7 @@ async function exportPDF(modo){
     // ═══════════════════════════════════════════════════════════
     await drawGanttPages(doc, acts, () => { curPage++; return curPage; });
 
-    if(!kg){
+    if(!kg && !intv){
     // (Secciones retiradas a pedido: Actividades Vencidas, Control de Tildado,
     //  Detalle de Imprevistas y Detalle de Actividades.)
 
@@ -3493,10 +3805,11 @@ async function exportPDF(modo){
     }
     } // fin if(!kg): actividades vencidas + footers portrait
 
-    // En el Reporte Kanban-Gantt se elimina la primera hoja (portrait) que queda vacía
-    if(kg){
+    // En el Reporte Kanban-Gantt / Interventores se elimina la primera hoja
+    // (portrait) que queda vacía, ya que esos reportes no llevan portada.
+    if(kg || intv){
       if(doc.getNumberOfPages() <= 1){
-        showToast('⚠️ No hay Gantt ni Kanban para imprimir con los filtros actuales', 'warn');
+        showToast('⚠️ No hay contenido para imprimir con los filtros actuales', 'warn');
         return;
       }
       try{ doc.deletePage(1); }catch(_){}
@@ -3504,9 +3817,11 @@ async function exportPDF(modo){
 
     // Guardar
     const _respArch = _slug(respNombre);
-    const filename = kg
-      ? `${_slug(tipoReporte)}_Kanban-Gantt_${_respArch}_${fechaArchivo}.pdf`
-      : `${_slug(tipoReporte)}_${_respArch}_${fechaArchivo}.pdf`;
+    const filename = intv
+      ? `${_slug(tipoReporte)}_Interventores_${_respArch}_${fechaArchivo}.pdf`
+      : kg
+        ? `${_slug(tipoReporte)}_Kanban-Gantt_${_respArch}_${fechaArchivo}.pdf`
+        : `${_slug(tipoReporte)}_${_respArch}_${fechaArchivo}.pdf`;
     doc.save(filename);
     showToast(`✓ PDF generado: ${filename}`, 'ok');
   } catch(e){
