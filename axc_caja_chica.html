@@ -158,8 +158,25 @@ tr:last-child td{border-bottom:none}
 .swatch{width:100%;height:26px;border-radius:6px;margin-bottom:7px;border:1px solid var(--border)}
 .sw-dark{background:#0d1117} .sw-light{background:#f6f8fa} .sw-warm{background:#1c1714}
 .set-close{margin-top:18px;width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px;font-weight:600;cursor:pointer}
+
+/* reporte */
+.rep-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.rep-filters .fld{margin-bottom:0}
+.rep-actions{display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap}
+.rep-meta{font-size:12px;color:var(--text2);margin:14px 0 6px;font-weight:600}
+.rep-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:10px}
+.rep-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}
+.rep-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--text2);font-weight:600;padding:8px 9px;border-bottom:1px solid var(--border);background:var(--bg3);position:sticky;top:0}
+.rep-table td{padding:6px 9px;border-bottom:1px solid var(--border2)}
+.rep-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.rep-cred{color:var(--green);font-weight:600}
+.rep-saldo{font-weight:700;font-variant-numeric:tabular-nums}
+.rep-saldo.neg{color:var(--red)}
+.rep-row-cred td{background:rgba(63,185,80,.06)}
+.rep-total td{font-weight:800;border-top:2px solid var(--border);background:var(--bg3)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -181,7 +198,7 @@ tr:last-child td{border-bottom:none}
   <nav class="tabs">
     <div class="tab active" data-tab="config" onclick="switchTab('config')">⚙️ Configuración</div>
     <div class="tab" data-tab="comprobantes" onclick="switchTab('comprobantes')">🧾 Comprobantes</div>
-    <div class="tab soon" title="Próxima fase">📊 Reporte</div>
+    <div class="tab" data-tab="reporte" onclick="switchTab('reporte')">📊 Reporte</div>
   </nav>
 
   <div class="wrap">
@@ -286,6 +303,32 @@ tr:last-child td{border-bottom:none}
         </div>
       </div>
     </section>
+
+    <!-- ====== REPORTE ====== -->
+    <section class="panel" id="panel-reporte">
+      <div class="card">
+        <div class="card-h">
+          <div class="ic" style="background:rgba(14,165,233,.14);color:var(--cyan)">📊</div>
+          <div><h2>Reporte de caja chica</h2><div class="desc">Por residente (saldo corrido, como el Excel) o consolidado. Filtrá y exportá a Excel.</div></div>
+        </div>
+        <div class="card-b">
+          <div class="rep-filters">
+            <div class="fld"><label>Residente</label><select id="r-res"></select></div>
+            <div class="fld"><label>Obra</label><select id="r-obra"></select></div>
+            <div class="fld"><label>Rubro</label><select id="r-rubro"></select></div>
+            <div class="fld"><label>Proveedor</label><select id="r-prov"></select></div>
+            <div class="fld"><label>Desde</label><input id="r-desde" type="date"></div>
+            <div class="fld"><label>Hasta</label><input id="r-hasta" type="date"></div>
+          </div>
+          <div class="rep-actions">
+            <button class="btn-primary" style="width:auto;margin:0" onclick="generarReporte()">Generar reporte</button>
+            <button class="btn-ghost" id="r-export" onclick="exportarReporte()" disabled>⬇ Exportar Excel</button>
+            <span id="rep-info" style="font-size:12px;color:var(--text2)"></span>
+          </div>
+          <div id="rep-result"><div class="empty">Elegí un residente (o "Todos") y tocá Generar.</div></div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v0.3</div>
@@ -336,7 +379,7 @@ function switchTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===t));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   gs('panel-'+t).classList.add('active');
-  gs('hdr-sub').textContent = t==='config' ? 'Configuración · topes y acreditaciones' : 'Comprobantes · carga y aprobación';
+  gs('hdr-sub').textContent = t==='config' ? 'Configuración · topes y acreditaciones' : (t==='comprobantes' ? 'Comprobantes · carga y aprobación' : 'Reporte · saldo corrido y consolidado');
 }
 
 // ===== boot =====
@@ -364,7 +407,7 @@ function switchTab(t){
 
 async function loadAll(){
   await Promise.all([loadResidentes(), loadConfig(), loadSaldos(), loadListas()]);
-  renderTopes(); fillResSelect(); fillComprobanteCatalogos();
+  renderTopes(); fillResSelect(); fillComprobanteCatalogos(); fillReporteFiltros();
   await Promise.all([loadAcreditaciones(), loadComprobantes()]);
 }
 
@@ -577,6 +620,165 @@ async function anular(id){
   if(error){ toast('Error: '+error.message,'err'); return; }
   await _SB.from('caja_chica_historial').insert({movimiento_id:id,accion:'anular',estado_nuevo:'anulado',detalle:motivo||null,hecho_por:CURRENT_USER.email});
   toast('Comprobante anulado','ok'); await loadSaldos(); renderTopes(); await loadComprobantes();
+}
+
+// ----- Reporte -----
+let REPORTE_DATA=null; // {modo, titulo, headers, rows, aoa, filename}
+
+function fillReporteFiltros(){
+  gs('r-res').innerHTML=`<option value="">Todos (consolidado)</option>`+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  gs('r-obra').innerHTML=optList(LISTAS.obras,'Todas');
+  gs('r-rubro').innerHTML=optList(LISTAS.rubros,'Todos');
+  gs('r-prov').innerHTML=optList(LISTAS.proveedores,'Todos');
+}
+
+function _dateFilter(q, col){
+  const d=gs('r-desde').value, h=gs('r-hasta').value;
+  if(d) q=q.gte(col,d); if(h) q=q.lte(col,h); return q;
+}
+
+async function generarReporte(){
+  const res=gs('r-res').value;
+  gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; REPORTE_DATA=null;
+  try{
+    if(res){ await reporteResidente(res); } else { await reporteConsolidado(); }
+  }catch(e){ gs('rep-result').innerHTML='<div class="empty">Error al generar: '+(e.message||e)+'</div>'; gs('rep-info').textContent=''; }
+}
+
+async function reporteResidente(res){
+  const obraF=gs('r-obra').value, rubroF=gs('r-rubro').value, provF=gs('r-prov').value;
+  // acreditaciones
+  let qa=_SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en').eq('residente',res);
+  qa=_dateFilter(qa,'fecha');
+  const { data:acr } = await qa;
+  // movimientos aprobados + items
+  let qm=_SB.from('caja_chica_movimientos')
+    .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,creado_en,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden)')
+    .eq('residente',res).eq('estado','aprobado');
+  qm=_dateFilter(qm,'fecha');
+  const { data:movs } = await qm;
+
+  // construir filas-evento
+  const rows=[];
+  (acr||[]).forEach(a=>rows.push({fecha:a.fecha,key:(a.fecha||'')+'_0_'+(a.creado_en||''),kind:'cred',
+    orden:'',factura:'',tipo:'',proveedor:'',obra:'',sector:'',rubro:'',contratista:'',
+    concepto:'Acreditación ('+a.medio+(a.referencia?(' · '+a.referencia):'')+')',cant:'',un:'',cu:'',
+    debitado:0,creditado:Number(a.monto)}));
+  (movs||[]).forEach(m=>{
+    const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
+    const list=its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}];
+    list.forEach(it=>rows.push({fecha:m.fecha,key:(m.fecha||'')+'_1_'+String(m.numero_orden||0).padStart(8,'0'),kind:'deb',
+      orden:m.numero_orden||'',factura:m.nro_factura||'',tipo:m.tipo_comprobante||'',proveedor:m.proveedor||'',
+      obra:m.obra||'',sector:m.sector||'',rubro:m.rubro||'',contratista:m.contratista||'',
+      concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,
+      debitado:Number(it.subtotal||0),creditado:0,
+      _obra:m.obra||'',_rubro:m.rubro||'',_prov:m.proveedor||''}));
+  });
+  // orden cronológico
+  rows.sort((a,b)=>a.key<b.key?-1:(a.key>b.key?1:0));
+  // saldo corrido sobre TODA la secuencia (saldo real de la caja)
+  let saldo=0; rows.forEach(r=>{ saldo+=r.creditado-r.debitado; r.saldo=saldo; });
+  const saldoFinal=saldo;
+
+  // filtros de visualización (obra/rubro/proveedor) → ocultan acreditaciones
+  const hasCat=obraF||rubroF||provF;
+  const shown=rows.filter(r=>{
+    if(!hasCat) return true;
+    if(r.kind==='cred') return false;
+    if(obraF && r._obra!==obraF) return false;
+    if(rubroF && r._rubro!==rubroF) return false;
+    if(provF && r._prov!==provF) return false;
+    return true;
+  });
+
+  renderReporteResidente(res, shown, saldoFinal, hasCat);
+}
+
+function renderReporteResidente(res, rows, saldoFinal, hasCat){
+  const fmtm=(v)=> (v===''||v==null)?'':fmt(v);
+  let sumDeb=0,sumCred=0;
+  const body=rows.map(r=>{ sumDeb+=r.debitado; sumCred+=r.creditado;
+    return `<tr class="${r.kind==='cred'?'rep-row-cred':''}">
+      <td>${r.fecha||''}</td><td>${r.orden}</td><td>${r.factura}</td><td>${r.tipo}</td>
+      <td>${r.proveedor}</td><td>${r.obra}</td><td>${r.sector}</td><td>${r.rubro}</td><td>${r.contratista}</td>
+      <td>${r.concepto}</td><td class="num">${r.cant!==''?r.cant:''}</td><td>${r.un}</td>
+      <td class="num">${fmtm(r.cu)}</td>
+      <td class="num">${r.debitado?fmt(r.debitado):''}</td>
+      <td class="num rep-cred">${r.creditado?fmt(r.creditado):''}</td>
+      <td class="num rep-saldo ${r.saldo<0?'neg':''}">${fmt(r.saldo)}</td></tr>`;
+  }).join('');
+  const headers=['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Concepto','Cant','Un','Costo Unit','Debitado','Creditado','Saldo'];
+  gs('rep-result').innerHTML=`
+    <div class="rep-meta">Caja chica · ${res} ${hasCat?'(filtrado por catálogo · sin acreditaciones)':''} · Saldo final de caja: <b style="color:${saldoFinal<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldoFinal)}</b></div>
+    <div class="rep-scroll"><table class="rep-table">
+      <thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${body||'<tr><td colspan="16" class="empty">Sin movimientos en el período.</td></tr>'}</tbody>
+      <tfoot><tr class="rep-total">
+        <td colspan="13" style="text-align:right">TOTAL GENERAL</td>
+        <td class="num">${fmt(sumDeb)}</td><td class="num">${fmt(sumCred)}</td><td class="num">₲ ${fmt(saldoFinal)}</td>
+      </tr></tfoot>
+    </table></div>`;
+
+  // preparar export
+  const aoa=[['Caja Chica — '+res],[],headers];
+  rows.forEach(r=>aoa.push([r.fecha||'',r.orden,r.factura,r.tipo,r.proveedor,r.obra,r.sector,r.rubro,r.contratista,r.concepto,r.cant,r.un,r.cu===''?'':Number(r.cu),r.debitado||'',r.creditado||'',r.saldo]));
+  aoa.push(['','','','','','','','','','','','','TOTAL',sumDeb,sumCred,saldoFinal]);
+  REPORTE_DATA={ aoa, filename:`caja_chica_${res.replace(/[^\w]+/g,'_')}_${todayISO()}.xlsx`, sheet:'Caja Chica' };
+  gs('r-export').disabled=false;
+  gs('rep-info').textContent=`${rows.length} fila(s)`;
+}
+
+async function reporteConsolidado(){
+  const obraF=gs('r-obra').value, rubroF=gs('r-rubro').value, provF=gs('r-prov').value;
+  // acreditaciones por residente
+  let qa=_SB.from('caja_chica_acreditaciones').select('residente,monto,fecha'); qa=_dateFilter(qa,'fecha');
+  const { data:acr } = await qa;
+  // movimientos aprobados por residente (con filtros de catálogo)
+  let qm=_SB.from('caja_chica_movimientos').select('residente,total,fecha,obra,rubro,proveedor').eq('estado','aprobado'); qm=_dateFilter(qm,'fecha');
+  if(obraF) qm=qm.eq('obra',obraF); if(rubroF) qm=qm.eq('rubro',rubroF); if(provF) qm=qm.eq('proveedor',provF);
+  const { data:movs } = await qm;
+
+  const map={};
+  RESIDENTES.forEach(r=>map[r.residente]={acreditado:0,debitado:0});
+  (acr||[]).forEach(a=>{ if(!map[a.residente]) map[a.residente]={acreditado:0,debitado:0}; map[a.residente].acreditado+=Number(a.monto); });
+  (movs||[]).forEach(m=>{ if(!map[m.residente]) map[m.residente]={acreditado:0,debitado:0}; map[m.residente].debitado+=Number(m.total); });
+
+  const rows=Object.keys(map).sort((a,b)=>a.localeCompare(b)).map(res=>{
+    const acreditado=map[res].acreditado, debitado=map[res].debitado;
+    return {res,acreditado,debitado,saldo:acreditado-debitado};
+  });
+  let tA=0,tD=0,tS=0; rows.forEach(r=>{tA+=r.acreditado;tD+=r.debitado;tS+=r.saldo;});
+
+  const body=rows.map(r=>`<tr>
+    <td class="res-name">${r.res}</td>
+    <td class="num rep-cred">${fmt(r.acreditado)}</td>
+    <td class="num">${fmt(r.debitado)}</td>
+    <td class="num rep-saldo ${r.saldo<0?'neg':''}">${fmt(r.saldo)}</td></tr>`).join('');
+  const catNote=(obraF||rubroF||provF)?' (gastos filtrados por catálogo)':'';
+  gs('rep-result').innerHTML=`
+    <div class="rep-meta">Consolidado de todas las cajas${catNote}</div>
+    <div class="rep-scroll"><table class="rep-table">
+      <thead><tr><th>Residente</th><th class="num">Acreditado ₲</th><th class="num">Debitado ₲</th><th class="num">Saldo ₲</th></tr></thead>
+      <tbody>${body||'<tr><td colspan="4" class="empty">Sin datos.</td></tr>'}</tbody>
+      <tfoot><tr class="rep-total"><td>TOTAL</td><td class="num">${fmt(tA)}</td><td class="num">${fmt(tD)}</td><td class="num">${fmt(tS)}</td></tr></tfoot>
+    </table></div>`;
+
+  const aoa=[['Caja Chica — Consolidado'],[],['Residente','Acreditado','Debitado','Saldo']];
+  rows.forEach(r=>aoa.push([r.res,r.acreditado,r.debitado,r.saldo]));
+  aoa.push(['TOTAL',tA,tD,tS]);
+  REPORTE_DATA={ aoa, filename:`caja_chica_consolidado_${todayISO()}.xlsx`, sheet:'Consolidado' };
+  gs('r-export').disabled=false; gs('rep-info').textContent=`${rows.length} residente(s)`;
+}
+
+function exportarReporte(){
+  if(!REPORTE_DATA){ toast('Generá un reporte primero','err'); return; }
+  try{
+    const ws=XLSX.utils.aoa_to_sheet(REPORTE_DATA.aoa);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, REPORTE_DATA.sheet||'Reporte');
+    XLSX.writeFile(wb, REPORTE_DATA.filename);
+    toast('Excel generado','ok');
+  }catch(e){ toast('Error al exportar: '+(e.message||e),'err'); }
 }
 
 async function doLogout(){ await _SB.auth.signOut(); window.location.href='index.html'; }
