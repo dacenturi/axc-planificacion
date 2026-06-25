@@ -2235,7 +2235,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-21-gantt-grouped';
+    const VERSION   = 'global-pdf-22-gantt-order-card-num';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2548,18 +2548,28 @@ async function exportPDF(modo){
       if(numDays === 0) return;
 
       // Ordenar igual que la vista HTML (respeta el selector: por defecto fecha de inicio asc).
-      // ★ En el reporte de Interventores (intv) se fuerza el orden: primero por
-      //   CONTRATISTA y luego por FECHA DE INICIO de la actividad, para agrupar
-      //   visualmente las actividades de cada contratista.
+      // ★ En el reporte de Interventores (intv) se ordena por FECHA DE INICIO de
+      //   actividad pero AGRUPANDO por contratista: el contratista cuya primera
+      //   actividad arranca antes va primero, con TODAS sus actividades juntas
+      //   (ordenadas por fecha de inicio), luego el siguiente contratista, etc.
       let sortedActs;
       if(intv){
+        const _fini = a => _getFechaActividad(a) || a.fecha_inicio || '\uffff';
+        // Fecha de inicio MÁS TEMPRANA de cada contratista
+        const minByContr = new Map();
+        ganttActs.forEach(a => {
+          const c = (a.contratista||'').trim() || '\uffff';
+          const f = _fini(a);
+          if(!minByContr.has(c) || f < minByContr.get(c)) minByContr.set(c, f);
+        });
         sortedActs = ganttActs.slice().sort((a,b) => {
-          const ca = ((a.contratista||'').trim() || '\uffff').toLowerCase();
-          const cb = ((b.contratista||'').trim() || '\uffff').toLowerCase();
-          if(ca !== cb) return ca < cb ? -1 : 1;
-          const fa = _getFechaActividad(a) || a.fecha_inicio || '';
-          const fb = _getFechaActividad(b) || b.fecha_inicio || '';
-          if(fa !== fb) return fa < fb ? -1 : 1;
+          const ca = (a.contratista||'').trim() || '\uffff';
+          const cb = (b.contratista||'').trim() || '\uffff';
+          const ma = minByContr.get(ca), mb = minByContr.get(cb);
+          if(ma !== mb) return ma < mb ? -1 : 1;          // grupos por fecha de inicio más temprana
+          if(ca !== cb) return ca.toLowerCase() < cb.toLowerCase() ? -1 : 1; // desempate estable
+          const fa = _fini(a), fb = _fini(b);
+          if(fa !== fb) return fa < fb ? -1 : 1;          // dentro del grupo: por fecha de inicio
           return (a.descripcion||'').localeCompare(b.descripcion||'', 'es');
         });
       } else {
@@ -2679,7 +2689,7 @@ async function exportPDF(modo){
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
         // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
-        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}${intv ? '  |  Orden: Contratista, luego fecha de inicio' : ''}`, lMX, lMT + 9);
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}${intv ? '  |  Orden: por fecha de inicio, agrupado por Contratista' : ''}`, lMX, lMT + 9);
 
         // ─── Cabecera de columna única ───
         const ganttTopY = lMT + 14;
@@ -3456,7 +3466,13 @@ async function exportPDF(modo){
         return { a, descLines, h, crit, critOn, critW, bg, totalDias: _totalDias(a), estado: _estadoLabel(a) };
       }
       const cardsByCont = {};
-      contratistas.forEach(c => { cardsByCont[c] = grupos.get(c).map(buildCard); });
+      contratistas.forEach(c => {
+        cardsByCont[c] = grupos.get(c).map((a, i) => {
+          const card = buildCard(a);
+          card.num = i + 1; // numeración discreta por columna (1,2,3,…)
+          return card;
+        });
+      });
 
       // ── Dibujo de una tarjeta ──
       function drawCard(x, y, card){
@@ -3477,9 +3493,17 @@ async function exportPDF(modo){
           doc.setFont('helvetica','bold'); doc.setFontSize(5.0); doc.setTextColor(...ct);
           doc.text(card.crit, rightX, y + 3.2, { align:'right' });
         }
-        // Obra (negrita navy) — recortada para no chocar con el texto de criticidad
+        // Numeración discreta de la tarjeta (1,2,3,…) en gris claro antes de la obra
+        let numW = 0;
+        if(card.num != null){
+          doc.setFont('helvetica','bold'); doc.setFontSize(5.2); doc.setTextColor(...GRAY);
+          const numTxt = card.num + '.';
+          doc.text(numTxt, px, cy);
+          numW = doc.getTextWidth(numTxt) + 1.0;
+        }
+        // Obra (negrita navy) — recortada para no chocar con número ni criticidad
         doc.setFont('helvetica','bold'); doc.setFontSize(6.0); doc.setTextColor(...NAVY);
-        doc.text(_trunc(a.obra || '—', innerW - card.critW - 0.5), px, cy);
+        doc.text(_trunc(a.obra || '—', innerW - card.critW - numW - 0.5), px + numW, cy);
         cy += 2.4;
         // Descripción
         doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(5.8);
