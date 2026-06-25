@@ -125,6 +125,8 @@ tr:last-child td{border-bottom:none}
 .act.ap{background:var(--green);color:#06210e}
 .act.re{background:var(--bg3);color:var(--red);border:1px solid var(--red)}
 .act.an{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
+.act.adj{background:var(--bg3);color:var(--cyan);border:1px solid var(--cyan)}
+.adj-pill{font-size:10px;font-weight:700;color:var(--cyan);background:rgba(14,165,233,.12);border:1px solid var(--cyan);border-radius:20px;padding:2px 8px}
 .act:hover{filter:brightness(1.08)}
 
 .empty{text-align:center;color:var(--text3);font-size:13px;padding:26px 10px}
@@ -188,9 +190,17 @@ tr:last-child td{border-bottom:none}
 .cat-it .nm{font-weight:600;font-size:12px}
 .cat-it .pr{color:var(--text2);font-size:11px;margin-top:1px}
 .cat-empty{padding:10px 11px;color:var(--text3);font-size:12px}
+.rdet-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;max-width:920px;width:100%;max-height:88vh;display:flex;flex-direction:column}
+.rdet-h{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--border);gap:12px}
+.rdet-h h3{font-family:'Syne';font-size:17px}
+.rdet-sub{font-size:12px;color:var(--text2);margin-top:2px}
+.rdet-body{padding:8px 16px;overflow:auto}
+.rdet-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
 
@@ -384,6 +394,20 @@ tr:last-child td{border-bottom:none}
       <div class="set-theme-opt" data-theme="warm" onclick="setTheme('warm')"><div class="swatch sw-warm"></div>Cálido</div>
     </div>
     <button class="set-close" onclick="closeSettings()">Cerrar</button>
+  </div>
+</div>
+
+<div class="set-bg" id="rdet-bg" onclick="if(event.target===this)closeRdet()">
+  <div class="rdet-card">
+    <div class="rdet-h">
+      <div><h3 id="rdet-title">Rendición</h3><div class="rdet-sub" id="rdet-sub"></div></div>
+      <button class="btn-ico" onclick="closeRdet()">✕</button>
+    </div>
+    <div class="rdet-body" id="rdet-body"></div>
+    <div class="rdet-foot">
+      <button class="btn-ghost" onclick="exportRendicionExcel()">⬇ Excel</button>
+      <button class="btn-primary" style="width:auto;margin:0" onclick="exportRendicionPDF()">🖨 PDF</button>
+    </div>
   </div>
 </div>
 
@@ -674,29 +698,47 @@ async function guardarComprobante(){
 async function loadComprobantes(){
   const box=gs('cmp-list');
   const { data, error }=await _SB.from('caja_chica_movimientos')
-    .select('id,residente,fecha,nro_factura,tipo_comprobante,total,estado,proveedor,obra')
+    .select('id,residente,fecha,nro_factura,tipo_comprobante,total,estado,proveedor,obra,caja_chica_adjuntos(id,storage_path,nombre)')
     .order('creado_en',{ascending:false}).limit(40);
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
   if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay comprobantes.</div>'; return; }
   box.innerHTML=data.map(m=>{
-    let acts='';
+    const adj=m.caja_chica_adjuntos||[];
+    let acts='<div class="cmp-acts">';
     if(m.estado==='solicitado'||m.estado==='borrador'){
-      acts=`<div class="cmp-acts">
-        <button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>
-        <button class="act re" onclick="rechazar('${m.id}')">Rechazar</button></div>`;
+      acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>
+        <button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
     } else if(m.estado==='aprobado'){
-      acts=`<div class="cmp-acts"><button class="act an" onclick="anular('${m.id}')">Anular</button></div>`;
+      acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`;
     }
+    if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
+    acts+='</div>';
+    if(acts==='<div class="cmp-acts"></div>') acts='';
     return `<div class="cmp">
       <div class="cmp-top">
         <span class="cmp-fac">${m.tipo_comprobante==='recibo'?'Recibo':'Fact.'} ${m.nro_factura}</span>
         <span class="st ${m.estado}">${m.estado}</span>
+        ${adj.length?`<span class="adj-pill">📎 ${adj.length}</span>`:''}
         <span class="cmp-tot">₲ ${fmt(m.total)}</span>
       </div>
       <div class="cmp-meta"><b class="cmp-res">${m.residente}</b> · ${m.fecha||''}${m.proveedor?' · '+m.proveedor:''}${m.obra?' · '+m.obra:''}</div>
       ${acts}
     </div>`;
   }).join('');
+}
+
+async function verAdjuntos(adj){
+  if(!adj || !adj.length){ toast('Sin adjuntos','err'); return; }
+  toast('Abriendo adjunto'+(adj.length>1?'s':'')+'…','ok');
+  let fail=0;
+  for(const a of adj){
+    try{
+      const { data, error }=await _SB.storage.from('caja-chica').createSignedUrl(a.storage_path, 3600);
+      if(error || !data || !data.signedUrl){ fail++; continue; }
+      window.open(data.signedUrl,'_blank');
+    }catch(e){ fail++; }
+  }
+  if(fail){ toast('No se pudieron abrir '+fail+' adjunto(s). ¿Está creado el bucket "caja-chica"?','err'); }
 }
 
 async function aprobar(id,total,res){
@@ -915,9 +957,10 @@ async function loadRendicionData(){
   const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
   if(!rends || !rends.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
   list.innerHTML=rends.map(r=>{
-    let acts='';
-    if(r.estado==='presentada') acts=`<div class="cmp-acts"><button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button></div>`;
-    else if(r.estado==='cerrada') acts=`<div class="cmp-acts"><button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button></div>`;
+    let btns=`<button class="act adj" onclick="abrirDetalleRendicion('${r.id}')">📄 Detalle</button>`;
+    if(r.estado==='presentada') btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`;
+    else if(r.estado==='cerrada') btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
+    const acts=`<div class="cmp-acts">${btns}</div>`;
     return `<div class="cmp">
       <div class="cmp-top"><span class="cmp-fac">Rendición</span><span class="st ${r.estado==='cerrada'?'aprobado':(r.estado==='presentada'?'solicitado':'borrador')}">${r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
       <div class="cmp-meta">Corte: ${r.fecha_corte||'—'}${r.cerrada_en?(' · cerrada '+(r.cerrada_en||'').slice(0,10)):''}</div>
@@ -963,6 +1006,87 @@ function acreditarReposicion(rid,res){
   const bnr=gs('repo-bnr'); bnr.textContent='Reposición vinculada a la rendición de '+res+'. Cargá el monto y acreditá.'; bnr.classList.add('show');
   gs('ac-monto').focus();
   toast('Cargá el monto de reposición; se vinculará a la rendición.','ok');
+}
+
+// ----- Detalle / export de rendición -----
+let REND_DETAIL=null;
+function closeRdet(){ gs('rdet-bg').classList.remove('open'); }
+async function abrirDetalleRendicion(rid){
+  gs('rdet-bg').classList.add('open');
+  gs('rdet-body').innerHTML='<div class="empty">Cargando…</div>'; REND_DETAIL=null;
+  const { data:rend }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
+  const { data:movs }=await _SB.from('caja_chica_movimientos')
+    .select('fecha,numero_orden,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,total')
+    .eq('rendicion_id',rid).order('fecha',{ascending:true});
+  const list=movs||[]; const total=list.reduce((a,m)=>a+Number(m.total),0);
+  gs('rdet-title').textContent='Rendición · '+(rend?rend.residente:'');
+  gs('rdet-sub').textContent=`Corte: ${rend?rend.fecha_corte||'—':'—'} · Estado: ${rend?rend.estado:''} · ${list.length} comprobante(s)`;
+  const headers=['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲'];
+  const body=list.map(m=>`<tr><td>${m.fecha||''}</td><td>${m.numero_orden||''}</td><td>${m.nro_factura||''}</td><td>${m.tipo_comprobante||''}</td><td>${m.proveedor||''}</td><td>${m.obra||''}</td><td>${m.sector||''}</td><td>${m.rubro||''}</td><td>${m.contratista||''}</td><td class="num">${fmt(m.total)}</td></tr>`).join('');
+  gs('rdet-body').innerHTML=`<div class="rep-scroll" style="border:none"><table class="rep-table">
+    <thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${body||'<tr><td colspan="10" class="empty">Sin comprobantes en esta rendición.</td></tr>'}</tbody>
+    <tfoot><tr class="rep-total"><td colspan="9" style="text-align:right">TOTAL RENDIDO</td><td class="num">₲ ${fmt(total)}</td></tr></tfoot></table></div>`;
+  REND_DETAIL={ rend, list, total, headers };
+}
+
+function exportRendicionExcel(){
+  if(!REND_DETAIL){ toast('Abrí el detalle primero','err'); return; }
+  const {rend,list,total,headers}=REND_DETAIL;
+  const aoa=[['Rendición de Caja Chica'],['Residente',rend.residente],['Fecha de corte',rend.fecha_corte||''],['Estado',rend.estado],['Emitido',todayISO()],[],headers];
+  list.forEach(m=>aoa.push([m.fecha||'',m.numero_orden||'',m.nro_factura||'',m.tipo_comprobante||'',m.proveedor||'',m.obra||'',m.sector||'',m.rubro||'',m.contratista||'',m.total]));
+  aoa.push(['','','','','','','','','TOTAL RENDIDO',total]);
+  try{
+    const ws=XLSX.utils.aoa_to_sheet(aoa); const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Rendición');
+    XLSX.writeFile(wb,`rendicion_${rend.residente.replace(/[^\w]+/g,'_')}_${rend.fecha_corte||todayISO()}.xlsx`);
+    toast('Excel generado','ok');
+  }catch(e){ toast('Error al exportar: '+(e.message||e),'err'); }
+}
+
+function exportRendicionPDF(){
+  if(!REND_DETAIL){ toast('Abrí el detalle primero','err'); return; }
+  if(!window.jspdf || !window.jspdf.jsPDF){ toast('No cargó la librería PDF','err'); return; }
+  const {rend,list,total}=REND_DETAIL;
+  const { jsPDF }=window.jspdf;
+  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'A4'});
+  const W=doc.internal.pageSize.getWidth(), PH=doc.internal.pageSize.getHeight();
+  // Encabezado de marca (navy + línea dorada)
+  doc.setFillColor(31,56,100); doc.rect(0,0,W,22,'F');
+  doc.setFillColor(200,160,40); doc.rect(0,22,W,1.5,'F');
+  doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
+  doc.text('AXC CONSTRUCTORA',12,11);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  doc.text('Rendición de Caja Chica',12,18);
+  // Metadatos
+  doc.setTextColor(40,40,40); doc.setFontSize(10);
+  const yM=31;
+  doc.text(`Residente: ${rend.residente}`,12,yM);
+  doc.text(`Fecha de corte: ${rend.fecha_corte||'—'}`,12,yM+5);
+  doc.text(`Estado: ${rend.estado}`,W-12,yM,{align:'right'});
+  doc.text(`Emitido: ${todayISO()}`,W-12,yM+5,{align:'right'});
+  // Tabla
+  const head=[['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲']];
+  const rows=list.map(m=>[m.fecha||'',String(m.numero_orden||''),m.nro_factura||'',m.tipo_comprobante||'',m.proveedor||'',m.obra||'',m.sector||'',m.rubro||'',m.contratista||'',fmt(m.total)]);
+  rows.push([{content:'TOTAL RENDIDO',colSpan:9,styles:{halign:'right',fontStyle:'bold'}},{content:'₲ '+fmt(total),styles:{halign:'right',fontStyle:'bold'}}]);
+  doc.autoTable({ startY:yM+10, head, body:rows,
+    styles:{fontSize:8,cellPadding:1.8,overflow:'linebreak'},
+    headStyles:{fillColor:[31,56,100],textColor:255,fontStyle:'bold'},
+    columnStyles:{9:{halign:'right'}}, margin:{left:12,right:12} });
+  // Firmas
+  let y=doc.lastAutoTable.finalY+24;
+  if(y>PH-22){ doc.addPage(); y=30; }
+  const colW=(W-24)/2;
+  doc.setDrawColor(120);
+  doc.line(20,y,20+colW-24,y); doc.line(W/2+12,y,W/2+12+colW-24,y);
+  doc.setFontSize(9); doc.setTextColor(70);
+  doc.text('Rinde (Residente)',20,y+5);
+  doc.text('Recibe / Aprueba',W/2+12,y+5);
+  // Pie
+  doc.setFontSize(8); doc.setTextColor(135);
+  doc.text('Desarrollado por CONEXDATA',W/2,PH-7,{align:'center'});
+  doc.save(`rendicion_${rend.residente.replace(/[^\w]+/g,'_')}_${rend.fecha_corte||todayISO()}.pdf`);
+  toast('PDF generado','ok');
 }
 
 async function doLogout(){ await _SB.auth.signOut(); window.location.href='index.html'; }
