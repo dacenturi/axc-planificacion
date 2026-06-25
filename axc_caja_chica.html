@@ -197,6 +197,12 @@ tr:last-child td{border-bottom:none}
 .rdet-sub{font-size:12px;color:var(--text2);margin-top:2px}
 .rdet-body{padding:8px 16px;overflow:auto}
 .rdet-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border)}
+.mi-saldo{display:flex;gap:18px;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px 20px;margin-bottom:18px;align-items:center}
+.mi-saldo .blk{display:flex;flex-direction:column;gap:2px}
+.mi-saldo .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);font-weight:600}
+.mi-saldo .v{font-family:'Syne';font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.mi-saldo .v.ok{color:var(--green)} .mi-saldo .v.warn{color:var(--accent)} .mi-saldo .v.zero{color:var(--red)}
+.mi-saldo .sep{width:1px;align-self:stretch;background:var(--border)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -271,6 +277,7 @@ tr:last-child td{border-bottom:none}
 
     <!-- ====== COMPROBANTES ====== -->
     <section class="panel" id="panel-comprobantes">
+      <div id="mi-saldo" class="mi-saldo" style="display:none"></div>
       <div class="grid2">
         <div class="card">
           <div class="card-h">
@@ -383,7 +390,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v0.3</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.0</div>
 </div>
 
 <div class="set-bg" id="set-bg" onclick="if(event.target===this)closeSettings()">
@@ -434,6 +441,7 @@ function closeSettings(){ document.getElementById('set-bg').classList.remove('op
 const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Arq. Patricia','Arq. Willians','Ing. Albert','Ing. Azucena','Lic. Dahiana'];
 let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, LISTAS={}, SECTORES_RAW=[];
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null;
+let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null;
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -456,18 +464,23 @@ function switchTab(t){
   if(!sess || !sess.session){ window.location.href='index.html'; return; }
   CURRENT_USER = sess.session.user;
   const { data:perf } = await _SB.from('perfiles').select('rol,residente,nombre').eq('id',CURRENT_USER.id).maybeSingle();
-  const rol = perf ? perf.rol : null;
-  if(!(rol==='admin'||rol==='supervisor_caja')){
-    gs('gate').innerHTML='<h3>Acceso restringido</h3><p>Esta sección es solo para administradores o supervisores de caja.</p><a class="hdr-back" href="index.html" style="margin-top:8px;width:auto;padding:0 16px">← Volver</a>';
+  ROL = perf ? perf.rol : null;
+  const esSuper = (ROL==='admin'||ROL==='supervisor_caja');
+  const esResidente = (ROL==='residente' && perf && perf.residente);
+  if(!esSuper && !esResidente){
+    gs('gate').innerHTML='<h3>Acceso restringido</h3><p>No tenés una caja chica asignada. Si creés que es un error, avisá al administrador.</p><a class="hdr-back" href="index.html" style="margin-top:8px;width:auto;padding:0 16px">← Volver</a>';
     return;
   }
+  IS_RESIDENTE = !esSuper;
+  MI_RESIDENTE = IS_RESIDENTE ? perf.residente : null;
   gs('u-name').textContent = (perf&&perf.nombre)?perf.nombre:CURRENT_USER.email;
-  gs('u-role').textContent = rol==='admin'?'Administrador':'Supervisor de caja';
+  gs('u-role').textContent = esSuper ? (ROL==='admin'?'Administrador':'Supervisor de caja') : ('Residente · '+MI_RESIDENTE);
   gs('ac-fecha').value=todayISO(); gs('c-fecha').value=todayISO();
-  moneyLive(gs('ac-monto'));
+  if(gs('ac-monto')) moneyLive(gs('ac-monto'));
 
   await loadAll();
   addLine();
+  if(IS_RESIDENTE){ aplicarModoResidente(); switchTab('comprobantes'); }
 
   gs('gate').style.display='none';
   gs('app').style.display='flex';
@@ -522,6 +535,7 @@ function renderTopes(){
       <td><button class="btn-save" onclick="saveTope('${r.residente.replace(/'/g,"\\'")}','${id}')">Guardar</button></td></tr>`;
   }).join('');
   RESIDENTES.forEach(r=>{ const el=gs('t_'+resId(r.residente)); if(el) moneyLive(el); });
+  if(IS_RESIDENTE) renderMiSaldo();
 }
 async function saveTope(res,id){
   const tope=parseInt(onlyDigits(gs('t_'+id).value)||'0',10);
@@ -671,6 +685,7 @@ async function guardarComprobante(){
     sector:gs('c-sector').value||null, rubro:gs('c-rubro').value||null, contratista:gs('c-contr').value||null,
     total, estado, solicitado_por:CURRENT_USER.email, solicitado_en:now };
   if(estado==='aprobado'){ cab.aprobado_por=CURRENT_USER.email; cab.aprobado_en=now; }
+  if(estado==='aprobado' && IS_RESIDENTE){ cab.observacion='Aprobado por el residente'; }
 
   let movId, wasEdit=!!EDIT_ID;
   if(EDIT_ID){
@@ -798,14 +813,16 @@ async function aprobar(id,total,res){
   toast('Comprobante aprobado','ok'); await loadSaldos(); renderTopes(); await loadComprobantes();
 }
 async function rechazar(id){
-  const motivo=prompt('Motivo del rechazo:'); if(motivo===null) return;
+  const motivo=prompt('Motivo del rechazo (obligatorio):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('El rechazo requiere un motivo','err'); return; }
   const { error }=await _SB.from('caja_chica_movimientos').update({estado:'rechazado',motivo_rechazo:motivo||null}).eq('id',id);
   if(error){ toast('Error: '+error.message,'err'); return; }
   await _SB.from('caja_chica_historial').insert({movimiento_id:id,accion:'rechazar',estado_nuevo:'rechazado',detalle:motivo||null,hecho_por:CURRENT_USER.email});
   toast('Comprobante rechazado','ok'); await loadComprobantes();
 }
 async function anular(id){
-  const motivo=prompt('Motivo de la anulación:'); if(motivo===null) return;
+  const motivo=prompt('Motivo de la anulación (obligatorio):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('La anulación requiere un motivo','err'); return; }
   const now=new Date().toISOString();
   const { error }=await _SB.from('caja_chica_movimientos').update({estado:'anulado',anulado_por:CURRENT_USER.email,anulado_en:now,motivo_anulacion:motivo||null}).eq('id',id);
   if(error){ toast('Error: '+error.message,'err'); return; }
@@ -1005,8 +1022,8 @@ async function loadRendicionData(){
   if(!rends || !rends.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
   list.innerHTML=rends.map(r=>{
     let btns=`<button class="act adj" onclick="abrirDetalleRendicion('${r.id}')">📄 Detalle</button>`;
-    if(r.estado==='presentada') btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`;
-    else if(r.estado==='cerrada') btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
+    if(r.estado==='presentada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`;
+    else if(r.estado==='cerrada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
     const acts=`<div class="cmp-acts">${btns}</div>`;
     return `<div class="cmp">
       <div class="cmp-top"><span class="cmp-fac">Rendición</span><span class="st ${r.estado==='cerrada'?'aprobado':(r.estado==='presentada'?'solicitado':'borrador')}">${r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
@@ -1134,6 +1151,37 @@ function exportRendicionPDF(){
   doc.text('Desarrollado por CONEXDATA',W/2,PH-7,{align:'center'});
   doc.save(`rendicion_${rend.residente.replace(/[^\w]+/g,'_')}_${rend.fecha_corte||todayISO()}.pdf`);
   toast('PDF generado','ok');
+}
+
+// ----- Modo residente -----
+function lockSelectTo(sel,val){ if(!sel) return; sel.innerHTML=`<option value="${String(val).replace(/"/g,'&quot;')}">${val}</option>`; sel.value=val; sel.disabled=true; }
+function aplicarModoResidente(){
+  const tabCfg=document.querySelector('.tab[data-tab="config"]'); if(tabCfg) tabCfg.style.display='none';
+  lockSelectTo(gs('c-res'), MI_RESIDENTE);
+  lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
+  gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true;
+  gs('mi-saldo').style.display='flex';
+  renderMiSaldo();
+}
+function renderMiSaldo(){
+  if(!IS_RESIDENTE) return;
+  const box=gs('mi-saldo'); if(!box) return;
+  const cfg=CONFIG[MI_RESIDENTE]||{}; const s=SALDOS[MI_RESIDENTE]||null;
+  const tope=(cfg.tope!=null)?cfg.tope:null;
+  const saldo=(s&&s.saldo!=null)?s.saldo:null;
+  const ultimo=s?s.ultimo:0;
+  const pct=(cfg.pct!=null?cfg.pct:(s?s.pct:20))||20;
+  let cls='ok',badge='';
+  if(saldo!=null){
+    if(saldo<=0){ cls='zero'; badge='<span class="badge-zero">FIN DE SALDO</span>'; }
+    else if(ultimo>0 && saldo<=ultimo*(pct/100)){ cls='warn'; badge='<span class="badge-warn">RENDIR</span>'; }
+  }
+  box.innerHTML=`
+    <div class="blk"><span class="lbl">Mi caja chica</span><span class="v" style="font-size:15px;color:var(--text)">${MI_RESIDENTE}</span></div>
+    <div class="sep"></div>
+    <div class="blk"><span class="lbl">Tope por factura</span><span class="v" style="color:var(--text)">₲ ${tope!=null?fmt(tope):'—'}</span></div>
+    <div class="sep"></div>
+    <div class="blk"><span class="lbl">Saldo disponible</span><span class="v ${cls}">₲ ${saldo!=null?fmt(saldo):'—'} ${badge}</span></div>`;
 }
 
 async function doLogout(){ await _SB.auth.signOut(); window.location.href='index.html'; }
