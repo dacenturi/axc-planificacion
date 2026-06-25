@@ -2235,7 +2235,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-16-interventores';
+    const VERSION   = 'global-pdf-17-interventores-kanban';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -3327,11 +3327,20 @@ async function exportPDF(modo){
     // días con su color de estado (cumplido / no cumplido / planificado /
     // domingo extra / imprevista). Pagina por alto cuando se llena la hoja.
     // ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+    // PÁGINA EXTRA: TABLERO INTERVENTORES (A4 landscape) — 25/06/2026
+    // Formato KANBAN cuyas COLUMNAS son los CONTRATISTAS. Bajo cada
+    // contratista van sus actividades como tarjetas con: obra, descripción,
+    // estado, días de trabajo (con su color de estado) y residente
+    // responsable. Pagina en vertical (parts) cuando una columna no entra,
+    // y en horizontal (grupos de columnas) cuando hay muchos contratistas.
+    // Va PRIMERO, antes del Gantt.
+    // ═══════════════════════════════════════════════════════════
     function drawInterventoresPages(doc, allActs, getNextPageNum){
       const iacts = (allActs || []).slice();
       if(!iacts.length) return;
 
-      // ── Colores de estado (para badge) ──
+      // ── Colores de estado (badge + acento de tarjeta) ──
       const EST_COLOR = {
         'Terminado'           : [34,197,94],
         'Cumple'              : [34,197,94],
@@ -3345,9 +3354,7 @@ async function exportPDF(modo){
       };
       const _estColor = e => EST_COLOR[e] || [148,163,184];
 
-      // ── Días de la actividad con su estado (cumple/no_cumple/pend/dom/impr) ──
-      // Reusa el mismo criterio que el Gantt: días tildados, domingos
-      // trabajados, o rango planificado de respaldo si no hay nada tildado.
+      // ── Días de la actividad con su estado (mismo criterio que el Gantt) ──
       function _diasConEstado(a){
         const out = [];
         let hasReal = false;
@@ -3370,7 +3377,6 @@ async function exportPDF(modo){
         if(!hasReal){
           _ganttRangoPlanISO(a).forEach(iso => out.push({ iso, st: isImp ? 'impr' : 'pend' }));
         }
-        // ordenar por fecha y deduplicar por iso
         out.sort((x,y) => x.iso < y.iso ? -1 : x.iso > y.iso ? 1 : 0);
         const seen = new Set();
         return out.filter(d => { if(seen.has(d.iso)) return false; seen.add(d.iso); return true; });
@@ -3384,23 +3390,31 @@ async function exportPDF(modo){
         grupos.get(k).push(a);
       });
       const contratistas = Array.from(grupos.keys()).sort((a,b) => a.localeCompare(b, 'es'));
+      // ordenar actividades de cada contratista por fecha de inicio efectiva
+      contratistas.forEach(c => {
+        grupos.get(c).sort((a,b) => {
+          const fa = _getFechaActividad(a) || a.fecha_inicio || '';
+          const fb = _getFechaActividad(b) || b.fecha_inicio || '';
+          return fa < fb ? -1 : fa > fb ? 1 : 0;
+        });
+      });
 
       // ── Geometría landscape ──
       const lpw = 297, lph = 210, lMX = 12, lMB = 12;
-      const COLS = 4;
+      const COLS_PER_PAGE = 5;
       const colGap = 4;
       const availW = lpw - 2*lMX;
-      const cardW = (availW - (COLS-1)*colGap) / COLS;
-      const cardPad = 2.6;
-      const innerW = cardW - cardPad*2;
-      const cardRowGap = 3;
-      const sectGap = 4;            // espacio entre secciones de contratista
-      const headH = 7.5;           // alto de la cabecera de sección
-      const topStartY = 41;        // primer Y útil tras título de página
-      const pageBottom = lph - lMB;
+      const colW = (availW - (COLS_PER_PAGE-1)*colGap) / COLS_PER_PAGE; // ancho fijo
+      const boardTopY = 40;
+      const colHeadH = 7.5;
+      const cardsTop = boardTopY + colHeadH + 2.5;
+      const cardGap = 1.8;
+      const usableH = lph - lMB - cardsTop;
+      const cardPad = 2.3;
+      const innerW = colW - cardPad*2;
 
-      // Tira de días: celdas con número de día dentro
-      const DAY_W = 5.0, DAY_H = 4.4, DAY_GAP = 0.8;
+      // Tira de días
+      const DAY_W = 4.6, DAY_H = 4.0, DAY_GAP = 0.8;
       const cellsPerRow = Math.max(1, Math.floor((innerW + DAY_GAP) / (DAY_W + DAY_GAP)));
 
       const _trunc = (txt, w) => {
@@ -3410,96 +3424,108 @@ async function exportPDF(modo){
         return txt.slice(0, Math.max(2, Math.floor(txt.length * f) - 1)) + '…';
       };
 
-      // ── Pre-cálculo de cada mini-tarjeta (líneas + alto) ──
+      // ── Pre-cálculo de cada tarjeta (líneas de descripción + alto) ──
       function buildCard(a){
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.2);
-        const obra = _trunc(a.obra || '—', innerW);
-        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.0);
+        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.1);
         let descLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
-        if(descLines.length > 4){ descLines = descLines.slice(0,4); descLines[3] = descLines[3].slice(0, Math.max(1, descLines[3].length-2)) + '…'; }
-        const sector = (a.sector || '').trim();
+        if(descLines.length > 5){ descLines = descLines.slice(0,5); descLines[4] = descLines[4].slice(0, Math.max(1, descLines[4].length-2)) + '…'; }
         const dias = _diasConEstado(a);
         const stripRows = Math.max(1, Math.ceil(dias.length / cellsPerRow));
         const estado = _estadoLabel(a);
-        // alto: pad + obra(2.6) + desc(n*2.4) + sector(2.4) + estado badge(3.6) + fechas(2.6) + label días(2.4) + tira(rows*(DAY_H+0.8)) + pad
-        let h = cardPad + 2.6 + descLines.length*2.4 + (sector?2.4:0) + 3.8 + 2.6 + 2.4 + stripRows*(DAY_H+1.0) + cardPad;
-        return { a, obra, descLines, sector, dias, stripRows, estado, h };
+        // alto: pad + obra(2.6) + desc(n*2.3) + badge(3.4+1.2) + diasLabel(2.2) + tira(rows*(DAY_H+0.9)) + resp(2.5) + fechas(2.4) + pad
+        const h = cardPad + 2.6 + descLines.length*2.3 + 4.6 + 2.2 + stripRows*(DAY_H+0.9) + 2.5 + 2.4 + cardPad;
+        return { a, descLines, dias, stripRows, estado, h };
       }
+      const cardsByCont = {};
+      contratistas.forEach(c => { cardsByCont[c] = grupos.get(c).map(buildCard); });
 
-      // ── Render de una mini-tarjeta en (x,y) ──
+      // ── Dibujo de una tarjeta ──
       function drawCard(x, y, card){
         const a = card.a, h = card.h;
         doc.setFillColor(...GRAY_LIGHT);
         doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
-        doc.roundedRect(x, y, cardW, h, 1.4, 1.4, 'FD');
-        // acento lateral por estado
+        doc.roundedRect(x, y, colW, h, 1.4, 1.4, 'FD');
         const ec = _estColor(card.estado);
         doc.setFillColor(...(a.imprevista ? ORANGE_IMP : ec));
-        doc.rect(x, y, 1.3, h, 'F');
+        doc.rect(x, y, 1.3, h, 'F'); // acento por estado
+        const px = x + cardPad + 1.2;
         let cy = y + cardPad + 1.6;
         // Obra
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.2); doc.setTextColor(...NAVY);
-        doc.text(card.obra, x + cardPad + 1.2, cy);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.4); doc.setTextColor(...NAVY);
+        doc.text(_trunc(a.obra || '—', innerW - 1.2), px, cy);
         cy += 2.6;
         // Descripción
-        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.0);
+        doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(6.1);
         doc.setTextColor(...(a.imprevista ? ORANGE_IMP : BLACK));
-        card.descLines.forEach(ln => { doc.text(ln, x + cardPad + 1.2, cy); cy += 2.4; });
-        // Sector
-        if(card.sector){
-          doc.setFont('helvetica', 'italic'); doc.setFontSize(5.4); doc.setTextColor(...GRAY_TEXT);
-          doc.text(_trunc('Sector: ' + card.sector, innerW), x + cardPad + 1.2, cy);
-          cy += 2.4;
-        }
+        card.descLines.forEach(ln => { doc.text(ln, px, cy); cy += 2.3; });
         // Badge de estado
         const badgeLabel = (a.imprevista ? 'IMPREVISTA · ' : '') + card.estado;
         doc.setFont('helvetica', 'bold'); doc.setFontSize(5.6);
-        const bw = Math.min(innerW, doc.getTextWidth(badgeLabel) + 4);
-        const bgc = a.imprevista ? ORANGE_IMP : ec;
-        doc.setFillColor(...bgc);
-        doc.roundedRect(x + cardPad + 1.2, cy - 2.5, bw, 3.4, 1.0, 1.0, 'F');
+        const bw = Math.min(innerW - 1.2, doc.getTextWidth(badgeLabel) + 4);
+        doc.setFillColor(...(a.imprevista ? ORANGE_IMP : ec));
+        doc.roundedRect(px, cy - 2.4, bw, 3.4, 1.0, 1.0, 'F');
         doc.setTextColor(255,255,255);
-        doc.text(badgeLabel, x + cardPad + 1.2 + bw/2, cy - 0.2, { align:'center' });
-        cy += 2.8;
-        // Fechas
-        const f0 = card.dias.length ? card.dias[0].iso : null;
-        const f1 = card.dias.length ? card.dias[card.dias.length-1].iso : null;
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(5.4); doc.setTextColor(...GRAY);
-        doc.text((f0 ? fmtFecha(f0) : '—') + ' a ' + (f1 ? fmtFecha(f1) : '—'), x + cardPad + 1.2, cy);
-        cy += 2.5;
-        // Label "Días:"
+        doc.text(badgeLabel, px + bw/2, cy - 0.1, { align:'center' });
+        cy += 3.0;
+        // Label "Días de trabajo:"
         doc.setFont('helvetica', 'bold'); doc.setFontSize(5.2); doc.setTextColor(...GRAY_TEXT);
-        doc.text('Dias (' + card.dias.length + '):', x + cardPad + 1.2, cy);
-        cy += 2.0;
+        doc.text('Dias de trabajo (' + card.dias.length + '):', px, cy);
+        cy += 1.9;
         // Tira de días con su estado
-        const stripX0 = x + cardPad + 1.2;
         card.dias.forEach((d, i) => {
-          const col = i % cellsPerRow;
-          const row = Math.floor(i / cellsPerRow);
-          const dx = stripX0 + col*(DAY_W + DAY_GAP);
-          const dy = cy + row*(DAY_H + 1.0);
+          const col = i % cellsPerRow, row = Math.floor(i / cellsPerRow);
+          const dx = px + col*(DAY_W + DAY_GAP);
+          const dy = cy + row*(DAY_H + 0.9);
           let fill = null, txtC = [255,255,255];
           if(d.st === 'cumple')         fill = [34,197,94];
           else if(d.st === 'no_cumple') fill = [220,38,38];
           else if(d.st === 'dom')       fill = [59,130,246];
           else if(d.st === 'impr')      fill = [255,107,53];
-          else { fill = null; txtC = NAVY; } // pend → borde dorado
+          else { fill = null; txtC = NAVY; }
           if(fill){
-            doc.setFillColor(...fill);
-            doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'F');
+            doc.setFillColor(...fill); doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'F');
           } else {
-            doc.setDrawColor(...GOLD); doc.setLineWidth(0.5);
-            doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'D');
+            doc.setDrawColor(...GOLD); doc.setLineWidth(0.5); doc.roundedRect(dx, dy, DAY_W, DAY_H, 0.7, 0.7, 'D');
           }
-          // número de día dentro de la celda
-          const dd = (d.iso || '').slice(8,10) || '?';
-          doc.setFont('helvetica', 'bold'); doc.setFontSize(4.4); doc.setTextColor(...txtC);
-          doc.text(String(parseInt(dd,10) || dd), dx + DAY_W/2, dy + DAY_H/2 + 1.4, { align:'center' });
+          const dd = (d.iso || '').slice(8,10);
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(4.2); doc.setTextColor(...txtC);
+          doc.text(String(parseInt(dd,10) || '?'), dx + DAY_W/2, dy + DAY_H/2 + 1.3, { align:'center' });
         });
+        cy += card.stripRows*(DAY_H + 0.9) + 0.4;
+        // Residente responsable + atraso
+        const dias = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? ('  ·  ' + a.dias_atraso + 'd atraso') : '';
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(5.5); doc.setTextColor(...GRAY_TEXT);
+        doc.text(_trunc('Resp.: ' + (a.residente || '—') + dias, innerW - 1.2), px, cy);
+        cy += 2.4;
+        // Fechas
+        const f0 = card.dias.length ? card.dias[0].iso : null;
+        const f1 = card.dias.length ? card.dias[card.dias.length-1].iso : null;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(5.3); doc.setTextColor(...GRAY);
+        doc.text((f0 ? fmtFecha(f0) : '—') + ' a ' + (f1 ? fmtFecha(f1) : '—'), px, cy);
       }
 
-      // ── Cabecera de página ──
-      function pageHeader(partNum, totalParts){
+      // ── Paginar verticalmente las tarjetas de cada contratista ──
+      const partsByCont = {};
+      contratistas.forEach(c => {
+        const parts = []; let cur = []; let curH = 0;
+        cardsByCont[c].forEach(card => {
+          const add = card.h + (cur.length ? cardGap : 0);
+          if(curH + add > usableH && cur.length){ parts.push(cur); cur = []; curH = 0; }
+          cur.push(card); curH += card.h + cardGap;
+        });
+        if(cur.length) parts.push(cur);
+        if(!parts.length) parts.push([]);
+        partsByCont[c] = parts;
+      });
+
+      // ── Agrupar contratistas en bloques de COLS_PER_PAGE (horizontal) ──
+      const colGroups = [];
+      for(let i = 0; i < contratistas.length; i += COLS_PER_PAGE){
+        colGroups.push(contratistas.slice(i, i + COLS_PER_PAGE));
+      }
+
+      // ── Cabecera + footer de página ──
+      function pageChrome(){
         const pgNum = getNextPageNum();
         doc.setFillColor(...NAVY); doc.rect(0, 0, lpw, 22, 'F');
         doc.setFillColor(...GOLD); doc.rect(0, 22, lpw, 1.5, 'F');
@@ -3507,115 +3533,84 @@ async function exportPDF(modo){
         doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
         doc.text('AXC CONSTRUCTORA', lMX + 22, 11);
         doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GOLD_LIGHT);
-        doc.text(`Interventores — Contratistas${totalParts>1 ? ` (parte ${partNum}/${totalParts})` : ''}`, lMX + 22, 16.5);
+        doc.text('Tablero de Interventores (por Contratista)', lMX + 22, 16.5);
         doc.setTextColor(...WHITE); doc.setFontSize(8);
         doc.text(`Página ${pgNum}`, lpw - lMX, 11, { align:'right' });
         doc.setTextColor(...GOLD_LIGHT); doc.text(`App: ${appLabel}`, lpw - lMX, 16.5, { align:'right' });
         // Título del bloque
         doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(...NAVY);
-        doc.text('Tablero de Interventores - Actividades por Contratista', lMX, 31);
+        doc.text('Tablero Kanban - Actividades por Contratista', lMX, 31);
         doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GRAY_TEXT);
         doc.text(`${contratistas.length} contratista${contratistas.length===1?'':'s'}  ·  ${iacts.length} actividad${iacts.length===1?'':'es'} (segun filtros activos)`, lMX, 36);
         // Footer
         doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
         doc.line(lMX, lph - 8, lpw - lMX, lph - 8);
         doc.setTextColor(...GRAY); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
-        doc.text('AXC Constructora - Reporte Global | Interventores', lMX, lph - 4);
+        doc.text('AXC Constructora - Reporte Global | Interventores por Contratista', lMX, lph - 4);
         doc.text(`Página ${pgNum}`, lpw / 2, lph - 4, { align:'center' });
         doc.text(`Conexdata · ${VERSION}`, lpw - lMX, lph - 4, { align:'right' });
-        return pgNum;
       }
 
-      // ── Cabecera de sección (contratista) ──
-      function sectionHeader(x, y, w, nombre, acts, cont){
+      // ── Cabecera de columna (contratista) ──
+      function colHeader(x, nombre, acts, parte, totalPartes){
         const ok = acts.filter(a => _isOK(a)).length;
         const fail = acts.filter(a => _isFAIL(a)).length;
         const den = ok + fail;
         const pct = den ? Math.round(ok/den*100) : null;
-        doc.setFillColor(...NAVY); doc.roundedRect(x, y, w, headH, 1.4, 1.4, 'F');
-        doc.setFillColor(...GOLD); doc.rect(x, y, 1.6, headH, 'F');
-        doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5);
-        doc.text(_trunc((cont?'(cont.) ':'') + nombre, w*0.55), x + 4, y + 5);
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...GOLD_LIGHT);
-        const resumen = `${acts.length} act.   ·   OK ${ok}   ·   No cumple ${fail}` + (pct!==null ? `   ·   ${pct}% cumpl.` : '');
-        doc.text(resumen, x + w - 3, y + 5, { align:'right' });
+        doc.setFillColor(...NAVY); doc.roundedRect(x, boardTopY, colW, colHeadH, 1.4, 1.4, 'F');
+        doc.setFillColor(...GOLD); doc.rect(x, boardTopY, 1.6, colHeadH, 'F');
+        // nombre del contratista
+        doc.setTextColor(...WHITE); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.6);
+        const sufijo = totalPartes > 1 ? `  (${parte}/${totalPartes})` : '';
+        doc.text(_trunc(nombre + sufijo, colW - 16), x + 3, boardTopY + 4);
+        // resumen (línea 2)
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(5.6); doc.setTextColor(...GOLD_LIGHT);
+        const resumen = `${acts.length} act. · OK ${ok} · NoC ${fail}` + (pct!==null ? ` · ${pct}%` : '');
+        doc.text(_trunc(resumen, colW - 6), x + 3, boardTopY + 6.6);
+        // total de actividades a la derecha (badge numérico)
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+        doc.setTextColor(...WHITE);
+        doc.text(String(acts.length), x + colW - 3, boardTopY + 4.8, { align:'right' });
       }
 
-      // ── Leyenda (una vez, al pie de la primera página de cada hoja) ──
+      // ── Leyenda al pie ──
       function drawLegend(){
-        const ly = pageBottom - 2.5;
+        const ly = lph - lMB - 0.5;
         let lx = lMX;
-        doc.setFontSize(6.5);
-        // pendiente (borde dorado)
+        doc.setFontSize(6.3);
         doc.setDrawColor(...GOLD); doc.setLineWidth(0.5);
-        doc.roundedRect(lx, ly - 2.6, 3.4, 2.6, 0.5, 0.5, 'D');
-        doc.setTextColor(...GRAY_TEXT); doc.text('Planificado', lx + 4.6, ly);
-        lx += 4.6 + doc.getTextWidth('Planificado') + 7;
+        doc.roundedRect(lx, ly - 2.6, 3.2, 2.6, 0.5, 0.5, 'D');
+        doc.setTextColor(...GRAY_TEXT); doc.text('Planificado', lx + 4.4, ly);
+        lx += 4.4 + doc.getTextWidth('Planificado') + 6;
         [[ [34,197,94],'Cumplido'], [[220,38,38],'No cumplido'], [[255,107,53],'Imprevista'], [[59,130,246],'Domingo extra']].forEach(([c,l]) => {
-          doc.setFillColor(...c); doc.roundedRect(lx, ly - 2.6, 3.4, 2.6, 0.5, 0.5, 'F');
-          doc.setTextColor(...GRAY_TEXT); doc.text(l, lx + 4.6, ly);
-          lx += 4.6 + doc.getTextWidth(l) + 7;
+          doc.setFillColor(...c); doc.roundedRect(lx, ly - 2.6, 3.2, 2.6, 0.5, 0.5, 'F');
+          doc.setTextColor(...GRAY_TEXT); doc.text(l, lx + 4.4, ly);
+          lx += 4.4 + doc.getTextWidth(l) + 6;
         });
       }
 
-      // ── Flujo de paginado ──
-      let part = 0;
-      // El total de partes no se conoce de antemano (depende del alto); usamos
-      // un placeholder 1 y, como ya hay numeración de página global, no es crítico.
-      pageHeader(part+1, 1);
-      let y = topStartY;
-      let legendDrawn = false;
-      const reservaLeyenda = 6; // espacio reservado para la leyenda al pie
-
-      function newPage(){
-        if(!legendDrawn){ drawLegend(); legendDrawn = true; }
-        part++;
-        pageHeader(part+1, 1);
-        y = topStartY;
-        legendDrawn = false;
-      }
-
-      contratistas.forEach(nombre => {
-        const acts = grupos.get(nombre);
-        // ordenar actividades por fecha de inicio efectiva
-        acts.sort((a,b) => {
-          const fa = _getFechaActividad(a) || a.fecha_inicio || '';
-          const fb = _getFechaActividad(b) || b.fecha_inicio || '';
-          return fa < fb ? -1 : fa > fb ? 1 : 0;
-        });
-        const cards = acts.map(buildCard);
-
-        let primeraFilaSeccion = true;
-        let idx = 0;
-        while(idx < cards.length){
-          // ¿Hay espacio para cabecera (si es 1ª fila) + 1 fila de tarjetas?
-          // Tomar la fila (hasta COLS tarjetas) y su alto
-          const fila = cards.slice(idx, idx + COLS);
-          const filaH = Math.max(...fila.map(c => c.h));
-          const needHead = primeraFilaSeccion ? (headH + 2) : 0;
-          if(y + needHead + filaH + reservaLeyenda > pageBottom){
-            newPage();
-            // tras salto de página, si la sección continúa, redibujar su cabecera
-            sectionHeader(lMX, y, availW, nombre, acts, !primeraFilaSeccion || idx>0);
-            y += headH + 2;
-            primeraFilaSeccion = false;
-          } else if(primeraFilaSeccion){
-            sectionHeader(lMX, y, availW, nombre, acts, false);
-            y += headH + 2;
-            primeraFilaSeccion = false;
-          }
-          // dibujar la fila de tarjetas
-          fila.forEach((card, j) => {
-            const x = lMX + j*(cardW + colGap);
-            drawCard(x, y, card);
+      // ── Render: por cada grupo de columnas, por cada "parte" vertical ──
+      colGroups.forEach(group => {
+        const groupParts = Math.max(...group.map(c => partsByCont[c].length));
+        for(let p = 0; p < groupParts; p++){
+          doc.addPage('a4', 'landscape');
+          pageChrome();
+          group.forEach((nombre, ci) => {
+            const x = lMX + ci*(colW + colGap);
+            const acts = grupos.get(nombre);
+            const totalPartes = partsByCont[nombre].length;
+            colHeader(x, nombre, acts, p+1, totalPartes);
+            const items = partsByCont[nombre][p] || [];
+            let y = cardsTop;
+            if(!items.length){
+              doc.setFont('helvetica', 'italic'); doc.setFontSize(6.5); doc.setTextColor(...GRAY);
+              doc.text('— sin más —', x + 3, y + 4); doc.setFont('helvetica', 'normal');
+            }
+            items.forEach(card => { drawCard(x, y, card); y += card.h + cardGap; });
           });
-          y += filaH + cardRowGap;
-          idx += COLS;
+          drawLegend();
         }
-        y += sectGap;
       });
-
-      if(!legendDrawn){ drawLegend(); legendDrawn = true; }
     }
 
     // ═══════════════════════════════════════════════════════════
