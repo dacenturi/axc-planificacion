@@ -126,6 +126,7 @@ tr:last-child td{border-bottom:none}
 .act.re{background:var(--bg3);color:var(--red);border:1px solid var(--red)}
 .act.an{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
 .act.adj{background:var(--bg3);color:var(--cyan);border:1px solid var(--cyan)}
+.act.ed{background:var(--bg3);color:var(--accent);border:1px solid var(--accent)}
 .adj-pill{font-size:10px;font-weight:700;color:var(--cyan);background:rgba(14,165,233,.12);border:1px solid var(--cyan);border-radius:20px;padding:2px 8px}
 .act:hover{filter:brightness(1.08)}
 
@@ -277,6 +278,7 @@ tr:last-child td{border-bottom:none}
             <div><h2>Nuevo comprobante</h2><div class="desc">Cabecera + líneas. El total no puede superar el tope ni el saldo (si se aprueba).</div></div>
           </div>
           <div class="card-b">
+            <div class="rd-bnr" id="cedit-bnr"></div>
             <div class="frow">
               <div class="fld"><label>Residente</label><select id="c-res"></select></div>
               <div class="fld"><label>Fecha</label><input id="c-fecha" type="date"></div>
@@ -431,7 +433,7 @@ function closeSettings(){ document.getElementById('set-bg').classList.remove('op
 
 const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Arq. Patricia','Arq. Willians','Ing. Albert','Ing. Azucena','Lic. Dahiana'];
 let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, LISTAS={}, SECTORES_RAW=[];
-let CAT_TIMER=null, CAT_ACTIVE_TR=null;
+let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null;
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -662,23 +664,32 @@ async function guardarComprobante(){
     if(total>saldo){ toast(`Saldo insuficiente (₲ ${fmt(saldo)}). Hay que rendir/acreditar antes de aprobar.`,'err'); return; }
   }
 
-  const btn=gs('c-btn'); btn.disabled=true; btn.textContent='Guardando…';
+  const btn=gs('c-btn'); btn.disabled=true; btn.textContent=EDIT_ID?'Actualizando…':'Guardando…';
   const now=new Date().toISOString();
   const cab={ residente:res, fecha, nro_factura:fac, tipo_comprobante:tipo,
     proveedor:gs('c-prov').value||null, vendedor:gs('c-vend').value||null, obra:gs('c-obra').value||null,
     sector:gs('c-sector').value||null, rubro:gs('c-rubro').value||null, contratista:gs('c-contr').value||null,
-    total, estado, creado_por:CURRENT_USER.email, solicitado_por:CURRENT_USER.email, solicitado_en:now };
+    total, estado, solicitado_por:CURRENT_USER.email, solicitado_en:now };
   if(estado==='aprobado'){ cab.aprobado_por=CURRENT_USER.email; cab.aprobado_en=now; }
 
-  const { data:mov, error }=await _SB.from('caja_chica_movimientos').insert(cab).select('id').single();
-  if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; toast('Error: '+error.message,'err'); return; }
-  const movId=mov.id;
+  let movId, wasEdit=!!EDIT_ID;
+  if(EDIT_ID){
+    const { error }=await _SB.from('caja_chica_movimientos').update(cab).eq('id',EDIT_ID);
+    if(error){ btn.disabled=false; btn.textContent='Actualizar comprobante'; toast('Error: '+error.message,'err'); return; }
+    movId=EDIT_ID;
+    await _SB.from('caja_chica_movimiento_items').delete().eq('movimiento_id',movId);
+    await _SB.from('caja_chica_movimiento_items').insert(lineas.map(l=>({concepto:l.concepto,cantidad:l.cantidad,unidad:l.unidad,costo_unit:l.costo_unit,subtotal:l.subtotal,orden:l.orden,movimiento_id:movId})));
+    await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion: estado==='aprobado'?'aprobar':'editar', estado_nuevo:estado, detalle:`${tipo} ${fac} · ₲ ${fmt(total)}`, hecho_por:CURRENT_USER.email });
+  } else {
+    cab.creado_por=CURRENT_USER.email;
+    const { data:mov, error }=await _SB.from('caja_chica_movimientos').insert(cab).select('id').single();
+    if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; toast('Error: '+error.message,'err'); return; }
+    movId=mov.id;
+    await _SB.from('caja_chica_movimiento_items').insert(lineas.map(l=>({concepto:l.concepto,cantidad:l.cantidad,unidad:l.unidad,costo_unit:l.costo_unit,subtotal:l.subtotal,orden:l.orden,movimiento_id:movId})));
+    await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion: estado==='aprobado'?'aprobar':'solicitar', estado_nuevo:estado, detalle:`${tipo} ${fac} · ₲ ${fmt(total)}`, hecho_por:CURRENT_USER.email });
+  }
 
-  const its=lineas.map(l=>({ concepto:l.concepto, cantidad:l.cantidad, unidad:l.unidad, costo_unit:l.costo_unit, subtotal:l.subtotal, orden:l.orden, movimiento_id:movId }));
-  await _SB.from('caja_chica_movimiento_items').insert(its);
-  await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion: estado==='aprobado'?'aprobar':'solicitar', estado_nuevo:estado, detalle:`${tipo} ${fac} · ₲ ${fmt(total)}`, hecho_por:CURRENT_USER.email });
-
-  // adjuntos (best-effort; requiere bucket 'caja-chica')
+  // adjuntos (best-effort; se agregan, no reemplazan)
   const files=gs('c-files').files; let adjWarn=false;
   for(const f of files){
     const path=`${movId}/${Date.now()}_${f.name}`;
@@ -687,12 +698,47 @@ async function guardarComprobante(){
     await _SB.from('caja_chica_adjuntos').insert({movimiento_id:movId,storage_path:path,nombre:f.name,tipo_mime:f.type,tamano_bytes:f.size,creado_por:CURRENT_USER.email});
   }
 
-  btn.disabled=false; btn.textContent='Guardar comprobante';
-  toast(estado==='aprobado'?`Comprobante aprobado · ₲ ${fmt(total)}`:`Comprobante guardado (solicitado)`,'ok');
-  if(adjWarn) setTimeout(()=>toast('Aviso: no se subieron adjuntos (falta crear el bucket "caja-chica" en Storage).','err'),1000);
-
-  gs('c-fac').value=''; gs('c-files').value=''; gs('lines-body').innerHTML=''; addLine();
+  cancelarEdicion();
+  btn.disabled=false;
+  toast(wasEdit?'Comprobante actualizado':(estado==='aprobado'?`Comprobante aprobado · ₲ ${fmt(total)}`:'Comprobante guardado (solicitado)'),'ok');
+  if(adjWarn) setTimeout(()=>toast('Aviso: no se subieron adjuntos (falta crear el bucket "caja-chica").','err'),1000);
   await loadSaldos(); renderTopes(); await loadComprobantes();
+}
+
+async function editarComprobante(id){
+  const { data:m }=await _SB.from('caja_chica_movimientos')
+    .select('*,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden)').eq('id',id).maybeSingle();
+  if(!m){ toast('No se encontró el comprobante','err'); return; }
+  if(!(m.estado==='borrador'||m.estado==='solicitado')){ toast('Solo se editan comprobantes en borrador o solicitado','err'); return; }
+  EDIT_ID=id;
+  switchTab('comprobantes');
+  gs('c-res').value=m.residente||''; gs('c-fecha').value=m.fecha||todayISO(); gs('c-fac').value=m.nro_factura||'';
+  gs('c-tipo').value=m.tipo_comprobante||'factura'; gs('c-prov').value=m.proveedor||''; gs('c-vend').value=m.vendedor||'';
+  gs('c-obra').value=m.obra||''; filtrarSectorComprobante(m.obra||''); gs('c-sector').value=m.sector||'';
+  gs('c-rubro').value=m.rubro||''; gs('c-contr').value=m.contratista||'';
+  document.querySelector('input[name="c-estado"][value="solicitado"]').checked=true;
+  gs('lines-body').innerHTML='';
+  const its=(m.caja_chica_movimiento_items||[]).sort((a,b)=>(a.orden||0)-(b.orden||0));
+  if(!its.length){ addLine(); }
+  else its.forEach(it=>{
+    addLine(); const tr=gs('lines-body').lastElementChild;
+    tr.querySelector('.li-con').value=it.concepto||'';
+    tr.querySelector('.li-cant').value=it.cantidad!=null?it.cantidad:1;
+    tr.querySelector('.li-un').value=it.unidad||'';
+    tr.querySelector('.li-cu').value=it.costo_unit?Number(it.costo_unit).toLocaleString('es-PY'):'';
+    tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
+  });
+  const bnr=gs('cedit-bnr'); bnr.innerHTML=`Editando comprobante <b>${m.nro_factura||''}</b> · <a href="#" onclick="cancelarEdicion();return false;" style="color:var(--accent);font-weight:600">cancelar edición</a>`; bnr.classList.add('show');
+  gs('c-btn').textContent='Actualizar comprobante';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function cancelarEdicion(){
+  EDIT_ID=null;
+  const bnr=gs('cedit-bnr'); if(bnr){ bnr.classList.remove('show'); bnr.innerHTML=''; }
+  gs('c-btn').textContent='Guardar comprobante';
+  gs('c-fac').value=''; gs('c-files').value='';
+  gs('lines-body').innerHTML=''; addLine();
 }
 
 async function loadComprobantes(){
@@ -707,6 +753,7 @@ async function loadComprobantes(){
     let acts='<div class="cmp-acts">';
     if(m.estado==='solicitado'||m.estado==='borrador'){
       acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>
+        <button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>
         <button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
     } else if(m.estado==='aprobado'){
       acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`;
