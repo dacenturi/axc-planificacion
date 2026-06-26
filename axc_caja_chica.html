@@ -58,6 +58,7 @@ a{color:inherit;text-decoration:none}
 .tab{padding:12px 18px;font-weight:600;font-size:13px;color:var(--text2);border-bottom:2px solid transparent;cursor:pointer;transition:.15s;display:flex;align-items:center;gap:7px}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.btn#btn-config.cfg-on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .tab.soon{opacity:.5;cursor:not-allowed}
 
 .wrap{position:relative;z-index:1;flex:1;max-width:1180px;width:100%;margin:0 auto;padding:24px 22px 60px}
@@ -314,20 +315,20 @@ tr:last-child td{border-bottom:none}
     </div>
     <div class="hdr-spacer"></div>
     <div class="hdr-user"><b id="u-name">—</b><span id="u-role">—</span></div>
+    <button class="btn btn-ghost" id="btn-config" onclick="switchTab('config')">⚙️ Configuración</button>
     <button class="btn btn-ghost" onclick="location.href='index.html'">🔙 Portal</button>
     <button class="btn btn-ghost" onclick="doLogout()">✕ Salir</button>
   </header>
 
   <nav class="tabs">
-    <div class="tab active" data-tab="config" onclick="switchTab('config')">⚙️ Configuración</div>
-    <div class="tab" data-tab="comprobantes" onclick="switchTab('comprobantes')">🧾 Comprobantes</div>
+    <div class="tab active" data-tab="comprobantes" onclick="switchTab('comprobantes')">🧾 Comprobantes</div>
     <div class="tab" data-tab="rendicion" onclick="switchTab('rendicion')">🧮 Rendición</div>
     <div class="tab" data-tab="reporte" onclick="switchTab('reporte')">📊 Reporte</div>
   </nav>
 
   <div class="wrap">
     <!-- ====== CONFIGURACIÓN ====== -->
-    <section class="panel active" id="panel-config">
+    <section class="panel" id="panel-config">
       <div class="dash" id="dash"></div>
       <div class="grid2">
         <div class="card">
@@ -371,7 +372,7 @@ tr:last-child td{border-bottom:none}
     </section>
 
     <!-- ====== COMPROBANTES ====== -->
-    <section class="panel" id="panel-comprobantes">
+    <section class="panel active" id="panel-comprobantes">
       <div id="mi-saldo" class="mi-saldo" style="display:none"></div>
       <div class="grid2">
         <div class="card">
@@ -513,7 +514,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.5</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.6</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -615,6 +616,7 @@ function switchTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===t));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   gs('panel-'+t).classList.add('active');
+  const bc=gs('btn-config'); if(bc) bc.classList.toggle('cfg-on', t==='config');
   const subs={config:'Configuración · topes y acreditaciones',comprobantes:'Comprobantes · carga y aprobación',rendicion:'Rendición · corte y reposición',reporte:'Reporte · saldo corrido y consolidado'};
   gs('hdr-sub').textContent = subs[t]||'';
 }
@@ -643,6 +645,7 @@ function switchTab(t){
   addLine();
   ccPrecargarComprobante();
   if(IS_RESIDENTE){ aplicarModoResidente(); switchTab('comprobantes'); }
+  else { switchTab('config'); }
 
   gs('gate').style.display='none';
   gs('app').style.display='flex';
@@ -970,6 +973,23 @@ async function guardarComprobante(){
   });
   if(!lineas.length){ toast('Cargá al menos una línea con concepto y monto','err'); return; }
 
+  // No permitir Nº de factura repetido (solo para tipo Factura). Se valida por proveedor.
+  if(tipo==='factura'){
+    const prov=gs('c-prov').value||'';
+    let q=_SB.from('caja_chica_movimientos').select('id,residente,fecha,total,proveedor')
+      .eq('tipo_comprobante','factura').eq('nro_factura',fac).neq('estado','anulado');
+    if(prov) q=q.eq('proveedor',prov);
+    if(EDIT_ID) q=q.neq('id',EDIT_ID);
+    const { data:dups }=await q.limit(1);
+    if(dups && dups.length){
+      const d=dups[0];
+      showAlert('Factura duplicada',
+        `Ya existe una <b>factura Nº ${fac}</b>${prov?(' del proveedor <b>'+prov+'</b>'):''} cargada en el sistema (residente <b>${d.residente||'—'}</b>, fecha ${d.fecha||'—'}, total <b>₲ ${fmt(d.total)}</b>).<br><br>No se puede cargar dos veces el mismo número de factura. Revisá el número o fijate si ya fue cargada.`,
+        '🚫', true);
+      return;
+    }
+  }
+
   const now=new Date().toISOString();
   const cab={ residente:res, fecha, nro_factura:fac, tipo_comprobante:tipo,
     proveedor:gs('c-prov').value||null, vendedor:gs('c-vend').value||null, obra:gs('c-obra').value||null,
@@ -995,6 +1015,11 @@ async function guardarComprobante(){
   await ccPersistComprobante(cab, lineas, gs('c-files').files, {wasEdit:!!EDIT_ID, editId:EDIT_ID});
 }
 
+function _dupFacturaErr(error){
+  if(!error) return false;
+  const m=(error.message||'')+' '+(error.details||'');
+  return error.code==='23505' && /nro_factura|factura|uq_cc_factura/i.test(m);
+}
 async function ccPersistComprobante(cab, lineas, fileList, opts){
   opts=opts||{};
   const btn=gs('c-btn'); btn.disabled=true; btn.textContent=opts.editId?'Actualizando…':'Guardando…';
@@ -1004,13 +1029,13 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
   let movId;
   if(opts.editId){
     const { error }=await _SB.from('caja_chica_movimientos').update(cab).eq('id',opts.editId);
-    if(error){ btn.disabled=false; btn.textContent='Actualizar comprobante'; toast('Error: '+error.message,'err'); return false; }
+    if(error){ btn.disabled=false; btn.textContent='Actualizar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=opts.editId;
     await _SB.from('caja_chica_movimiento_items').delete().eq('movimiento_id',movId);
     await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
   } else {
     const { data:mov, error }=await _SB.from('caja_chica_movimientos').insert(cab).select('id').single();
-    if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; toast('Error: '+error.message,'err'); return false; }
+    if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=mov.id;
     await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
   }
@@ -1761,7 +1786,7 @@ function exportRendicionPDF(){
 // ----- Modo residente -----
 function lockSelectTo(sel,val){ if(!sel) return; sel.innerHTML=`<option value="${String(val).replace(/"/g,'&quot;')}">${val}</option>`; sel.value=val; sel.disabled=true; }
 function aplicarModoResidente(){
-  const tabCfg=document.querySelector('.tab[data-tab="config"]'); if(tabCfg) tabCfg.style.display='none';
+  const tabCfg=gs('btn-config'); if(tabCfg) tabCfg.style.display='none';
   lockSelectTo(gs('c-res'), MI_RESIDENTE);
   lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
   gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true;
