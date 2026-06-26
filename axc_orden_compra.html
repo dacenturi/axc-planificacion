@@ -2466,6 +2466,17 @@ body{
   color:var(--text-muted);
   font-size:13px;
 }
+.detail-adj-hint{
+  background:#FEF3CD;
+  color:#7A5600;
+  border:1px solid #FCD46B;
+  border-radius:10px;
+  padding:10px 12px;
+  font-size:12.5px;
+  line-height:1.45;
+  margin-bottom:10px;
+}
+.detail-adj-hint b{color:#5e4200}
 
 /* Preview inline modal */
 .preview-modal{
@@ -7840,6 +7851,18 @@ function renderDetailBody(){
     });
   }
 
+  // Botón "Agregar adjunto" (estados Solicitado/Observado o admin) → abre selector de archivos
+  const btnAddAdj = document.getElementById('detailBtnAddAdjunto');
+  const adjInput = document.getElementById('detailAdjuntoInput');
+  if(btnAddAdj && adjInput){
+    btnAddAdj.addEventListener('click', ()=> adjInput.click());
+    adjInput.addEventListener('change', (e)=>{
+      const files = e.target.files;
+      if(files && files.length) uploadAdjuntosDetalle(files);
+      e.target.value = ''; // permite re-seleccionar el mismo archivo luego
+    });
+  }
+
   // Click en adjuntos → preview
   document.querySelectorAll('[data-att-preview]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -8131,6 +8154,10 @@ function _recalcDetailItems(){
 }
 
 function renderAdjuntosSection(isAdmin){
+  const oc = detail.oc;
+  // ¿Puede sumar adjuntos? Mismo criterio que editar:
+  // Admin (OC no archivada) o el residente creador cuando está Solicitado/Observado.
+  const canAdjuntar = _puedeEditarOC(oc) && (!detail.isEditing);
   const adj = detail.adjuntos;
   let body;
   if(adj.length === 0){
@@ -8161,6 +8188,19 @@ function renderAdjuntosSection(isAdmin){
     }).join('') + '</div>';
   }
 
+  // Pista visual cuando la OC está observada: el objetivo es cargar lo que falta.
+  const observadoHint = (canAdjuntar && oc && oc.estado === 'Observado')
+    ? `<div class="detail-adj-hint">📌 Esta OC fue <b>observada</b>: subí acá los datos o archivos solicitados para que pueda aprobarse.</div>`
+    : '';
+
+  const addBtn = canAdjuntar
+    ? `<button class="detail-section-action" id="detailBtnAddAdjunto" title="Subir uno o más archivos">➕ Agregar adjunto</button>`
+    : '';
+
+  const fileInput = canAdjuntar
+    ? `<input type="file" id="detailAdjuntoInput" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx" style="display:none">`
+    : '';
+
   return `
     <div class="detail-section">
       <div class="detail-section-title">
@@ -8168,9 +8208,84 @@ function renderAdjuntosSection(isAdmin){
           <span style="font-size:14px">📎</span>
           <span>Adjuntos (${adj.length})</span>
         </div>
+        ${addBtn}
       </div>
+      ${fileInput}
+      ${observadoHint}
       ${body}
     </div>`;
+}
+
+// ─── Subir adjunto(s) desde el detalle (OC Solicitada/Observada o admin) ──
+async function uploadAdjuntosDetalle(fileList){
+  const oc = detail.oc;
+  if(!oc) return;
+  if(!_puedeEditarOC(oc)){
+    showToast('No tenés permiso para adjuntar archivos en esta OC.', 'error');
+    return;
+  }
+  const files = Array.from(fileList || []).filter(Boolean);
+  if(files.length === 0) return;
+
+  const MAX_SIZE = 10 * 1024 * 1024; // 10 MB (mismo límite que el formulario)
+  const userName = state.profile?.nombre || state.user?.email || 'desconocido';
+  let okCount = 0;
+
+  const btn = document.getElementById('detailBtnAddAdjunto');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Subiendo...'; }
+
+  for(const file of files){
+    if(file.size > MAX_SIZE){
+      showToast(`"${file.name}" supera los 10 MB y no se subió`, 'error');
+      continue;
+    }
+    try{
+      const tipo = inferAttachmentTipo(file);
+      const safeName = file.name.replace(/[^\w\d.\-]/g, '_');
+      const path = `${oc.id}/${Date.now()}_${safeName}`;
+
+      const {error: upErr} = await sb.storage
+        .from('oc-adjuntos')
+        .upload(path, file, {upsert:false});
+      if(upErr) throw upErr;
+
+      const {error: insErr} = await sb.from('oc_adjuntos').insert({
+        oc_id: oc.id,
+        nombre_archivo: file.name,
+        tipo: tipo,
+        url_storage: path,
+        tamano_kb: Math.round(file.size/1024),
+        subido_por: userName,
+      });
+      if(insErr){
+        // Si falla el registro, limpiamos el archivo para no dejar huérfanos.
+        try{ await sb.storage.from('oc-adjuntos').remove([path]); }catch{}
+        throw insErr;
+      }
+      okCount++;
+    }catch(e){
+      console.warn('Error subiendo adjunto en detalle:', file.name, e);
+      showToast(`Error subiendo "${file.name}": ${e.message || ''}`, 'error');
+    }
+  }
+
+  // Recargar la lista de adjuntos y refrescar la vista
+  try{
+    const {data} = await sb.from('oc_adjuntos')
+      .select('*').eq('oc_id', oc.id)
+      .order('created_at', {ascending:false});
+    detail.adjuntos = data || [];
+  }catch(e){ /* mantener lo que haya */ }
+
+  if(detail.oc) detail.oc._adjuntos_count = (detail.adjuntos || []).length;
+
+  renderDetailBody();
+  renderDetailActions();
+  try{ loadOCs(); }catch(e){} // actualiza el contador 📎 en la tarjeta
+
+  if(okCount > 0){
+    showToast(okCount === 1 ? '📎 Adjunto subido' : `📎 ${okCount} adjuntos subidos`, 'success');
+  }
 }
 
 function renderHistorialSection(oc){
