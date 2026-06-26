@@ -520,7 +520,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.8</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.9</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1330,6 +1330,7 @@ function onTipoReporte(){
   const esCons=(t==='consolidado');
   gs('f-res').style.display = esCons?'none':'';
   gs('f-rnd').style.display = esCons?'none':'';
+  const pdfSel=gs('r-pdf-detalle'); if(pdfSel) pdfSel.style.display = esCons?'none':'';
   gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
   REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
   gs('rep-result').innerHTML='<div class="empty">'+(esCons?'Reporte de todos los residentes. Tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
@@ -1573,14 +1574,65 @@ async function reporteConsolidado(){
   rows.forEach(r=>aoa.push([r.res,r.ultAcr,r.acreditado,(r.ultRend?(r.ultRend+(r.rndNro?(' · '+r.rndNro):'')):''),r.debitado,r.saldo]));
   aoa.push(['TOTAL','',tA,'',tD,tS]);
   REPORTE_DATA={ aoa, filename:`caja_chica_consolidado_${todayISO()}.xlsx`, sheet:'Consolidado' };
-  gs('r-export').disabled=false; gs('r-export-pdf').disabled=true; REPORTE_PDF=null;
+  REPORTE_PDF={ mode:'consolidado', rows, tA, tD, tS, catNote };
+  gs('r-export').disabled=false; gs('r-export-pdf').disabled=false;
   gs('rep-info').textContent=`${rows.length} residente(s)`;
 }
 
 // PDF del reporte por residente, con logo AXC + residente + período + rendición
+function exportConsolidadoPDF(){
+  const P=REPORTE_PDF;
+  if(!P || P.mode!=='consolidado'){ toast('Generá primero el consolidado','err'); return; }
+  if(!window.jspdf || !window.jspdf.jsPDF){ toast('No cargó la librería PDF','err'); return; }
+  const { jsPDF }=window.jspdf;
+  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  const pageW=doc.internal.pageSize.getWidth();
+  const M=12;
+  const san=(t)=>String(t==null?'':t).replace(/\s*→\s*/g,' a ').replace(/[—–]/g,'-').replace(/…/g,'...').replace(/₲/g,'Gs ');
+  // Encabezado
+  try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(15);
+  doc.text('Reporte de Caja Chica · Consolidado', pageW-M, 14, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(8.5);
+  doc.text('Emitido: '+todayISO(), pageW-M, 19.5, {align:'right'});
+  doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,pageW-M,23);
+  // Metadatos
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
+  doc.text('Consolidado de todas las cajas'+(P.catNote||''), M, 30);
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
+  doc.text('Saldo total', pageW-M, 28, {align:'right'});
+  doc.setFontSize(15); doc.setTextColor(P.tS<0?200:20, P.tS<0?40:120, 40);
+  doc.text('Gs '+fmt(P.tS), pageW-M, 35, {align:'right'});
+  // Tabla
+  const head=[['Residente','Últ. acreditación','Acreditado','Últ. rendición present.','Debitado','Saldo']];
+  const body=P.rows.map(r=>[ san(r.res), r.ultAcr||'-', fmt(r.acreditado), r.ultRend?san(r.ultRend+(r.rndNro?(' · '+r.rndNro):'')):'-', fmt(r.debitado), fmt(r.saldo) ]);
+  const totalIdx=body.length;
+  body.push(['TOTAL','', fmt(P.tA), '', fmt(P.tD), 'Gs '+fmt(P.tS)]);
+  doc.autoTable({
+    head, body, startY:40, margin:{left:M,right:M},
+    styles:{font:'helvetica',fontSize:8.5,cellPadding:1.8,overflow:'linebreak',textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1,valign:'middle'},
+    headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:8.5,halign:'center'},
+    columnStyles:{
+      0:{cellWidth:'auto',fontStyle:'bold'},1:{cellWidth:34,halign:'center',overflow:'visible'},2:{cellWidth:38,halign:'right'},
+      3:{cellWidth:52},4:{cellWidth:38,halign:'right'},5:{cellWidth:40,halign:'right'}
+    },
+    didParseCell:(d)=>{
+      if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; d.cell.styles.fontSize=9; }
+    },
+    didDrawPage:()=>{
+      const ph=doc.internal.pageSize.getHeight();
+      doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
+      doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
+      doc.text('Página '+doc.internal.getNumberOfPages(), pageW-M, ph-6, {align:'right'});
+    }
+  });
+  doc.save(`caja_chica_consolidado_${todayISO()}.pdf`);
+}
+
 function exportarReportePDF(){
   if(rTipo()==='rendicion'){ return exportRendicionPDF(); }
-  if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente','err'); return; }
+  if(REPORTE_PDF && REPORTE_PDF.mode==='consolidado'){ return exportConsolidadoPDF(); }
+  if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente o en "Consolidado"','err'); return; }
   const P=REPORTE_PDF;
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
