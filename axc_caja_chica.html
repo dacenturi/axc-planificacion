@@ -507,6 +507,10 @@ tr:last-child td{border-bottom:none}
           <div class="rep-actions">
             <button class="btn-primary" style="width:auto;margin:0" onclick="generarReporte()">Generar reporte</button>
             <button class="btn-ghost" id="r-export" onclick="exportarReporte()" disabled style="display:none">⬇ Exportar Excel</button>
+            <select id="r-pdf-detalle" title="Nivel de detalle del PDF" style="width:auto;height:36px;padding:0 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px">
+              <option value="detalle">PDF con detalle por ítem</option>
+              <option value="resumen">PDF resumido (1 línea por comprobante)</option>
+            </select>
             <button class="btn-ghost" id="r-export-pdf" onclick="exportarReportePDF()" disabled>🖨 Exportar PDF</button>
             <span id="rep-info" style="font-size:12px;color:var(--text2)"></span>
           </div>
@@ -516,7 +520,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.2</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.3</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1580,35 +1584,61 @@ function exportarReportePDF(){
   doc.setFontSize(15); doc.setTextColor(P.saldoFinal<0?200:20, P.saldoFinal<0?40:120, 40);
   doc.text('Gs '+fmt(P.saldoFinal), pageW-M, y+9, {align:'right'});
 
-  // Tabla línea por línea (muestra subtotales por ítem; cabecera de comprobante en la 1ª línea)
-  const head=[['Fecha','Factura','Proveedor','Obra','Rubro','Concepto','Cant','Un','Costo','Debitado','Creditado','Saldo','Rend.']];
-  const body=[];
-  P.rows.forEach(r=>{
-    if(r.items && r.items.length){
-      r.items.forEach((it,idx)=>body.push([
-        idx===0?(r.fecha||''):'', idx===0?(r.factura||''):'', idx===0?(r.proveedor||''):'', idx===0?(r.obra||''):'', idx===0?(r.rubro||''):'',
-        it.concepto||'', (it.cant!==''&&it.cant!=null)?String(it.cant):'', it.un||'', (it.cu!==''&&it.cu!=null)?fmt(it.cu):'',
-        it.sub?fmt(it.sub):'', '', idx===0?fmt(r.saldo):'', idx===0?(r.rnd||''):'' ]));
-    } else {
-      body.push([ r.fecha||'', r.factura||'', r.proveedor||'', r.obra||'', r.rubro||'', r.concepto||'', '', '', '',
-        r.debitado?fmt(r.debitado):'', r.creditado?fmt(r.creditado):'', fmt(r.saldo), r.rnd||'' ]);
-    }
-  });
+  // Nivel de detalle elegido por el usuario: 'detalle' (ítem por ítem) o 'resumen' (1 línea por comprobante)
+  const modo = (gs('r-pdf-detalle') && gs('r-pdf-detalle').value) ? gs('r-pdf-detalle').value : 'detalle';
+  let head, columnStyles; const body=[];
+
+  if(modo==='resumen'){
+    // Resumen: una fila por comprobante / acreditación (sin desglose de ítems)
+    head=[['Fecha','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Concepto','Debitado','Creditado','Saldo','Rend.']];
+    P.rows.forEach(r=>{
+      if(r.kind==='cred'){
+        body.push([ r.fecha||'', '', '', '', '', '', '', '', r.concepto||'Acreditación', '', r.creditado?fmt(r.creditado):'', fmt(r.saldo), '' ]);
+      } else {
+        const n=(r.items && r.items.length)?r.items.length:0;
+        body.push([ r.fecha||'', r.factura||'', r.tipo||'', r.proveedor||'', r.obra||'', r.sector||'', r.rubro||'', r.contratista||'',
+          n?(n+' ítem(s)'):'', r.debitado?fmt(r.debitado):'', '', fmt(r.saldo), r.rnd||'' ]);
+      }
+    });
+    columnStyles={
+      0:{cellWidth:19,overflow:'visible'},1:{cellWidth:27,overflow:'visible'},2:{cellWidth:15},3:{cellWidth:24},4:{cellWidth:22},
+      5:{cellWidth:18},6:{cellWidth:18},7:{cellWidth:22},8:{cellWidth:'auto'},
+      9:{cellWidth:20,halign:'right'},10:{cellWidth:20,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:16,halign:'center',overflow:'visible'}
+    };
+  } else {
+    // Detalle: cabecera de comprobante en la 1ª línea + un renglón por ítem con su subtotal
+    head=[['Fecha','Factura','Proveedor','Obra','Rubro','Concepto','Cant','Un','Costo','Debitado','Creditado','Saldo','Rend.']];
+    P.rows.forEach(r=>{
+      if(r.items && r.items.length){
+        r.items.forEach((it,idx)=>body.push([
+          idx===0?(r.fecha||''):'', idx===0?(r.factura||''):'', idx===0?(r.proveedor||''):'', idx===0?(r.obra||''):'', idx===0?(r.rubro||''):'',
+          it.concepto||'', (it.cant!==''&&it.cant!=null)?String(it.cant):'', it.un||'', (it.cu!==''&&it.cu!=null)?fmt(it.cu):'',
+          it.sub?fmt(it.sub):'', '', idx===0?fmt(r.saldo):'', idx===0?(r.rnd||''):'' ]));
+      } else {
+        body.push([ r.fecha||'', r.factura||'', r.proveedor||'', r.obra||'', r.rubro||'', r.concepto||'', '', '', '',
+          r.debitado?fmt(r.debitado):'', r.creditado?fmt(r.creditado):'', fmt(r.saldo), r.rnd||'' ]);
+      }
+    });
+    columnStyles={
+      0:{cellWidth:19,overflow:'visible'},1:{cellWidth:27,overflow:'visible'},2:{cellWidth:22},3:{cellWidth:20},4:{cellWidth:16},
+      5:{cellWidth:'auto'},
+      6:{cellWidth:9,halign:'center'},7:{cellWidth:9,halign:'center'},8:{cellWidth:18,halign:'right'},
+      9:{cellWidth:18,halign:'right'},10:{cellWidth:18,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:16,halign:'center',overflow:'visible'}
+    };
+  }
   const totalIdx=body.length;
-  body.push(['','','','','','TOTAL GENERAL','','','', fmt(P.sumDeb), fmt(P.sumCred), 'Gs '+fmt(P.saldoFinal), '']);
+  const totLabelIdx = (modo==='resumen')?8:5;
+  const totRow=new Array(13).fill('');
+  totRow[totLabelIdx]='TOTAL GENERAL'; totRow[9]=fmt(P.sumDeb); totRow[10]=fmt(P.sumCred); totRow[11]='Gs '+fmt(P.saldoFinal);
+  body.push(totRow);
 
   doc.autoTable({
     head, body, startY:y+15, margin:{left:M,right:M},
     styles:{font:'helvetica',fontSize:7.5,cellPadding:1.4,overflow:'linebreak',textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1,valign:'middle'},
     headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:7.5,halign:'center'},
-    columnStyles:{
-      0:{cellWidth:19,overflow:'visible'},1:{cellWidth:27,overflow:'visible'},2:{cellWidth:22},3:{cellWidth:20},4:{cellWidth:16},
-      5:{cellWidth:'auto'},
-      6:{cellWidth:9,halign:'center'},7:{cellWidth:9,halign:'center'},8:{cellWidth:18,halign:'right'},
-      9:{cellWidth:18,halign:'right'},10:{cellWidth:18,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:16,halign:'center',overflow:'visible'}
-    },
+    columnStyles,
     didParseCell:(d)=>{
-      if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; d.cell.styles.fontSize=8; }
+      if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; d.cell.styles.fontSize=8; if(d.column.index===totLabelIdx) d.cell.styles.halign='right'; }
       else if(d.section==='body' && body[d.row.index][10] && !body[d.row.index][1]){ d.cell.styles.fillColor=[238,246,236]; }
     },
     didDrawPage:()=>{
@@ -1619,7 +1649,7 @@ function exportarReportePDF(){
     }
   });
 
-  doc.save(`caja_chica_reporte_${P.res.replace(/[^\w]+/g,'_')}_${todayISO()}.pdf`);
+  doc.save(`caja_chica_reporte_${P.res.replace(/[^\w]+/g,'_')}_${modo}_${todayISO()}.pdf`);
 }
 
 function exportarReporte(){
