@@ -520,7 +520,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.0</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.1</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -743,6 +743,22 @@ async function acreditar(){
   const banco=gs('ac-banco')?gs('ac-banco').value.trim():'', nro=gs('ac-nro')?gs('ac-nro').value.trim():'';
   if(!res){ toast('Elegí un residente','err'); return; }
   if(!monto||monto<=0){ toast('Ingresá un monto válido','err'); return; }
+  // EDICIÓN de una acreditación existente (solo admin/supervisor)
+  if(EDIT_ACR_ID){
+    const btn=gs('ac-btn'); btn.disabled=true; btn.textContent='Actualizando…';
+    const upd={residente:res,fecha,monto,medio,referencia:ref||null,banco:(medio!=='efectivo'?(banco||null):null),nro_operacion:(medio!=='efectivo'?(nro||null):null)};
+    let { error }=await _SB.from('caja_chica_acreditaciones').update(upd).eq('id',EDIT_ACR_ID);
+    if(error && /banco|nro_operacion|column/i.test(error.message||'')){
+      const ref2=[ref, banco?('Banco: '+banco):'', nro?('Nº: '+nro):''].filter(Boolean).join(' · ')||null;
+      const r2=await _SB.from('caja_chica_acreditaciones').update({residente:res,fecha,monto,medio,referencia:ref2}).eq('id',EDIT_ACR_ID); error=r2.error;
+    }
+    btn.disabled=false;
+    if(error){ btn.textContent='Actualizar acreditación'; toast('Error: '+error.message,'err'); return; }
+    cancelarEdicionAcr();
+    toast('Acreditación actualizada','ok');
+    await loadSaldos(); renderTopes(); await loadAcreditaciones();
+    return;
+  }
   // Regla de rendición: no se puede acreditar si hay una rendición PRESENTADA sin cerrar.
   const { data:pend }=await _SB.from('caja_chica_rendiciones').select('id').eq('residente',res).eq('estado','presentada').limit(1);
   if(pend && pend.length){ toast('Hay una rendición presentada sin cerrar para '+res+'. Cerrá el corte antes de acreditar.','err'); return; }
@@ -765,18 +781,59 @@ async function acreditar(){
   if(gs('ac-banco')) gs('ac-banco').value=''; if(gs('ac-nro')) gs('ac-nro').value='';
   await loadSaldos(); renderTopes(); await loadAcreditaciones();
 }
+
+// Admin: editar una acreditación (corrige el monto acreditado) -> recalcula el saldo.
+async function editarAcreditacion(id){
+  if(IS_RESIDENTE) return;
+  const { data:a }=await _SB.from('caja_chica_acreditaciones').select('*').eq('id',id).maybeSingle();
+  if(!a){ toast('No se encontró la acreditación','err'); return; }
+  EDIT_ACR_ID=id;
+  gs('ac-res').value=a.residente||'';
+  gs('ac-fecha').value=a.fecha||todayISO();
+  gs('ac-monto').value=(a.monto!=null)?Number(a.monto).toLocaleString('es-PY'):'';
+  gs('ac-medio').value=a.medio||'efectivo';
+  await acMedioChange();
+  if(gs('ac-banco')) gs('ac-banco').value=a.banco||'';
+  if(gs('ac-nro')) gs('ac-nro').value=a.nro_operacion||'';
+  gs('ac-ref').value=a.referencia||'';
+  gs('ac-btn').textContent='Actualizar acreditación';
+  const bnr=gs('repo-bnr'); if(bnr){ bnr.innerHTML=`Editando acreditación de <b>${a.residente}</b> · ₲ ${fmt(a.monto)}. <a href="#" onclick="cancelarEdicionAcr();return false;" style="color:var(--accent);font-weight:600">Cancelar</a>`; bnr.classList.add('show'); }
+  window.scrollTo({top:0,behavior:'smooth'}); gs('ac-monto').focus();
+}
+function cancelarEdicionAcr(){
+  EDIT_ACR_ID=null;
+  const btn=gs('ac-btn'); if(btn) btn.textContent='Acreditar fondo';
+  gs('ac-monto').value=''; gs('ac-ref').value='';
+  if(gs('ac-banco')) gs('ac-banco').value=''; if(gs('ac-nro')) gs('ac-nro').value='';
+  const bnr=gs('repo-bnr'); if(bnr){ bnr.classList.remove('show'); bnr.innerHTML=''; }
+  acMedioChange();
+}
+// Admin: eliminar una acreditación -> recalcula el saldo.
+async function eliminarAcreditacion(id){
+  if(IS_RESIDENTE) return;
+  const { data:a }=await _SB.from('caja_chica_acreditaciones').select('residente,monto,rendicion_id').eq('id',id).maybeSingle();
+  if(!a){ toast('No se encontró la acreditación','err'); return; }
+  const aviso = a.rendicion_id ? '\n\nOJO: es una REPOSICIÓN vinculada a una rendición.' : '';
+  if(!confirm(`¿Eliminar la acreditación de ₲ ${fmt(a.monto)} de ${a.residente}? El saldo se recalcula automáticamente.${aviso}`)) return;
+  const { error }=await _SB.from('caja_chica_acreditaciones').delete().eq('id',id);
+  if(error){ toast('Error: '+error.message,'err'); return; }
+  if(EDIT_ACR_ID===id) cancelarEdicionAcr();
+  toast('Acreditación eliminada','ok');
+  await loadSaldos(); renderTopes(); await loadAcreditaciones();
+}
 async function loadAcreditaciones(){
   const box=gs('acr-list');
-  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('residente,fecha,monto,medio,referencia,banco,nro_operacion').order('creado_en',{ascending:false}).limit(12);
-  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('residente,fecha,monto,medio,referencia').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
+  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,banco,nro_operacion,rendicion_id').order('creado_en',{ascending:false}).limit(12);
+  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
   if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay acreditaciones.</div>'; return; }
   box.innerHTML=data.map(a=>{
-    const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'' ].filter(Boolean).join('  ·  ');
+    const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'', a.rendicion_id?'Reposición de rendición':'' ].filter(Boolean).join('  ·  ');
     const sub = det ? `<div class="acr-sub">${det}</div>` : '';
+    const acts = !IS_RESIDENTE ? `<div class="cmp-acts" style="margin-top:6px"><button class="act ed" onclick="editarAcreditacion('${a.id}')">✎ Editar</button><button class="act an" onclick="eliminarAcreditacion('${a.id}')">🗑 Eliminar</button></div>` : '';
     return `<div class="acr-item">
       <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
-      ${sub}</div>`;
+      ${sub}${acts}</div>`;
   }).join('');
 }
 
@@ -1748,6 +1805,7 @@ function exportarReporte(){
 
 // ----- Rendición -----
 let PENDING_REND_LINK=null; // {rid,res} para vincular la próxima acreditación
+let EDIT_ACR_ID=null;       // id de la acreditación que se está editando (admin)
 let RD_PENDING=[];          // movimientos aprobados sin rendir (del residente activo)
 
 function fillRendicionResidentes(){
