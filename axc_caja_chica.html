@@ -520,7 +520,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.5</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.6</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1230,6 +1230,7 @@ function renderComprobantes(){
         <button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
     } else if(m.estado==='aprobado'){
       if(!m.rendicion_id) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`;
+      else if(!IS_RESIDENTE) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
     }
     if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
     acts+='</div>';
@@ -1714,15 +1715,17 @@ async function loadRendicionData(){
     : '<div class="empty">No hay gastos aprobados pendientes de rendir.</div>';
   gs('rd-btn').disabled = !RD_PENDING.length;
 
-  // historial de rendiciones del residente
+  // historial de rendiciones del residente (se ocultan las devueltas/reabiertas 'abierta')
   const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
-  if(!rends || !rends.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
-  list.innerHTML=rends.map(r=>{
+  const visibles=(rends||[]).filter(r=>r.estado==='presentada'||r.estado==='cerrada');
+  if(!visibles.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
+  list.innerHTML=visibles.map(r=>{
     const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
     const periodo=(r.fecha_desde||r.fecha_hasta)?`Período: ${r.fecha_desde||'—'} → ${r.fecha_hasta||'—'}`:'';
     let btns=`<button class="act adj" onclick="abrirDetalleRendicion('${r.id}')">📄 Detalle</button>`;
-    if(r.estado==='presentada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`;
-    else if(r.estado==='cerrada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
+    if(r.estado==='presentada') btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">${IS_RESIDENTE?'Cerrar mi rendición':'Cerrar corte'}</button>`;
+    if(r.estado==='cerrada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
+    if((r.estado==='presentada'||r.estado==='cerrada') && !IS_RESIDENTE) btns+=`<button class="act re" onclick="devolverRendicion('${r.id}')">↩ Devolver</button>`;
     const acts=`<div class="cmp-acts">${btns}</div>`;
     return `<div class="cmp">
       <div class="cmp-top"><span class="cmp-fac">${nro}</span><span class="st ${r.estado==='cerrada'?'aprobado':(r.estado==='presentada'?'solicitado':'borrador')}">${r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
@@ -1755,13 +1758,59 @@ async function presentarRendicion(){
 }
 
 async function cerrarRendicion(id){
-  if(!confirm('¿Cerrar el corte de esta rendición? Después podrás acreditar el nuevo fondo.')) return;
+  const msg = IS_RESIDENTE
+    ? '¿Cerrar tu rendición como terminada? El supervisor la revisará y acreditará la reposición.'
+    : '¿Cerrar el corte de esta rendición? Después podrás acreditar el nuevo fondo.';
+  if(!confirm(msg)) return;
   const now=new Date().toISOString();
   const { error }=await _SB.from('caja_chica_rendiciones').update({estado:'cerrada',cerrada_por:CURRENT_USER.email,cerrada_en:now}).eq('id',id);
   if(error){ toast('Error: '+error.message,'err'); return; }
   await _SB.from('caja_chica_historial').insert({rendicion_id:id,accion:'cerrar',estado_nuevo:'cerrada',hecho_por:CURRENT_USER.email});
-  toast('Rendición cerrada. Ya podés acreditar el nuevo fondo.','ok');
+  toast(IS_RESIDENTE?'Rendición cerrada. Queda a la espera de la reposición del supervisor.':'Rendición cerrada. Ya podés acreditar el nuevo fondo.','ok');
   await loadRendicionData();
+}
+
+// Supervisor: devuelve la rendición ENTERA para corrección (la reabre y libera sus comprobantes).
+async function devolverRendicion(id){
+  if(IS_RESIDENTE) return;
+  // no se puede devolver si ya tiene reposición acreditada
+  const { data:acr }=await _SB.from('caja_chica_acreditaciones').select('id').eq('rendicion_id',id).limit(1);
+  if(acr && acr.length){ showAlert('No se puede devolver','Esta rendición ya tiene una <b>reposición acreditada</b>. La plata nueva ya entró, así que no se puede reabrir.','🚫',true); return; }
+  const motivo=prompt('Motivo de la devolución (se registra en el historial):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('Indicá un motivo','err'); return; }
+  if(!confirm('Se devolverá la rendición al residente: sus comprobantes vuelven a quedar libres y deberá presentarla de nuevo. ¿Confirmás?')) return;
+  // liberar comprobantes (vuelven a "aprobado sin rendir")
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null}).eq('rendicion_id',id);
+  if(e1){ toast('Error: '+e1.message,'err'); return; }
+  // reabrir la rendición (queda 'abierta' y se oculta de la lista)
+  const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'abierta',total_rendido:0,cerrada_por:null,cerrada_en:null}).eq('id',id);
+  if(e2){ toast('Error: '+e2.message,'err'); return; }
+  await _SB.from('caja_chica_historial').insert({rendicion_id:id,accion:'devolver',estado_nuevo:'abierta',detalle:'Rendición devuelta: '+motivo,hecho_por:CURRENT_USER.email});
+  toast('Rendición devuelta. Los comprobantes quedaron libres para corregir.','ok');
+  await loadSaldos(); await loadRendicionData();
+}
+
+// Supervisor: saca UN comprobante de su rendición y lo devuelve al residente para corregir.
+async function sacarDeRendicion(id){
+  if(IS_RESIDENTE) return;
+  const { data:m }=await _SB.from('caja_chica_movimientos').select('rendicion_id,total').eq('id',id).maybeSingle();
+  if(!m || !m.rendicion_id){ toast('Este comprobante no está en una rendición','err'); return; }
+  const rid=m.rendicion_id;
+  // bloquear si la rendición ya tiene reposición acreditada
+  const { data:acr }=await _SB.from('caja_chica_acreditaciones').select('id').eq('rendicion_id',rid).limit(1);
+  if(acr && acr.length){ showAlert('No se puede devolver','La rendición de este comprobante ya tiene una <b>reposición acreditada</b>. No se puede modificar.','🚫',true); return; }
+  const motivo=prompt('Motivo para devolver este comprobante al residente (obligatorio):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('Indicá un motivo','err'); return; }
+  // sacarlo de la rendición y mandarlo a "solicitado" para corregir
+  const { error }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null,estado:'solicitado',motivo_rechazo:motivo}).eq('id',id);
+  if(error){ toast('Error: '+error.message,'err'); return; }
+  // recalcular total de la rendición; si queda vacía, se reabre (se oculta)
+  const { data:rest }=await _SB.from('caja_chica_movimientos').select('total').eq('rendicion_id',rid);
+  if(!rest || !rest.length){ await _SB.from('caja_chica_rendiciones').update({estado:'abierta',total_rendido:0,cerrada_por:null,cerrada_en:null}).eq('id',rid); }
+  else { const t=rest.reduce((a,x)=>a+Number(x.total||0),0); await _SB.from('caja_chica_rendiciones').update({total_rendido:t}).eq('id',rid); }
+  await _SB.from('caja_chica_historial').insert({movimiento_id:id,rendicion_id:rid,accion:'devolver',estado_nuevo:'solicitado',detalle:'Sacado de la rendición: '+motivo,hecho_por:CURRENT_USER.email});
+  toast('Comprobante devuelto al residente para corregir','ok');
+  await loadSaldos(); renderTopes(); await loadComprobantes();
 }
 
 function acreditarReposicion(rid,res){
