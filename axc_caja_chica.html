@@ -246,6 +246,12 @@ tr:last-child td{border-bottom:none}
 .exc-card textarea:focus{outline:none;border-color:var(--accent)}
 .exc-acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .exc-pill{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;border-radius:20px;padding:2px 9px;background:rgba(248,81,73,.15);color:var(--red);border:1px solid var(--red)}
+.fld-add{display:flex;gap:6px}
+.fld-add select{flex:1;min-width:0}
+.addbtn{flex:none;width:40px;border:1px solid var(--border);background:var(--bg3);color:var(--accent);border-radius:8px;font-size:18px;font-weight:700;cursor:pointer;line-height:1}
+.addbtn:hover{border-color:var(--accent)}
+.cat-add{padding:9px 11px;cursor:pointer;color:var(--accent);font-weight:600;font-size:12px;border-top:1px solid var(--border2)}
+.cat-add:hover{background:var(--bg3)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -338,16 +344,16 @@ tr:last-child td{border-bottom:none}
               <div class="fld"><label>Tipo</label><select id="c-tipo"><option value="factura">Factura</option><option value="recibo">Recibo</option></select></div>
             </div>
             <div class="frow">
-              <div class="fld"><label>Proveedor</label><select id="c-prov"></select></div>
-              <div class="fld"><label>Vendedor</label><select id="c-vend"></select></div>
+              <div class="fld"><label>Proveedor</label><div class="fld-add"><select id="c-prov"></select><button type="button" class="addbtn" title="Agregar proveedor" onclick="nuevoValorLista('proveedores','c-prov')">＋</button></div></div>
+              <div class="fld"><label>Vendedor</label><div class="fld-add"><select id="c-vend"></select><button type="button" class="addbtn" title="Agregar vendedor" onclick="nuevoValorLista('vendedores','c-vend')">＋</button></div></div>
             </div>
             <div class="frow">
-              <div class="fld"><label>Obra</label><select id="c-obra"></select></div>
-              <div class="fld"><label>Sector</label><select id="c-sector"></select></div>
+              <div class="fld"><label>Obra</label><div class="fld-add"><select id="c-obra"></select><button type="button" class="addbtn" title="Agregar obra" onclick="nuevoValorLista('obras','c-obra')">＋</button></div></div>
+              <div class="fld"><label>Sector</label><div class="fld-add"><select id="c-sector"></select><button type="button" class="addbtn" title="Agregar sector (a la obra elegida)" onclick="nuevoValorLista('sectores','c-sector')">＋</button></div></div>
             </div>
             <div class="frow">
-              <div class="fld"><label>Rubro</label><select id="c-rubro"></select></div>
-              <div class="fld"><label>Contratista</label><select id="c-contr"></select></div>
+              <div class="fld"><label>Rubro</label><div class="fld-add"><select id="c-rubro"></select><button type="button" class="addbtn" title="Agregar rubro" onclick="nuevoValorLista('rubros','c-rubro')">＋</button></div></div>
+              <div class="fld"><label>Contratista</label><div class="fld-add"><select id="c-contr"></select><button type="button" class="addbtn" title="Agregar contratista" onclick="nuevoValorLista('contratistas','c-contr')">＋</button></div></div>
             </div>
 
             <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);font-weight:600;margin:6px 0 4px">Detalle (líneas)</label>
@@ -454,7 +460,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.6</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.7</div>
 </div>
 
 <div class="set-bg" id="exc-bg" onclick="if(event.target===this)closeExc()">
@@ -656,6 +662,47 @@ function filtrarSectorComprobante(obra){
   sel.innerHTML='<option value="">— Sector —</option>'+secs.map(s=>`<option value="${String(s.valor).replace(/"/g,'&quot;')}">${s.valor}</option>`).join('');
 }
 
+// Alta de valores nuevos en la MISMA base que la OC / Planificación (tabla listas)
+async function nuevoValorLista(tipo, selectId){
+  const labels={proveedores:'proveedor',vendedores:'vendedor',obras:'obra',sectores:'sector',rubros:'rubro',contratistas:'contratista'};
+  const ph={proveedores:'— Proveedor —',vendedores:'— Vendedor —',obras:'— Obra —',rubros:'— Rubro —',contratistas:'— Contratista —'};
+  let val=(prompt('Nuevo '+(labels[tipo]||tipo)+':','')||'').trim();
+  if(!val) return;
+  let obra_ref='';
+  if(tipo==='sectores'){
+    obra_ref=gs('c-obra').value||'';
+    if(!obra_ref){ toast('Elegí primero la obra para crear el sector','err'); return; }
+  }
+  // ¿ya existe?
+  let dup=false;
+  if(tipo==='sectores') dup=SECTORES_RAW.some(s=>String(s.valor).toLowerCase()===val.toLowerCase() && _obraMatch(s.obra_ref,obra_ref));
+  else dup=(LISTAS[tipo]||[]).some(v=>String(v).toLowerCase()===val.toLowerCase());
+  if(!dup){
+    const { error }=await _SB.from('listas').insert({tipo, valor:val, obra_ref});
+    if(error){ toast('Error: '+error.message,'err'); return; }
+    if(!LISTAS[tipo]) LISTAS[tipo]=[];
+    LISTAS[tipo].push(val); LISTAS[tipo].sort((a,b)=>String(a).localeCompare(String(b),'es'));
+    if(tipo==='sectores') SECTORES_RAW.push({valor:val,obra_ref});
+    toast((labels[tipo]||'Valor')+' agregado','ok');
+  } else { toast('Ya existía; lo selecciono','ok'); }
+  // refrescar select y seleccionar el valor
+  if(tipo==='sectores'){ filtrarSectorComprobante(gs('c-obra').value); gs('c-sector').value=val; }
+  else if(tipo==='obras'){ gs('c-obra').innerHTML=optList(LISTAS.obras,ph.obras); gs('c-obra').value=val; filtrarSectorComprobante(val); }
+  else { gs(selectId).innerHTML=optList(LISTAS[tipo],ph[tipo]); gs(selectId).value=val; }
+}
+
+// Alta de concepto en el MISMO catálogo que la OC (productos_catalogo)
+async function nuevoConcepto(tr,nombre){
+  nombre=(nombre||'').trim(); if(!nombre){ toast('Escribí el concepto primero','err'); return; }
+  const precio=parseInt(onlyDigits(tr.querySelector('.li-cu').value)||'0',10);
+  const unidad=tr.querySelector('.li-un').value.trim()||null;
+  hideCatDD();
+  const { error }=await _SB.from('productos_catalogo').insert({nombre, precio_referencia:precio, url_imagen:'', url_producto:'', marca:'', unidad_medida:unidad, activo:true, creado_por:CURRENT_USER.email});
+  if(error){ toast('Error: '+error.message,'err'); return; }
+  tr.querySelector('.li-con').value=nombre;
+  toast('Concepto agregado al catálogo','ok');
+}
+
 // Autocompletado de concepto desde productos_catalogo (catálogo de la OC)
 function ensureCatDD(){
   if(gs('cat-dd')) return;
@@ -679,7 +726,12 @@ async function catSearch(input,tr){
 }
 function renderCatDD(items,input,tr){
   const d=gs('cat-dd'); positionCatDD(input);
-  if(!items.length){ d.innerHTML='<div class="cat-empty">Sin coincidencias en el catálogo</div>'; d.classList.add('show'); return; }
+  const qv=(input.value||'').trim();
+  if(!items.length){
+    d.innerHTML='<div class="cat-empty">Sin coincidencias en el catálogo</div>'+(qv?`<div class="cat-add">➕ Agregar "<b>${qv.replace(/</g,'&lt;')}</b>" al catálogo</div>`:'');
+    const add=d.querySelector('.cat-add'); if(add) add.addEventListener('mousedown',ev=>{ ev.preventDefault(); nuevoConcepto(tr, input.value); });
+    d.classList.add('show'); return;
+  }
   d.innerHTML=items.map((it,i)=>`<div class="cat-it" data-i="${i}"><div class="nm">${String(it.nombre||'').replace(/</g,'&lt;')}</div><div class="pr">${it.marca?String(it.marca).replace(/</g,'&lt;')+' · ':''}₲ ${fmt(Math.round(Number(it.precio_referencia)||0))}${it.unidad_medida?(' · '+it.unidad_medida):''}</div></div>`).join('');
   d.querySelectorAll('.cat-it').forEach(el=>el.addEventListener('mousedown',ev=>{ ev.preventDefault(); pickCatItem(tr,items[Number(el.dataset.i)]); }));
   d.classList.add('show');
@@ -862,39 +914,6 @@ async function confirmarExcepcion(){
   }
 }
 
-async function duplicarComprobante(id){
-  const { data:m }=await _SB.from('caja_chica_movimientos')
-    .select('*,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden)').eq('id',id).maybeSingle();
-  if(!m){ toast('No se encontró el comprobante','err'); return; }
-  EDIT_ID=null; // es NUEVO, no edición
-  const bnr=gs('cedit-bnr'); if(bnr){ bnr.classList.remove('show'); bnr.innerHTML=''; }
-  gs('c-btn').textContent='Guardar comprobante';
-  switchTab('comprobantes');
-  if(!IS_RESIDENTE){ gs('c-res').value=m.residente||''; }
-  gs('c-fecha').value=todayISO();
-  gs('c-fac').value=''; // nuevo Nº de factura
-  gs('c-tipo').value=m.tipo_comprobante||'factura';
-  gs('c-prov').value=m.proveedor||''; gs('c-vend').value=m.vendedor||'';
-  gs('c-obra').value=m.obra||''; filtrarSectorComprobante(m.obra||''); gs('c-sector').value=m.sector||'';
-  gs('c-rubro').value=m.rubro||''; gs('c-contr').value=m.contratista||'';
-  document.querySelector('input[name="c-estado"][value="solicitado"]').checked=true;
-  gs('lines-body').innerHTML='';
-  const its=(m.caja_chica_movimiento_items||[]).sort((a,b)=>(a.orden||0)-(b.orden||0));
-  if(!its.length){ addLine(); }
-  else its.forEach(it=>{
-    addLine(); const tr=gs('lines-body').lastElementChild;
-    tr.querySelector('.li-con').value=it.concepto||'';
-    tr.querySelector('.li-cant').value=it.cantidad!=null?it.cantidad:1;
-    tr.querySelector('.li-un').value=it.unidad||'';
-    tr.querySelector('.li-cu').value=it.costo_unit?Number(it.costo_unit).toLocaleString('es-PY'):'';
-    tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
-  });
-  gs('c-files').value='';
-  window.scrollTo({top:0,behavior:'smooth'});
-  gs('c-fac').focus();
-  toast('Comprobante duplicado. Cargá el Nº de factura y guardá.','ok');
-}
-
 async function editarComprobante(id){
   const { data:m }=await _SB.from('caja_chica_movimientos')
     .select('*,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden)').eq('id',id).maybeSingle();
@@ -989,7 +1008,6 @@ function renderComprobantes(){
       if(!m.rendicion_id) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`;
     }
     if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
-    acts+=`<button class="act dup" onclick="duplicarComprobante('${m.id}')">⎘ Duplicar</button>`;
     acts+='</div>';
     if(acts==='<div class="cmp-acts"></div>') acts='';
     return `<div class="cmp">
