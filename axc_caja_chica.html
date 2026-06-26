@@ -252,6 +252,20 @@ tr:last-child td{border-bottom:none}
 .addbtn:hover{border-color:var(--accent)}
 .cat-add{padding:9px 11px;cursor:pointer;color:var(--accent);font-weight:600;font-size:12px;border-top:1px solid var(--border2)}
 .cat-add:hover{background:var(--bg3)}
+.prod-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;max-width:470px;width:100%;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.prod-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.prod-h h3{font-family:'Syne';font-size:17px}
+.prod-body{padding:14px 20px;overflow:auto}
+.prod-body label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);font-weight:600;margin:10px 0 5px}
+.prod-body input,.prod-body select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 11px;font-size:13px;font-family:'Inter'}
+.prod-body input:focus,.prod-body select:focus{outline:none;border-color:var(--accent)}
+.prod-body .frow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.prod-imgarea{border:2px dashed var(--border3);border-radius:12px;min-height:120px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;background:var(--bg3)}
+.prod-imgarea:hover{border-color:var(--accent)}
+.prod-imgempty{color:var(--text3);font-size:12px;text-align:center;line-height:1.7}
+.prod-imgarea img{max-width:100%;max-height:200px;display:block}
+.prod-err{background:rgba(248,81,73,.1);color:var(--red);border:1px solid var(--red);border-radius:8px;padding:8px 11px;font-size:12px;margin-top:10px}
+.prod-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -460,7 +474,41 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.7</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.8</div>
+</div>
+
+<div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
+  <div class="prod-card">
+    <div class="prod-h"><h3>＋ Nuevo material</h3><button class="btn-ico" onclick="closeProd()">✕</button></div>
+    <div class="prod-body">
+      <div class="prod-imgarea" id="prod-imgarea" onclick="document.getElementById('prod-img').click()">
+        <div id="prod-imgempty" class="prod-imgempty">📷<br>Agregar foto (opcional)</div>
+        <img id="prod-imgprev" alt="">
+        <input type="file" id="prod-img" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="prodOnImg()">
+      </div>
+      <button type="button" class="btn-ghost" id="prod-imgclear" style="display:none;margin-top:8px" onclick="prodClearImg(event)">Quitar foto</button>
+      <label>Nombre del material *</label>
+      <input id="prod-nombre" placeholder="Ej. Cemento Itaipú CP2 50kg" maxlength="200">
+      <div class="frow">
+        <div><label>Precio referencia ₲</label><input id="prod-precio" inputmode="numeric" placeholder="0"></div>
+        <div><label>Unidad</label><select id="prod-unidad">
+          <option value="">Sin especificar</option><option value="Unidad">Unidad</option><option value="Bolsa">Bolsa</option>
+          <option value="Caja">Caja</option><option value="Kg">Kilogramo (Kg)</option><option value="Litro">Litro</option>
+          <option value="Metro">Metro lineal</option><option value="m²">Metro cuadrado (m²)</option>
+          <option value="m³">Metro cúbico (m³)</option><option value="Rollo">Rollo</option><option value="Pack">Pack</option>
+        </select></div>
+      </div>
+      <label>Marca</label>
+      <input id="prod-marca" placeholder="Ej. Itaipú, Stanley…" maxlength="80">
+      <label>Link del producto (opcional)</label>
+      <input id="prod-url" type="url" placeholder="https://…">
+      <div class="prod-err" id="prod-err" style="display:none"></div>
+    </div>
+    <div class="prod-foot">
+      <button class="btn-ghost" onclick="closeProd()">Cancelar</button>
+      <button class="btn-primary" style="width:auto;margin:0" id="prod-save" onclick="guardarProducto()">Crear material</button>
+    </div>
+  </div>
 </div>
 
 <div class="set-bg" id="exc-bg" onclick="if(event.target===this)closeExc()">
@@ -691,16 +739,59 @@ async function nuevoValorLista(tipo, selectId){
   else { gs(selectId).innerHTML=optList(LISTAS[tipo],ph[tipo]); gs(selectId).value=val; }
 }
 
-// Alta de concepto en el MISMO catálogo que la OC (productos_catalogo)
-async function nuevoConcepto(tr,nombre){
-  nombre=(nombre||'').trim(); if(!nombre){ toast('Escribí el concepto primero','err'); return; }
+// Alta de material en el MISMO catálogo que la OC (productos_catalogo), con el mismo formato (foto, marca, etc.)
+let PROD_CTX=null, PROD_IMG=null;
+function abrirNuevoProducto(tr,nombre){
+  PROD_CTX={tr}; PROD_IMG=null;
+  gs('prod-nombre').value=(nombre||'').trim();
   const precio=parseInt(onlyDigits(tr.querySelector('.li-cu').value)||'0',10);
-  const unidad=tr.querySelector('.li-un').value.trim()||null;
+  gs('prod-precio').value=precio?Number(precio).toLocaleString('es-PY'):'';
+  const un=tr.querySelector('.li-un').value.trim();
+  gs('prod-unidad').value=[...gs('prod-unidad').options].some(o=>o.value===un)?un:'';
+  gs('prod-marca').value=''; gs('prod-url').value='';
+  gs('prod-imgprev').style.display='none'; gs('prod-imgempty').style.display='block'; gs('prod-imgclear').style.display='none';
+  gs('prod-img').value=''; gs('prod-err').style.display='none';
   hideCatDD();
-  const { error }=await _SB.from('productos_catalogo').insert({nombre, precio_referencia:precio, url_imagen:'', url_producto:'', marca:'', unidad_medida:unidad, activo:true, creado_por:CURRENT_USER.email});
-  if(error){ toast('Error: '+error.message,'err'); return; }
-  tr.querySelector('.li-con').value=nombre;
-  toast('Concepto agregado al catálogo','ok');
+  gs('prod-bg').classList.add('open');
+  moneyLive(gs('prod-precio'));
+  setTimeout(()=>gs('prod-nombre').focus(),60);
+}
+function closeProd(){ gs('prod-bg').classList.remove('open'); PROD_CTX=null; PROD_IMG=null; }
+function prodClearImg(ev){ if(ev) ev.stopPropagation(); PROD_IMG=null; gs('prod-img').value=''; gs('prod-imgprev').style.display='none'; gs('prod-imgempty').style.display='block'; gs('prod-imgclear').style.display='none'; }
+function prodOnImg(){ const f=gs('prod-img').files[0]; if(!f) return; PROD_IMG=f; const r=new FileReader(); r.onload=e=>{ const p=gs('prod-imgprev'); p.src=e.target.result; p.style.display='block'; gs('prod-imgempty').style.display='none'; gs('prod-imgclear').style.display='inline-flex'; }; r.readAsDataURL(f); }
+function prodErr(m){ const e=gs('prod-err'); e.textContent=m; e.style.display='block'; }
+async function guardarProducto(){
+  const nombre=gs('prod-nombre').value.trim();
+  if(!nombre){ prodErr('Poné el nombre del material'); return; }
+  const precio=parseInt(onlyDigits(gs('prod-precio').value)||'0',10);
+  const unidad=gs('prod-unidad').value||null;
+  const marca=gs('prod-marca').value.trim()||'';
+  const url=gs('prod-url').value.trim()||'';
+  const btn=gs('prod-save'); btn.disabled=true; btn.textContent='Creando…'; gs('prod-err').style.display='none';
+  try{
+    const { data:ins, error }=await _SB.from('productos_catalogo')
+      .insert({nombre, precio_referencia:precio, url_imagen:'', url_producto:url, marca, unidad_medida:unidad, activo:true, creado_por:CURRENT_USER.email})
+      .select('id').single();
+    if(error) throw error;
+    const newId=ins.id;
+    if(PROD_IMG){
+      const ext=(PROD_IMG.name.split('.').pop()||'jpg').toLowerCase();
+      const safeExt=['jpg','jpeg','png','webp'].includes(ext)?ext:'jpg';
+      const path=`producto_${newId}_${Date.now()}.${safeExt}`;
+      const { error:upe }=await _SB.storage.from('productos-imagenes').upload(path,PROD_IMG,{cacheControl:'31536000',upsert:false,contentType:PROD_IMG.type});
+      if(!upe){ const { data:u }=_SB.storage.from('productos-imagenes').getPublicUrl(path); const pub=(u&&u.publicUrl)?u.publicUrl:''; if(pub) await _SB.from('productos_catalogo').update({url_imagen:pub}).eq('id',newId); }
+    }
+    const tr=PROD_CTX&&PROD_CTX.tr;
+    if(tr){
+      tr.querySelector('.li-con').value=nombre;
+      if(precio) tr.querySelector('.li-cu').value=Number(precio).toLocaleString('es-PY');
+      if(unidad) tr.querySelector('.li-un').value=unidad;
+      tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
+    }
+    btn.disabled=false; btn.textContent='Crear material';
+    closeProd();
+    toast('Material agregado al catálogo','ok');
+  }catch(e){ btn.disabled=false; btn.textContent='Crear material'; prodErr('Error: '+(e.message||e)); }
 }
 
 // Autocompletado de concepto desde productos_catalogo (catálogo de la OC)
@@ -729,7 +820,7 @@ function renderCatDD(items,input,tr){
   const qv=(input.value||'').trim();
   if(!items.length){
     d.innerHTML='<div class="cat-empty">Sin coincidencias en el catálogo</div>'+(qv?`<div class="cat-add">➕ Agregar "<b>${qv.replace(/</g,'&lt;')}</b>" al catálogo</div>`:'');
-    const add=d.querySelector('.cat-add'); if(add) add.addEventListener('mousedown',ev=>{ ev.preventDefault(); nuevoConcepto(tr, input.value); });
+    const add=d.querySelector('.cat-add'); if(add) add.addEventListener('mousedown',ev=>{ ev.preventDefault(); abrirNuevoProducto(tr, input.value); });
     d.classList.add('show'); return;
   }
   d.innerHTML=items.map((it,i)=>`<div class="cat-it" data-i="${i}"><div class="nm">${String(it.nombre||'').replace(/</g,'&lt;')}</div><div class="pr">${it.marca?String(it.marca).replace(/</g,'&lt;')+' · ':''}₲ ${fmt(Math.round(Number(it.precio_referencia)||0))}${it.unidad_medida?(' · '+it.unidad_medida):''}</div></div>`).join('');
