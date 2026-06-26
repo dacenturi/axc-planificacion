@@ -184,6 +184,7 @@ tr:last-child td{border-bottom:none}
 .rep-table th{text-align:left;font-size:9.5px;text-transform:uppercase;letter-spacing:.2px;color:var(--text2);font-weight:600;padding:7px 7px;border-bottom:1px solid var(--border);background:var(--bg3);position:sticky;top:0;word-wrap:break-word}
 .rep-table td{padding:6px 7px;border-bottom:1px solid var(--border2);word-wrap:break-word;overflow-wrap:anywhere;vertical-align:top}
 .rep-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow-wrap:normal}
+.rep-table .nw{white-space:nowrap;overflow-wrap:normal}
 .rep-cred{color:var(--green);font-weight:600}
 .rep-saldo{font-weight:700;font-variant-numeric:tabular-nums}
 .rep-saldo.neg{color:var(--red)}
@@ -487,17 +488,16 @@ tr:last-child td{border-bottom:none}
       <div class="card">
         <div class="card-h">
           <div class="ic" style="background:rgba(14,165,233,.14);color:var(--cyan)">📊</div>
-          <div><h2>Reporte de caja chica</h2><div class="desc">Elegí el tipo de reporte: estado de cuenta por residente, consolidado, o una rendición puntual.</div></div>
+          <div><h2>Reporte de caja chica</h2><div class="desc">Estado de cuenta por residente (con filtro por rendición) o consolidado de todos.</div></div>
         </div>
         <div class="card-b">
           <div class="rep-tipo">
             <label class="rt-opt"><input type="radio" name="r-tipo" value="cuenta" checked onchange="onTipoReporte()"> 📄 Estado de cuenta</label>
             <label class="rt-opt" id="rt-consolidado"><input type="radio" name="r-tipo" value="consolidado" onchange="onTipoReporte()"> 📚 Consolidado</label>
-            <label class="rt-opt"><input type="radio" name="r-tipo" value="rendicion" onchange="onTipoReporte()"> 🧾 Rendición</label>
           </div>
           <div class="rep-filters">
             <div class="fld" id="f-res"><label>Residente</label><select id="r-res" onchange="onResReporte()"></select></div>
-            <div class="fld" id="f-rnd" style="display:none"><label>Rendición</label><select id="r-rnd"></select></div>
+            <div class="fld" id="f-rnd"><label>Rendición</label><select id="r-rnd"></select></div>
             <div class="fld f-cat"><label>Obra</label><select id="r-obra"></select></div>
             <div class="fld f-cat"><label>Rubro</label><select id="r-rubro"></select></div>
             <div class="fld f-cat"><label>Proveedor</label><select id="r-prov"></select></div>
@@ -516,7 +516,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.9</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v3.2</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1287,6 +1287,7 @@ function fillReporteFiltros(){
   gs('r-obra').innerHTML=optList(LISTAS.obras,'Todas');
   gs('r-rubro').innerHTML=optList(LISTAS.rubros,'Todos');
   gs('r-prov').innerHTML=optList(LISTAS.proveedores,'Todos');
+  onResReporte();
 }
 
 function _dateFilter(q, col){
@@ -1297,39 +1298,31 @@ function _dateFilter(q, col){
 function rTipo(){ const el=document.querySelector('input[name="r-tipo"]:checked'); return el?el.value:'cuenta'; }
 function onTipoReporte(){
   const t=rTipo();
-  document.querySelectorAll('.f-cat').forEach(e=>e.style.display = (t==='rendicion'?'none':''));
-  gs('f-rnd').style.display = (t==='rendicion'?'':'none');
-  gs('f-res').style.display = (t==='consolidado'?'none':'');
+  const esCons=(t==='consolidado');
+  gs('f-res').style.display = esCons?'none':'';
+  gs('f-rnd').style.display = esCons?'none':'';
   gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
-  REPORTE_DATA=null; REPORTE_PDF=null; REND_DETAIL=null; gs('rep-info').textContent='';
-  gs('rep-result').innerHTML='<div class="empty">'+(t==='rendicion'?'Elegí un residente y su rendición, luego Generar.':t==='consolidado'?'Reporte de todos los residentes. Tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
-  if(t==='rendicion') onResReporte();
+  REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
+  gs('rep-result').innerHTML='<div class="empty">'+(esCons?'Reporte de todos los residentes. Tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
+  if(!esCons) onResReporte();
 }
 async function onResReporte(){
-  if(rTipo()!=='rendicion') return;
+  if(rTipo()==='consolidado') return;
   const res=gs('r-res').value, sel=gs('r-rnd');
-  if(!res){ sel.innerHTML='<option value="">— elegí residente —</option>'; return; }
-  sel.innerHTML='<option value="">Cargando…</option>';
+  if(!res){ sel.innerHTML='<option value="">Todas</option>'; return; }
   const { data:rends }=await _SB.from('caja_chica_rendiciones')
-    .select('id,numero,fecha_desde,fecha_hasta,estado,fecha_corte').eq('residente',res)
+    .select('id,numero,estado').eq('residente',res)
     .in('estado',['presentada','cerrada']).order('numero',{ascending:false});
-  if(!rends||!rends.length){ sel.innerHTML='<option value="">— sin rendiciones —</option>'; return; }
-  sel.innerHTML='<option value="">— elegí rendición —</option>'+rends.map(r=>{
-    const nro='RND-'+String(r.numero!=null?r.numero:0).padStart(4,'0');
-    const per=(r.fecha_desde||r.fecha_hasta)?` · ${r.fecha_desde||'—'}→${r.fecha_hasta||'—'}`:'';
-    return `<option value="${r.id}">${nro}${per} · ${r.estado}</option>`;
-  }).join('');
+  let opts='<option value="">Todas las rendiciones</option><option value="sin">Sin rendir</option>';
+  (rends||[]).forEach(r=>{ const nro='RND-'+String(r.numero!=null?r.numero:0).padStart(4,'0'); opts+=`<option value="${r.id}">${nro} (${r.estado})</option>`; });
+  sel.innerHTML=opts;
 }
 
 async function generarReporte(){
   const t=rTipo();
-  gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true; REPORTE_DATA=null; REPORTE_PDF=null; REND_DETAIL=null;
+  gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true; REPORTE_DATA=null; REPORTE_PDF=null;
   try{
-    if(t==='rendicion'){
-      const rid=gs('r-rnd').value;
-      if(!rid){ gs('rep-result').innerHTML='<div class="empty">Elegí una rendición.</div>'; gs('rep-info').textContent=''; return; }
-      await reporteRendicionInline(rid);
-    } else if(t==='consolidado'){
+    if(t==='consolidado'){
       await reporteConsolidado();
     } else {
       const res=gs('r-res').value;
@@ -1377,7 +1370,7 @@ async function reporteResidente(res, opts){
     rows.push({kind:'deb',key:(m.fecha||'')+'_1_'+String(m.numero_orden||0).padStart(8,'0'),
       fecha:m.fecha,orden:m.numero_orden||'',factura:m.nro_factura||'',tipo:m.tipo_comprobante||'',
       proveedor:m.proveedor||'',obra:m.obra||'',sector:m.sector||'',rubro:m.rubro||'',contratista:m.contratista||'',
-      debitado:Number(m.total||0),creditado:0,rnd:numero,total:Number(m.total||0),
+      debitado:Number(m.total||0),creditado:0,rnd:numero,total:Number(m.total||0),rendId:m.rendicion_id||'',
       items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
       _obra:m.obra||'',_rubro:m.rubro||'',_prov:m.proveedor||''});
   });
@@ -1386,13 +1379,17 @@ async function reporteResidente(res, opts){
   if(isRend){ let acc=0; rows.forEach(r=>{ acc+=r.debitado; r.saldo=acc; }); saldoFinal=acc; }
   else { let saldo=0; rows.forEach(r=>{ saldo+=r.creditado-r.debitado; r.saldo=saldo; }); saldoFinal=saldo; }
 
+  const rndF=(!isRend && gs('r-rnd'))?gs('r-rnd').value:'';
   const hasCat=obraF||rubroF||provF;
+  const hasFilter=hasCat||rndF;
   const shown=rows.filter(r=>{
-    if(!hasCat) return true;
-    if(r.kind==='cred') return false;
+    if(!hasFilter) return true;
+    if(r.kind==='cred') return false; // al filtrar (catálogo o rendición) se ocultan las acreditaciones
     if(obraF && r._obra!==obraF) return false;
     if(rubroF && r._rubro!==rubroF) return false;
     if(provF && r._prov!==provF) return false;
+    if(rndF==='sin' && r.rendId) return false;        // "Sin rendir" = comprobantes sin rendición
+    if(rndF && rndF!=='sin' && r.rendId!==rndF) return false; // una rendición puntual
     return true;
   });
 
@@ -1402,7 +1399,7 @@ async function reporteResidente(res, opts){
       list:(movs||[]).map(m=>({fecha:m.fecha,numero_orden:m.numero_orden,nro_factura:m.nro_factura,tipo_comprobante:m.tipo_comprobante,proveedor:m.proveedor,obra:m.obra,sector:m.sector,rubro:m.rubro,contratista:m.contratista,total:m.total})).sort((a,b)=>(a.fecha||'')<(b.fecha||'')?-1:1),
       headers:['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲'] };
   }
-  renderReporteResidente(res, shown, saldoFinal, hasCat, opts);
+  renderReporteResidente(res, shown, saldoFinal, hasFilter, opts);
 }
 
 function toggleGrp(gid){
@@ -1424,13 +1421,13 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
       : hasAcr ? `<span class="grp-tog tog-${gid}">▸</span> ${r.concepto}`
       : (r.concepto||'');
     html+=`<tr class="${r.kind==='cred'?'rep-row-cred':''} ${clickable?'rep-grp':''}"${clickable?` onclick="toggleGrp('${gid}')"`:''}>
-      <td>${r.fecha||''}</td><td>${r.factura}</td><td>${r.tipo}</td>
+      <td class="nw">${r.fecha||''}</td><td class="nw">${r.factura}</td><td>${r.tipo}</td>
       <td>${r.proveedor}</td><td>${r.obra}</td><td>${r.sector}</td><td>${r.rubro}</td><td>${r.contratista}</td>
       <td>${conCell}</td>
       <td class="num">${r.debitado?fmt(r.debitado):''}</td>
       <td class="num rep-cred">${r.creditado?fmt(r.creditado):''}</td>
       <td class="num rep-saldo ${r.saldo<0?'neg':''}">${fmt(r.saldo)}</td>
-      <td>${r.rnd||''}</td></tr>`;
+      <td class="nw">${r.rnd||''}</td></tr>`;
     if(hasItems){ r.items.forEach(it=>{
       const det=`↳ ${it.concepto}`+((it.cant!==''&&it.cant!=null)?(' · '+it.cant+(it.un?(' '+it.un):'')):'')+((it.cu!==''&&it.cu!=null)?(' × ₲'+fmt(it.cu)):'');
       html+=`<tr class="rep-det det-${gid}" style="display:none">
@@ -1451,16 +1448,17 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
   const colSaldo = isRend ? 'Acumulado' : 'Saldo';
   const totalLbl = isRend ? 'TOTAL RENDIDO' : 'TOTAL GENERAL';
   const headers=['Fecha','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Concepto','Debitado','Creditado',colSaldo,'Rendición'];
-  const widths=['6%','8%','5%','11%','10%','8%','8%','9%','8%','7%','7%','7%','6%'];
+  const nwCols=[0,1,9,10,11,12]; // Fecha, Factura, Debitado, Creditado, Saldo, Rendición en una sola línea
+  const widths=['7%','10%','5%','10%','9%','8%','8%','8%','7%','7%','7%','7%','7%'];
   const colgroup='<colgroup>'+widths.map(w=>`<col style="width:${w}">`).join('')+'</colgroup>';
   const meta = isRend
     ? `<b>${opts.nro||'Rendición'}</b> · ${res} · Período: ${opts.periodo||'—'} · Corte: ${opts.rend?opts.rend.fecha_corte||'—':'—'} · Estado: ${opts.rend?opts.rend.estado:''} · ${rows.length} comprobante(s) · Total rendido: <b style="color:var(--accent)">₲ ${fmt(saldoFinal)}</b>`
-    : `Caja chica · ${res} ${hasCat?'(filtrado por catálogo · sin acreditaciones)':''} · Saldo final de caja: <b style="color:${saldoFinal<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldoFinal)}</b>`;
+    : `Caja chica · ${res} ${hasCat?(()=>{const s=gs('r-rnd');return (s&&s.value)?(' · '+(s.value==='sin'?'Sin rendir':s.options[s.selectedIndex].text)+' · sin acreditaciones'):'(filtrado por catálogo · sin acreditaciones)';})():''} · Saldo final de caja: <b style="color:${saldoFinal<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldoFinal)}</b>`;
   gs('rep-result').innerHTML=`
     <div class="rep-meta">${meta}</div>
     <div class="rep-scroll"><table class="rep-table">
       ${colgroup}
-      <thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+      <thead><tr>${headers.map((h,idx)=>`<th class="${nwCols.includes(idx)?'nw':''}">${h}</th>`).join('')}</tr></thead>
       <tbody>${html||'<tr><td colspan="13" class="empty">Sin movimientos.</td></tr>'}</tbody>
       <tfoot><tr class="rep-total">
         <td colspan="9" style="text-align:right">${totalLbl}</td>
@@ -1569,16 +1567,18 @@ function exportarReportePDF(){
   doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,pageW-M,23);
 
   // Metadatos: apilados a la izquierda (sin solaparse) + saldo grande a la derecha
-  const kv=(label,value,x,y)=>{ doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text(label,x,y); const w=doc.getTextWidth(label); doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+(value||'—'), x+w+1.5, y); };
+  // jsPDF (helvetica) no tiene los glifos ₲ ni →: los reemplazo por texto seguro.
+  const sanPdf=(t)=>String(t==null?'':t).replace(/\s*→\s*/g,' a ').replace(/[—–]/g,'-').replace(/…/g,'...').replace(/₲/g,'Gs ');
+  const kv=(label,value,x,y)=>{ doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text(label,x,y); const w=doc.getTextWidth(label); doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+sanPdf(value||'-'), x+w+1.5, y); };
   let y=29;
   kv('Residente:', P.res, M, y);
   kv('Período:', P.periodo, M, y+5.5);
-  kv('Rendición:', P.rendUnica||'Varias / —', M, y+11);
+  kv('Rendición:', P.rendUnica||'Varias', M, y+11);
   // saldo final, a la derecha
   doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
   doc.text('Saldo final de caja', pageW-M, y+2, {align:'right'});
   doc.setFontSize(15); doc.setTextColor(P.saldoFinal<0?200:20, P.saldoFinal<0?40:120, 40);
-  doc.text('₲ '+fmt(P.saldoFinal), pageW-M, y+9, {align:'right'});
+  doc.text('Gs '+fmt(P.saldoFinal), pageW-M, y+9, {align:'right'});
 
   // Tabla línea por línea (muestra subtotales por ítem; cabecera de comprobante en la 1ª línea)
   const head=[['Fecha','Factura','Proveedor','Obra','Rubro','Concepto','Cant','Un','Costo','Debitado','Creditado','Saldo','Rend.']];
@@ -1595,17 +1595,17 @@ function exportarReportePDF(){
     }
   });
   const totalIdx=body.length;
-  body.push(['','','','','','TOTAL GENERAL','','','', fmt(P.sumDeb), fmt(P.sumCred), '₲ '+fmt(P.saldoFinal), '']);
+  body.push(['','','','','','TOTAL GENERAL','','','', fmt(P.sumDeb), fmt(P.sumCred), 'Gs '+fmt(P.saldoFinal), '']);
 
   doc.autoTable({
     head, body, startY:y+15, margin:{left:M,right:M},
-    styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,overflow:'linebreak',textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1,valign:'middle'},
+    styles:{font:'helvetica',fontSize:7.5,cellPadding:1.4,overflow:'linebreak',textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1,valign:'middle'},
     headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:7.5,halign:'center'},
     columnStyles:{
-      0:{cellWidth:16},1:{cellWidth:22},2:{cellWidth:26},3:{cellWidth:22},4:{cellWidth:20},
+      0:{cellWidth:19,overflow:'visible'},1:{cellWidth:27,overflow:'visible'},2:{cellWidth:22},3:{cellWidth:20},4:{cellWidth:16},
       5:{cellWidth:'auto'},
-      6:{cellWidth:10,halign:'center'},7:{cellWidth:10,halign:'center'},8:{cellWidth:20,halign:'right'},
-      9:{cellWidth:20,halign:'right'},10:{cellWidth:20,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:14,halign:'center'}
+      6:{cellWidth:9,halign:'center'},7:{cellWidth:9,halign:'center'},8:{cellWidth:18,halign:'right'},
+      9:{cellWidth:18,halign:'right'},10:{cellWidth:18,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:16,halign:'center',overflow:'visible'}
     },
     didParseCell:(d)=>{
       if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; d.cell.styles.fontSize=8; }
@@ -1776,24 +1776,25 @@ function exportRendicionPDF(){
   doc.text(nro+' · Emitido: '+todayISO(), W-M, 20.5, {align:'right'});
   doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,W-M,23);
   // Metadatos: apilados a la izquierda + total grande a la derecha (sin solaparse)
-  const kv=(label,value,x,y)=>{ doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text(label,x,y); const w=doc.getTextWidth(label); doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+(value||'—'), x+w+1.5, y); };
+  const sanPdf=(t)=>String(t==null?'':t).replace(/\s*→\s*/g,' a ').replace(/[—–]/g,'-').replace(/…/g,'...').replace(/₲/g,'Gs ');
+  const kv=(label,value,x,y)=>{ doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text(label,x,y); const w=doc.getTextWidth(label); doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+sanPdf(value||'-'), x+w+1.5, y); };
   const yM=29;
   doc.setFontSize(10);
   kv('Residente:', rend.residente, M, yM);
   kv('Período:', periodo, M, yM+5.5);
-  kv('Estado:', rend.estado+'   ·   Corte: '+(rend.fecha_corte||'—'), M, yM+11);
+  kv('Estado:', rend.estado+'   ·   Corte: '+(rend.fecha_corte||'-'), M, yM+11);
   doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
   doc.text('Total rendido', W-M, yM+2, {align:'right'});
   doc.setFontSize(15); doc.setTextColor(31,56,100);
-  doc.text('₲ '+fmt(total), W-M, yM+9, {align:'right'});
+  doc.text('Gs '+fmt(total), W-M, yM+9, {align:'right'});
   // Tabla
-  const head=[['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲']];
+  const head=[['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total Gs']];
   const rows=list.map(m=>[m.fecha||'',String(m.numero_orden||''),m.nro_factura||'',m.tipo_comprobante||'',m.proveedor||'',m.obra||'',m.sector||'',m.rubro||'',m.contratista||'',fmt(m.total)]);
-  rows.push([{content:'TOTAL RENDIDO',colSpan:9,styles:{halign:'right',fontStyle:'bold',fillColor:[240,236,225],textColor:[31,56,100]}},{content:'₲ '+fmt(total),styles:{halign:'right',fontStyle:'bold',fillColor:[240,236,225],textColor:[31,56,100]}}]);
+  rows.push([{content:'TOTAL RENDIDO',colSpan:9,styles:{halign:'right',fontStyle:'bold',fillColor:[240,236,225],textColor:[31,56,100]}},{content:'Gs '+fmt(total),styles:{halign:'right',fontStyle:'bold',fillColor:[240,236,225],textColor:[31,56,100]}}]);
   doc.autoTable({ startY:yM+15, head, body:rows,
     styles:{font:'helvetica',fontSize:8,cellPadding:1.8,overflow:'linebreak',lineColor:[225,225,225],lineWidth:0.1},
     headStyles:{fillColor:[31,56,100],textColor:255,fontStyle:'bold',halign:'center'},
-    columnStyles:{0:{cellWidth:20},1:{cellWidth:14,halign:'center'},2:{cellWidth:26},3:{cellWidth:16},9:{halign:'right',cellWidth:26}}, margin:{left:M,right:M} });
+    columnStyles:{0:{cellWidth:20,overflow:'visible'},1:{cellWidth:14,halign:'center'},2:{cellWidth:27,overflow:'visible'},3:{cellWidth:16},9:{halign:'right',cellWidth:26}}, margin:{left:M,right:M} });
   // Firmas
   let y=doc.lastAutoTable.finalY+24;
   if(y>PH-22){ doc.addPage(); y=30; }
@@ -1816,7 +1817,7 @@ function aplicarModoResidente(){
   const tabCfg=gs('btn-config'); if(tabCfg) tabCfg.style.display='none';
   lockSelectTo(gs('c-res'), MI_RESIDENTE);
   lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
-  gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true;
+  gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true; onResReporte();
   const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='none';
   gs('mi-saldo').style.display='flex';
   const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='none';
