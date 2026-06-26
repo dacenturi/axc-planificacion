@@ -188,6 +188,10 @@ tr:last-child td{border-bottom:none}
 .rep-grp:hover td{background:var(--bg3)}
 .grp-tog{display:inline-block;width:14px;color:var(--accent);font-weight:700}
 .rep-det td{background:color-mix(in srgb,var(--bg3) 60%,transparent);font-size:11px;color:var(--text2)}
+.rep-tipo{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.rt-opt{display:flex;align-items:center;gap:7px;border:1px solid var(--border);background:var(--bg3);border-radius:10px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;user-select:none}
+.rt-opt:has(input:checked){border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.rt-opt input{accent-color:var(--accent)}
 .rd-line{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border2);font-size:12px}
 .rd-line:last-child{border-bottom:none}
 .rd-line .f{font-weight:600}
@@ -456,16 +460,22 @@ tr:last-child td{border-bottom:none}
       <div class="card">
         <div class="card-h">
           <div class="ic" style="background:rgba(14,165,233,.14);color:var(--cyan)">📊</div>
-          <div><h2>Reporte de caja chica</h2><div class="desc">Por residente (saldo corrido, como el Excel) o consolidado. Filtrá y exportá a Excel.</div></div>
+          <div><h2>Reporte de caja chica</h2><div class="desc">Elegí el tipo de reporte: estado de cuenta por residente, consolidado, o una rendición puntual.</div></div>
         </div>
         <div class="card-b">
+          <div class="rep-tipo">
+            <label class="rt-opt"><input type="radio" name="r-tipo" value="cuenta" checked onchange="onTipoReporte()"> 📄 Estado de cuenta</label>
+            <label class="rt-opt"><input type="radio" name="r-tipo" value="consolidado" onchange="onTipoReporte()"> 📚 Consolidado</label>
+            <label class="rt-opt"><input type="radio" name="r-tipo" value="rendicion" onchange="onTipoReporte()"> 🧾 Rendición</label>
+          </div>
           <div class="rep-filters">
-            <div class="fld"><label>Residente</label><select id="r-res"></select></div>
-            <div class="fld"><label>Obra</label><select id="r-obra"></select></div>
-            <div class="fld"><label>Rubro</label><select id="r-rubro"></select></div>
-            <div class="fld"><label>Proveedor</label><select id="r-prov"></select></div>
-            <div class="fld"><label>Desde</label><input id="r-desde" type="date"></div>
-            <div class="fld"><label>Hasta</label><input id="r-hasta" type="date"></div>
+            <div class="fld" id="f-res"><label>Residente</label><select id="r-res" onchange="onResReporte()"></select></div>
+            <div class="fld" id="f-rnd" style="display:none"><label>Rendición</label><select id="r-rnd"></select></div>
+            <div class="fld f-cat"><label>Obra</label><select id="r-obra"></select></div>
+            <div class="fld f-cat"><label>Rubro</label><select id="r-rubro"></select></div>
+            <div class="fld f-cat"><label>Proveedor</label><select id="r-prov"></select></div>
+            <div class="fld f-cat"><label>Desde</label><input id="r-desde" type="date"></div>
+            <div class="fld f-cat"><label>Hasta</label><input id="r-hasta" type="date"></div>
           </div>
           <div class="rep-actions">
             <button class="btn-primary" style="width:auto;margin:0" onclick="generarReporte()">Generar reporte</button>
@@ -473,13 +483,13 @@ tr:last-child td{border-bottom:none}
             <button class="btn-ghost" id="r-export-pdf" onclick="exportarReportePDF()" disabled>🖨 Exportar PDF</button>
             <span id="rep-info" style="font-size:12px;color:var(--text2)"></span>
           </div>
-          <div id="rep-result"><div class="empty">Elegí un residente (o "Todos") y tocá Generar.</div></div>
+          <div id="rep-result"><div class="empty">Elegí un residente y tocá Generar.</div></div>
         </div>
       </div>
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.0</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.1</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1177,7 +1187,7 @@ let REPORTE_DATA=null; // {modo, titulo, headers, rows, aoa, filename}
 let REPORTE_PDF=null;  // datos para el PDF del reporte por residente
 
 function fillReporteFiltros(){
-  gs('r-res').innerHTML=`<option value="">Todos (consolidado)</option>`+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  gs('r-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
   gs('r-obra').innerHTML=optList(LISTAS.obras,'Todas');
   gs('r-rubro').innerHTML=optList(LISTAS.rubros,'Todos');
   gs('r-prov').innerHTML=optList(LISTAS.proveedores,'Todos');
@@ -1188,12 +1198,71 @@ function _dateFilter(q, col){
   if(d) q=q.gte(col,d); if(h) q=q.lte(col,h); return q;
 }
 
+function rTipo(){ const el=document.querySelector('input[name="r-tipo"]:checked'); return el?el.value:'cuenta'; }
+function onTipoReporte(){
+  const t=rTipo();
+  document.querySelectorAll('.f-cat').forEach(e=>e.style.display = (t==='rendicion'?'none':''));
+  gs('f-rnd').style.display = (t==='rendicion'?'':'none');
+  gs('f-res').style.display = (t==='consolidado'?'none':'');
+  gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
+  REPORTE_DATA=null; REPORTE_PDF=null; REND_DETAIL=null; gs('rep-info').textContent='';
+  gs('rep-result').innerHTML='<div class="empty">'+(t==='rendicion'?'Elegí un residente y su rendición, luego Generar.':t==='consolidado'?'Reporte de todos los residentes. Tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
+  if(t==='rendicion') onResReporte();
+}
+async function onResReporte(){
+  if(rTipo()!=='rendicion') return;
+  const res=gs('r-res').value, sel=gs('r-rnd');
+  if(!res){ sel.innerHTML='<option value="">— elegí residente —</option>'; return; }
+  sel.innerHTML='<option value="">Cargando…</option>';
+  const { data:rends }=await _SB.from('caja_chica_rendiciones')
+    .select('id,numero,fecha_desde,fecha_hasta,estado,fecha_corte').eq('residente',res)
+    .in('estado',['presentada','cerrada']).order('numero',{ascending:false});
+  if(!rends||!rends.length){ sel.innerHTML='<option value="">— sin rendiciones —</option>'; return; }
+  sel.innerHTML='<option value="">— elegí rendición —</option>'+rends.map(r=>{
+    const nro='RND-'+String(r.numero!=null?r.numero:0).padStart(4,'0');
+    const per=(r.fecha_desde||r.fecha_hasta)?` · ${r.fecha_desde||'—'}→${r.fecha_hasta||'—'}`:'';
+    return `<option value="${r.id}">${nro}${per} · ${r.estado}</option>`;
+  }).join('');
+}
+
 async function generarReporte(){
-  const res=gs('r-res').value;
-  gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true; REPORTE_DATA=null; REPORTE_PDF=null;
+  const t=rTipo();
+  gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true; REPORTE_DATA=null; REPORTE_PDF=null; REND_DETAIL=null;
   try{
-    if(res){ await reporteResidente(res); } else { await reporteConsolidado(); }
+    if(t==='rendicion'){
+      const rid=gs('r-rnd').value;
+      if(!rid){ gs('rep-result').innerHTML='<div class="empty">Elegí una rendición.</div>'; gs('rep-info').textContent=''; return; }
+      await reporteRendicionInline(rid);
+    } else if(t==='consolidado'){
+      await reporteConsolidado();
+    } else {
+      const res=gs('r-res').value;
+      if(!res){ gs('rep-result').innerHTML='<div class="empty">Elegí un residente.</div>'; gs('rep-info').textContent=''; return; }
+      await reporteResidente(res);
+    }
   }catch(e){ gs('rep-result').innerHTML='<div class="empty">Error al generar: '+(e.message||e)+'</div>'; gs('rep-info').textContent=''; }
+}
+
+async function reporteRendicionInline(rid){
+  const { data:rend }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
+  const { data:movs }=await _SB.from('caja_chica_movimientos')
+    .select('fecha,numero_orden,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,total')
+    .eq('rendicion_id',rid).order('fecha',{ascending:true});
+  const list=movs||[]; const total=list.reduce((a,m)=>a+Number(m.total),0);
+  const nro=(rend&&rend.numero!=null)?('RND-'+String(rend.numero).padStart(4,'0')):'Rendición';
+  const periodo=(rend&&(rend.fecha_desde||rend.fecha_hasta))?`${rend.fecha_desde||'—'} → ${rend.fecha_hasta||'—'}`:'—';
+  const headers=['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲'];
+  const body=list.map(m=>`<tr><td>${m.fecha||''}</td><td>${m.numero_orden||''}</td><td>${m.nro_factura||''}</td><td>${m.tipo_comprobante||''}</td><td>${m.proveedor||''}</td><td>${m.obra||''}</td><td>${m.sector||''}</td><td>${m.rubro||''}</td><td>${m.contratista||''}</td><td class="num">${fmt(m.total)}</td></tr>`).join('');
+  gs('rep-result').innerHTML=`
+    <div class="rep-meta"><b>${nro}</b> · ${rend?rend.residente:''} · Período: ${periodo} · Corte: ${rend?rend.fecha_corte||'—':'—'} · Estado: ${rend?rend.estado:''} · ${list.length} comprobante(s)</div>
+    <div class="rep-scroll"><table class="rep-table">
+      <thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${body||'<tr><td colspan="10" class="empty">Sin comprobantes en esta rendición.</td></tr>'}</tbody>
+      <tfoot><tr class="rep-total"><td colspan="9" style="text-align:right">TOTAL RENDIDO</td><td class="num">₲ ${fmt(total)}</td></tr></tfoot>
+    </table></div>`;
+  REND_DETAIL={ rend, list, total, headers, nro, periodo };
+  gs('r-export').disabled=false; gs('r-export-pdf').disabled=false;
+  gs('rep-info').textContent=`${list.length} comprobante(s)`;
 }
 
 async function reporteResidente(res){
@@ -1350,7 +1419,8 @@ async function reporteConsolidado(){
 
 // PDF del reporte por residente, con logo AXC + residente + período + rendición
 function exportarReportePDF(){
-  if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible eligiendo un residente','err'); return; }
+  if(rTipo()==='rendicion'){ return exportRendicionPDF(); }
+  if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente','err'); return; }
   const P=REPORTE_PDF;
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
@@ -1418,6 +1488,7 @@ function exportarReportePDF(){
 }
 
 function exportarReporte(){
+  if(rTipo()==='rendicion'){ return exportRendicionExcel(); }
   if(!REPORTE_DATA){ toast('Generá un reporte primero','err'); return; }
   try{
     const ws=XLSX.utils.aoa_to_sheet(REPORTE_DATA.aoa);
@@ -1561,20 +1632,24 @@ function exportRendicionPDF(){
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'A4'});
   const W=doc.internal.pageSize.getWidth(), PH=doc.internal.pageSize.getHeight();
-  // Encabezado de marca (navy + línea dorada)
-  doc.setFillColor(31,56,100); doc.rect(0,0,W,22,'F');
-  doc.setFillColor(200,160,40); doc.rect(0,22,W,1.5,'F');
-  doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
-  doc.text('AXC CONSTRUCTORA',12,11);
-  doc.setFont('helvetica','normal'); doc.setFontSize(10);
-  doc.text('Rendición de Caja Chica · '+nro,12,18);
+  const M=12;
+  // Logo real de AXC + título (mismo estilo que el PDF de estado de cuenta)
+  try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(15);
+  doc.text('Rendición de Caja Chica', W-M, 15, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(9);
+  doc.text(nro+' · Emitido: '+todayISO(), W-M, 20.5, {align:'right'});
+  doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,25,W-M,25);
   // Metadatos
-  doc.setTextColor(40,40,40); doc.setFontSize(10);
-  const yM=31;
-  doc.text(`Residente: ${rend.residente}`,12,yM);
-  doc.text(`Período: ${periodo}`,12,yM+5);
-  doc.text(`Estado: ${rend.estado}`,W-12,yM,{align:'right'});
-  doc.text(`Corte: ${rend.fecha_corte||'—'}  ·  Emitido: ${todayISO()}`,W-12,yM+5,{align:'right'});
+  const yM=32;
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
+  doc.text('Residente:',M,yM);
+  doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+rend.residente,M+22,yM);
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text('Período:',M+95,yM);
+  doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+periodo,M+113,yM);
+  doc.setTextColor(40,40,40);
+  doc.text(`Estado: ${rend.estado}`,W-M,yM,{align:'right'});
+  doc.text(`Corte: ${rend.fecha_corte||'—'}`,W-M,yM+5,{align:'right'});
   // Tabla
   const head=[['Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲']];
   const rows=list.map(m=>[m.fecha||'',String(m.numero_orden||''),m.nro_factura||'',m.tipo_comprobante||'',m.proveedor||'',m.obra||'',m.sector||'',m.rubro||'',m.contratista||'',fmt(m.total)]);
