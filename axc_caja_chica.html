@@ -143,6 +143,10 @@ tr:last-child td{border-bottom:none}
 .acr-row:last-child{border-bottom:none}
 .acr-medio{font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:2px 7px}
 .acr-monto{margin-left:auto;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums}
+.acr-item{border-bottom:1px solid var(--border2)}
+.acr-item:last-child{border-bottom:none}
+.acr-item .acr-row{border-bottom:none}
+.acr-sub{font-size:11px;color:var(--text2);padding:0 0 9px 2px;margin-top:-4px}
 
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg3);border:1px solid var(--border3);border-radius:10px;padding:11px 18px;font-size:13px;font-weight:500;opacity:0;transition:.25s;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -348,10 +352,12 @@ tr:last-child td{border-bottom:none}
               <div class="rd-bnr" id="repo-bnr"></div>
               <div class="fld"><label>Residente</label><select id="ac-res"></select></div>
               <div class="fld"><label>Monto (₲)</label><input id="ac-monto" class="money-in" inputmode="numeric" placeholder="0"></div>
-              <div class="fld"><label>Medio</label><select id="ac-medio">
+              <div class="fld"><label>Medio</label><select id="ac-medio" onchange="acMedioChange()">
                 <option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option>
                 <option value="banco">Banco</option><option value="cheque">Cheque</option></select></div>
-              <div class="fld"><label>Referencia (opcional)</label><input id="ac-ref" placeholder="Nº transferencia / cheque / comprobante"></div>
+              <div class="fld" id="fld-banco" style="display:none"><label>Banco</label><input id="ac-banco" placeholder="Ej. Itaú, Continental, Ueno…"></div>
+              <div class="fld" id="fld-nro" style="display:none"><label>Nº operación / transferencia</label><input id="ac-nro" placeholder="Nº de operación"></div>
+              <div class="fld"><label>Referencia (opcional)</label><input id="ac-ref" placeholder="Nota / comprobante"></div>
               <div class="fld"><label>Fecha</label><input id="ac-fecha" type="date"></div>
               <button class="btn-primary" id="ac-btn" onclick="acreditar()">Acreditar fondo</button>
             </div>
@@ -507,7 +513,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.3</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v2.5</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -706,8 +712,14 @@ async function saveTope(res,id){
 
 // ----- Configuración: acreditar -----
 function fillResSelect(){ gs('ac-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join(''); }
+async function acMedioChange(){
+  const m=gs('ac-medio').value, show=(m!=='efectivo');
+  gs('fld-banco').style.display=show?'':'none';
+  gs('fld-nro').style.display=show?'':'none';
+}
 async function acreditar(){
   const res=gs('ac-res').value, monto=parseInt(onlyDigits(gs('ac-monto').value)||'0',10), medio=gs('ac-medio').value, ref=gs('ac-ref').value.trim(), fecha=gs('ac-fecha').value||todayISO();
+  const banco=gs('ac-banco')?gs('ac-banco').value.trim():'', nro=gs('ac-nro')?gs('ac-nro').value.trim():'';
   if(!res){ toast('Elegí un residente','err'); return; }
   if(!monto||monto<=0){ toast('Ingresá un monto válido','err'); return; }
   // Regla de rendición: no se puede acreditar si hay una rendición PRESENTADA sin cerrar.
@@ -715,20 +727,36 @@ async function acreditar(){
   if(pend && pend.length){ toast('Hay una rendición presentada sin cerrar para '+res+'. Cerrá el corte antes de acreditar.','err'); return; }
   const btn=gs('ac-btn'); btn.disabled=true; btn.textContent='Acreditando…';
   const payload={residente:res,fecha,monto,medio,referencia:ref||null,creado_por:CURRENT_USER.email};
+  if(medio!=='efectivo'){ payload.banco=banco||null; payload.nro_operacion=nro||null; }
   if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ payload.rendicion_id=PENDING_REND_LINK.rid; }
-  const { error }=await _SB.from('caja_chica_acreditaciones').insert(payload);
+  let { error }=await _SB.from('caja_chica_acreditaciones').insert(payload);
+  if(error && /banco|nro_operacion|column/i.test(error.message||'')){
+    // columnas nuevas aún no creadas: guardo banco/nº dentro de referencia
+    const ref2=[ref, banco?('Banco: '+banco):'', nro?('Nº: '+nro):''].filter(Boolean).join(' · ')||null;
+    const p2={residente:res,fecha,monto,medio,referencia:ref2,creado_por:CURRENT_USER.email};
+    if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ p2.rendicion_id=PENDING_REND_LINK.rid; }
+    const r2=await _SB.from('caja_chica_acreditaciones').insert(p2); error=r2.error;
+  }
   btn.disabled=false; btn.textContent='Acreditar fondo';
   if(error){ toast('Error: '+error.message,'err'); return; }
   if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ PENDING_REND_LINK=null; gs('repo-bnr').classList.remove('show'); }
   toast(`Acreditado ₲ ${fmt(monto)} a ${res}`,'ok'); gs('ac-monto').value=''; gs('ac-ref').value='';
+  if(gs('ac-banco')) gs('ac-banco').value=''; if(gs('ac-nro')) gs('ac-nro').value='';
   await loadSaldos(); renderTopes(); await loadAcreditaciones();
 }
 async function loadAcreditaciones(){
   const box=gs('acr-list');
-  const { data, error }=await _SB.from('caja_chica_acreditaciones').select('residente,fecha,monto,medio,referencia').order('creado_en',{ascending:false}).limit(12);
+  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('residente,fecha,monto,medio,referencia,banco,nro_operacion').order('creado_en',{ascending:false}).limit(12);
+  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('residente,fecha,monto,medio,referencia').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
   if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay acreditaciones.</div>'; return; }
-  box.innerHTML=data.map(a=>`<div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>`).join('');
+  box.innerHTML=data.map(a=>{
+    const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'' ].filter(Boolean).join('  ·  ');
+    const sub = det ? `<div class="acr-sub">${det}</div>` : '';
+    return `<div class="acr-item">
+      <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
+      ${sub}</div>`;
+  }).join('');
 }
 
 // ----- Comprobantes -----
@@ -1273,8 +1301,13 @@ async function reporteResidente(res, opts){
   const obraF=isRend?'':gs('r-obra').value, rubroF=isRend?'':gs('r-rubro').value, provF=isRend?'':gs('r-prov').value;
   let acr=[];
   if(!isRend){
-    let qa=_SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en').eq('residente',res);
-    qa=_dateFilter(qa,'fecha'); const ra=await qa; acr=ra.data||[];
+    let qa=_SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en,creado_por,banco,nro_operacion').eq('residente',res);
+    qa=_dateFilter(qa,'fecha'); let ra=await qa;
+    if(ra.error){ // columnas banco/nro_operacion aún no creadas
+      let qa2=_SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en,creado_por').eq('residente',res);
+      qa2=_dateFilter(qa2,'fecha'); ra=await qa2;
+    }
+    acr=ra.data||[];
   }
   let qm=_SB.from('caja_chica_movimientos')
     .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,creado_en,rendicion_id,caja_chica_rendiciones(numero),caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden)')
@@ -1285,8 +1318,9 @@ async function reporteResidente(res, opts){
   const rows=[];
   (acr||[]).forEach(a=>rows.push({kind:'cred',key:(a.fecha||'')+'_0_'+(a.creado_en||''),
     fecha:a.fecha,orden:'',factura:'',tipo:'',proveedor:'',obra:'',sector:'',rubro:'',contratista:'',
-    concepto:'Acreditación ('+a.medio+(a.referencia?(' · '+a.referencia):'')+')',
-    debitado:0,creditado:Number(a.monto),rnd:'',items:null}));
+    concepto:'Acreditación ('+a.medio+')',
+    debitado:0,creditado:Number(a.monto),rnd:'',items:null,
+    acr:{medio:a.medio||'',banco:a.banco||'',nro:a.nro_operacion||'',ref:a.referencia||'',por:a.creado_por||''}}));
   (movs||[]).forEach(m=>{
     const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
     const numero=(m.caja_chica_rendiciones&&m.caja_chica_rendiciones.numero!=null)?('RND-'+String(m.caja_chica_rendiciones.numero).padStart(4,'0')):'—';
@@ -1333,10 +1367,13 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
   let sumDeb=0,sumCred=0; let html='';
   rows.forEach((r,i)=>{ sumDeb+=r.debitado; sumCred+=r.creditado;
     const gid='g'+i; const hasItems=r.items&&r.items.length;
+    const hasAcr=r.kind==='cred'&&r.acr;
+    const clickable=hasItems||hasAcr;
     const conCell = hasItems
       ? `<span class="grp-tog tog-${gid}">▸</span> ${r.items.length} ítem(s)`
+      : hasAcr ? `<span class="grp-tog tog-${gid}">▸</span> ${r.concepto}`
       : (r.concepto||'');
-    html+=`<tr class="${r.kind==='cred'?'rep-row-cred':''} ${hasItems?'rep-grp':''}"${hasItems?` onclick="toggleGrp('${gid}')"`:''}>
+    html+=`<tr class="${r.kind==='cred'?'rep-row-cred':''} ${clickable?'rep-grp':''}"${clickable?` onclick="toggleGrp('${gid}')"`:''}>
       <td>${r.fecha||''}</td><td>${r.orden}</td><td>${r.factura}</td><td>${r.tipo}</td>
       <td>${r.proveedor}</td><td>${r.obra}</td><td>${r.sector}</td><td>${r.rubro}</td><td>${r.contratista}</td>
       <td>${conCell}</td><td class="num"></td><td></td><td class="num"></td>
@@ -1352,6 +1389,15 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
         <td class="num">${(it.cu!==''&&it.cu!=null)?fmt(it.cu):''}</td>
         <td class="num">${it.sub?fmt(it.sub):''}</td><td></td><td></td><td></td></tr>`;
     }); }
+    else if(hasAcr){ const a=r.acr;
+      const parts=[['Medio', a.medio||'—']];
+      if(a.banco) parts.push(['Banco', a.banco]);
+      if(a.nro) parts.push(['Nº operación', a.nro]);
+      if(a.ref) parts.push(['Referencia', a.ref]);
+      if(a.por) parts.push(['Registrado por', a.por]);
+      const info=parts.map(p=>`<b>${p[0]}:</b> ${p[1]}`).join('&nbsp;&nbsp;·&nbsp;&nbsp;');
+      html+=`<tr class="rep-det det-${gid}" style="display:none"><td colspan="9"></td><td colspan="8" style="padding-left:22px">↳ ${info}</td></tr>`;
+    }
   });
   const colSaldo = isRend ? 'Acumulado' : 'Saldo';
   const totalLbl = isRend ? 'TOTAL RENDIDO' : 'TOTAL GENERAL';
@@ -1386,7 +1432,8 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
         idx===0?r.proveedor:'', idx===0?r.obra:'', idx===0?r.sector:'', idx===0?r.rubro:'', idx===0?r.contratista:'',
         it.concepto, it.cant, it.un, it.cu===''?'':Number(it.cu), it.sub||'', '', idx===0?r.saldo:'', idx===0?r.rnd:'' ]));
     } else {
-      aoa.push([r.fecha||'',r.orden,r.factura,r.tipo,r.proveedor,r.obra,r.sector,r.rubro,r.contratista,r.concepto,'','','', r.debitado||'', r.creditado||'', r.saldo, r.rnd||'']);
+      const conc = r.acr ? ('Acreditación ('+[r.acr.medio, r.acr.banco?('Banco: '+r.acr.banco):'', r.acr.nro?('Nº: '+r.acr.nro):'', r.acr.ref].filter(Boolean).join(' · ')+')') : r.concepto;
+      aoa.push([r.fecha||'',r.orden,r.factura,r.tipo,r.proveedor,r.obra,r.sector,r.rubro,r.contratista,conc,'','','', r.debitado||'', r.creditado||'', r.saldo, r.rnd||'']);
     }
   });
   aoa.push(['','','','','','','','','','','','','TOTAL',sumDeb,sumCred,saldoFinal,'']);
