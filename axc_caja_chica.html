@@ -218,6 +218,10 @@ tr:last-child td{border-bottom:none}
 .rnd-pill.sin{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
 .rnd-pill.enr{background:rgba(88,166,255,.15);color:var(--blue)}
 .rnd-pill.rendido{background:rgba(63,185,80,.15);color:var(--green)}
+.cmp-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.cmp-filters input,.cmp-filters select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:7px 10px;font-size:12px;font-family:'Inter'}
+.cmp-filters input{flex:1;min-width:160px}
+.cmp-filters input:focus,.cmp-filters select:focus{outline:none;border-color:var(--accent)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -348,7 +352,28 @@ tr:last-child td{border-bottom:none}
             <div class="ic" style="background:rgba(88,166,255,.14);color:var(--blue)">📋</div>
             <div><h2>Comprobantes cargados</h2><div class="desc">Aprobá, rechazá o anulá. Solo los aprobados descuentan saldo.</div></div>
           </div>
-          <div class="card-b" id="cmp-list"><div class="empty">Cargando…</div></div>
+          <div class="card-b">
+            <div class="cmp-filters">
+              <input id="cf-q" placeholder="Buscar Nº factura / proveedor…" oninput="renderComprobantes()">
+              <select id="cf-estado" onchange="renderComprobantes()">
+                <option value="">Estado: todos</option>
+                <option value="solicitado">Solicitado</option>
+                <option value="aprobado">Aprobado</option>
+                <option value="rechazado">Rechazado</option>
+                <option value="anulado">Anulado</option>
+                <option value="borrador">Borrador</option>
+              </select>
+              <select id="cf-rend" onchange="renderComprobantes()">
+                <option value="">Rendición: todas</option>
+                <option value="sin">Sin rendir</option>
+                <option value="enr">En rendición</option>
+                <option value="rendido">Rendido</option>
+              </select>
+              <select id="cf-res" onchange="renderComprobantes()"></select>
+              <select id="cf-obra" onchange="renderComprobantes()"></select>
+            </div>
+            <div id="cmp-list"><div class="empty">Cargando…</div></div>
+          </div>
         </div>
       </div>
     </section>
@@ -404,7 +429,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.2</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v1.3</div>
 </div>
 
 <div class="set-bg" id="alert-bg">
@@ -759,16 +784,46 @@ function cancelarEdicion(){
   gs('lines-body').innerHTML=''; addLine();
 }
 
+let CMP_CACHE=[];
 async function loadComprobantes(){
   const box=gs('cmp-list');
   const { data, error }=await _SB.from('caja_chica_movimientos')
     .select('id,residente,fecha,nro_factura,tipo_comprobante,total,estado,proveedor,obra,rendicion_id,caja_chica_adjuntos(id,storage_path,nombre),caja_chica_rendiciones(numero,estado)')
-    .order('creado_en',{ascending:false}).limit(40);
+    .order('creado_en',{ascending:false}).limit(300);
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
-  if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay comprobantes.</div>'; return; }
-  box.innerHTML=data.map(m=>{
+  CMP_CACHE=data||[];
+  // poblar filtros una sola vez
+  if(!IS_RESIDENTE && gs('cf-res') && !gs('cf-res').dataset.filled){
+    gs('cf-res').innerHTML='<option value="">Residente: todos</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+    gs('cf-res').dataset.filled='1';
+  }
+  if(gs('cf-obra') && !gs('cf-obra').dataset.filled){
+    gs('cf-obra').innerHTML='<option value="">Obra: todas</option>'+(LISTAS.obras||[]).map(o=>`<option value="${String(o).replace(/"/g,'&quot;')}">${o}</option>`).join('');
+    gs('cf-obra').dataset.filled='1';
+  }
+  renderComprobantes();
+}
+
+function rendState(m){ const rd=m.caja_chica_rendiciones; if(rd) return rd.estado==='cerrada'?'rendido':'enr'; return m.estado==='aprobado'?'sin':''; }
+
+function renderComprobantes(){
+  const box=gs('cmp-list');
+  if(!CMP_CACHE.length){ box.innerHTML='<div class="empty">Todavía no hay comprobantes.</div>'; return; }
+  const q=(gs('cf-q').value||'').trim().toLowerCase();
+  const fe=gs('cf-estado').value, fr=gs('cf-rend').value;
+  const fres=(gs('cf-res')&&!IS_RESIDENTE)?gs('cf-res').value:'';
+  const fo=gs('cf-obra')?gs('cf-obra').value:'';
+  const rows=CMP_CACHE.filter(m=>{
+    if(fe && m.estado!==fe) return false;
+    if(fres && m.residente!==fres) return false;
+    if(fo && m.obra!==fo) return false;
+    if(fr && rendState(m)!==fr) return false;
+    if(q){ const hay=((m.nro_factura||'')+' '+(m.proveedor||'')).toLowerCase(); if(!hay.includes(q)) return false; }
+    return true;
+  });
+  if(!rows.length){ box.innerHTML='<div class="empty">Sin comprobantes para ese filtro.</div>'; return; }
+  box.innerHTML=rows.map(m=>{
     const adj=m.caja_chica_adjuntos||[];
-    // badge de rendición
     let rnd='';
     const rd=m.caja_chica_rendiciones;
     if(rd){
@@ -1182,6 +1237,7 @@ function aplicarModoResidente(){
   lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
   gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true;
   gs('mi-saldo').style.display='flex';
+  const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='none';
   renderMiSaldo();
 }
 function renderMiSaldo(){
