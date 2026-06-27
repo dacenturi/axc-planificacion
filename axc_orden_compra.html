@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v4.7 · imputación de rubro robusta
+      Conexdata · AXC Planificación v4.8 · edición de materiales en OC
     </p>
   </div>
 </div>
@@ -7772,12 +7772,17 @@ const detail = {
   isEditing: false,    // modo edición admin
   decisionAction: null,// 'Rechazar' | 'Observar' (para el decision modal)
   signedUrlCache: new Map(), // cache de URLs firmadas para evitar re-pedidos
+  _removedIds: [],     // ids de items existentes marcados para borrar al guardar
+  _presuInsumos: null, // insumos del presupuesto de la OC (para imputar rubro)
+  _tmpSeq: 0,          // contador de ids temporales para items nuevos
 };
 
 // ─── Abrir modal de detalle ────────────────────────────
 async function openDetail(oc){
   detail.oc = oc;
   detail.isEditing = false;
+  detail._removedIds = [];
+  detail._tmpSeq = 0;
 
   // Header
   const isLegacy = oc.legacy_id != null;
@@ -7876,11 +7881,23 @@ function renderDetailBody(){
     document.querySelectorAll('.edit-item-input').forEach(inp => {
       inp.addEventListener('input', _recalcDetailItems);
     });
+    // Agregar material (abre buscador de catálogo)
+    const btnAddItem = document.getElementById('detailBtnAddItem');
+    if(btnAddItem) btnAddItem.addEventListener('click', ()=> openDetailProductPicker('add'));
+    // Acciones por ítem: cambiar producto / quitar
+    document.querySelectorAll('.det-item-act').forEach(btn => {
+      btn.addEventListener('click', ()=>{
+        const id = btn.getAttribute('data-item-id');
+        const act = btn.getAttribute('data-det-action');
+        if(act === 'remove') detailRemoveItem(id);
+        else if(act === 'replace') openDetailProductPicker('replace', id);
+      });
+    });
     const btnCancelEdit = document.getElementById('detailBtnCancelEdit');
     if(btnCancelEdit) btnCancelEdit.addEventListener('click', ()=>{
       detail.isEditing = false;
-      renderDetailBody();
-      renderDetailActions();
+      detail._removedIds = [];
+      openDetail(detail.oc);   // recarga items frescos de BD → descarta agregados/quitados/cambios sin guardar
     });
     // Filtrar sectores cuando cambia obra
     const obraSel = document.getElementById('editObra');
@@ -7901,6 +7918,9 @@ function renderDetailBody(){
     if(btnEdit) btnEdit.addEventListener('click', async ()=>{
       // Cargar listas si no están
       await loadListasForForm();
+      detail._removedIds = [];
+      detail._tmpSeq = 0;
+      await detailLoadPresuInsumos();   // para imputar rubro a materiales agregados/cambiados
       detail.isEditing = true;
       renderDetailBody();
       renderDetailActions();
@@ -8094,6 +8114,7 @@ function renderItemsSection(editing){
           </div>
         </div>
         <div class="detail-att-empty">Esta OC no tiene items registrados.</div>
+        ${editing ? `<div style="margin-top:10px"><button type="button" id="detailBtnAddItem" style="font-size:12.5px;font-weight:700;color:#1B5524;background:#eaf3ee;border:1px solid #b9d6c2;border-radius:7px;padding:7px 14px;cursor:pointer">➕ Agregar material</button></div>` : ''}
       </div>`;
   }
 
@@ -8131,10 +8152,26 @@ function renderItemsSection(editing){
       </tr>`;
     }
     if(editing){
-      // Material: se editan cantidad y precio unitario
+      // Material: cantidad y precio editables + acciones (cambiar producto / quitar)
+      const acciones = `
+        <div style="display:flex;gap:6px;margin-top:5px">
+          <button type="button" class="det-item-act" data-det-action="replace" data-item-id="${it.id}" style="font-size:10.5px;color:#1F3864;background:#eef2f8;border:1px solid #cdd9ec;border-radius:5px;padding:2px 8px;cursor:pointer">↺ Cambiar producto</button>
+          <button type="button" class="det-item-act" data-det-action="remove" data-item-id="${it.id}" style="font-size:10.5px;color:#c0392b;background:#fdf3f3;border:1px solid #e3b4b4;border-radius:5px;padding:2px 8px;cursor:pointer">× Quitar</button>
+        </div>`;
+      const nameCellEd = `
+        <td>
+          <div class="detail-item-row-name">
+            <div class="detail-item-img">${imgHtml}</div>
+            <div style="min-width:0">
+              <div class="detail-item-name">${escapeHtml(it.producto_nombre||'—')}</div>
+              ${nombreSub}
+              ${acciones}
+            </div>
+          </div>
+        </td>`;
       return `
       <tr data-item-id="${it.id}">
-        ${nameCell}
+        ${nameCellEd}
         <td class="right"><input type="text" inputmode="decimal" class="edit-item-input" data-item-id="${it.id}" data-item-field="cantidad" value="${Number(it.cantidad||0)}" style="width:80px;${inpStyle}"></td>
         <td class="right"><input type="text" inputmode="numeric" class="edit-item-input" data-item-id="${it.id}" data-item-field="precio" value="${Number(it.precio_unit||0)}" style="width:120px;${inpStyle}"></td>
         <td class="right subtotal" id="detItemSub-${it.id}">${fmtMoney(it.subtotal)}</td>
@@ -8182,6 +8219,7 @@ function renderItemsSection(editing){
         </tfoot>
       </table>
       </div>
+      ${editing ? `<div style="margin-top:10px"><button type="button" id="detailBtnAddItem" style="font-size:12.5px;font-weight:700;color:#1B5524;background:#eaf3ee;border:1px solid #b9d6c2;border-radius:7px;padding:7px 14px;cursor:pointer">➕ Agregar material</button></div>` : ''}
     </div>`;
 }
 
@@ -8207,6 +8245,153 @@ function _recalcDetailItems(){
   });
   const totalCell = document.getElementById('detailItemsTotal');
   if(totalCell) totalCell.textContent = fmtMoney(total);
+}
+
+// ─── Edición de materiales en el detalle (agregar / quitar / cambiar) ───
+
+// Carga (una vez por edición) los insumos del presupuesto de la OC, para imputar rubro.
+async function detailLoadPresuInsumos(){
+  const pp = (detail.oc && detail.oc.presupuesto || '').trim();
+  if(!pp){ detail._presuInsumos = []; return; }
+  if(detail._presuInsumos && detail._presuInsumos._pp === pp) return; // ya cargado
+  try{
+    const { data } = await sb.from('presupuesto_insumos')
+      .select('material,rubro_codigo').eq('presupuesto', pp);
+    const arr = (data||[]).map(function(m){ return { material:m.material||'', rubro_codigo:String(m.rubro_codigo||'').trim() }; });
+    arr._pp = pp;
+    detail._presuInsumos = arr;
+  }catch(e){ console.warn('detailLoadPresuInsumos', e); detail._presuInsumos = []; }
+}
+
+// Imputación INEQUÍVOCA por nombre: devuelve rubro_codigo solo si el material
+// matchea insumos de un único rubro del presupuesto; si no, cadena vacía.
+function _detailRubroForName(nombre){
+  const ins = detail._presuInsumos;
+  if(!Array.isArray(ins) || !ins.length) return '';
+  const n = _presuNorm(nombre);
+  if(!n) return '';
+  const rubros = {};
+  ins.forEach(function(m){
+    const mat = _presuNorm(m.material);
+    if(!mat) return;
+    if(mat === n || mat.indexOf(n) >= 0 || n.indexOf(mat) >= 0){
+      if(m.rubro_codigo) rubros[m.rubro_codigo] = 1;
+    }
+  });
+  const keys = Object.keys(rubros);
+  return keys.length === 1 ? keys[0] : '';
+}
+
+// Quita un item del detalle en modo edición (marca para borrar si ya existía en BD).
+function detailRemoveItem(id){
+  const idx = detail.items.findIndex(function(it){ return String(it.id) === String(id); });
+  if(idx < 0) return;
+  const it = detail.items[idx];
+  if(it && !it._isNew && String(id).indexOf('tmp_') !== 0){
+    detail._removedIds.push(it.id);   // existente en BD → borrar al guardar
+  }
+  detail.items.splice(idx, 1);
+  renderDetailBody();
+  renderDetailActions();
+}
+
+// Aplica el producto elegido del catálogo: agrega un item nuevo o reemplaza uno existente.
+function detailApplyProduct(prod, mode, itemId){
+  const precio = Number(prod.precio_referencia) || 0;
+  if(mode === 'replace'){
+    const it = detail.items.find(function(x){ return String(x.id) === String(itemId); });
+    if(!it) return;
+    it.producto_id = prod.id;
+    it.producto_nombre = prod.nombre || '—';
+    it.precio_unit = precio;
+    it.subtotal = Math.round((Number(it.cantidad)||1) * precio);
+    it._url_imagen = prod.url_imagen || '';
+    it.rubro_codigo = _detailRubroForName(it.producto_nombre);   // re-imputar
+    if(!it._isNew) it._dirty = true;
+  } else {
+    const cant = 1;
+    detail.items.push({
+      id: 'tmp_' + (++detail._tmpSeq),
+      producto_id: prod.id,
+      producto_nombre: prod.nombre || '—',
+      cantidad: cant,
+      precio_unit: precio,
+      subtotal: Math.round(cant * precio),
+      es_mano_obra: false,
+      _url_imagen: prod.url_imagen || '',
+      rubro_codigo: _detailRubroForName(prod.nombre || ''),
+      _isNew: true,
+    });
+  }
+  renderDetailBody();
+  renderDetailActions();
+}
+
+// Buscador de catálogo (overlay) para agregar o cambiar un material.
+function openDetailProductPicker(mode, itemId){
+  const existing = document.getElementById('detailPickerOverlay');
+  if(existing) existing.remove();
+  const ov = document.createElement('div');
+  ov.id = 'detailPickerOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(10,26,41,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(560px,100%);max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.3)">' +
+      '<div style="padding:14px 16px;background:#1F3864;color:#fff;display:flex;align-items:center;justify-content:space-between">' +
+        '<strong style="font-size:14px">' + (mode==='replace'?'↺ Cambiar producto':'➕ Agregar material') + '</strong>' +
+        '<button type="button" id="detailPickerClose" style="background:transparent;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1">×</button>' +
+      '</div>' +
+      '<div style="padding:12px 16px;border-bottom:1px solid #eee">' +
+        '<input type="text" id="detailPickerSearch" placeholder="Buscar producto por nombre…" autocomplete="off" style="width:100%;padding:9px 12px;border:1px solid #d9cfb8;border-radius:8px;font-family:inherit;font-size:14px;box-sizing:border-box">' +
+      '</div>' +
+      '<div id="detailPickerResults" style="overflow-y:auto;padding:8px 10px;flex:1">' +
+        '<div style="text-align:center;color:#8893a5;padding:24px;font-size:13px">Escribí al menos 2 letras para buscar.</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(e){ if(e.target === ov) ov.remove(); });
+  document.getElementById('detailPickerClose').addEventListener('click', function(){ ov.remove(); });
+
+  const inp = document.getElementById('detailPickerSearch');
+  const res = document.getElementById('detailPickerResults');
+  let seq = 0;
+  let timer = null;
+  async function run(){
+    const q = inp.value.trim();
+    if(q.length < 2){ res.innerHTML = '<div style="text-align:center;color:#8893a5;padding:24px;font-size:13px">Escribí al menos 2 letras para buscar.</div>'; return; }
+    const mySeq = ++seq;
+    res.innerHTML = '<div style="text-align:center;color:#8893a5;padding:24px;font-size:13px">Buscando…</div>';
+    try{
+      const safe = q.replace(/[%_]/g, function(c){ return '\\'+c; });
+      const { data } = await sb.from('productos_catalogo')
+        .select('id, nombre, precio_referencia, url_imagen')
+        .eq('activo', true).ilike('nombre', '%'+safe+'%')
+        .order('nombre').limit(40);
+      if(mySeq !== seq) return;
+      const list = data || [];
+      if(!list.length){ res.innerHTML = '<div style="text-align:center;color:#8893a5;padding:24px;font-size:13px">Sin resultados.</div>'; return; }
+      res.innerHTML = list.map(function(p){
+        const img = (p.url_imagen && String(p.url_imagen).startsWith('http'))
+          ? '<img src="'+escapeHtml(p.url_imagen)+'" style="width:34px;height:34px;border-radius:6px;object-fit:cover;flex-shrink:0" onerror="this.style.display=\'none\'">'
+          : '<span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:#f0ece0;border-radius:6px;flex-shrink:0">📦</span>';
+        return '<button type="button" class="det-pick-row" data-pick-id="'+p.id+'" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#fff;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer">' +
+          img +
+          '<span style="flex:1;min-width:0"><span style="display:block;font-size:13px;color:#1F3864;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(p.nombre||'—')+'</span>' +
+          '<span style="display:block;font-size:11px;color:#8893a5">ID #'+p.id+' · '+fmtMoney(p.precio_referencia)+'</span></span>' +
+          '<span style="font-size:11px;color:#1B5524;font-weight:700">Elegir</span>' +
+        '</button>';
+      }).join('');
+      res.querySelectorAll('.det-pick-row').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          const pid = btn.getAttribute('data-pick-id');
+          const prod = list.find(function(p){ return String(p.id) === String(pid); });
+          if(prod){ detailApplyProduct(prod, mode, itemId); }
+          ov.remove();
+        });
+      });
+    }catch(e){ if(mySeq===seq) res.innerHTML = '<div style="text-align:center;color:#c0392b;padding:24px;font-size:13px">Error al buscar: '+escapeHtml(e.message||'')+'</div>'; }
+  }
+  inp.addEventListener('input', function(){ clearTimeout(timer); timer = setTimeout(run, 280); });
+  setTimeout(function(){ inp.focus(); }, 50);
 }
 
 function renderAdjuntosSection(isAdmin){
@@ -8773,30 +8958,64 @@ async function saveDetailEdits(){
     return;
   }
 
-  // Leer los items editados del DOM y recalcular subtotales + total
-  const itemUpdates = [];
+  // Leer los items del DOM y volcar cantidad/precio a detail.items;
+  // separar existentes (UPDATE) de nuevos (INSERT). Los quitados ya están en _removedIds.
+  const updates = [];
+  const inserts = [];
   let nuevoTotal = 0;
   let itemsInvalidos = false;
+  let _orden = 0;
   document.querySelectorAll('#detailBody tr[data-item-id]').forEach(tr => {
     const id = tr.getAttribute('data-item-id');
     const esMO = tr.getAttribute('data-es-mo') === '1';
+    const it = detail.items.find(x => String(x.id) === String(id));
+    if(!it) return;
     const precioInp = tr.querySelector('input[data-item-field="precio"]');
-    const precio = precioInp ? (parseFloat(String(precioInp.value).replace(/[^\d.-]/g,'')) || 0) : 0;
+    const precio = precioInp ? (parseFloat(String(precioInp.value).replace(/[^\d.-]/g,'')) || 0) : (Number(it.precio_unit)||0);
     let cantidad, subtotal;
     if(esMO){
       cantidad = 1;
       subtotal = Math.round(precio);
     } else {
       const cantInp = tr.querySelector('input[data-item-field="cantidad"]');
-      cantidad = cantInp ? (parseFloat(String(cantInp.value).replace(/[^\d.,-]/g,'').replace(',','.')) || 0) : 0;
+      cantidad = cantInp ? (parseFloat(String(cantInp.value).replace(/[^\d.,-]/g,'').replace(',','.')) || 0) : (Number(it.cantidad)||0);
       subtotal = Math.round(cantidad * precio);
     }
     if(precio < 0 || cantidad <= 0) itemsInvalidos = true;
-    itemUpdates.push({ id, cantidad, precio_unit: Math.round(precio), subtotal });
+    it.cantidad = cantidad; it.precio_unit = Math.round(precio); it.subtotal = subtotal;
+    const esNuevo = it._isNew || String(id).indexOf('tmp_') === 0;
+    if(esNuevo){
+      inserts.push({
+        oc_id: oc.id,
+        producto_id: it.es_mano_obra ? null : it.producto_id,
+        producto_nombre: it.producto_nombre,
+        cantidad: cantidad,
+        precio_unit: Math.round(precio),
+        subtotal: subtotal,
+        rubro_codigo: it.rubro_codigo || null,
+        es_mano_obra: !!it.es_mano_obra,
+        orden: _orden,
+      });
+    } else {
+      updates.push({
+        id: it.id,
+        cantidad: cantidad,
+        precio_unit: Math.round(precio),
+        subtotal: subtotal,
+        producto_id: it.es_mano_obra ? null : it.producto_id,
+        producto_nombre: it.producto_nombre,
+        rubro_codigo: it.rubro_codigo || null,
+      });
+    }
     nuevoTotal += subtotal;
+    _orden++;
   });
   if(itemsInvalidos){
     showToast('Revisá los items: cantidad y precio deben ser válidos (> 0)', 'error');
+    return;
+  }
+  if(updates.length === 0 && inserts.length === 0){
+    showToast('La OC debe tener al menos un material', 'error');
     return;
   }
 
@@ -8813,15 +9032,34 @@ async function saveDetailEdits(){
   btn.textContent = 'Guardando...';
 
   try{
-    // 1) Actualizar cada item (con .select() para detectar bloqueos de permisos/RLS)
-    for(const u of itemUpdates){
+    // 1) Borrar los items quitados
+    if(detail._removedIds && detail._removedIds.length){
+      const { error: eDel } = await sb
+        .from('ordenes_compra_items')
+        .delete()
+        .in('id', detail._removedIds);
+      if(eDel) throw eDel;
+    }
+
+    // 2) Actualizar los items existentes (con .select() para detectar bloqueos RLS)
+    for(const u of updates){
       const { data: d1, error: e1 } = await sb
         .from('ordenes_compra_items')
-        .update({ cantidad: u.cantidad, precio_unit: u.precio_unit, subtotal: u.subtotal })
+        .update({ cantidad: u.cantidad, precio_unit: u.precio_unit, subtotal: u.subtotal, producto_id: u.producto_id, producto_nombre: u.producto_nombre, rubro_codigo: u.rubro_codigo })
         .eq('id', u.id)
         .select();
       if(e1) throw e1;
       if(!d1 || d1.length === 0) throw new Error('No se pudo actualizar un item (permisos insuficientes).');
+    }
+
+    // 3) Insertar los materiales nuevos
+    if(inserts.length){
+      const { data: dIns, error: eIns } = await sb
+        .from('ordenes_compra_items')
+        .insert(inserts)
+        .select();
+      if(eIns) throw eIns;
+      if(!dIns || dIns.length !== inserts.length) throw new Error('No se pudieron agregar todos los materiales (permisos insuficientes).');
     }
 
     // 2) Actualizar la OC (datos + total recalculado + estado si corresponde)
