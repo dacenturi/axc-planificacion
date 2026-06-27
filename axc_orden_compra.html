@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v4.6 · tipo de compra en listado
+      Conexdata · AXC Planificación v4.7 · imputación de rubro robusta
     </p>
   </div>
 </div>
@@ -5840,10 +5840,21 @@ function renderCart(){
     return;
   }
 
-  document.getElementById('cartSubtitle').textContent = `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${fmtMoney(total)}`;
-
   const _cbActive = !!cartBudget.pp && ((Array.isArray(cartBudget.mats) && cartBudget.mats.length>0) || (Array.isArray(cartBudget.rubros) && cartBudget.rubros.length>0));
   if(_cbActive){ try{ _cbAutoImputar(); }catch(e){} }
+
+  let _sinRubro = 0;
+  if(_cbActive){
+    wizard.cart.forEach(function(it){
+      if(it.es_mano_obra) return;
+      if(it.rubro_codigo) return;
+      if(_cbResolveRubro(it.producto_id)) return;
+      _sinRubro++;
+    });
+  }
+  document.getElementById('cartSubtitle').textContent =
+    `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${fmtMoney(total)}` +
+    (_sinRubro>0 ? `  ·  ⚠ ${_sinRubro} sin rubro` : '');
   const _itemHtml = wizard.cart.map((it, idx)=>{
     let _badge = '';
     if(_cbActive && !it.es_mano_obra){
@@ -5854,6 +5865,12 @@ function renderCart(){
           _badge = `<div class="cip-badge" style="background:${bg};color:${d.color};border:1px solid ${d.color}33">${d.excede?'⚠ ':'💳 '}Debita de: ${escapeHtml(d.txt)}</div>`;
         }
       }catch(e){}
+    }
+    let _selStyle='', _lblTxt='Presupuesto:', _lblStyle='';
+    if(_cbActive && !it.es_mano_obra && !it.rubro_codigo && !_cbResolveRubro(it.producto_id)){
+      _selStyle=' style="border:1px solid #c0392b;background:#fdf3f3"';
+      _lblTxt='⚠ Elegí rubro:';
+      _lblStyle=' style="color:#c0392b;font-weight:700"';
     }
     if(it.es_mano_obra){
       return `
@@ -5888,7 +5905,7 @@ function renderCart(){
           <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
         </div>
       </div>
-      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl">Presupuesto:</span><select class="cb-isel" data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>${_badge}` : ''}
+      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl"${_lblStyle}>${_lblTxt}</span><select class="cb-isel"${_selStyle} data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>${_badge}` : ''}
       <div class="cart-item-bottom">
         <span class="cart-item-calc">Subtotal</span>
         <span class="cart-item-subtotal">${fmtMoney(it.subtotal)}</span>
@@ -5912,14 +5929,19 @@ function renderCart(){
       const rub = (cartBudget.allRubros||[]).find(function(r){ return String(r.rubro_codigo)===rk; });
       const presu = rub ? (Number(rub.precio_total)||0) : 0;
       let label, sub;
+      const _esSin = (rk==='__sin');
       if(rk==='__mo'){ label='🔧 Mano de obra'; sub=''; }
-      else if(rk==='__sin'){ label='Sin rubro asignado'; sub=''; }
+      else if(_esSin){ label='⚠ Sin rubro asignado'; sub = _cbActive ? 'Elegí el rubro de cada ítem antes de guardar' : ''; }
       else { label = rk + (desc ? (' · ' + desc) : ''); sub = presu>0 ? ('de ' + fmtMoney(presu) + ' presup.') : ''; }
+      const _alert = (_esSin && _cbActive);
+      const _grpStyle = _alert ? ' style="border:1px solid #e3b4b4;background:#fdf3f3;border-radius:8px"' : '';
+      const _codeStyle = _alert ? ' style="color:#c0392b"' : '';
+      const _subStyle = _alert ? ' style="color:#c0392b;font-weight:600"' : '';
       const head = '<div class="cart-group-head">' +
-          '<div class="cgh-l"><span class="cgh-code">' + escapeHtml(label) + '</span>' + (sub ? ('<span class="cgh-sub">' + sub + '</span>') : '') + '</div>' +
+          '<div class="cgh-l"><span class="cgh-code"' + _codeStyle + '>' + escapeHtml(label) + '</span>' + (sub ? ('<span class="cgh-sub"' + _subStyle + '>' + escapeHtml(sub) + '</span>') : '') + '</div>' +
           '<div class="cgh-r"><span class="cgh-cnt">' + idxs.length + ' ít.</span><span class="cgh-tot">' + fmtMoney(grpTot) + '</span></div>' +
         '</div>';
-      return '<div class="cart-group">' + head + idxs.map(function(i){ return _itemHtml[i]; }).join('') + '</div>';
+      return '<div class="cart-group"' + _grpStyle + '>' + head + idxs.map(function(i){ return _itemHtml[i]; }).join('') + '</div>';
     }).join('');
   } else {
     html = _itemHtml.join('');
@@ -6823,8 +6845,30 @@ function _cbBestRubroForIns(codigoInsumo){
   });
   return best;
 }
+/* Fallback INEQUÍVOCO por nombre: si el material del producto matchea insumos
+   del presupuesto que pertenecen a UN SOLO rubro, devuelve ese rubro_codigo.
+   Si matchea 0 ó varios rubros distintos, devuelve null (no adivina). */
+function _cbRubroByName(nombre){
+  if(!Array.isArray(cartBudget.mats) || !cartBudget.mats.length) return null;
+  const n = _presuNorm(nombre);
+  if(!n) return null;
+  const rubros = {};
+  cartBudget.mats.forEach(function(m){
+    const mat = _presuNorm(m.material||'');
+    if(!mat) return;
+    // match exacto, o uno contenido en el otro (tolera sufijos de marca/medida)
+    if(mat === n || mat.indexOf(n) >= 0 || n.indexOf(mat) >= 0){
+      const rk = String(m.rubro_codigo||'').trim();
+      if(rk) rubros[rk] = 1;
+    }
+  });
+  const keys = Object.keys(rubros);
+  return keys.length === 1 ? keys[0] : null;   // solo si es inequívoco
+}
+
 /* Cascada de débito automática (Presupuesto → Rubro → Insumo):
-   a cada ítem sin imputar (y no elegido a mano) le asigna el rubro de mayor saldo de su insumo */
+   a cada ítem sin imputar (y no elegido a mano) le asigna el rubro de mayor saldo de su insumo.
+   Si no matchea por producto_id, intenta un fallback INEQUÍVOCO por nombre. */
 function _cbAutoImputar(){
   if(!cartBudget.pp || !Array.isArray(cartBudget.mats) || !cartBudget.mats.length) return;
   (wizard.cart||[]).forEach(function(it){
@@ -6833,9 +6877,13 @@ function _cbAutoImputar(){
     if(it.rubro_codigo) return;                  // ya tiene rubro asignado
     if(_cbResolveRubro(it.producto_id)) return;  // mapeado a un rubro de servicio
     const ins = _cbResolveIns(it.producto_id);
-    if(!ins) return;                             // su producto no matchea un insumo del presupuesto
-    const best = _cbBestRubroForIns(ins);
-    if(best && best.rubro_codigo){ it.rubro_codigo = best.rubro_codigo; }
+    if(ins){
+      const best = _cbBestRubroForIns(ins);
+      if(best && best.rubro_codigo){ it.rubro_codigo = best.rubro_codigo; return; }
+    }
+    // Fallback: su producto no matchea un insumo por id → probar por nombre, solo si es inequívoco
+    const rkName = _cbRubroByName(it.producto_nombre);
+    if(rkName){ it.rubro_codigo = rkName; }
   });
 }
 /* Destino de débito EFECTIVO de un ítem del carrito (para el badge). Devuelve {txt,color,excede} */
@@ -7577,6 +7625,14 @@ async function submitOC(){
     const realNumero = ocData.numero_oc;
 
     // 3) Insertar items
+    // Garantía de imputación: con el mapa producto→insumo cargado, asignar rubro
+    // a los ítems que lo permitan ANTES de guardar (evita huecos por timing del render).
+    try{
+      if(cartBudget.pp && Array.isArray(cartBudget.mats) && cartBudget.mats.length){
+        if(!cartBudget.mapLoaded){ await loadProductoMap(); }
+        _cbAutoImputar();
+      }
+    }catch(e){ console.warn('auto-imputar pre-guardado', e); }
     const _hayMO = wizard.cart.some(it => it.es_mano_obra);
     const _haySinPres = wizard.cart.some(it => it.sin_presupuesto);
     const _hayProdReal = wizard.cart.some(it => it.producto_real);
