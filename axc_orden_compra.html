@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v5.0 · rubro unificado (catálogo maestro)
+      Conexdata · AXC Planificación v5.1 · rubro unificado (catálogo maestro)
     </p>
   </div>
 </div>
@@ -6417,11 +6417,27 @@ function populateFormSelects(){
   document.getElementById('fldProveedor').innerHTML =
     '<option value="">Seleccionar proveedor...</option>' +
     wizard.listas.proveedores.map(p => `<option value="${escapeHtml(p.valor)}">${escapeHtml(p.valor)}</option>`).join('');
+  // Al cambiar el proveedor, re-filtrar el vendedor
+  document.getElementById('fldProveedor').onchange = function(){ populateVendedorSelect(this.value); };
 
-  // Vendedor
-  document.getElementById('fldVendedor').innerHTML =
-    '<option value="">Sin vendedor</option>' +
-    wizard.listas.vendedores.map(v => `<option value="${escapeHtml(v.valor)}">${escapeHtml(v.valor)}</option>`).join('');
+  // Vendedor (filtrado por el proveedor elegido)
+  populateVendedorSelect(document.getElementById('fldProveedor').value || '');
+}
+
+// Vendedor ligado al proveedor (usa obra_ref como referencia al proveedor).
+// Muestra los vendedores del proveedor elegido + los "genéricos" (sin proveedor asignado).
+function populateVendedorSelect(prov){
+  const sel = document.getElementById('fldVendedor');
+  if(!sel) return;
+  const prev = sel.value;
+  const provN = (prov||'').trim().toLowerCase();
+  const lista = (wizard.listas.vendedores||[]).filter(v => {
+    const ref = (v.obra_ref||'').trim().toLowerCase();
+    return ref === '' || (provN !== '' && ref === provN);
+  });
+  sel.innerHTML = '<option value="">Sin vendedor</option>' +
+    lista.map(v => `<option value="${escapeHtml(v.valor)}">${escapeHtml(v.valor)}</option>`).join('');
+  if(prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
 // Aplica el bloqueo del campo "Residente" si el usuario NO es admin
@@ -6569,7 +6585,15 @@ async function enterStep2(){
   document.getElementById('fldResidente').value = wizard.form.residente || '';
   document.getElementById('fldContratista').value = wizard.form.contratista || '';
   document.getElementById('fldProveedor').value = wizard.form.proveedor || '';
-  document.getElementById('fldVendedor').value = wizard.form.vendedor || '';
+  populateVendedorSelect(wizard.form.proveedor || '');
+  (function(){
+    const sv = document.getElementById('fldVendedor');
+    const vv = wizard.form.vendedor || '';
+    if(vv && ![...sv.options].some(o => o.value === vv)){
+      const opt = document.createElement('option'); opt.value = vv; opt.textContent = vv; sv.appendChild(opt);
+    }
+    sv.value = vv;
+  })();
   document.getElementById('fldTipoCompra').value = wizard.form.tipo_compra || '';
   // Presupuesto se gestiona en el Carrito (Paso 1); presuApplyMode() sincroniza el valor actual.
   presuInit(); presuApplyMode();
@@ -10678,6 +10702,15 @@ async function confirmAddListItem(){
   if(cfg.needsObra){
     obraRef = (document.getElementById('addListExtraSelect').value || '').trim();
   }
+  // Vendedor: se liga al proveedor elegido (reutiliza obra_ref como referencia al proveedor)
+  if(cfg.listKey === 'vendedores'){
+    obraRef = (document.getElementById('fldProveedor').value || '').trim();
+    if(!obraRef){
+      errBox.textContent = 'Elegí primero el proveedor para crear el vendedor.';
+      errBox.classList.add('visible');
+      return;
+    }
+  }
 
   // Insertar en Supabase
   const confirmBtn = document.getElementById('addListConfirm');
@@ -10738,6 +10771,12 @@ function refreshOneSelect(cfg){
   if(cfg.listKey === 'sectores'){
     const obraActual = document.getElementById('fldObra')?.value;
     if(obraActual) filterSectoresByObra(obraActual);
+    return;
+  }
+
+  // Caso especial: vendedores filtra por proveedor
+  if(cfg.listKey === 'vendedores'){
+    populateVendedorSelect(document.getElementById('fldProveedor')?.value || '');
     return;
   }
 
