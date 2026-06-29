@@ -944,7 +944,7 @@ body{
       <div class="login-error" id="loginError"></div>
     </form>
     <div class="login-footer">
-      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.3.1 (fix total PDF)
+      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.4 (PDF con/sin detalle)
     </div>
   </div>
 </div>
@@ -1536,7 +1536,7 @@ function initFilterBindings(){
 
   // Botones
   document.getElementById('btnPrint').addEventListener('click', () => window.print());
-  document.getElementById('btnExportPDF').addEventListener('click', exportPDF);
+  document.getElementById('btnExportPDF').addEventListener('click', abrirModalExportPDF);
 
   initSeccionesMenu();
 }
@@ -2327,6 +2327,43 @@ function startRealtime(){
   }
 }
 
+// ─── Selector de formato de exportación PDF ──────────────
+function abrirModalExportPDF(){
+  // Evitar duplicados
+  if(document.getElementById('pdfModeOverlay')) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'pdfModeOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,26,41,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+
+  overlay.innerHTML = `
+    <div role="dialog" aria-modal="true" style="background:#fff;border-radius:16px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden;font-family:inherit">
+      <div style="background:linear-gradient(135deg,#1F3864,#0A1A29);padding:18px 22px;color:#fff">
+        <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px">📄 Exportar a PDF</div>
+        <div style="font-size:12.5px;opacity:.85;margin-top:3px">Elegí cómo querés el reporte</div>
+      </div>
+      <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px">
+        <button id="pdfModeDetalle" style="text-align:left;border:1.5px solid #1F3864;background:#f4f7fc;border-radius:12px;padding:14px 16px;cursor:pointer;transition:.15s">
+          <div style="font-weight:700;color:#1F3864;font-size:14px">Con detalle de factura</div>
+          <div style="font-size:12px;color:#5b6478;margin-top:2px">Trae todas las líneas de cada orden (productos, cantidades y subtotales).</div>
+        </button>
+        <button id="pdfModeResumen" style="text-align:left;border:1.5px solid #C8A028;background:#fdf8ec;border-radius:12px;padding:14px 16px;cursor:pointer;transition:.15s">
+          <div style="font-weight:700;color:#9a7a1e;font-size:14px">Sin detalle (resumen)</div>
+          <div style="font-size:12px;color:#5b6478;margin-top:2px">Una sola línea por orden, con el total. Más compacto.</div>
+        </button>
+        <button id="pdfModeCancel" style="border:none;background:transparent;color:#8B93A7;font-size:13px;cursor:pointer;padding:6px;margin-top:2px">Cancelar</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const cerrar = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) cerrar(); });
+  document.getElementById('pdfModeCancel').addEventListener('click', cerrar);
+  document.getElementById('pdfModeDetalle').addEventListener('click', () => { cerrar(); exportPDF(true); });
+  document.getElementById('pdfModeResumen').addEventListener('click', () => { cerrar(); exportPDF(false); });
+}
+
 // ─── PDF Export ──────────────────────────────────────────
 function pdfSafe(s){
   if(s==null) return '';
@@ -2347,8 +2384,8 @@ function fmtPdfMoney(n){
   return 'Gs. ' + Math.round(Number(n)).toLocaleString('es-PY');
 }
 
-async function exportPDF(){
-  showLoading('Generando PDF profesional...');
+async function exportPDF(incluirDetalle = true){
+  showLoading(incluirDetalle ? 'Generando PDF detallado...' : 'Generando PDF resumen...');
   try{
     if(!window.jspdf || !window.jspdf.jsPDF){
       throw new Error('Librería jsPDF no cargada');
@@ -2584,7 +2621,9 @@ async function exportPDF(){
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(8);
     doc.setTextColor(140, 150, 170);
-    doc.text(pdfSafe(`${ocGroupsArr.length} ordenes · ${sortedItems.length} items (excluyendo Rechazados)`), M, y);
+    doc.text(pdfSafe(incluirDetalle
+      ? `${ocGroupsArr.length} ordenes · ${sortedItems.length} items (excluyendo Rechazados)`
+      : `${ocGroupsArr.length} ordenes · resumen sin detalle (excluyendo Rechazados)`), M, y);
     y += 4;
 
     // Filas: por cada OC, una cabecera (con su total) y debajo sus items
@@ -2598,14 +2637,17 @@ async function exportPDF(){
         pdfSafe(g.oc.oc_tipo_compra || 'Sin especificar'),
         pdfSafe(`${g.items.length} item${g.items.length===1?'':'s'}`), '', fmtPdfMoney(ocTotal), pdfSafe(g.oc.oc_estado),
       ]);
-      pdfRows.push({ type:'oc', sub:0 });
-      g.items.forEach(it => {
-        tableRows.push([
-          '', '', '', '', '', pdfSafe('   ' + (it.producto_nombre||'').slice(0,30)),
-          String(it.cantidad||0), fmtPdfMoney(it.subtotal), '',
-        ]);
-        pdfRows.push({ type:'item', sub:(Number(it.subtotal)||0) });
-      });
+      // En modo resumen, la cabecera lleva el subtotal de la OC (para la suma por hoja).
+      pdfRows.push({ type:'oc', sub: incluirDetalle ? 0 : ocTotal });
+      if(incluirDetalle){
+        g.items.forEach(it => {
+          tableRows.push([
+            '', '', '', '', '', pdfSafe('   ' + (it.producto_nombre||'').slice(0,30)),
+            String(it.cantidad||0), fmtPdfMoney(it.subtotal), '',
+          ]);
+          pdfRows.push({ type:'item', sub:(Number(it.subtotal)||0) });
+        });
+      }
     });
 
     // Acumulador del subtotal de la hoja actual
@@ -2648,10 +2690,10 @@ async function exportPDF(){
         }
       },
       didDrawCell: function(data){
-        // Acumular SOLO los subtotales de los items (no las cabeceras de OC, para no duplicar)
+        // Acumular subtotales: en modo detalle, los items; en modo resumen, las cabeceras de OC
         if(data.section === 'body' && data.column.index === 6){
           const meta = pdfRows[data.row.index];
-          if(meta && meta.type === 'item') _pageSum += meta.sub;
+          if(meta && (meta.type === 'item' || (!incluirDetalle && meta.type === 'oc'))) _pageSum += meta.sub;
         }
       },
       didDrawPage: function(data){
