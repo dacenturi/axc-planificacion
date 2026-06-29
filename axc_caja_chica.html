@@ -542,7 +542,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v5.0</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v5.1</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1482,8 +1482,11 @@ function renderComprobantes(){
       if(!m.rendicion_id){ if(puedeAprobar()) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`; }
       else if(puedeAprobarRendicion()) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
     }
-    if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
-    else { acts+=`<button class="act adj" style="opacity:.5" onclick='toast("Este comprobante no tiene foto/PDF adjunto.","err")'>📎 Sin adjunto</button>`; }
+    if(adj.length){
+      acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`;
+      acts+=`<button class="act ed" onclick='reemplazarAdjunto("${m.id}",${JSON.stringify(adj).replace(/'/g,"&#39;")})'>🔄 Cambiar foto</button>`;
+    }
+    else { acts+=`<button class="act adj" onclick='reemplazarAdjunto("${m.id}",[])'>📎 Subir foto</button>`; }
     acts+='</div>';
     if(acts==='<div class="cmp-acts"></div>') acts='';
     return `<div class="cmp">
@@ -1523,6 +1526,36 @@ function _iconoAdjunto(adj, stop){
     return `<span class="rep-adj" title="Ver comprobante adjunto" onclick='${s}verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎</span>`;
   }
   return `<span class="rep-adj rep-adj-off" title="Sin comprobante adjunto" onclick='${s}toast("Este comprobante no tiene foto/PDF adjunto.","err")'>📎</span>`;
+}
+
+// Reemplaza (o agrega) la foto/PDF de un comprobante. Disponible para
+// todos: residentes y supervisores. Útil si el escaneo no se ve bien.
+// Sube el archivo nuevo, lo registra y recién ahí borra el anterior.
+function reemplazarAdjunto(movId, adjActuales){
+  const inp=document.createElement('input');
+  inp.type='file'; inp.accept='image/*,application/pdf';
+  inp.onchange=async ()=>{
+    const f=inp.files && inp.files[0];
+    if(!f) return;
+    toast('Subiendo nuevo comprobante…','ok');
+    try{
+      // 1) subir el archivo nuevo
+      const path=`${movId}/${Date.now()}_${f.name}`;
+      const up=await _SB.storage.from('caja-chica').upload(path,f,{contentType:f.type,upsert:false});
+      if(up.error){ toast('No se pudo subir: '+up.error.message,'err'); return; }
+      // 2) registrar el nuevo
+      const ins=await _SB.from('caja_chica_adjuntos').insert({movimiento_id:movId,storage_path:path,nombre:f.name,tipo_mime:f.type,tamano_bytes:f.size,creado_por:CURRENT_USER.email});
+      if(ins.error){ toast('La foto se subió pero no se registró: '+ins.error.message,'err'); return; }
+      // 3) recién ahora borrar el/los anterior(es) (archivo + registro)
+      for(const a of (adjActuales||[])){
+        if(a.storage_path){ try{ await _SB.storage.from('caja-chica').remove([a.storage_path]); }catch(_){} }
+        if(a.id){ try{ await _SB.from('caja_chica_adjuntos').delete().eq('id',a.id); }catch(_){} }
+      }
+      toast('Comprobante actualizado ✓','ok');
+      await loadComprobantes();
+    }catch(e){ toast('Error: '+(e.message||e),'err'); }
+  };
+  inp.click();
 }
 
 async function aprobar(id,total,res){
