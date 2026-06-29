@@ -54,6 +54,19 @@ a{color:inherit;text-decoration:none}
 .btn-ghost{background:none;color:var(--text2);border:1px solid var(--border)}
 .btn-ghost:hover{color:var(--text);border-color:var(--border3)}
 
+/* ── Escaneo de factura con IA (opcional) ── */
+.ia-scan{margin-top:8px}
+.ia-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#0EA5E9,#6366f1);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;transition:filter .15s,transform .1s}
+.ia-btn:hover{filter:brightness(1.08)}
+.ia-btn:active{transform:translateY(1px)}
+.ia-btn:disabled{opacity:.6;cursor:wait}
+.ia-status{font-size:12.5px;margin-top:7px;line-height:1.4}
+.ia-status.ok{color:#0a8a4f}
+.ia-status.err{color:#c0392b}
+.ia-status.run{color:var(--text2)}
+.ia-filled{border-color:#0EA5E9 !important;box-shadow:0 0 0 2px rgba(14,165,233,.15)}
+.ia-revisar{display:inline-block;margin-top:6px;font-size:11px;font-weight:600;color:#0369a1;background:rgba(14,165,233,.12);border-radius:6px;padding:3px 8px}
+
 .tabs{position:relative;z-index:2;display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--border);background:var(--bg2)}
 .tab{padding:12px 18px;font-weight:600;font-size:13px;color:var(--text2);border-bottom:2px solid transparent;cursor:pointer;transition:.15s;display:flex;align-items:center;gap:7px}
 .tab:hover{color:var(--text)}
@@ -392,8 +405,12 @@ tr:last-child td{border-bottom:none}
               <div class="fld"><label>Tipo</label><select id="c-tipo"><option value="factura">Factura</option><option value="recibo">Recibo</option></select></div>
             </div>
             <div class="frow">
-              <div class="fld"><label>Proveedor</label><div class="fld-add"><select id="c-prov"></select><button type="button" class="addbtn" title="Agregar proveedor" onclick="nuevoValorLista('proveedores','c-prov')">＋</button></div></div>
+              <div class="fld"><label>Proveedor <span style="color:var(--text3);font-weight:400;text-transform:none">(Razón social)</span></label><div class="fld-add"><select id="c-prov"></select><button type="button" class="addbtn" title="Agregar proveedor" onclick="nuevoValorLista('proveedores','c-prov')">＋</button></div></div>
+              <div class="fld"><label>RUC <span style="color:var(--text3);font-weight:400;text-transform:none">(opcional)</span></label><input id="c-ruc" placeholder="Ej. 80012345-6"></div>
+            </div>
+            <div class="frow">
               <div class="fld"><label>Vendedor</label><div class="fld-add"><select id="c-vend"></select><button type="button" class="addbtn" title="Agregar vendedor" onclick="nuevoValorLista('vendedores','c-vend')">＋</button></div></div>
+              <div class="fld"></div>
             </div>
             <div class="frow">
               <div class="fld"><label>Obra</label><div class="fld-add"><select id="c-obra"></select><button type="button" class="addbtn" title="Agregar obra" onclick="nuevoValorLista('obras','c-obra')">＋</button></div></div>
@@ -416,6 +433,12 @@ tr:last-child td{border-bottom:none}
             <div class="tot-row"><span class="lbl">Total del comprobante</span><span class="val" id="c-total">₲ 0</span></div>
 
             <div class="fld" style="margin-top:14px"><label>Comprobante (obligatorio · foto/PDF) <span style="color:#c0392b">*</span></label><input id="c-files" type="file" accept="image/*,application/pdf" multiple></div>
+
+            <!-- Escaneo con IA: EN PAUSA por el momento. Para reactivarlo, quitar el style="display:none" de la línea de abajo. -->
+            <div class="ia-scan" style="display:none">
+              <button type="button" class="ia-btn" id="ia-scan-btn" onclick="escanearFacturaIA()">✨ Escanear factura con IA <span style="opacity:.7;font-weight:400">(opcional)</span></button>
+              <div id="ia-scan-status" class="ia-status"></div>
+            </div>
 
             <div class="fld" style="margin-top:14px"><label>Comentario (opcional)</label><textarea id="c-coment" rows="2" placeholder="Aclaración o nota sobre este comprobante..." style="width:100%;resize:vertical;font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line,#e0d8c4);border-radius:10px;background:#fff;box-sizing:border-box"></textarea></div>
 
@@ -515,7 +538,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.6</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.7</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1075,6 +1098,103 @@ function checkLimites(res,total){
   return { superaTope:(tope>0 && total>tope), dejaNegativo:(total>saldo), tope, saldo };
 }
 
+// ───────────────────────────────────────────────────────────────────
+// Escaneo de factura con IA (OPCIONAL). Llama a la Edge Function
+// 'escanear-factura' (Gemini Flash). Autocompleta el formulario y deja
+// TODO editable. Si falla o no reconoce, el residente carga a mano.
+// ───────────────────────────────────────────────────────────────────
+function _iaStatus(msg, cls){ const s=gs('ia-scan-status'); if(s){ s.innerHTML=msg; s.className='ia-status'+(cls?' '+cls:''); } }
+function _iaMark(id){ const el=gs(id); if(el){ el.classList.add('ia-filled'); setTimeout(()=>el.classList.remove('ia-filled'), 14000); } }
+function _fileToBase64(file){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('No se pudo leer el archivo')); r.readAsDataURL(file); });
+}
+function _pick(obj, names){ for(const n of names){ if(obj && obj[n]!=null && obj[n]!=='') return obj[n]; } return null; }
+function _numPY(v){ if(v==null) return null; if(typeof v==='number') return Math.round(v); const n=parseInt(String(v).replace(/[^\d]/g,''),10); return isNaN(n)?null:n; }
+
+async function escanearFacturaIA(){
+  const btn=gs('ia-scan-btn');
+  const files=gs('c-files').files;
+  if(!files || !files.length){
+    showAlert('Falta la imagen','Primero subí la foto o el PDF de la factura en <b>Comprobante</b>, y después tocá <b>Escanear con IA</b>.', '📷', true);
+    return;
+  }
+  const file=files[0];
+  btn.disabled=true;
+  _iaStatus('Leyendo la factura con IA… esto puede tardar unos segundos.', 'run');
+  try{
+    const b64=await _fileToBase64(file);
+    const { data, error }=await _SB.functions.invoke('escanear-factura', {
+      body:{ image_base64:b64, mime_type:(file.type||'image/jpeg'), filename:file.name }
+    });
+    if(error) throw new Error(error.message||'Error en el servicio de escaneo');
+    let r=(data && (data.factura || data.result || data.data || data)) || {};
+    if(typeof r==='string'){ try{ r=JSON.parse(r); }catch(_){ throw new Error('Respuesta no válida'); } }
+
+    let llenados=0;
+
+    // Proveedor (razón social) — si no está en la lista, se agrega como opción
+    const prov=_pick(r,['proveedor','razon_social','razonSocial','emisor','nombre']);
+    if(prov){
+      const sel=gs('c-prov');
+      let opt=[...sel.options].find(o=>o.value.trim().toLowerCase()===String(prov).trim().toLowerCase());
+      if(!opt){ opt=document.createElement('option'); opt.value=String(prov).trim(); opt.textContent=String(prov).trim(); sel.appendChild(opt); }
+      sel.value=opt.value; filtrarVendedorComprobante(sel.value); _iaMark('c-prov'); llenados++;
+    }
+    // RUC
+    const ruc=_pick(r,['ruc','RUC','ruc_emisor','rucEmisor']);
+    if(ruc){ gs('c-ruc').value=String(ruc).trim(); _iaMark('c-ruc'); llenados++; }
+    // Nº factura
+    const fac=_pick(r,['nro_factura','numero_factura','factura','nro','numero','comprobante']);
+    if(fac){ gs('c-fac').value=String(fac).trim(); _iaMark('c-fac'); llenados++; }
+    // Fecha (ISO YYYY-MM-DD)
+    const fecha=_pick(r,['fecha','fecha_emision','date']);
+    if(fecha){ const f=String(fecha).slice(0,10); if(/^\d{4}-\d{2}-\d{2}$/.test(f)){ gs('c-fecha').value=f; _iaMark('c-fecha'); llenados++; } }
+    // Tipo
+    const tipo=_pick(r,['tipo','tipo_comprobante']);
+    if(tipo){ gs('c-tipo').value=(String(tipo).toLowerCase().includes('recibo'))?'recibo':'factura'; }
+
+    // Líneas detalladas (cada producto), editables
+    const items=r.items||r.lineas||r.detalle||r.productos||[];
+    if(Array.isArray(items) && items.length){
+      gs('lines-body').innerHTML='';
+      items.forEach(it=>{
+        addLine(); const tr=gs('lines-body').lastElementChild;
+        const con=_pick(it,['concepto','descripcion','detalle','producto','item','nombre']);
+        const cant=_pick(it,['cantidad','cant','qty']);
+        const un=_pick(it,['unidad','un','medida']);
+        const cu=_numPY(_pick(it,['costo_unit','precio_unit','precio_unitario','precio','costo','unitario']));
+        if(con) tr.querySelector('.li-con').value=String(con).trim();
+        tr.querySelector('.li-cant').value=(cant!=null && !isNaN(Number(cant)))?Number(cant):1;
+        if(un) tr.querySelector('.li-un').value=String(un).trim();
+        if(cu!=null) tr.querySelector('.li-cu').value=cu.toLocaleString('es-PY');
+        tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
+      });
+      llenados++;
+    }
+
+    if(!llenados){ _iaStatus('La IA no reconoció datos en esta imagen. Probá con una foto más nítida o cargá los campos a mano.', 'err'); btn.disabled=false; return; }
+
+    // Validación suave: total declarado vs suma de líneas
+    const totalDecl=_numPY(_pick(r,['total','monto_total','importe_total','total_factura']));
+    let aviso='';
+    if(totalDecl!=null){
+      const totalCalc=_numPY((gs('c-total').textContent||'').replace(/[^\d]/g,''));
+      if(totalCalc!=null && Math.abs(totalCalc-totalDecl) > Math.max(1000, totalDecl*0.02)){
+        aviso='<br>⚠️ El total de la factura (₲ '+totalDecl.toLocaleString('es-PY')+') no coincide con la suma de las líneas (₲ '+totalCalc.toLocaleString('es-PY')+'). Revisá los montos.';
+      }
+    }
+    _iaStatus('✓ Datos cargados. <b>Revisá y corregí</b> lo que haga falta antes de guardar.'+aviso, aviso?'err':'ok');
+
+  }catch(e){
+    const msg=String((e&&e.message)||e);
+    if(/not found|404|non-2xx|Function not found/i.test(msg)){
+      _iaStatus('El servicio de escaneo todavía no está disponible. Cargá la factura a mano por ahora.', 'err');
+    }else{
+      _iaStatus('No se pudo escanear ('+msg+'). Cargá la factura a mano.', 'err');
+    }
+  }finally{ btn.disabled=false; }
+}
+
 async function guardarComprobante(){
   const res=gs('c-res').value, fac=gs('c-fac').value.trim(), tipo=gs('c-tipo').value, fecha=gs('c-fecha').value||todayISO();
   const estado='solicitado'; // los comprobantes siempre entran como solicitado; la aprobación es un paso aparte
@@ -1151,7 +1271,7 @@ async function guardarComprobante(){
     }
   }
   const cab={ residente:res, fecha, nro_factura:fac, tipo_comprobante:tipo,
-    proveedor:gs('c-prov').value||null, vendedor:gs('c-vend').value||null, obra:gs('c-obra').value||null,
+    proveedor:gs('c-prov').value||null, ruc:gs('c-ruc').value.trim()||null, vendedor:gs('c-vend').value||null, obra:gs('c-obra').value||null,
     sector:gs('c-sector').value||null, rubro:gs('c-rubro').value||null, contratista:gs('c-contr').value||null,
     comentario:gs('c-coment').value.trim()||null,
     total, estado, solicitado_por:CURRENT_USER.email, solicitado_en:now };
@@ -1263,6 +1383,7 @@ async function editarComprobante(id){
   switchTab('comprobantes');
   gs('c-res').value=m.residente||''; gs('c-fecha').value=m.fecha||todayISO(); gs('c-fac').value=m.nro_factura||'';
   gs('c-tipo').value=m.tipo_comprobante||'factura'; gs('c-prov').value=m.proveedor||'';
+  gs('c-ruc').value=m.ruc||'';
   filtrarVendedorComprobante(m.proveedor||'');
   // Preservar el vendedor guardado aunque no esté en la lista filtrada (dato histórico)
   if(m.vendedor && ![...gs('c-vend').options].some(o=>o.value===m.vendedor)){
@@ -1293,7 +1414,7 @@ function cancelarEdicion(){
   EDIT_ID=null; EDIT_ORIG_TOTAL=0; EDIT_TIENE_ADJ=false;
   const bnr=gs('cedit-bnr'); if(bnr){ bnr.classList.remove('show'); bnr.innerHTML=''; }
   gs('c-btn').textContent='Guardar comprobante';
-  gs('c-fac').value=''; gs('c-files').value=''; gs('c-coment').value='';
+  gs('c-fac').value=''; gs('c-ruc').value=''; gs('c-files').value=''; gs('c-coment').value='';
   gs('lines-body').innerHTML=''; addLine();
 }
 
