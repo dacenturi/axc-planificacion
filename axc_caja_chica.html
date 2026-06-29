@@ -203,6 +203,8 @@ tr:last-child td{border-bottom:none}
 .rep-saldo.neg{color:var(--red)}
 .rep-adj{cursor:pointer;font-size:13px;opacity:.7;margin-left:4px;transition:opacity .12s,transform .1s;display:inline-block}
 .rep-adj:hover{opacity:1;transform:scale(1.15)}
+.rep-adj-off{opacity:.3;filter:grayscale(1)}
+.rep-adj-off:hover{opacity:.55;transform:none}
 .rep-row-cred td{background:rgba(63,185,80,.06)}
 .rep-total td{font-weight:800;border-top:2px solid var(--border);background:var(--bg3)}
 .rep-grp{cursor:pointer}
@@ -540,7 +542,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.8</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.9</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -1479,6 +1481,7 @@ function renderComprobantes(){
       else if(puedeAprobarRendicion()) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
     }
     if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
+    else { acts+=`<button class="act adj" style="opacity:.5" onclick='toast("Este comprobante no tiene foto/PDF adjunto.","err")'>📎 Sin adjunto</button>`; }
     acts+='</div>';
     if(acts==='<div class="cmp-acts"></div>') acts='';
     return `<div class="cmp">
@@ -1508,6 +1511,16 @@ async function verAdjuntos(adj){
     }catch(e){ fail++; }
   }
   if(fail){ toast('No se pudieron abrir '+fail+' adjunto(s). ¿Está creado el bucket "caja-chica"?','err'); }
+}
+
+// Devuelve el ícono 📎 para una fila. Siempre se muestra: activo si hay
+// adjunto (abre la imagen), atenuado si no lo hay (avisa que falta foto).
+function _iconoAdjunto(adj, stop){
+  const s = stop ? 'event.stopPropagation();' : '';
+  if(adj && adj.length){
+    return `<span class="rep-adj" title="Ver comprobante adjunto" onclick='${s}verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎</span>`;
+  }
+  return `<span class="rep-adj rep-adj-off" title="Sin comprobante adjunto" onclick='${s}toast("Este comprobante no tiene foto/PDF adjunto.","err")'>📎</span>`;
 }
 
 async function aprobar(id,total,res){
@@ -1693,9 +1706,7 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
       ? `<span class="grp-tog tog-${gid}">▸</span> ${r.items.length} ítem(s)`
       : hasAcr ? `<span class="grp-tog tog-${gid}">▸</span> ${r.concepto}`
       : (r.concepto||'');
-    const facCell = (r.factura||'') + ((r.adj&&r.adj.length)
-      ? ` <span class="rep-adj" title="Ver comprobante adjunto" onclick='event.stopPropagation();verAdjuntos(${JSON.stringify(r.adj).replace(/'/g,"&#39;")})'>📎</span>`
-      : '');
+    const facCell = (r.factura||'') + ((r.kind==='deb') ? (' '+_iconoAdjunto(r.adj, true)) : '');
     html+=`<tr class="${r.kind==='cred'?'rep-row-cred':''} ${clickable?'rep-grp':''}"${clickable?` onclick="toggleGrp('${gid}')"`:''}>
       <td class="nw">${r.fecha||''}</td><td class="nw">${facCell}</td><td>${r.tipo}</td>
       <td>${r.proveedor}</td><td>${r.obra}</td><td>${r.sector}</td><td>${r.rubro}</td><td>${r.contratista}</td>
@@ -2010,14 +2021,14 @@ async function loadRendicionData(){
 
   // gastos aprobados sin rendir (hasta el corte)
   const { data:movs }=await _SB.from('caja_chica_movimientos')
-    .select('id,fecha,nro_factura,total,numero_orden,obra').eq('residente',res).eq('estado','aprobado').is('rendicion_id',null)
+    .select('id,fecha,nro_factura,total,numero_orden,obra,caja_chica_adjuntos(id,storage_path,nombre)').eq('residente',res).eq('estado','aprobado').is('rendicion_id',null)
     .order('fecha',{ascending:true});
   RD_PENDING=(movs||[]).filter(m=>!corte || (m.fecha||'')<=corte);
   const totalPend=RD_PENDING.reduce((a,m)=>a+Number(m.total),0);
   const s=SALDOS[res]; const saldo=s?s.saldo:0;
   sum.innerHTML=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b> · Gastos aprobados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
   pend.innerHTML = RD_PENDING.length
-    ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
+    ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura} ${_iconoAdjunto(m.caja_chica_adjuntos||[],false)}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
     : '<div class="empty">No hay gastos aprobados pendientes de rendir.</div>';
   gs('rd-btn').disabled = !RD_PENDING.length;
 
