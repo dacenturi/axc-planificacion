@@ -320,6 +320,7 @@ tr:last-child td{border-bottom:none}
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 </head>
 <body>
 
@@ -534,6 +535,9 @@ tr:last-child td{border-bottom:none}
               <option value="resumen">PDF resumido (1 línea por comprobante)</option>
             </select>
             <button class="btn-ghost" id="r-export-pdf" onclick="exportarReportePDF()" disabled>🖨 Exportar PDF</button>
+            <label id="r-pdf-adj-wrap" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none" title="Adjunta las fotos/PDF de los comprobantes al final del reporte, en orden">
+              <input type="checkbox" id="r-pdf-adjuntos" style="width:16px;height:16px;cursor:pointer"> Anexar comprobantes
+            </label>
             <span id="rep-info" style="font-size:12px;color:var(--text2)"></span>
           </div>
           <div id="rep-result"><div class="empty">Elegí un residente y tocá Generar.</div></div>
@@ -542,7 +546,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v5.1</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v5.2</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -2023,7 +2027,82 @@ function exportarReportePDF(){
     }
   });
 
-  doc.save(`caja_chica_reporte_${P.res.replace(/[^\w]+/g,'_')}_${modo}_${todayISO()}.pdf`);
+  const filename=`caja_chica_reporte_${P.res.replace(/[^\w]+/g,'_')}_${modo}_${todayISO()}.pdf`;
+  if(gs('r-pdf-adjuntos') && gs('r-pdf-adjuntos').checked){
+    _exportarConAdjuntos(doc, P.rows, filename);
+  } else {
+    doc.save(filename);
+  }
+}
+
+// Helpers para anexar comprobantes al PDF del reporte (usa pdf-lib)
+function _mimeFromName(n){ n=(n||'').toLowerCase(); if(n.endsWith('.pdf'))return 'application/pdf'; if(n.endsWith('.png'))return 'image/png'; if(n.endsWith('.jpg')||n.endsWith('.jpeg'))return 'image/jpeg'; if(n.endsWith('.webp'))return 'image/webp'; return ''; }
+function _descargarBlob(bytes, filename, type){ const blob=new Blob([bytes],{type}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(()=>URL.revokeObjectURL(url),2000); }
+function _addSeparador(doc,font,fontB,label,sub,nombre){
+  const { rgb }=PDFLib; const p=doc.addPage([595.28,841.89]);
+  p.drawText('Comprobante adjunto',{x:36,y:800,size:11,font,color:rgb(0.5,0.5,0.5)});
+  p.drawText(label||'',{x:36,y:776,size:18,font:fontB,color:rgb(0.12,0.22,0.39)});
+  p.drawText(sub||'',{x:36,y:756,size:10,font,color:rgb(0.4,0.4,0.4)});
+  if(nombre) p.drawText('Archivo: '+nombre,{x:36,y:740,size:9,font,color:rgb(0.5,0.5,0.5)});
+  p.drawText('(las paginas del comprobante siguen a continuacion)',{x:36,y:722,size:9,font,color:rgb(0.5,0.5,0.5)});
+}
+function _addAviso(doc,font,txt){ const { rgb }=PDFLib; const p=doc.addPage([595.28,841.89]); p.drawText(txt,{x:36,y:790,size:11,font,color:rgb(0.7,0.2,0.2)}); }
+
+async function _exportarConAdjuntos(jsDoc, rows, filename){
+  const info=gs('rep-info');
+  if(!window.PDFLib){ toast('No cargó la librería para anexar. Se descarga el reporte sin adjuntos.','err'); jsDoc.save(filename); return; }
+  const { PDFDocument, StandardFonts, rgb }=PDFLib;
+  try{
+    if(info) info.textContent='Preparando adjuntos…';
+    const merged=await PDFDocument.load(jsDoc.output('arraybuffer'));
+    const font=await merged.embedFont(StandardFonts.Helvetica);
+    const fontB=await merged.embedFont(StandardFonts.HelveticaBold);
+
+    // Recolecta adjuntos en el MISMO orden del reporte (por fecha de carga)
+    const items=[];
+    (rows||[]).forEach(r=>{
+      if(r.kind==='deb' && r.adj && r.adj.length){
+        r.adj.forEach(a=> items.push({ a, label:`Fact. ${r.factura||''}`, sub:`${r.proveedor||''}${r.fecha?(' · '+r.fecha):''} · Gs ${fmt(r.debitado||r.total||0)}` }));
+      }
+    });
+    if(!items.length){ toast('Este reporte no tiene comprobantes con adjunto para anexar.','err'); jsDoc.save(filename); if(info)info.textContent=''; return; }
+
+    let ok=0, fail=0;
+    for(let i=0;i<items.length;i++){
+      const { a,label,sub }=items[i];
+      if(info) info.textContent=`Anexando comprobante ${i+1} de ${items.length}…`;
+      try{
+        const { data:su, error }=await _SB.storage.from('caja-chica').createSignedUrl(a.storage_path, 3600);
+        if(error || !su || !su.signedUrl){ fail++; continue; }
+        const buf=await (await fetch(su.signedUrl)).arrayBuffer();
+        const mime=(a.tipo_mime||'').toLowerCase() || _mimeFromName(a.nombre||'');
+        if(mime.includes('pdf') || /\.pdf$/i.test(a.nombre||'')){
+          _addSeparador(merged,font,fontB,label,sub,a.nombre);
+          try{ const src=await PDFDocument.load(buf,{ignoreEncryption:true}); const ps=await merged.copyPages(src, src.getPageIndices()); ps.forEach(p=>merged.addPage(p)); ok++; }
+          catch(e){ _addAviso(merged,font,'No se pudo incrustar el PDF: '+(a.nombre||'')); fail++; }
+        } else {
+          let img=null;
+          try{ img=(mime.includes('png')||/\.png$/i.test(a.nombre||'')) ? await merged.embedPng(buf) : await merged.embedJpg(buf); }
+          catch(e){ try{ img=await merged.embedPng(buf); }catch(e2){ img=null; } }
+          if(!img){ _addAviso(merged,font,'Formato de imagen no soportado: '+(a.nombre||'')+' (convertí a JPG/PNG).'); fail++; continue; }
+          const page=merged.addPage([595.28,841.89]); const mar=36;
+          page.drawText(label||'',{x:mar,y:800,size:14,font:fontB,color:rgb(0.12,0.22,0.39)});
+          page.drawText(sub||'',{x:mar,y:784,size:9,font,color:rgb(0.4,0.4,0.4)});
+          const maxW=page.getWidth()-mar*2, maxH=760-mar;
+          const sc=Math.min(maxW/img.width, maxH/img.height, 1), w=img.width*sc, h=img.height*sc;
+          page.drawImage(img,{x:(page.getWidth()-w)/2, y:760-h, width:w, height:h});
+          ok++;
+        }
+      }catch(e){ fail++; }
+    }
+    _descargarBlob(await merged.save(), filename, 'application/pdf');
+    if(info) info.textContent='';
+    toast(`PDF con ${ok} comprobante(s) anexado(s)`+(fail?` · ${fail} no se pudo(ieron) anexar`:''), fail?'err':'ok');
+  }catch(e){
+    if(info) info.textContent='';
+    toast('No se pudo anexar los comprobantes ('+(e.message||e)+'). Descargo el reporte solo.','err');
+    jsDoc.save(filename);
+  }
 }
 
 function exportarReporte(){
