@@ -332,7 +332,7 @@ tr:last-child td{border-bottom:none}
     <section class="panel" id="panel-config">
       <div class="dash" id="dash"></div>
       <div class="grid2">
-        <div class="card">
+        <div class="card" id="sec-topes">
           <div class="card-h">
             <div class="ic" style="background:rgba(240,165,0,.14);color:var(--accent)">🎯</div>
             <div><h2>Topes por residente</h2><div class="desc">Monto máximo por factura y % de alerta. El saldo se calcula solo.</div></div>
@@ -345,7 +345,7 @@ tr:last-child td{border-bottom:none}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:22px">
-          <div class="card">
+          <div class="card" id="sec-acreditar">
             <div class="card-h">
               <div class="ic" style="background:rgba(63,185,80,.14);color:var(--green)">＋</div>
               <div><h2>Acreditar fondo a residente</h2><div class="desc">Registra un depósito que sube el saldo de la caja.</div></div>
@@ -515,7 +515,7 @@ tr:last-child td{border-bottom:none}
     </section>
   </div>
 
-  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.5</div>
+  <div class="footer">Desarrollado por <b>CONEXDATA</b> · Caja Chica v4.6</div>
 </div>
 
 <div class="set-bg" id="prod-bg" onclick="if(event.target===this)closeProd()">
@@ -604,7 +604,7 @@ const AXC_LOGO='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMkAAABCCAYAAAD9sf
 const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Arq. Patricia','Arq. Willians','Ing. Albert','Ing. Azucena','Lic. Dahiana'];
 let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LISTAS={}, SECTORES_RAW=[], VENDEDORES_RAW=[];
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
-let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null;
+let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -634,8 +634,9 @@ async function switchTab(t){
   const { data:sess } = await _SB.auth.getSession();
   if(!sess || !sess.session){ window.location.href='index.html'; return; }
   CURRENT_USER = sess.session.user;
-  const { data:perf } = await _SB.from('perfiles').select('rol,residente,nombre').eq('id',CURRENT_USER.id).maybeSingle();
+  const { data:perf } = await _SB.from('perfiles').select('rol,residente,nombre,permisos').eq('id',CURRENT_USER.id).maybeSingle();
   ROL = perf ? perf.rol : null;
+  PERMISOS = (perf && perf.permisos && typeof perf.permisos==='object') ? perf.permisos : {};
   const esSuper = (ROL==='admin'||ROL==='supervisor_caja');
   const esResidente = (ROL==='residente' && perf && perf.residente);
   if(!esSuper && !esResidente){
@@ -646,12 +647,13 @@ async function switchTab(t){
   MI_RESIDENTE = IS_RESIDENTE ? perf.residente : null;
   gs('u-name').textContent = (perf&&perf.nombre)?perf.nombre:CURRENT_USER.email;
   gs('u-role').textContent = esSuper ? (ROL==='admin'?'Administrador':'Supervisor de caja') : ('Residente · '+MI_RESIDENTE);
-  // Configuración: acceso en el header, SOLO admin / supervisor de caja
-  if(gs('btn-config')) gs('btn-config').style.display = esSuper ? '' : 'none';
+  // Configuración: acceso en el header, según permiso (configurar topes y/o acreditar)
+  if(gs('btn-config')) gs('btn-config').style.display = (puedeConfigurar()||puedeAcreditar()) ? '' : 'none';
   gs('ac-fecha').value=todayISO(); gs('c-fecha').value=todayISO();
   if(gs('ac-monto')) moneyLive(gs('ac-monto'));
 
   await loadAll();
+  aplicarPermisosConfigUI();
   addLine();
   ccPrecargarComprobante();
   if(IS_RESIDENTE){ aplicarModoResidente(); switchTab('comprobantes'); }
@@ -717,6 +719,7 @@ function renderTopes(){
   renderMiSaldo(); renderDash();
 }
 async function saveTope(res,id){
+  if(!puedeConfigurar()){ showAlert('Sin permiso','No tenés habilitado <b>configurar topes</b>.','🚫',true); return; }
   const tope=parseInt(onlyDigits(gs('t_'+id).value)||'0',10);
   let pct=parseInt(onlyDigits(gs('p_'+id).value)||'20',10); if(pct<0)pct=0; if(pct>100)pct=100;
   const btn=event.target; btn.disabled=true; btn.textContent='…';
@@ -735,6 +738,7 @@ async function acMedioChange(){
   gs('fld-nro').style.display=show?'':'none';
 }
 async function acreditar(){
+  if(!puedeAcreditar()){ showAlert('Sin permiso','No tenés habilitado <b>acreditar fondos</b>.','🚫',true); return; }
   const res=gs('ac-res').value, monto=parseInt(onlyDigits(gs('ac-monto').value)||'0',10), medio=gs('ac-medio').value, ref=gs('ac-ref').value.trim(), fecha=gs('ac-fecha').value||todayISO();
   const banco=gs('ac-banco')?gs('ac-banco').value.trim():'', nro=gs('ac-nro')?gs('ac-nro').value.trim():'';
   if(!res){ toast('Elegí un residente','err'); return; }
@@ -780,7 +784,7 @@ async function acreditar(){
 
 // Admin: editar una acreditación (corrige el monto acreditado) -> recalcula el saldo.
 async function editarAcreditacion(id){
-  if(IS_RESIDENTE) return;
+  if(!puedeAcreditar()) return;
   const { data:a }=await _SB.from('caja_chica_acreditaciones').select('*').eq('id',id).maybeSingle();
   if(!a){ toast('No se encontró la acreditación','err'); return; }
   EDIT_ACR_ID=id;
@@ -806,7 +810,7 @@ function cancelarEdicionAcr(){
 }
 // Admin: eliminar una acreditación -> recalcula el saldo.
 async function eliminarAcreditacion(id){
-  if(IS_RESIDENTE) return;
+  if(!puedeAcreditar()) return;
   const { data:a }=await _SB.from('caja_chica_acreditaciones').select('residente,monto,rendicion_id').eq('id',id).maybeSingle();
   if(!a){ toast('No se encontró la acreditación','err'); return; }
   const aviso = a.rendicion_id ? '\n\nOJO: es una REPOSICIÓN vinculada a una rendición.' : '';
@@ -826,7 +830,7 @@ async function loadAcreditaciones(){
   box.innerHTML=data.map(a=>{
     const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'', a.rendicion_id?'Reposición de rendición':'' ].filter(Boolean).join('  ·  ');
     const sub = det ? `<div class="acr-sub">${det}</div>` : '';
-    const acts = !IS_RESIDENTE ? `<div class="cmp-acts" style="margin-top:6px"><button class="act ed" onclick="editarAcreditacion('${a.id}')">✎ Editar</button><button class="act an" onclick="eliminarAcreditacion('${a.id}')">🗑 Eliminar</button></div>` : '';
+    const acts = puedeAcreditar() ? `<div class="cmp-acts" style="margin-top:6px"><button class="act ed" onclick="editarAcreditacion('${a.id}')">✎ Editar</button><button class="act an" onclick="eliminarAcreditacion('${a.id}')">🗑 Eliminar</button></div>` : '';
     return `<div class="acr-item">
       <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
       ${sub}${acts}</div>`;
@@ -1049,6 +1053,21 @@ function lineSubtotal(tr){ const c=parseFloat((tr.querySelector('.li-cant').valu
 function recalcTotal(){ let t=0; gs('lines-body').querySelectorAll('tr').forEach(tr=>t+=lineSubtotal(tr)); gs('c-total').textContent='₲ '+fmt(t); return t; }
 
 function esSupervisorActual(){ return !IS_RESIDENTE; }
+// ----- Permisos granulares (Caja Chica) -----
+// esSuper (admin/supervisor_caja) puede todo. Un residente puede SUMAR
+// capacidades si el admin le activó el permiso correspondiente en su perfil.
+function _pp(k){ return !IS_RESIDENTE || (PERMISOS && PERMISOS[k]===true); }
+function puedeAprobar(){ return _pp('cc_aprobar'); }
+function puedeAprobarRendicion(){ return _pp('cc_aprobar_rendicion'); }
+function puedeAcreditar(){ return _pp('cc_acreditar'); }
+function puedeConfigurar(){ return _pp('cc_configurar'); }
+function puedeExcepcion(){ return _pp('cc_excepcion'); }
+function puedeVerTodas(){ return _pp('cc_ver_todas'); }
+// Muestra/oculta las secciones de la pestaña Configuración según el permiso
+function aplicarPermisosConfigUI(){
+  const st=gs('sec-topes'); if(st) st.style.display = puedeConfigurar() ? '' : 'none';
+  const sa=gs('sec-acreditar'); if(sa) sa.style.display = puedeAcreditar() ? '' : 'none';
+}
 function checkLimites(res,total){
   const cfg=CONFIG[res]||{}; const s=SALDOS[res]||{};
   const tope=(cfg.tope!=null)?cfg.tope:0;
@@ -1287,7 +1306,7 @@ async function loadComprobantes(){
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
   CMP_CACHE=data||[];
   // poblar filtros una sola vez
-  if(!IS_RESIDENTE && gs('cf-res') && !gs('cf-res').dataset.filled){
+  if(puedeVerTodas() && gs('cf-res') && !gs('cf-res').dataset.filled){
     gs('cf-res').innerHTML='<option value="">Residente: todos</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
     gs('cf-res').dataset.filled='1';
   }
@@ -1305,7 +1324,7 @@ function renderComprobantes(){
   if(!CMP_CACHE.length){ box.innerHTML='<div class="empty">Todavía no hay comprobantes.</div>'; return; }
   const q=(gs('cf-q').value||'').trim().toLowerCase();
   const fe=gs('cf-estado').value, fr=gs('cf-rend').value;
-  const fres=(gs('cf-res')&&!IS_RESIDENTE)?gs('cf-res').value:'';
+  const fres=(gs('cf-res')&&puedeVerTodas())?gs('cf-res').value:'';
   const fo=gs('cf-obra')?gs('cf-obra').value:'';
   const rows=CMP_CACHE.filter(m=>{
     if(fe && m.estado!==fe) return false;
@@ -1329,12 +1348,12 @@ function renderComprobantes(){
     }
     let acts='<div class="cmp-acts">';
     if(m.estado==='solicitado'||m.estado==='borrador'){
-      acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>
-        <button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>
-        <button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
+      if(puedeAprobar()) acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>`;
+      acts+=`<button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>`;
+      if(puedeAprobar()) acts+=`<button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
     } else if(m.estado==='aprobado'){
-      if(!m.rendicion_id) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`;
-      else if(!IS_RESIDENTE) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
+      if(!m.rendicion_id){ if(puedeAprobar()) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`; }
+      else if(puedeAprobarRendicion()) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
     }
     if(adj.length){ acts+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver adjunto${adj.length>1?'s ('+adj.length+')':''}</button>`; }
     acts+='</div>';
@@ -1369,9 +1388,10 @@ async function verAdjuntos(adj){
 }
 
 async function aprobar(id,total,res){
+  if(!puedeAprobar()){ showAlert('Sin permiso para aprobar','No tenés habilitado <b>aprobar comprobantes</b>. Pedí al administrador que te active ese permiso.','🚫',true); return; }
   const lim=checkLimites(res,total);
   if(lim.superaTope || lim.dejaNegativo){
-    if(!esSupervisorActual()){
+    if(!puedeExcepcion()){
       const det = lim.superaTope
         ? `El total <b>₲ ${fmt(total)}</b> supera el tope por factura (<b>₲ ${fmt(lim.tope)}</b>).`
         : `El saldo disponible es <b>₲ ${fmt(lim.saldo)}</b> y el comprobante es <b>₲ ${fmt(total)}</b>.`;
@@ -1387,6 +1407,7 @@ async function aprobar(id,total,res){
   toast('Comprobante aprobado','ok'); await loadSaldos(); renderTopes(); await loadComprobantes();
 }
 async function rechazar(id){
+  if(!puedeAprobar()){ showAlert('Sin permiso','No tenés habilitado <b>rechazar comprobantes</b>.','🚫',true); return; }
   const motivo=prompt('Motivo del rechazo (obligatorio):'); if(motivo===null) return;
   if(!motivo.trim()){ toast('El rechazo requiere un motivo','err'); return; }
   const { error }=await _SB.from('caja_chica_movimientos').update({estado:'rechazado',motivo_rechazo:motivo||null}).eq('id',id);
@@ -1395,6 +1416,7 @@ async function rechazar(id){
   toast('Comprobante rechazado','ok'); await loadComprobantes();
 }
 async function anular(id){
+  if(!puedeAprobar()){ showAlert('Sin permiso','No tenés habilitado <b>anular comprobantes</b>.','🚫',true); return; }
   const motivo=prompt('Motivo de la anulación (obligatorio):'); if(motivo===null) return;
   if(!motivo.trim()){ toast('La anulación requiere un motivo','err'); return; }
   const now=new Date().toISOString();
@@ -1881,8 +1903,8 @@ async function loadRendicionData(){
     const periodo=(r.fecha_desde||r.fecha_hasta)?`Período: ${r.fecha_desde||'—'} → ${r.fecha_hasta||'—'}`:'';
     let btns=`<button class="act adj" onclick="verDetalleEnReporte('${r.id}','${res.replace(/'/g,"\\'")}')">📄 Detalle</button>`;
     if(r.estado==='presentada') btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">${IS_RESIDENTE?'Cerrar mi rendición':'Cerrar corte'}</button>`;
-    if(r.estado==='cerrada' && !IS_RESIDENTE) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
-    if((r.estado==='presentada'||r.estado==='cerrada') && !IS_RESIDENTE) btns+=`<button class="act re" onclick="devolverRendicion('${r.id}')">↩ Devolver</button>`;
+    if(r.estado==='cerrada' && puedeAcreditar()) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
+    if((r.estado==='presentada'||r.estado==='cerrada') && puedeAprobarRendicion()) btns+=`<button class="act re" onclick="devolverRendicion('${r.id}')">↩ Devolver</button>`;
     if((r.estado==='presentada'||r.estado==='cerrada') && IS_RESIDENTE) btns+=`<button class="act re" onclick="cancelarMiRendicion('${r.id}')">✕ Cancelar rendición</button>`;
     const acts=`<div class="cmp-acts">${btns}</div>`;
     return `<div class="cmp">
@@ -1945,7 +1967,7 @@ async function cancelarMiRendicion(id){
 
 // Supervisor: devuelve la rendición ENTERA para corrección (la reabre y libera sus comprobantes).
 async function devolverRendicion(id){
-  if(IS_RESIDENTE) return;
+  if(!puedeAprobarRendicion()) return;
   // no se puede devolver si ya tiene reposición acreditada
   const { data:acr }=await _SB.from('caja_chica_acreditaciones').select('id').eq('rendicion_id',id).limit(1);
   if(acr && acr.length){ showAlert('No se puede devolver','Esta rendición ya tiene una <b>reposición acreditada</b>. La plata nueva ya entró, así que no se puede reabrir.','🚫',true); return; }
@@ -1965,7 +1987,7 @@ async function devolverRendicion(id){
 
 // Supervisor: saca UN comprobante de su rendición y lo devuelve al residente para corregir.
 async function sacarDeRendicion(id){
-  if(IS_RESIDENTE) return;
+  if(!puedeAprobarRendicion()) return;
   const { data:m }=await _SB.from('caja_chica_movimientos').select('rendicion_id,total').eq('id',id).maybeSingle();
   if(!m || !m.rendicion_id){ toast('Este comprobante no está en una rendición','err'); return; }
   const rid=m.rendicion_id;
@@ -2102,17 +2124,26 @@ function exportRendicionPDF(){
 // ----- Modo residente -----
 function lockSelectTo(sel,val){ if(!sel) return; sel.innerHTML=`<option value="${String(val).replace(/"/g,'&quot;')}">${val}</option>`; sel.value=val; sel.disabled=true; }
 function aplicarModoResidente(){
-  const tabCfg=gs('btn-config'); if(tabCfg) tabCfg.style.display='none';
-  lockSelectTo(gs('c-res'), MI_RESIDENTE);
-  lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
-  gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true; onResReporte();
-  const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='none';
+  const verTodas = puedeVerTodas();
+  const tabCfg=gs('btn-config'); if(tabCfg) tabCfg.style.display=(puedeConfigurar()||puedeAcreditar())?'':'none';
+  if(verTodas){
+    // Puede ver/elegir todas las cajas: no se bloquean los selectores
+    loadRendicionData(); onResReporte();
+    const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='';
+    const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='';
+  } else {
+    // Residente común: fijado a su propia caja
+    lockSelectTo(gs('c-res'), MI_RESIDENTE);
+    lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
+    gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true; onResReporte();
+    const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='none';
+    const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='none';
+  }
   gs('mi-saldo').style.display='flex';
-  const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='none';
   renderMiSaldo();
 }
 function renderDash(){
-  const box=gs('dash'); if(!box || IS_RESIDENTE) return;
+  const box=gs('dash'); if(!box || !puedeVerTodas()) return;
   let tAcr=0,tGas=0,tSal=0; const rendir=[],fin=[];
   RESIDENTES.forEach(r=>{ const s=SALDOS[r.residente]; if(!s) return;
     tAcr+=s.acreditado||0; tGas+=s.gastado||0; tSal+=s.saldo||0;
@@ -2131,10 +2162,10 @@ function renderDash(){
     <div class="dash-card d-ale"><div class="dash-lbl">Alertas (${nAlert})</div>${alertHtml}</div>`;
 }
 
-function onCResChange(){ if(!IS_RESIDENTE) renderMiSaldo(); }
+function onCResChange(){ if(puedeVerTodas()) renderMiSaldo(); }
 function renderMiSaldo(resArg){
   const box=gs('mi-saldo'); if(!box) return;
-  const res = resArg || (IS_RESIDENTE ? MI_RESIDENTE : (gs('c-res')?gs('c-res').value:''));
+  const res = resArg || ((IS_RESIDENTE && !puedeVerTodas()) ? MI_RESIDENTE : (gs('c-res')?gs('c-res').value:''));
   if(!res){ box.style.display='none'; box.innerHTML=''; return; }
   box.style.display='flex';
   const cfg=CONFIG[res]||{}; const s=SALDOS[res]||null;
