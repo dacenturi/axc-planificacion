@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v4.8 · edición de materiales en OC
+      Conexdata · AXC Planificación v4.9 · rubro unificado (catálogo maestro)
     </p>
   </div>
 </div>
@@ -4152,7 +4152,7 @@ body{
                 <select class="step-select" id="fldRubro">
                   <option value="">Seleccionar rubro...</option>
                 </select>
-                <button type="button" class="btn-add-list" data-add-tipo="rubros" title="Agregar nuevo rubro">+</button>
+                <button type="button" class="btn-add-list" data-add-tipo="rubros" title="El catálogo de rubros es el maestro compartido" style="display:none">+</button>
               </div>
             </div>
 
@@ -6255,7 +6255,7 @@ wizard.form = {
 };
 wizard.listas = {
   obras: [], sectores: [], contratistas: [], residentes: [],
-  rubros: [], proveedores: [], vendedores: [], tipo_compra: [],
+  rubros: [], rubrosMaestra: [], proveedores: [], vendedores: [], tipo_compra: [],
 };
 wizard.attachments = []; // {id, file, name, size, type, tipo, status, progress, url_storage}
 wizard.preselectedFromClone = null; // {proveedor, contratista, etc.} si se clonó OC
@@ -6331,6 +6331,16 @@ async function loadListasForForm(){
     wizard.listas.contratistas = byTipo.contratistas || [];
     wizard.listas.residentes = byTipo.residentes || [];
     wizard.listas.rubros = byTipo.rubros || [];
+    // Catálogo MAESTRO de rubros (mismo que usa el presupuesto/planificación): código + capítulo + nombre.
+    // Alimenta el selector de rubro para que Caja Chica y toda OC usen los mismos códigos.
+    try{
+      const { data: rubMaestra } = await sb
+        .from('rubros')
+        .select('codigo,capitulo,nombre')
+        .eq('activo', true)
+        .order('codigo', {ascending:true});
+      wizard.listas.rubrosMaestra = rubMaestra || [];
+    }catch(eRub){ console.warn('rubros maestra', eRub); wizard.listas.rubrosMaestra = []; }
     wizard.listas.proveedores = byTipo.proveedores || [];
     wizard.listas.vendedores = byTipo.vendedores || [];
     wizard.listas.tipo_compra = byTipo.tipo_compra || [];
@@ -6380,10 +6390,36 @@ async function loadListasForForm(){
 }
 
 function populateFormSelects(){
-  // Rubro
-  document.getElementById('fldRubro').innerHTML =
-    '<option value="">Seleccionar rubro...</option>' +
-    wizard.listas.rubros.map(r => `<option value="${escapeHtml(r.valor)}">${escapeHtml(r.valor)}</option>`).join('');
+  // Rubro: catálogo maestro (código + nombre), agrupado por capítulo. value = código.
+  (function(){
+    const sel = document.getElementById('fldRubro');
+    if(!sel) return;
+    const maestra = wizard.listas.rubrosMaestra || [];
+    if(maestra.length){
+      // Agrupar por capítulo conservando el orden por código
+      const grupos = {};
+      const ordenCap = [];
+      maestra.forEach(r => {
+        const cap = r.capitulo || 'Sin capítulo';
+        if(!grupos[cap]){ grupos[cap] = []; ordenCap.push(cap); }
+        grupos[cap].push(r);
+      });
+      let html = '<option value="">Seleccionar rubro...</option>';
+      ordenCap.forEach(cap => {
+        html += `<optgroup label="${escapeHtml(cap)}">`;
+        grupos[cap].forEach(r => {
+          const txt = (r.codigo || '') + (r.nombre ? ' — ' + r.nombre : '');
+          html += `<option value="${escapeHtml(r.codigo||'')}">${escapeHtml(txt)}</option>`;
+        });
+        html += '</optgroup>';
+      });
+      sel.innerHTML = html;
+    } else {
+      // Fallback: lista vieja de texto libre (tabla listas) por si la maestra viene vacía
+      sel.innerHTML = '<option value="">Seleccionar rubro...</option>' +
+        wizard.listas.rubros.map(r => `<option value="${escapeHtml(r.valor)}">${escapeHtml(r.valor)}</option>`).join('');
+    }
+  })();
 
   // Obra
   document.getElementById('fldObra').innerHTML =
@@ -6535,7 +6571,17 @@ async function enterStep2(){
   }
 
   // Aplicar form al DOM
-  document.getElementById('fldRubro').value = wizard.form.rubro || '';
+  (function(){
+    const sel = document.getElementById('fldRubro');
+    const val = wizard.form.rubro || '';
+    if(sel && val && !Array.from(sel.options).some(o => o.value === val)){
+      // OC vieja con rubro en texto libre que no está en el catálogo actual: preservarlo
+      const opt = document.createElement('option');
+      opt.value = val; opt.textContent = val + ' (anterior)';
+      sel.insertBefore(opt, sel.firstChild.nextSibling);
+    }
+    if(sel) sel.value = val;
+  })();
   document.getElementById('fldObra').value = wizard.form.obra || '';
   if(wizard.form.obra){
     filterSectoresByObra(wizard.form.obra);
@@ -7637,6 +7683,10 @@ async function submitOC(){
     const _haySinPres = wizard.cart.some(it => it.sin_presupuesto);
     const _hayProdReal = wizard.cart.some(it => it.producto_real);
     const _haySector = wizard.cart.some(it => it.sector);
+    // Fallback de rubro: si el ítem no recibió rubro del presupuesto, hereda el
+    // código de rubro elegido en la cabecera (wizard.form.rubro). Resuelve Caja Chica
+    // y cualquier OC sin presupuesto, para que el rubro aparezca en dashboard/reportes.
+    const _rubroCab = (wizard.form.rubro || '').trim();
     const itemsPayload = wizard.cart.map((it, idx) => {
       const row = {
         oc_id: ocId,
@@ -7645,7 +7695,7 @@ async function submitOC(){
         cantidad: it.cantidad,
         precio_unit: it.precio_unit,
         subtotal: it.subtotal,
-        rubro_codigo: it.rubro_codigo || null,
+        rubro_codigo: it.rubro_codigo || (it.es_mano_obra ? null : (_rubroCab || null)),
         orden: idx,
       };
       if(_hayMO) row.es_mano_obra = !!it.es_mano_obra;
@@ -7994,7 +8044,27 @@ function renderInfoSection(oc, editing){
   if(editing){
     // Modo edición: inputs
     const obrasOpts = wizard.listas.obras.map(o => `<option value="${escapeHtml(o.valor)}" ${o.valor===oc.obra?'selected':''}>${escapeHtml(o.valor)}</option>`).join('');
-    const rubrosOpts = wizard.listas.rubros.map(r => `<option value="${escapeHtml(r.valor)}" ${r.valor===oc.rubro?'selected':''}>${escapeHtml(r.valor)}</option>`).join('');
+    const rubrosOpts = (function(){
+      const maestra = wizard.listas.rubrosMaestra || [];
+      if(!maestra.length){
+        return wizard.listas.rubros.map(r => `<option value="${escapeHtml(r.valor)}" ${r.valor===oc.rubro?'selected':''}>${escapeHtml(r.valor)}</option>`).join('');
+      }
+      const grupos = {}; const ordenCap = [];
+      maestra.forEach(r => { const cap = r.capitulo || 'Sin capítulo'; if(!grupos[cap]){ grupos[cap]=[]; ordenCap.push(cap); } grupos[cap].push(r); });
+      let html = '';
+      // Preservar rubro anterior (texto libre) si la OC vieja lo tenía y no está en el catálogo
+      const tieneVal = maestra.some(r => (r.codigo||'') === oc.rubro);
+      if(oc.rubro && !tieneVal){ html += `<option value="${escapeHtml(oc.rubro)}" selected>${escapeHtml(oc.rubro)} (anterior)</option>`; }
+      ordenCap.forEach(cap => {
+        html += `<optgroup label="${escapeHtml(cap)}">`;
+        grupos[cap].forEach(r => {
+          const txt = (r.codigo||'') + (r.nombre ? ' — ' + r.nombre : '');
+          html += `<option value="${escapeHtml(r.codigo||'')}" ${ (r.codigo||'')===oc.rubro ? 'selected':'' }>${escapeHtml(txt)}</option>`;
+        });
+        html += '</optgroup>';
+      });
+      return html;
+    })();
     const residentesOpts = wizard.listas.residentes.map(r => `<option value="${escapeHtml(r.valor)}" ${r.valor===oc.residente?'selected':''}>${escapeHtml(r.valor)}</option>`).join('');
     const contratistasOpts = wizard.listas.contratistas.map(c => `<option value="${escapeHtml(c.valor)}" ${c.valor===oc.contratista?'selected':''}>${escapeHtml(c.valor)}</option>`).join('');
     const proveedoresOpts = wizard.listas.proveedores.map(p => `<option value="${escapeHtml(p.valor)}" ${p.valor===oc.proveedor?'selected':''}>${escapeHtml(p.valor)}</option>`).join('');
@@ -8965,6 +9035,8 @@ async function saveDetailEdits(){
   let nuevoTotal = 0;
   let itemsInvalidos = false;
   let _orden = 0;
+  // Fallback de rubro: ítems sin imputación del presupuesto heredan el rubro de cabecera.
+  const _rubroCabDet = (payload.rubro || '').trim();
   document.querySelectorAll('#detailBody tr[data-item-id]').forEach(tr => {
     const id = tr.getAttribute('data-item-id');
     const esMO = tr.getAttribute('data-es-mo') === '1';
@@ -8992,7 +9064,7 @@ async function saveDetailEdits(){
         cantidad: cantidad,
         precio_unit: Math.round(precio),
         subtotal: subtotal,
-        rubro_codigo: it.rubro_codigo || null,
+        rubro_codigo: it.rubro_codigo || (it.es_mano_obra ? null : (_rubroCabDet || null)),
         es_mano_obra: !!it.es_mano_obra,
         orden: _orden,
       });
@@ -9004,7 +9076,7 @@ async function saveDetailEdits(){
         subtotal: subtotal,
         producto_id: it.es_mano_obra ? null : it.producto_id,
         producto_nombre: it.producto_nombre,
-        rubro_codigo: it.rubro_codigo || null,
+        rubro_codigo: it.rubro_codigo || (it.es_mano_obra ? null : (_rubroCabDet || null)),
       });
     }
     nuevoTotal += subtotal;
