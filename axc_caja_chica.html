@@ -375,8 +375,8 @@ tr:last-child td{border-bottom:none}
           </div>
           <div class="card-b" style="padding:6px 10px">
             <table>
-              <thead><tr><th>Residente</th><th style="text-align:right">Tope/factura ₲</th><th style="text-align:center">% alerta</th><th style="text-align:center">IA</th><th style="text-align:right">Saldo ₲</th><th></th></tr></thead>
-              <tbody id="topes-body"><tr><td colspan="6" class="empty">Cargando…</td></tr></tbody>
+              <thead><tr><th>Residente</th><th style="text-align:right">Tope/factura ₲</th><th style="text-align:center">% alerta</th><th style="text-align:right">Saldo ₲</th><th></th></tr></thead>
+              <tbody id="topes-body"><tr><td colspan="5" class="empty">Cargando…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -658,9 +658,9 @@ const AXC_LOGO='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMkAAABCCAYAAAD9sf
 const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Arq. Patricia','Arq. Willians','Ing. Albert','Ing. Azucena','Lic. Dahiana'];
 let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LISTAS={}, SECTORES_RAW=[], VENDEDORES_RAW=[];
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
-let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={}, IA_PERFIL=false;
+let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v6.6';
+const APP_VERSION='Caja Chica v6.7';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -700,10 +700,9 @@ async function switchTab(t){
   const { data:sess } = await _SB.auth.getSession();
   if(!sess || !sess.session){ window.location.href='index.html'; return; }
   CURRENT_USER = sess.session.user;
-  const { data:perf } = await _SB.from('perfiles').select('rol,residente,nombre,permisos,ia_habilitada').eq('id',CURRENT_USER.id).maybeSingle();
+  const { data:perf } = await _SB.from('perfiles').select('rol,residente,nombre,permisos').eq('id',CURRENT_USER.id).maybeSingle();
   ROL = perf ? perf.rol : null;
   PERMISOS = (perf && perf.permisos && typeof perf.permisos==='object') ? perf.permisos : {};
-  IA_PERFIL = !!(perf && perf.ia_habilitada);
   const esSuper = (ROL==='admin'||ROL==='supervisor_caja');
   const esResidente = (ROL==='residente' && perf && perf.residente);
   if(!esSuper && !esResidente){
@@ -742,8 +741,8 @@ async function loadAll(){
 async function loadResidentes(){
   RESIDENTES=[];
   try{
-    const { data } = await _SB.from('perfiles').select('nombre,residente,rol,ia_habilitada').eq('rol','residente');
-    if(data&&data.length){ RESIDENTES=data.filter(p=>p.residente).map(p=>({residente:p.residente,nombre:p.nombre,ia:!!p.ia_habilitada})).sort((a,b)=>a.residente.localeCompare(b.residente)); }
+    const { data } = await _SB.from('perfiles').select('nombre,residente,rol').eq('rol','residente');
+    if(data&&data.length){ RESIDENTES=data.filter(p=>p.residente).map(p=>({residente:p.residente,nombre:p.nombre})).sort((a,b)=>a.residente.localeCompare(b.residente)); }
   }catch(e){}
   if(!RESIDENTES.length) RESIDENTES=RES_FALLBACK.map(r=>({residente:r,nombre:r}));
 }
@@ -777,28 +776,16 @@ function saldoClass(res){ const s=SALDOS[res]; if(!s) return ['none','—',''];
 function resId(res){ return btoa(unescape(encodeURIComponent(res))).replace(/=/g,''); }
 function renderTopes(){
   const body=gs('topes-body');
-  if(!RESIDENTES.length){ body.innerHTML='<tr><td colspan="6" class="empty">Sin residentes.</td></tr>'; return; }
+  if(!RESIDENTES.length){ body.innerHTML='<tr><td colspan="5" class="empty">Sin residentes.</td></tr>'; return; }
   body.innerHTML=RESIDENTES.map(r=>{ const cfg=CONFIG[r.residente]||{tope:'',pct:20}; const [cls,saldoTxt,badge]=saldoClass(r.residente); const id=resId(r.residente);
-    const iaCell = (ROL==='admin')
-      ? `<td style="text-align:center"><label class="ia-tog" title="Habilitar escaneo con IA para este residente"><input type="checkbox" ${r.ia?'checked':''} onchange="saveIA('${r.residente.replace(/'/g,"\\'")}', this.checked)"><span></span></label></td>`
-      : `<td style="text-align:center;color:var(--text3);font-size:12px">${r.ia?'Sí':'No'}</td>`;
     return `<tr><td class="res-name">${r.residente}${badge}</td>
       <td><input class="inp-money" id="t_${id}" inputmode="numeric" value="${cfg.tope!==''?Number(cfg.tope).toLocaleString('es-PY'):''}" placeholder="0"></td>
       <td><input class="inp-pct" id="p_${id}" inputmode="numeric" value="${cfg.pct!=null?cfg.pct:20}"></td>
-      ${iaCell}
       <td class="saldo ${cls}">${saldoTxt}</td>
       <td><button class="btn-save" onclick="saveTope('${r.residente.replace(/'/g,"\\'")}','${id}')">Guardar</button></td></tr>`;
   }).join('');
   RESIDENTES.forEach(r=>{ const el=gs('t_'+resId(r.residente)); if(el) moneyLive(el); });
   renderMiSaldo(); renderDash();
-}
-// Habilita/deshabilita el escaneo con IA para un residente (solo admin)
-async function saveIA(res, on){
-  if(ROL!=='admin'){ showAlert('Sin permiso','Solo un administrador puede cambiar el permiso de IA.','🚫',true); return; }
-  const { error }=await _SB.rpc('set_ia_habilitada', { p_residente:res, p_on:on });
-  if(error){ toast('No se pudo cambiar el permiso: '+error.message,'err'); await loadResidentes(); renderTopes(); return; }
-  const rr=RESIDENTES.find(x=>x.residente===res); if(rr) rr.ia=on;
-  toast(`IA ${on?'habilitada ✓':'deshabilitada'} para ${res}`, 'ok');
 }
 async function saveTope(res,id){  if(!puedeConfigurar()){ showAlert('Sin permiso','No tenés habilitado <b>configurar topes</b>.','🚫',true); return; }
   const tope=parseInt(onlyDigits(gs('t_'+id).value)||'0',10);
@@ -1183,8 +1170,8 @@ function lineSubtotal(tr){ const c=parseFloat((tr.querySelector('.li-cant').valu
 function recalcTotal(){ let t=0; gs('lines-body').querySelectorAll('tr').forEach(tr=>t+=lineSubtotal(tr)); gs('c-total').textContent='₲ '+fmt(t); return t; }
 
 function esSupervisorActual(){ return !IS_RESIDENTE; }
-// IA: el admin siempre; los residentes solo si tienen el permiso habilitado en su perfil
-function puedeUsarIA(){ return IA_HABILITADA && (ROL==='admin' || IA_PERFIL); }
+// IA: el admin siempre; los residentes solo si tienen el permiso "Escanear con IA" (cc_ia) habilitado en Perfiles
+function puedeUsarIA(){ return IA_HABILITADA && (ROL==='admin' || (PERMISOS && PERMISOS.cc_ia===true)); }
 // ----- Permisos granulares (Caja Chica) -----
 // esSuper (admin/supervisor_caja) puede todo. Un residente puede SUMAR
 // capacidades si el admin le activó el permiso correspondiente en su perfil.
