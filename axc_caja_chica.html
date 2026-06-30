@@ -66,6 +66,13 @@ a{color:inherit;text-decoration:none}
 .ia-status.run{color:var(--text2)}
 .ia-filled{border-color:#0EA5E9 !important;box-shadow:0 0 0 2px rgba(14,165,233,.15)}
 .ia-revisar{display:inline-block;margin-top:6px;font-size:11px;font-weight:600;color:#0369a1;background:rgba(14,165,233,.12);border-radius:6px;padding:3px 8px}
+.campo-falta{border:2px solid #e74c3c !important;background:#fdeceb !important}
+.campo-falta-box{outline:2px solid #e74c3c;outline-offset:3px;border-radius:8px}
+.li-con-td{position:relative}
+.li-con-td .li-con{padding-right:22px}
+.li-map{position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:12px;font-weight:700;pointer-events:none;color:#cbb78a}
+tr.li-mapeada .li-map{color:#16a34a}
+tr.li-mapeada-ia .li-map{color:#0EA5E9}
 
 .tabs{position:relative;z-index:2;display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--border);background:var(--bg2)}
 .tab{padding:12px 18px;font-weight:600;font-size:13px;color:var(--text2);border-bottom:2px solid transparent;cursor:pointer;transition:.15s;display:flex;align-items:center;gap:7px}
@@ -443,6 +450,7 @@ tr:last-child td{border-bottom:none}
             <!-- Escaneo con IA: por ahora SOLO el administrador (en prueba). Se muestra desde el JS según ROL. -->
             <div class="ia-scan" id="ia-scan-wrap" style="display:none">
               <button type="button" class="ia-btn" id="ia-scan-btn" onclick="escanearFacturaIA()">✨ Escanear factura con IA <span style="opacity:.7;font-weight:400">(opcional)</span></button>
+              <div id="ia-contador" style="font-size:12px;color:var(--text2);margin-top:6px"></div>
               <div id="ia-scan-status" class="ia-status"></div>
             </div>
 
@@ -639,13 +647,17 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v5.7';
+const APP_VERSION='Caja Chica v6.1';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
 const IA_HABILITADA=true;
+// Límite diario de escaneos del nivel gratuito de Gemini (referencia visible).
+const IA_LIMITE_DIARIO=20;
 // ───────────────────────────────────────────────────────────────────
 (function _pintarVersion(){ try{ const txt=APP_VERSION+(IA_HABILITADA?'':' · sin IA'); const f=document.getElementById('app-ver-foot'); if(f) f.textContent=txt; const b=document.getElementById('ver-badge'); if(b) b.textContent=txt; }catch(e){} })();
+// Al editar un campo, se le quita el resalte de faltante (rojo) y el de IA (azul, = "ya lo validé")
+['input','change'].forEach(ev=>document.addEventListener(ev, e=>{ const t=e.target; if(t&&t.classList){ t.classList.remove('campo-falta'); t.classList.remove('ia-filled'); } }, true));
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -692,6 +704,7 @@ async function switchTab(t){
   if(gs('btn-config')) gs('btn-config').style.display = (puedeConfigurar()||puedeAcreditar()) ? '' : 'none';
   // Escaneo con IA: por ahora SOLO el administrador (está en prueba) y solo si el interruptor está activo
   if(gs('ia-scan-wrap')) gs('ia-scan-wrap').style.display = (IA_HABILITADA && ROL==='admin') ? '' : 'none';
+  if(IA_HABILITADA && ROL==='admin') actualizarContadorIA();
   gs('ac-fecha').value=todayISO(); gs('c-fecha').value=todayISO();
   if(gs('ac-monto')) moneyLive(gs('ac-monto'));
 
@@ -1035,6 +1048,10 @@ function renderCatDD(items,input,tr){
 }
 function pickCatItem(tr,it){
   tr.querySelector('.li-con').value=it.nombre||'';
+  tr.dataset.prodId = it.id || '';
+  tr.dataset.prodNombre = it.nombre || '';
+  tr.dataset.prodIA = ''; // elegido a mano = confirmado
+  _marcarMapeo(tr);
   const precio=Math.round(Number(it.precio_referencia)||0);
   const cu=tr.querySelector('.li-cu'); cu.value=precio?Number(precio).toLocaleString('es-PY'):'';
   if(it.unidad_medida){ tr.querySelector('.li-un').value=it.unidad_medida; }
@@ -1073,10 +1090,55 @@ function fillComprobanteCatalogos(){
   gs('c-rubro').innerHTML=optList(LISTAS.rubros,'— Rubro —');
   gs('c-contr').innerHTML=optList(LISTAS.contratistas,'— Contratista —');
 }
+function _marcarMapeo(tr){
+  const ind=tr.querySelector('.li-map');
+  const ok=!!(tr.dataset.prodId);
+  const ia=ok && tr.dataset.prodIA==='1';
+  tr.classList.toggle('li-mapeada', ok && !ia);
+  tr.classList.toggle('li-mapeada-ia', ia);
+  if(ind){
+    ind.textContent = ok ? '✓' : '○';
+    ind.title = ok
+      ? (ia ? ('Propuesto por IA: '+(tr.dataset.prodNombre||'')+' — revisá y confirmá')
+            : ('Material del catálogo: '+(tr.dataset.prodNombre||'')))
+      : 'Sin material del catálogo — elegí uno de la lista';
+  }
+}
+// ── Matching de concepto ↔ catálogo (la IA propone, el usuario confirma) ──
+function _normTxt(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9ñ ]/g,' ').replace(/\s+/g,' ').trim(); }
+const _STOP_MAT=new Set(['de','la','el','los','las','con','para','por','del','un','una','kg','kgs','gr','grs','lt','lts','ml','mt','mts','cm','mm','und','unid','unidad','pza','pzas','caja','bolsa','rollo','par','set','juego','marca','tipo']);
+function _keywordsMat(s){ return _normTxt(s).split(' ').filter(w=>w.length>=3 && !_STOP_MAT.has(w)); }
+async function _proponerMaterialIA(concepto){
+  const kws=_keywordsMat(concepto);
+  if(!kws.length) return null;
+  const main=kws.slice().sort((a,b)=>b.length-a.length)[0]; // palabra más distintiva
+  let cand=[];
+  try{
+    const { data }=await _SB.from('productos_catalogo')
+      .select('id,nombre,unidad_medida,precio_referencia').eq('activo',true)
+      .ilike('nombre','%'+main.replace(/[%_]/g,c=>'\\'+c)+'%').limit(20);
+    cand=data||[];
+  }catch(e){ return null; }
+  if(!cand.length) return null;
+  let best=null, bestScore=0;
+  cand.forEach(c=>{ const nn=_normTxt(c.nombre); let sc=0; kws.forEach(w=>{ if(nn.includes(w)) sc+=(w===main?2:1); }); if(sc>bestScore){ bestScore=sc; best=c; } });
+  return (best && bestScore>=2) ? best : null; // umbral: al menos la palabra principal coincide
+}
+async function _proponerMaterialesLineas(){
+  const filas=[...gs('lines-body').querySelectorAll('tr')];
+  let prop=0;
+  for(const tr of filas){
+    if(tr.dataset.prodId) continue; // ya tiene material elegido a mano
+    const con=tr.querySelector('.li-con'); if(!con || !con.value.trim()) continue;
+    const m=await _proponerMaterialIA(con.value);
+    if(m){ tr.dataset.prodId=m.id; tr.dataset.prodNombre=m.nombre; tr.dataset.prodIA='1'; _marcarMapeo(tr); prop++; }
+  }
+  if(prop){ const s=gs('ia-scan-status'); if(s) s.innerHTML += ` · <b>${prop}</b> material(es) propuesto(s) del catálogo (✓ celeste) — revisá.`; }
+}
 function addLine(){
   const tb=gs('lines-body');
   const tr=document.createElement('tr'); tr.className='li';
-  tr.innerHTML=`<td><input class="li-con" placeholder="Concepto"></td>
+  tr.innerHTML=`<td class="li-con-td"><input class="li-con" placeholder="Concepto"><span class="li-map" title="Sin material del catálogo — elegí uno de la lista">○</span></td>
     <td><input class="li-cant num" inputmode="decimal" value="1"></td>
     <td><input class="li-un" placeholder="un"></td>
     <td><input class="li-cu num" inputmode="numeric" placeholder="0"></td>
@@ -1085,7 +1147,7 @@ function addLine(){
   tb.appendChild(tr);
   const cant=tr.querySelector('.li-cant'), cu=tr.querySelector('.li-cu');
   const con=tr.querySelector('.li-con');
-  con.addEventListener('input',()=>{ clearTimeout(CAT_TIMER); CAT_TIMER=setTimeout(()=>catSearch(con,tr),250); });
+  con.addEventListener('input',()=>{ tr.dataset.prodId=''; tr.dataset.prodNombre=''; tr.dataset.prodIA=''; _marcarMapeo(tr); clearTimeout(CAT_TIMER); CAT_TIMER=setTimeout(()=>catSearch(con,tr),250); });
   con.addEventListener('focus',()=>{ if(con.value.trim().length>=2) catSearch(con,tr); });
   const recompute=()=>{ const c=parseFloat((cant.value||'0').replace(',','.'))||0; const u=parseInt(onlyDigits(cu.value)||'0',10); const sub=Math.round(c*u); tr.querySelector('.li-sub').textContent='₲ '+fmt(sub); cu.value=u?Number(u).toLocaleString('es-PY'):''; recalcTotal(); };
   cant.addEventListener('input',recompute); cu.addEventListener('input',recompute);
@@ -1124,12 +1186,37 @@ function checkLimites(res,total){
 // TODO editable. Si falla o no reconoce, el residente carga a mano.
 // ───────────────────────────────────────────────────────────────────
 function _iaStatus(msg, cls){ const s=gs('ia-scan-status'); if(s){ s.innerHTML=msg; s.className='ia-status'+(cls?' '+cls:''); } }
-function _iaMark(id){ const el=gs(id); if(el){ el.classList.add('ia-filled'); setTimeout(()=>el.classList.remove('ia-filled'), 14000); } }
+function _iaMark(id){ const el=gs(id); if(el){ el.classList.add('ia-filled'); } }
+// Marca/desmarca un campo obligatorio faltante (resaltado rojo)
+function _marcarFalta(id, falta){ const el=gs(id); if(el) el.classList.toggle('campo-falta', !!falta); }
+function _limpiarFaltas(){ document.querySelectorAll('.campo-falta').forEach(e=>e.classList.remove('campo-falta')); const lb=gs('lines-body'); if(lb) lb.classList.remove('campo-falta-box'); }
 function _fileToBase64(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('No se pudo leer el archivo')); r.readAsDataURL(file); });
 }
 function _pick(obj, names){ for(const n of names){ if(obj && obj[n]!=null && obj[n]!=='') return obj[n]; } return null; }
 function _numPY(v){ if(v==null) return null; if(typeof v==='number') return Math.round(v); const n=parseInt(String(v).replace(/[^\d]/g,''),10); return isNaN(n)?null:n; }
+
+// Día en zona Pacífico (el reset diario de Gemini es a medianoche del Pacífico)
+function _hoyPacifico(){ try{ return new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'}); }catch(e){ return new Date().toISOString().slice(0,10); } }
+
+// Cuenta los escaneos de hoy y actualiza el contador visible.
+async function actualizarContadorIA(){
+  const el=gs('ia-contador'); if(!el) return;
+  if(!(IA_HABILITADA && ROL==='admin')){ el.textContent=''; return; }
+  try{
+    const { count, error }=await _SB.from('caja_chica_ia_uso').select('id',{count:'exact',head:true}).eq('fecha_pacifico',_hoyPacifico());
+    if(error){ el.textContent=''; return; }
+    const usados=count||0, quedan=Math.max(0, IA_LIMITE_DIARIO-usados);
+    el.innerHTML=`Escaneos IA hoy: <b>${usados}/${IA_LIMITE_DIARIO}</b> · te quedan <b>${quedan}</b>`;
+    el.style.color = quedan<=0 ? '#c0392b' : (quedan<=3 ? 'var(--accent,#EE992F)' : 'var(--text2)');
+    if(quedan<=0) el.innerHTML+=' · <span style="color:#c0392b">límite de hoy alcanzado, se reinicia de madrugada</span>';
+  }catch(e){ el.textContent=''; }
+}
+
+// Registra un escaneo usado (para el contador).
+async function registrarUsoIA(){
+  try{ await _SB.from('caja_chica_ia_uso').insert({fecha_pacifico:_hoyPacifico(), usuario:(CURRENT_USER&&CURRENT_USER.email)||null}); }catch(e){}
+}
 
 async function escanearFacturaIA(){
   const btn=gs('ia-scan-btn');
@@ -1147,6 +1234,7 @@ async function escanearFacturaIA(){
       body:{ image_base64:b64, mime_type:(file.type||'image/jpeg'), filename:file.name }
     });
     if(error) throw new Error(error.message||'Error en el servicio de escaneo');
+    registrarUsoIA(); actualizarContadorIA(); // se consumió un escaneo del día
     if(data && data.error){ _iaStatus('No se pudo escanear: '+data.error+'. Cargá la factura a mano.', 'err'); btn.disabled=false; return; }
     let r=(data && (data.factura || data.result || data.data || data)) || {};
     if(typeof r==='string'){ try{ r=JSON.parse(r); }catch(_){ throw new Error('Respuesta no válida'); } }
@@ -1191,6 +1279,7 @@ async function escanearFacturaIA(){
         tr.querySelector('.li-cant').dispatchEvent(new Event('input'));
       });
       llenados++;
+      _proponerMaterialesLineas(); // Fase 3: la IA propone material del catálogo por línea (no bloquea)
     }
 
     if(!llenados){ _iaStatus('La IA no reconoció datos en esta imagen. Probá con una foto más nítida o cargá los campos a mano.', 'err'); btn.disabled=false; return; }
@@ -1221,23 +1310,27 @@ async function escanearFacturaIA(){
 async function guardarComprobante(){
   const res=gs('c-res').value, fac=gs('c-fac').value.trim(), tipo=gs('c-tipo').value, fecha=gs('c-fecha').value||todayISO();
   const estado='solicitado'; // los comprobantes siempre entran como solicitado; la aprobación es un paso aparte
-  if(!res){ showAlert('Falta el residente','Elegí el <b>residente</b> de la caja antes de guardar el comprobante.','⚠️',true); return; }
-  if(!fac){ showAlert('Falta el Nº de factura','Cargá el <b>Nº de factura o recibo</b> antes de guardar el comprobante.','⚠️',true); return; }
+
+  // Armar líneas (se usan en la validación y más abajo)
   const lineas=[]; let total=0;
   gs('lines-body').querySelectorAll('tr').forEach((tr,i)=>{
     const con=tr.querySelector('.li-con').value.trim(); const c=parseFloat((tr.querySelector('.li-cant').value||'0').replace(',','.'))||0;
     const un=tr.querySelector('.li-un').value.trim(); const u=parseInt(onlyDigits(tr.querySelector('.li-cu').value)||'0',10); const sub=Math.round(c*u);
-    if(con&&sub>0){ lineas.push({concepto:con,cantidad:c,unidad:un||null,costo_unit:u,subtotal:sub,orden:i}); total+=sub; }
+    if(con&&sub>0){ lineas.push({concepto:con,cantidad:c,unidad:un||null,costo_unit:u,subtotal:sub,orden:i,producto_id:tr.dataset.prodId||null,producto_nombre:tr.dataset.prodNombre||null}); total+=sub; }
   });
-  if(!lineas.length){ showAlert('Falta el detalle','Cargá al menos una <b>línea con concepto y monto</b> para poder guardar el comprobante.','⚠️',true); return; }
-
-  // Adjunto del comprobante OBLIGATORIO: tiene que haber un archivo nuevo,
-  // o (si estoy editando) que el comprobante ya tenga un adjunto cargado.
   const _hayArchivosNuevos = gs('c-files').files && gs('c-files').files.length > 0;
   const _tieneAdjuntoPrevio = !!EDIT_ID && EDIT_TIENE_ADJ;
-  if(!_hayArchivosNuevos && !_tieneAdjuntoPrevio){
-    showAlert('Falta el comprobante','Tenés que <b>adjuntar el comprobante</b> (foto o PDF de la factura/recibo) para poder guardar.','📎',true);
-    gs('c-files').focus();
+
+  // ── Validación de obligatorios: junta TODOS los faltantes, los resalta y los lista ──
+  _limpiarFaltas();
+  const faltan=[];
+  const reqCab=[['c-res','Residente'],['c-fecha','Fecha'],['c-fac','Nº de factura'],['c-prov','Proveedor'],['c-obra','Obra'],['c-rubro','Rubro'],['c-contr','Contratista']];
+  reqCab.forEach(([id,label])=>{ const v=(gs(id).value||'').trim(); if(!v){ _marcarFalta(id,true); faltan.push(label); } });
+  if(!lineas.length){ faltan.push('Al menos una línea con concepto y monto'); const lb=gs('lines-body'); if(lb) lb.classList.add('campo-falta-box'); }
+  if(!_hayArchivosNuevos && !_tieneAdjuntoPrevio){ faltan.push('Comprobante adjunto (foto o PDF)'); _marcarFalta('c-files',true); }
+  if(faltan.length){
+    showAlert('Faltan campos obligatorios','No se puede guardar todavía. Completá lo que está marcado en rojo:<br><br>• '+faltan.join('<br>• '), '⚠️', true);
+    const first=document.querySelector('.campo-falta, .campo-falta-box'); if(first && first.scrollIntoView) first.scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
 
@@ -1326,7 +1419,7 @@ function _dupFacturaErr(error){
 async function ccPersistComprobante(cab, lineas, fileList, opts){
   opts=opts||{};
   const btn=gs('c-btn'); btn.disabled=true; btn.textContent=opts.editId?'Actualizando…':'Guardando…';
-  const itemsOf=(movId)=>lineas.map(l=>({concepto:l.concepto,cantidad:l.cantidad,unidad:l.unidad,costo_unit:l.costo_unit,subtotal:l.subtotal,orden:l.orden,movimiento_id:movId}));
+  const itemsOf=(movId)=>lineas.map(l=>({concepto:l.concepto,cantidad:l.cantidad,unidad:l.unidad,costo_unit:l.costo_unit,subtotal:l.subtotal,orden:l.orden,movimiento_id:movId,producto_id:l.producto_id||null,producto_nombre:l.producto_nombre||null}));
   const accion = cab.estado==='aprobado' ? (cab.excepcion?'aprobar_excepcion':(opts.editId?'aprobar':(opts.wasEdit?'aprobar':'aprobar'))) : (opts.editId?'editar':'solicitar');
   const detalle = `${cab.tipo_comprobante} ${cab.nro_factura} · ₲ ${fmt(cab.total)}`+(cab.excepcion?(' · EXCEPCIÓN: '+(cab.excepcion_motivo||'')):'');
   let movId;
@@ -1399,7 +1492,7 @@ async function confirmarExcepcion(){
 
 async function editarComprobante(id){
   const { data:m }=await _SB.from('caja_chica_movimientos')
-    .select('*,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id)').eq('id',id).maybeSingle();
+    .select('*,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden,producto_id,producto_nombre),caja_chica_adjuntos(id)').eq('id',id).maybeSingle();
   if(!m){ toast('No se encontró el comprobante','err'); return; }
   if(!(m.estado==='borrador'||m.estado==='solicitado')){ toast('Solo se editan comprobantes en borrador o solicitado','err'); return; }
   EDIT_ID=id;
@@ -1425,6 +1518,9 @@ async function editarComprobante(id){
   else its.forEach(it=>{
     addLine(); const tr=gs('lines-body').lastElementChild;
     tr.querySelector('.li-con').value=it.concepto||'';
+    tr.dataset.prodId = it.producto_id||'';
+    tr.dataset.prodNombre = it.producto_nombre||'';
+    _marcarMapeo(tr);
     tr.querySelector('.li-cant').value=it.cantidad!=null?it.cantidad:1;
     tr.querySelector('.li-un').value=it.unidad||'';
     tr.querySelector('.li-cu').value=it.costo_unit?Number(it.costo_unit).toLocaleString('es-PY'):'';
