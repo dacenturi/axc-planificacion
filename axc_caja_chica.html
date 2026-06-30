@@ -639,8 +639,13 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v5.4';
-(function _pintarVersion(){ try{ const f=document.getElementById('app-ver-foot'); if(f) f.textContent=APP_VERSION; const b=document.getElementById('ver-badge'); if(b) b.textContent=APP_VERSION; }catch(e){} })();
+const APP_VERSION='Caja Chica v5.6';
+// ── INTERRUPTOR DE IA ──────────────────────────────────────────────
+// true  = con escaneo IA (toma automática de datos, solo admin en prueba)
+// false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
+const IA_HABILITADA=true;
+// ───────────────────────────────────────────────────────────────────
+(function _pintarVersion(){ try{ const txt=APP_VERSION+(IA_HABILITADA?'':' · sin IA'); const f=document.getElementById('app-ver-foot'); if(f) f.textContent=txt; const b=document.getElementById('ver-badge'); if(b) b.textContent=txt; }catch(e){} })();
 
 const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
@@ -685,8 +690,8 @@ async function switchTab(t){
   gs('u-role').textContent = esSuper ? (ROL==='admin'?'Administrador':'Supervisor de caja') : ('Residente · '+MI_RESIDENTE);
   // Configuración: acceso en el header, según permiso (configurar topes y/o acreditar)
   if(gs('btn-config')) gs('btn-config').style.display = (puedeConfigurar()||puedeAcreditar()) ? '' : 'none';
-  // Escaneo con IA: por ahora SOLO el administrador (está en prueba)
-  if(gs('ia-scan-wrap')) gs('ia-scan-wrap').style.display = (ROL==='admin') ? '' : 'none';
+  // Escaneo con IA: por ahora SOLO el administrador (está en prueba) y solo si el interruptor está activo
+  if(gs('ia-scan-wrap')) gs('ia-scan-wrap').style.display = (IA_HABILITADA && ROL==='admin') ? '' : 'none';
   gs('ac-fecha').value=todayISO(); gs('c-fecha').value=todayISO();
   if(gs('ac-monto')) moneyLive(gs('ac-monto'));
 
@@ -1201,11 +1206,13 @@ async function escanearFacturaIA(){
     _iaStatus('✓ Datos cargados. <b>Revisá y corregí</b> lo que haga falta antes de guardar.'+aviso, aviso?'err':'ok');
 
   }catch(e){
-    const msg=String((e&&e.message)||e);
-    if(/not found|404|non-2xx|Function not found/i.test(msg)){
+    let msg=String((e&&e.message)||e);
+    // Intentar leer el error real que devolvió la función (ej. falta GEMINI_API_KEY)
+    try{ if(e && e.context && typeof e.context.json==='function'){ const b=await e.context.json(); if(b && b.error) msg=b.error; } }catch(_){}
+    if(/not found|404|Function not found/i.test(msg)){
       _iaStatus('El servicio de escaneo todavía no está disponible. Cargá la factura a mano por ahora.', 'err');
     }else{
-      _iaStatus('No se pudo escanear ('+msg+'). Cargá la factura a mano.', 'err');
+      _iaStatus('No se pudo escanear: '+msg+'. Cargá la factura a mano.', 'err');
     }
   }finally{ btn.disabled=false; }
 }
