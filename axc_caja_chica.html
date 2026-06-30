@@ -456,7 +456,10 @@ tr:last-child td{border-bottom:none}
 
             <div class="fld" style="margin-top:14px"><label>Comentario (opcional)</label><textarea id="c-coment" rows="2" placeholder="Aclaración o nota sobre este comprobante..." style="width:100%;resize:vertical;font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line,#e0d8c4);border-radius:10px;background:#fff;box-sizing:border-box"></textarea></div>
 
-            <button class="btn-primary" id="c-btn" onclick="guardarComprobante()">Guardar comprobante</button>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+              <button class="btn-primary" id="c-btn" onclick="guardarComprobante()">Guardar comprobante</button>
+              <button class="btn-ghost" id="c-cancel" onclick="limpiarComprobante()">Cancelar</button>
+            </div>
           </div>
         </div>
 
@@ -647,7 +650,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v6.2';
+const APP_VERSION='Caja Chica v6.4';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -1252,7 +1255,7 @@ async function escanearFacturaIA(){
     if(prov){
       const sel=gs('c-prov');
       let opt=[...sel.options].find(o=>o.value.trim().toLowerCase()===String(prov).trim().toLowerCase());
-      if(!opt){ opt=document.createElement('option'); opt.value=String(prov).trim(); opt.textContent=String(prov).trim(); sel.appendChild(opt); }
+      if(!opt){ opt=document.createElement('option'); opt.value=String(prov).trim(); opt.textContent=String(prov).trim(); opt.dataset.temp='1'; sel.appendChild(opt); }
       sel.value=opt.value; filtrarVendedorComprobante(sel.value); _iaMark('c-prov'); llenados++;
     }
     // RUC
@@ -1506,7 +1509,12 @@ async function editarComprobante(id){
   EDIT_ORIG_TOTAL = (m.estado==='solicitado') ? Number(m.total||0) : 0; // ya cuenta en COMPROMETIDO si está solicitado
   switchTab('comprobantes');
   gs('c-res').value=m.residente||''; gs('c-fecha').value=m.fecha||todayISO(); gs('c-fac').value=m.nro_factura||'';
-  gs('c-tipo').value=m.tipo_comprobante||'factura'; gs('c-prov').value=m.proveedor||'';
+  gs('c-tipo').value=m.tipo_comprobante||'factura';
+  // Preservar el proveedor guardado aunque no esté en la lista (dato del comprobante, no ensucia la lista)
+  if(m.proveedor && ![...gs('c-prov').options].some(o=>o.value===m.proveedor)){
+    const opt=document.createElement('option'); opt.value=m.proveedor; opt.textContent=m.proveedor; gs('c-prov').appendChild(opt);
+  }
+  gs('c-prov').value=m.proveedor||'';
   gs('c-ruc').value=m.ruc||'';
   filtrarVendedorComprobante(m.proveedor||'');
   // Preservar el vendedor guardado aunque no esté en la lista filtrada (dato histórico)
@@ -1537,13 +1545,36 @@ async function editarComprobante(id){
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
-function cancelarEdicion(){
+function limpiarComprobante(skipConfirm){
+  if(!skipConfirm){
+    const hayDatos = (gs('c-fac').value||'').trim() || gs('c-prov').value || (gs('c-files').files&&gs('c-files').files.length) || [...gs('lines-body').querySelectorAll('.li-con')].some(i=>(i.value||'').trim());
+    if(hayDatos && !confirm('¿Cancelar y limpiar el comprobante? Se van a borrar los datos cargados que no hayas guardado.')) return;
+  }
   EDIT_ID=null; EDIT_ORIG_TOTAL=0; EDIT_TIENE_ADJ=false;
   const bnr=gs('cedit-bnr'); if(bnr){ bnr.classList.remove('show'); bnr.innerHTML=''; }
   gs('c-btn').textContent='Guardar comprobante';
+  // Cabecera
   gs('c-fac').value=''; gs('c-ruc').value=''; gs('c-files').value=''; gs('c-coment').value='';
+  if(gs('c-fecha')) gs('c-fecha').value=todayISO();
+  if(gs('c-tipo')) gs('c-tipo').value='factura';
+  // Listas: todas a "sin datos" (placeholder)
+  gs('c-prov').value=''; if(typeof gs('c-prov').onchange==='function') gs('c-prov').onchange();
+  gs('c-vend').value='';
+  gs('c-obra').value=''; filtrarSectorComprobante(''); gs('c-sector').value='';
+  gs('c-rubro').value=''; gs('c-contr').value='';
+  // Residente: si es residente logueado queda fijado a su caja; si es admin/supervisor, vacío
+  if(!(IS_RESIDENTE && !puedeVerTodas())){ const r=gs('c-res'); if(r && !r.disabled) r.value=''; }
+  // Líneas y marcas visuales
   gs('lines-body').innerHTML=''; addLine();
+  _limpiarFaltas();
+  // Quitar del desplegable los nombres temporales que agregó el escaneo (no estaban en la lista)
+  ['c-prov','c-vend'].forEach(id=>{ const sel=gs(id); if(sel) [...sel.options].forEach(o=>{ if(o.dataset&&o.dataset.temp==='1') o.remove(); }); });
+  document.querySelectorAll('.ia-filled').forEach(e=>e.classList.remove('ia-filled'));
+  const st=gs('ia-scan-status'); if(st){ st.innerHTML=''; st.className='ia-status'; }
+  if(typeof renderMiSaldo==='function') renderMiSaldo();
+  recalcTotal();
 }
+function cancelarEdicion(){ limpiarComprobante(true); }
 
 let CMP_CACHE=[];
 async function loadComprobantes(){
