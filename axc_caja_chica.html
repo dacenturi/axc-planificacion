@@ -514,8 +514,8 @@ tr:last-child td{border-bottom:none}
                 <option value="borrador">Borrador</option>
               </select>
               <select id="cf-rend" onchange="renderComprobantes()">
-                <option value="">Rendición: todas</option>
-                <option value="sin" selected>Sin rendir</option>
+                <option value="" selected>Rendición: todas</option>
+                <option value="sin">Sin rendir</option>
                 <option value="enr">En rendición</option>
                 <option value="rendido">Rendido</option>
               </select>
@@ -541,6 +541,10 @@ tr:last-child td{border-bottom:none}
             </div>
             <div id="rd-summary" class="rep-meta"></div>
             <div id="rd-pending"><div class="empty">Elegí un residente.</div></div>
+            <div class="frow">
+              <div class="fld"><label>Solicito reposición de ₲ (opcional)</label><input id="rd-repo-monto" type="number" min="0" step="1" placeholder="Dejar vacío o ingresar monto"></div>
+              <div class="fld"><label>Observación (opcional)</label><input id="rd-repo-obs" type="text" placeholder="Nota para la supervisora"></div>
+            </div>
             <button class="btn-primary" id="rd-btn" onclick="presentarRendicion()">Presentar rendición</button>
           </div>
         </div>
@@ -665,6 +669,18 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<div class="set-bg" id="cfsaldo-bg">
+  <div class="alert-card" id="cfsaldo-card" style="max-width:440px">
+    <div class="alert-ico" style="color:var(--accent)">⚠️</div>
+    <h3 id="cfsaldo-title">Aviso de saldo</h3>
+    <p id="cfsaldo-msg"></p>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <button class="alert-btn" style="flex:1;background:var(--card2);color:var(--text);border:1px solid var(--line)" onclick="_cfSaldoResp(false)">Cancelar</button>
+      <button class="alert-btn" style="flex:1" onclick="_cfSaldoResp(true)">Entendido, continuar</button>
+    </div>
+  </div>
+</div>
+
 <div class="set-bg" id="rdet-bg" onclick="if(event.target===this)closeRdet()">
   <div class="rdet-card">
     <div class="rdet-h">
@@ -696,7 +712,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v6.8';
+const APP_VERSION='Caja Chica v7.0';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -1220,6 +1236,14 @@ function puedeAcreditar(){ return _pp('cc_acreditar'); }
 function puedeConfigurar(){ return _pp('cc_configurar'); }
 function puedeExcepcion(){ return _pp('cc_excepcion'); }
 function puedeVerTodas(){ return _pp('cc_ver_todas'); }
+function _puedeAnularComprob(m){
+  if(!m) return false;
+  if(m.rendicion_id) return false;                          // en rendición: no se anula
+  if(!(m.estado==='solicitado'||m.estado==='borrador'||m.estado==='observado')) return false;
+  if(puedeAprobar()) return true;                            // supervisor / admin
+  if(IS_RESIDENTE && MI_RESIDENTE && m.residente===MI_RESIDENTE && _pp('cc_cargar')) return true; // dueño
+  return false;
+}
 // Muestra/oculta las secciones de la pestaña Configuración según el permiso
 function aplicarPermisosConfigUI(){
   const st=gs('sec-topes'); if(st) st.style.display = puedeConfigurar() ? '' : 'none';
@@ -1464,6 +1488,23 @@ async function guardarComprobante(){
       return;
     }
   }
+  // AVISO 20%: si tras este comprobante el saldo PROYECTADO entra en zona de alerta, pedir confirmación al usuario
+  if(!esSupervisorActual()){
+    const s=SALDOS[res]||{};
+    const sDisp=(s.saldo!=null)?Number(s.saldo):0;
+    const comp=Math.max(0,(COMPROMETIDO[res]||0) - (EDIT_ID?EDIT_ORIG_TOTAL:0));
+    const ref=(s.ultimo && s.ultimo>0)?Number(s.ultimo):sDisp;   // fondo de referencia
+    const pctA=((CONFIG[res]&&CONFIG[res].pct!=null)?CONFIG[res].pct:(s.pct!=null?s.pct:20))||20;
+    const umbral=ref*(pctA/100);
+    const proyectado=sDisp - comp - total;    // lo que quedaría tras aprobar este comprobante
+    if(ref>0 && proyectado>=0 && proyectado<=umbral){
+      const ok=await showConfirmSaldo('Está llegando a su límite de saldo',
+        `Con este comprobante, su saldo proyectado quedaría en <b>₲ ${fmt(proyectado)}</b>, por debajo del <b>${pctA}%</b> de su fondo asignado (<b>₲ ${fmt(ref)}</b>).<br><br>`+
+        `Le recomendamos <b>presentar su rendición</b> a la brevedad para reponer fondos y seguir operando con normalidad.<br><br>`+
+        `¿Desea registrar igualmente este comprobante?`);
+      if(!ok){ return; }
+    }
+  }
   const cab={ residente:res, fecha, nro_factura:fac, tipo_comprobante:tipo,
     proveedor:gs('c-prov').value||null, ruc:gs('c-ruc').value.trim()||null, vendedor:gs('c-vend').value||null, obra:gs('c-obra').value||null,
     sector:gs('c-sector').value||null, rubro:gs('c-rubro').value||null, contratista:gs('c-contr').value||null,
@@ -1695,10 +1736,12 @@ function renderComprobantes(){
       rnd=`<span class="rnd-pill sin">Sin rendir</span>`;
     }
     let acts='<div class="cmp-acts">';
-    if(m.estado==='solicitado'||m.estado==='borrador'){
+    if(m.estado==='solicitado'||m.estado==='borrador'||m.estado==='observado'){
+      const enRend=!!m.rendicion_id;
       if(puedeAprobar()) acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>`;
-      acts+=`<button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>`;
+      if(!enRend) acts+=`<button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>`;
       if(puedeAprobar()) acts+=`<button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
+      if(!enRend && _puedeAnularComprob(m)) acts+=`<button class="act an" onclick="anular('${m.id}')">🗑 Anular</button>`;
     } else if(m.estado==='aprobado'){
       if(!m.rendicion_id){ if(puedeAprobar()) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`; }
       else if(puedeAprobarRendicion()) acts+=`<button class="act re" onclick="sacarDeRendicion('${m.id}')">↩ Devolver</button>`;
@@ -1808,7 +1851,11 @@ async function rechazar(id){
   toast('Comprobante rechazado','ok'); await loadComprobantes();
 }
 async function anular(id){
-  if(!puedeAprobar()){ showAlert('Sin permiso','No tenés habilitado <b>anular comprobantes</b>.','🚫',true); return; }
+  const { data:m }=await _SB.from('caja_chica_movimientos').select('residente,estado,rendicion_id').eq('id',id).maybeSingle();
+  if(!m){ toast('Comprobante no encontrado','err'); return; }
+  const propio = IS_RESIDENTE && MI_RESIDENTE && m.residente===MI_RESIDENTE;
+  const ok = puedeAprobar() || (propio && _pp('cc_cargar') && !m.rendicion_id && (m.estado==='solicitado'||m.estado==='borrador'||m.estado==='observado'));
+  if(!ok){ showAlert('Sin permiso','No podés anular este comprobante. Solo se anulan comprobantes propios que todavía no están en una rendición.','🚫',true); return; }
   const motivo=prompt('Motivo de la anulación (obligatorio):'); if(motivo===null) return;
   if(!motivo.trim()){ toast('La anulación requiere un motivo','err'); return; }
   const now=new Date().toISOString();
@@ -2396,13 +2443,17 @@ async function presentarRendicion(){
   const fDesde=fechas.length?fechas[0]:corte, fHasta=fechas.length?fechas[fechas.length-1]:corte;
   const btn=gs('rd-btn'); btn.disabled=true; btn.textContent='Presentando…';
   const now=new Date().toISOString();
-  const { data:rend, error }=await _SB.from('caja_chica_rendiciones').insert({residente:res,fecha_corte:corte,fecha_desde:fDesde,fecha_hasta:fHasta,estado:'presentada',total_rendido:total,presentada_por:CURRENT_USER.email,presentada_en:now,creado_por:CURRENT_USER.email}).select('id,numero').single();
+  const repoMonto=(function(){ const el=gs('rd-repo-monto'); const v=parseFloat(el?el.value:''); return (isFinite(v)&&v>0)?v:null; })();
+  const repoObs=(function(){ const el=gs('rd-repo-obs'); return (el&&el.value.trim())?el.value.trim():null; })();
+  const { data:rend, error }=await _SB.from('caja_chica_rendiciones').insert({residente:res,fecha_corte:corte,fecha_desde:fDesde,fecha_hasta:fHasta,estado:'presentada',total_rendido:total,reposicion_solicitada:repoMonto,reposicion_obs:repoObs,presentada_por:CURRENT_USER.email,presentada_en:now,creado_por:CURRENT_USER.email}).select('id,numero').single();
   if(error){ btn.disabled=false; btn.textContent='Presentar rendición'; toast('Error: '+error.message,'err'); return; }
   const rid=rend.id;
   await _SB.from('caja_chica_movimientos').update({rendicion_id:rid}).in('id',ids);
   await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'rendir',estado_nuevo:'presentada',detalle:`RND-${String(rend.numero||0).padStart(4,'0')} · Corte ${corte} · ${ids.length} comprob. · ₲ ${fmt(total)}`,hecho_por:CURRENT_USER.email});
   btn.disabled=false; btn.textContent='Presentar rendición';
   toast(`Rendición RND-${String(rend.numero||0).padStart(4,'0')} presentada · ₲ ${fmt(total)}`,'ok');
+  if(gs('rd-repo-monto')) gs('rd-repo-monto').value='';
+  if(gs('rd-repo-obs')) gs('rd-repo-obs').value='';
   await loadRendicionData();
 }
 
@@ -2746,6 +2797,13 @@ function renderMiSaldo(resArg){
 
 function showAlert(title,msg,ico,danger){ gs('alert-title').textContent=title; gs('alert-msg').innerHTML=msg; gs('alert-ico').textContent=ico||'⚠️'; gs('alert-card').classList.toggle('danger',!!danger); gs('alert-bg').classList.add('open'); }
 function closeAlert(){ gs('alert-bg').classList.remove('open'); }
+let _cfSaldoPromise=null;
+function showConfirmSaldo(title,msg){
+  gs('cfsaldo-title').textContent=title; gs('cfsaldo-msg').innerHTML=msg;
+  gs('cfsaldo-bg').classList.add('open');
+  return new Promise(resolve=>{ _cfSaldoPromise=resolve; });
+}
+function _cfSaldoResp(ok){ gs('cfsaldo-bg').classList.remove('open'); if(_cfSaldoPromise){ _cfSaldoPromise(ok); _cfSaldoPromise=null; } }
 
 async function doLogout(){ await _SB.auth.signOut(); window.location.href='index.html'; }
 </script>
