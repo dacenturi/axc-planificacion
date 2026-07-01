@@ -803,7 +803,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.16';
+const APP_VERSION='Caja Chica v7.17';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2994,13 +2994,31 @@ function renderTablero(){
     col('Falta reponer','🔴',deben,'deben','Nada pendiente de reponer.')+
     col('Repuestas','🟢',ok,'ok','Todavía sin rendiciones completas.');
 }
-function acreditarReposicion(rid,res){
+async function acreditarReposicion(rid,res){
   PENDING_REND_LINK={rid,res};
   switchTab('config');
   gs('ac-res').value=res;
-  const bnr=gs('repo-bnr'); bnr.textContent='Reposición vinculada a la rendición de '+res+'. Cargá el monto y acreditá.'; bnr.classList.add('show');
+  // Traer lo que pidió el residente (monto solicitado + justificación) para que la supervisora lo considere
+  let solic=null, obs=null, nro=null, totRend=null;
+  try{
+    const { data:rend }=await _SB.from('caja_chica_rendiciones')
+      .select('numero,total_rendido,reposicion_solicitada,reposicion_obs').eq('id',rid).maybeSingle();
+    if(rend){ solic=rend.reposicion_solicitada; obs=rend.reposicion_obs; nro=rend.numero; totRend=rend.total_rendido; }
+  }catch(e){}
+  const bnr=gs('repo-bnr');
+  const nroTxt = (nro!=null) ? ('RND-'+String(nro).padStart(4,'0')+' · ') : '';
+  const solicTxt = (solic!=null && Number(solic)>0)
+    ? `El residente solicitó <b>₲ ${fmt(solic)}</b>`
+    : `El residente <b>no indicó monto</b> (total rendido: ₲ ${fmt(totRend||0)})`;
+  const obsTxt = obs ? `<br>📝 <b>Justificación:</b> ${_esc(obs)}` : '';
+  bnr.innerHTML = `${nroTxt}Reposición de <b>${_esc(res)}</b>. ${solicTxt}.${obsTxt}<br>`
+    + `<span style="color:var(--text3)">Podés acreditar ese monto o ajustarlo según corresponda.</span>`;
+  bnr.classList.add('show');
+  // Precargo el monto sugerido (lo solicitado, o el total rendido) para que la supervisora lo confirme o ajuste
+  const sugerido = (solic!=null && Number(solic)>0) ? Number(solic) : (Number(totRend)||0);
+  if(sugerido>0) gs('ac-monto').value = sugerido.toLocaleString('es-PY');
   gs('ac-monto').focus();
-  toast('Cargá el monto de reposición; se vinculará a la rendición.','ok');
+  toast('Revisá el monto solicitado y su justificación; acreditá o ajustá.','ok');
 }
 
 // "Detalle" de una rendición: abre el Estado de cuenta del residente filtrado por esa rendición
