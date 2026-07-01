@@ -803,7 +803,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.9';
+const APP_VERSION='Caja Chica v7.10';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -3138,63 +3138,79 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
   // Datos frescos: rendición (con firma) + movimientos con ítems y adjuntos
   const { data:rend }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
   if(!rend){ toast('Rendición no encontrada','err'); if(info)info.textContent=''; return; }
+  const res=rend.residente;
+  // Acreditaciones del residente (para mostrar Creditado y el Saldo de caja, como el Estado de cuenta)
+  let acr=[];
+  {
+    let ra=await _SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en,creado_por,banco,nro_operacion').eq('residente',res);
+    if(ra.error){ ra=await _SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,referencia,creado_en,creado_por').eq('residente',res); }
+    acr=ra.data||[];
+  }
   const { data:movs }=await _SB.from('caja_chica_movimientos')
     .select('fecha,numero_orden,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,total,estado,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
     .eq('rendicion_id',rid).order('fecha',{ascending:true});
-  // Filas con acumulado + ítems (mismo criterio que el Estado de cuenta en modo rendición)
-  const rows=[]; let acc=0;
-  (movs||[]).forEach(m=>{
-    const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
-    acc+=Number(m.total||0);
-    rows.push({
-      kind:'deb', fecha:m.fecha||'', factura:m.nro_factura||'', proveedor:m.proveedor||'', obra:m.obra||'', rubro:m.rubro||'',
-      debitado:Number(m.total||0), total:Number(m.total||0), saldo:acc, adj:m.caja_chica_adjuntos||[],
-      items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)}))
-    });
-  });
-  const totalRendido=acc;
   const nro=(rend.numero!=null)?('RND-'+String(rend.numero).padStart(4,'0')):'Rendición';
   const periodo=(rend.fecha_desde||rend.fecha_hasta)?`${rend.fecha_desde||'—'} → ${rend.fecha_hasta||'—'}`:'—';
+
+  // Filas: acreditaciones (crédito) + comprobantes de esta rendición (débito), ordenadas por fecha (crédito primero)
+  const rows=[];
+  (acr||[]).forEach(a=>rows.push({ kind:'cred', key:(a.fecha||'')+'_0_'+(a.creado_en||''),
+    fecha:a.fecha||'', factura:'', proveedor:'', obra:'', rubro:'', concepto:'Acreditación ('+(a.medio||'efectivo')+')',
+    debitado:0, creditado:Number(a.monto||0), rnd:'', items:null, adj:[] }));
+  (movs||[]).forEach(m=>{
+    const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
+    rows.push({ kind:'deb', key:(m.fecha||'')+'_1_'+String(m.numero_orden||0).padStart(8,'0'),
+      fecha:m.fecha||'', factura:m.nro_factura||'', proveedor:m.proveedor||'', obra:m.obra||'', rubro:m.rubro||'',
+      debitado:Number(m.total||0), creditado:0, total:Number(m.total||0), rnd:nro+' · Presentado', adj:m.caja_chica_adjuntos||[],
+      items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})) });
+  });
+  rows.sort((a,b)=>a.key<b.key?-1:(a.key>b.key?1:0));
+  let saldo=0, sumDeb=0, sumCred=0;
+  rows.forEach(r=>{ saldo+=r.creditado-r.debitado; r.saldo=saldo; sumDeb+=r.debitado; sumCred+=r.creditado; });
+  const saldoFinal=saldo;
 
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const W=doc.internal.pageSize.getWidth(), PH=doc.internal.pageSize.getHeight();
   const M=12;
   const sanPdf=(t)=>String(t==null?'':t).replace(/\s*→\s*/g,' a ').replace(/[—–]/g,'-').replace(/…/g,'...').replace(/₲/g,'Gs ');
-  // Encabezado (idéntico al Estado de cuenta)
+  // Encabezado idéntico al Estado de cuenta
   try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
   doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(15);
   doc.text('Reporte de Caja Chica · Planilla a Rendir', W-M, 14, {align:'right'});
   doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(8.5);
   doc.text(nro+' · Emitido: '+todayISO(), W-M, 19.5, {align:'right'});
   doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,W-M,23);
-  // Metadatos apilados a la izquierda + total grande a la derecha
+  // Metadatos + Saldo final de caja a la derecha
   const kv=(label,value,x,y)=>{ doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.text(label,x,y); const w=doc.getTextWidth(label); doc.setFont('helvetica','normal'); doc.setTextColor(40,40,40); doc.text(' '+sanPdf(value||'-'), x+w+1.5, y); };
   let y=29;
-  kv('Residente:', rend.residente, M, y);
+  kv('Residente:', res, M, y);
   kv('Período:', periodo, M, y+5.5);
   kv('Rendición:', nro+'   ·   Estado: '+(rend.estado||'-')+'   ·   Corte: '+(rend.fecha_corte||'-'), M, y+11);
   doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
-  doc.text('Total a rendir', W-M, y+2, {align:'right'});
-  doc.setFontSize(15); doc.setTextColor(31,56,100);
-  doc.text('Gs '+fmt(totalRendido), W-M, y+9, {align:'right'});
+  doc.text('Saldo final de caja', W-M, y+2, {align:'right'});
+  doc.setFontSize(15); doc.setTextColor(saldoFinal<0?200:20, saldoFinal<0?40:120, 40);
+  doc.text('Gs '+fmt(saldoFinal), W-M, y+9, {align:'right'});
 
-  // Tabla modo "detalle" (mismas columnas y estilo que el Estado de cuenta)
-  const head=[['Fecha','Factura','Proveedor','Obra','Rubro','Concepto','Cant','Un','Costo','Debitado','Creditado','Acumulado','Rend.']];
-  const body=[]; const subRows=[];
+  // Tabla "detalle" idéntica al Estado de cuenta (con Acreditación, Debitado, Creditado y Saldo)
+  const head=[['Fecha','Factura','Proveedor','Obra','Rubro','Concepto','Cant','Un','Costo','Debitado','Creditado','Saldo','Rend.']];
+  const body=[]; const subRows=[]; const credRows=[];
   rows.forEach(r=>{
-    if(r.items && r.items.length){
+    if(r.kind==='cred'){
+      credRows.push(body.length);
+      body.push([ r.fecha||'', '', '', '', '', r.concepto||'Acreditación', '', '', '', '', fmt(r.creditado), fmt(r.saldo), '' ]);
+    } else if(r.items && r.items.length){
       r.items.forEach((it,idx)=>body.push([
         idx===0?(r.fecha||''):'', idx===0?(r.factura||''):'', idx===0?(r.proveedor||''):'', idx===0?(r.obra||''):'', idx===0?(r.rubro||''):'',
         it.concepto||'', (it.cant!==''&&it.cant!=null)?String(it.cant):'', it.un||'', (it.cu!==''&&it.cu!=null)?fmt(it.cu):'',
-        it.sub?fmt(it.sub):'', '', idx===0?fmt(r.saldo):'', idx===0?nro:'' ]));
+        it.sub?fmt(it.sub):'', '', idx===0?fmt(r.saldo):'', idx===0?(r.rnd||''):'' ]));
       if(r.items.length>1){ subRows.push(body.length); body.push(['','','','','','Subtotal comprobante','','','', fmt(r.debitado), '', '', '']); }
     } else {
-      body.push([ r.fecha||'', r.factura||'', r.proveedor||'', r.obra||'', r.rubro||'', '', '', '', '', fmt(r.debitado), '', fmt(r.saldo), nro ]);
+      body.push([ r.fecha||'', r.factura||'', r.proveedor||'', r.obra||'', r.rubro||'', '', '', '', '', fmt(r.debitado), '', fmt(r.saldo), r.rnd||'' ]);
     }
   });
   const totalIdx=body.length;
-  const totRow=new Array(13).fill(''); totRow[5]='TOTAL RENDIDO'; totRow[9]=fmt(totalRendido); totRow[11]='Gs '+fmt(totalRendido);
+  const totRow=new Array(13).fill(''); totRow[5]='TOTAL GENERAL'; totRow[9]=fmt(sumDeb); totRow[10]=fmt(sumCred); totRow[11]='Gs '+fmt(saldoFinal);
   body.push(totRow);
   doc.autoTable({
     head, body, startY:y+15, margin:{left:M,right:M},
@@ -3203,6 +3219,7 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
     columnStyles:{0:{cellWidth:19,overflow:'visible'},1:{cellWidth:27,overflow:'visible'},2:{cellWidth:22},3:{cellWidth:20},4:{cellWidth:16},5:{cellWidth:'auto'},6:{cellWidth:9,halign:'center'},7:{cellWidth:9,halign:'center'},8:{cellWidth:18,halign:'right'},9:{cellWidth:18,halign:'right'},10:{cellWidth:18,halign:'right'},11:{cellWidth:22,halign:'right'},12:{cellWidth:16,halign:'center',overflow:'visible'}},
     didParseCell:(d)=>{
       if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; d.cell.styles.fontSize=8; if(d.column.index===5) d.cell.styles.halign='right'; }
+      else if(d.section==='body' && credRows.includes(d.row.index)){ d.cell.styles.fillColor=[238,246,236]; if(d.column.index===10){ d.cell.styles.textColor=[20,120,40]; d.cell.styles.fontStyle='bold'; } }
       else if(d.section==='body' && subRows.includes(d.row.index)){ d.cell.styles.fillColor=[245,242,232]; d.cell.styles.fontStyle='bold'; d.cell.styles.textColor=[90,72,20]; if(d.column.index===5) d.cell.styles.halign='right'; }
     },
     didDrawPage:()=>{
@@ -3224,7 +3241,7 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
   doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120);
   doc.text('Presentada: '+_fDT(rend.presentada_en),20,fy+9.5);
 
-  const filename=`caja_chica_planilla_a_rendir_${(rend.residente||'').replace(/[^\w]+/g,'_')}_${nro}_${todayISO()}.pdf`;
+  const filename=`caja_chica_planilla_a_rendir_${(res||'').replace(/[^\w]+/g,'_')}_${nro}_${todayISO()}.pdf`;
   if(conAdjuntos){
     await _exportarConAdjuntos(doc, rows, filename);
   } else {
