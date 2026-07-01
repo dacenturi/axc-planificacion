@@ -751,6 +751,7 @@ tr:last-child td{border-bottom:none}
   <div class="sig-card">
     <h3 id="sig-title">Firmá tu rendición</h3>
     <div class="sig-sub" id="sig-sub">Dibujá tu firma con el dedo o el mouse. Le da respaldo a la presentación.</div>
+    <div style="font-size:11px;font-weight:800;color:var(--gold,#C8A028);text-transform:uppercase;letter-spacing:.4px;margin:-2px 0 8px">🔏 Firma obligatoria — sin firma no se puede presentar</div>
     <canvas id="sig-canvas" class="sig-canvas"></canvas>
     <div class="sig-hint">Firmá dentro del recuadro blanco</div>
     <div class="sig-row">
@@ -770,7 +771,7 @@ tr:last-child td{border-bottom:none}
     <div class="sig-sub" id="apr-sub">Dejá tu observación y firmá la aprobación.</div>
     <label style="font-size:11px;color:var(--text2);font-weight:700;text-transform:uppercase;letter-spacing:.3px;display:block;margin-bottom:5px">Observación de la aprobación</label>
     <textarea id="apr-obs" class="apr-obs" placeholder="Ej.: Rendición conforme, comprobantes verificados."></textarea>
-    <label style="font-size:11px;color:var(--text2);font-weight:700;text-transform:uppercase;letter-spacing:.3px;display:block;margin-bottom:5px">Firma del que aprueba</label>
+    <label style="font-size:11px;color:var(--text2);font-weight:700;text-transform:uppercase;letter-spacing:.3px;display:block;margin-bottom:5px">Firma del que aprueba <span style="color:var(--gold,#C8A028)">🔏 obligatoria</span></label>
     <canvas id="apr-canvas" class="sig-canvas"></canvas>
     <div class="sig-hint">Firmá dentro del recuadro blanco</div>
     <div class="sig-row">
@@ -800,7 +801,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.6';
+const APP_VERSION='Caja Chica v7.7';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2553,10 +2554,15 @@ async function presentarRendicion(){
   const repoObs=(function(){ const el=gs('rd-repo-obs'); return (el&&el.value.trim())?el.value.trim():null; })();
   const _base={residente:res,fecha_corte:corte,fecha_desde:fDesde,fecha_hasta:fHasta,estado:'presentada',total_rendido:total,reposicion_solicitada:repoMonto,reposicion_obs:repoObs,presentada_por:CURRENT_USER.email,presentada_en:now,creado_por:CURRENT_USER.email};
   const _full={..._base,firma_presentacion:firma.dataUrl,firma_presentacion_nombre:firma.nombre};
-  let _ins=await _SB.from('caja_chica_rendiciones').insert(_full).select('id,numero').single();
-  if(_ins.error && /firma_presentacion|column|schema|does not exist/i.test(_ins.error.message||'')){ _ins=await _SB.from('caja_chica_rendiciones').insert(_base).select('id,numero').single(); }
+  const _ins=await _SB.from('caja_chica_rendiciones').insert(_full).select('id,numero').single();
   const rend=_ins.data, error=_ins.error;
-  if(error){ btn.disabled=false; btn.textContent='Presentar rendición'; toast('Error: '+error.message,'err'); return; }
+  if(error){
+    btn.disabled=false; btn.textContent='Presentar rendición';
+    if(/firma_presentacion|column|schema|does not exist/i.test(error.message||'')){
+      showAlert('Falta actualizar la base','La firma es <b>obligatoria</b> y no se puede guardar porque faltan las columnas de firma. Corré el script <b>axc_caja_chica_v7.7_firmas.sql</b> en Supabase y volvé a intentar.','🔏',true);
+    } else { toast('Error: '+error.message,'err'); }
+    return;
+  }
   const rid=rend.id;
   await _SB.from('caja_chica_movimientos').update({rendicion_id:rid}).in('id',ids);
   await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'rendir',estado_nuevo:'presentada',detalle:`RND-${String(rend.numero||0).padStart(4,'0')} · Corte ${corte} · ${ids.length} comprob. · ₲ ${fmt(total)}`,hecho_por:CURRENT_USER.email});
@@ -2835,11 +2841,13 @@ async function aprobarRendicion(rid){
   const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'aprobado',aprobado_por:CURRENT_USER.email,aprobado_en:now}).eq('rendicion_id',rid);
   if(e1){ toast('Error: '+e1.message,'err'); return; }
   const _upFull={estado:'aguardando_acreditacion',aprobada_por:CURRENT_USER.email,aprobada_en:now,total_rendido:total,obs_aprobacion:aprob.obs||null,firma_aprobacion:aprob.dataUrl,firma_aprobacion_nombre:aprob.nombre};
-  let up=await _SB.from('caja_chica_rendiciones').update(_upFull).eq('id',rid);
-  if(up.error && /firma_aprobacion|obs_aprobacion|column|schema|does not exist/i.test(up.error.message||'')){
-    up=await _SB.from('caja_chica_rendiciones').update({estado:'aguardando_acreditacion',aprobada_por:CURRENT_USER.email,aprobada_en:now,total_rendido:total}).eq('id',rid);
+  const up=await _SB.from('caja_chica_rendiciones').update(_upFull).eq('id',rid);
+  if(up.error){
+    if(/firma_aprobacion|obs_aprobacion|column|schema|does not exist/i.test(up.error.message||'')){
+      showAlert('Falta actualizar la base','La firma de aprobación es <b>obligatoria</b> y no se puede guardar porque faltan las columnas de firma. Corré el script <b>axc_caja_chica_v7.7_firmas.sql</b> en Supabase y volvé a intentar.','🔏',true);
+    } else { toast('Error: '+up.error.message,'err'); }
+    return;
   }
-  if(up.error){ toast('Error: '+up.error.message,'err'); return; }
   await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'aprobar_rendicion',estado_nuevo:'aguardando_acreditacion',detalle:`${movs.length} comprob. · ₲ ${fmt(total)}${aprob.obs?(' · Obs: '+aprob.obs):''}`,hecho_por:CURRENT_USER.email});
   toast('Rendición aprobada y firmada. Queda aguardando acreditación.','ok');
   closeRev(); await loadSaldos(); renderTopes(); await loadRendicionData();
