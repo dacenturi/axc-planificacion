@@ -723,7 +723,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.4';
+const APP_VERSION='Caja Chica v7.5';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -1916,7 +1916,7 @@ async function onResReporte(){
   if(!res){ sel.innerHTML='<option value="">Todas</option>'; return; }
   const { data:rends }=await _SB.from('caja_chica_rendiciones')
     .select('id,numero,estado').eq('residente',res)
-    .in('estado',['presentada','cerrada']).order('numero',{ascending:false});
+    .in('estado',['presentada','observada','aguardando_acreditacion','cerrada','repuesta']).order('numero',{ascending:false});
   let opts='<option value="">Todas las rendiciones</option><option value="sin">Sin rendir</option>';
   (rends||[]).forEach(r=>{ const nro='RND-'+String(r.numero!=null?r.numero:0).padStart(4,'0'); opts+=`<option value="${r.id}">${nro} (${r.estado})</option>`; });
   sel.innerHTML=opts;
@@ -1957,9 +1957,9 @@ async function reporteResidente(res, opts){
     acr=ra.data||[];
   }
   let qm=_SB.from('caja_chica_movimientos')
-    .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,creado_en,rendicion_id,caja_chica_rendiciones(numero),caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre)')
+    .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,estado,creado_en,rendicion_id,caja_chica_rendiciones(numero),caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre)')
     .eq('residente',res);
-  if(isRend){ qm=qm.eq('rendicion_id',opts.rendId); } else { qm=qm.eq('estado','aprobado'); qm=_dateFilter(qm,'fecha'); }
+  if(isRend){ qm=qm.eq('rendicion_id',opts.rendId); } else { qm=qm.in('estado',['solicitado','observado','aprobado']); qm=_dateFilter(qm,'fecha'); }
   const { data:movs } = await qm;
 
   const rows=[];
@@ -1971,10 +1971,12 @@ async function reporteResidente(res, opts){
   (movs||[]).forEach(m=>{
     const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
     const numero=(m.caja_chica_rendiciones&&m.caja_chica_rendiciones.numero!=null)?('RND-'+String(m.caja_chica_rendiciones.numero).padStart(4,'0')):'—';
+    let _estLbl; if(m.estado==='solicitado') _estLbl=m.rendicion_id?'Presentado':'Cargado'; else _estLbl=({observado:'Observado',aprobado:'Aprobado',rechazado:'Rechazado',anulado:'Anulado',borrador:'Borrador'})[m.estado]||m.estado;
+    const rndCell = m.rendicion_id ? (numero+' · '+_estLbl) : _estLbl;
     rows.push({kind:'deb',key:(m.fecha||'')+'_1_'+String(m.numero_orden||0).padStart(8,'0'),
       fecha:m.fecha,orden:m.numero_orden||'',factura:m.nro_factura||'',tipo:m.tipo_comprobante||'',
       proveedor:m.proveedor||'',obra:m.obra||'',sector:m.sector||'',rubro:m.rubro||'',contratista:m.contratista||'',
-      debitado:Number(m.total||0),creditado:0,rnd:numero,total:Number(m.total||0),rendId:m.rendicion_id||'',
+      debitado:Number(m.total||0),creditado:0,rnd:rndCell,total:Number(m.total||0),rendId:m.rendicion_id||'',estado:m.estado,
       adj:m.caja_chica_adjuntos||[],
       items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
       _obra:m.obra||'',_rubro:m.rubro||'',_prov:m.proveedor||''});
@@ -2436,7 +2438,7 @@ async function loadRendicionData(){
     const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
     const periodo=(r.fecha_desde||r.fecha_hasta)?`Período: ${r.fecha_desde||'—'} → ${r.fecha_hasta||'—'}`:'';
     let btns=`<button class="act adj" onclick="revisarRendicion('${r.id}','${res.replace(/'/g,"\\'")}')">${(r.estado==='presentada'&&puedeAprobarRendicion())?'🔍 Revisar / aprobar':'👁 Ver comprobantes'}</button>`;
-    btns+=`<button class="act ed" onclick="imprimirPlanillaRendicion('${r.id}')">📄 Planilla / PDF</button>`;
+    btns+=`<button class="act ed" onclick="verDetalleEnReporte('${r.id}','${res.replace(/'/g,"\\'")}')">📄 Planilla / PDF</button>`;
     if(r.estado==='presentada' && IS_RESIDENTE) btns+=`<button class="act re" onclick="cancelarMiRendicion('${r.id}')">✕ Cancelar</button>`;
     if(r.estado==='aguardando_acreditacion' && puedeAcreditar()) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">💰 Acreditar reposición</button>`;
     const acts=`<div class="cmp-acts">${btns}</div>`;
@@ -2765,8 +2767,8 @@ async function verDetalleEnReporte(rid, res){
   onTipoReporte();
   if(gs('r-res')) gs('r-res').value=res;
   await onResReporte();               // pobla el filtro de rendiciones del residente
-  // Estado de cuenta COMPLETO (Todas): muestra débito, crédito (acreditaciones), fechas y saldo corrido coherente.
-  if(gs('r-rnd')) gs('r-rnd').value='';
+  // Filtrado por esta rendición: muestra sus comprobantes con estado y nº de rendición
+  if(gs('r-rnd')) gs('r-rnd').value=rid;
   await generarReporte();
   window.scrollTo({top:0,behavior:'smooth'});
 }
