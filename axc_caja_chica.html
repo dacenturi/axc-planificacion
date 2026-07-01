@@ -803,7 +803,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.13';
+const APP_VERSION='Caja Chica v7.14';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2930,7 +2930,7 @@ async function loadTablero(){
   const cols=gs('tbl-cols'); if(cols) cols.innerHTML='<div class="empty">Cargando…</div>';
   try{
     const { data:rends } = await _SB.from('caja_chica_rendiciones')
-      .select('id,residente,numero,estado,total_rendido,fecha_corte,fecha_desde,fecha_hasta,presentada_en,cerrada_en')
+      .select('id,residente,numero,estado,total_rendido,fecha_corte,fecha_desde,fecha_hasta,presentada_en,aprobada_en,cerrada_en')
       .order('creado_en',{ascending:false});
     const { data:acr } = await _SB.from('caja_chica_acreditaciones')
       .select('rendicion_id,monto').not('rendicion_id','is',null);
@@ -2945,23 +2945,24 @@ function _tblCard(r, grupo){
   const monto = '₲ '+fmt(Number(r.total_rendido||0));
   const periodo = (r.fecha_desde&&r.fecha_hasta) ? (r.fecha_desde+' → '+r.fecha_hasta) : (r.fecha_corte||'');
   const bdr = grupo==='pres'?'tbl-bdr-pend':(grupo==='deben'?'tbl-bdr-warn':'tbl-bdr-ok');
-  let act='', meta='';
+  let meta=''; const btns=[];
+  const resEsc = String(r.residente).replace(/'/g,"\\'");
   const btnPlanilla = `<button class="btn-ghost" onclick="abrirDetalleRendicion('${r.id}')">📄 Planilla</button>`;
-  const btns=[];
   if(grupo==='pres'){
-    meta = 'Presentada'+(r.presentada_en?(' · '+String(r.presentada_en).slice(0,10)):'');
-    if(puedeAprobarRendicion()) btns.push(`<button class="act ap btn-save" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`);
+    meta = 'Presentada'+(r.presentada_en?(' · '+String(r.presentada_en).slice(0,10)):'')+' · a revisar';
+    if(puedeAprobarRendicion()) btns.push(`<button class="act ap btn-save" onclick="revisarRendicion('${r.id}','${resEsc}')">🔍 Revisar / aprobar</button>`);
     btns.push(btnPlanilla);
   }else if(grupo==='deben'){
-    meta = 'Cerrada'+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'')+' · falta reponer';
-    if(puedeAcreditar()) btns.push(`<button class="act ap btn-save" onclick="acreditarReposicion('${r.id}','${String(r.residente).replace(/'/g,"\\'")}')">Acreditar reposición</button>`);
+    if(r.estado==='aguardando_acreditacion') meta = 'Aprobada · aguardando acreditación'+(r.aprobada_en?(' · '+String(r.aprobada_en).slice(0,10)):'');
+    else meta = 'Cerrada'+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'')+' · falta reponer';
+    if(puedeAcreditar()) btns.push(`<button class="act ap btn-save" onclick="acreditarReposicion('${r.id}','${resEsc}')">Acreditar reposición</button>`);
     btns.push(btnPlanilla);
   }else{
     const rep=TABLERO.repuestas[r.id]||0;
     meta = '✓ Repuesto ₲ '+fmt(rep)+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'');
     btns.push(btnPlanilla);
   }
-  act = btns.length ? `<div class="act">${btns.join('')}</div>` : '';
+  const act = btns.length ? `<div class="act">${btns.join('')}</div>` : '';
   return `<div class="tbl-card ${bdr}">
     <div class="top"><span class="num">${num}</span><span class="monto">${monto}</span></div>
     <div class="res">${r.residente||'—'}</div>
@@ -2972,22 +2973,25 @@ function renderTablero(){
   const cols=gs('tbl-cols'), res=gs('tbl-resumen'); if(!cols) return;
   const pres=[], deben=[], ok=[];
   TABLERO.rends.forEach(r=>{
-    if(r.estado==='presentada') pres.push(r);
-    else if(r.estado==='cerrada'){ (TABLERO.repuestas[r.id]?ok:deben).push(r); }
+    const tieneRepo = !!TABLERO.repuestas[r.id];
+    if(r.estado==='presentada') pres.push(r);                       // esperando revisión/aprobación del supervisor
+    else if(r.estado==='aguardando_acreditacion') deben.push(r);    // aprobada, falta acreditar la reposición
+    else if(r.estado==='repuesta') ok.push(r);                      // fondo repuesto (completa)
+    else if(r.estado==='cerrada'){ (tieneRepo?ok:deben).push(r); }  // camino legacy: cerrada con/sin reposición
   });
   const totalDeben = deben.reduce((s,r)=>s+Number(r.total_rendido||0),0);
   if(res){
     res.innerHTML =
-      `<div class="tbl-chip pend"><div class="n">${pres.length}</div><div class="l">Esperando cierre</div></div>`+
-      `<div class="tbl-chip warn"><div class="n">${deben.length}</div><div class="l">Deben reposición · ₲ ${fmt(totalDeben)}</div></div>`+
+      `<div class="tbl-chip pend"><div class="n">${pres.length}</div><div class="l">Esperando aprobación</div></div>`+
+      `<div class="tbl-chip warn"><div class="n">${deben.length}</div><div class="l">Falta reponer · ₲ ${fmt(totalDeben)}</div></div>`+
       `<div class="tbl-chip"><div class="n">${ok.length}</div><div class="l">Repuestas (completas)</div></div>`;
   }
   const col=(titulo,emoji,arr,grupo,empty)=>
     `<div class="tbl-col"><h3>${emoji} ${titulo} <span class="cnt">${arr.length}</span></h3>`+
     (arr.length?arr.map(r=>_tblCard(r,grupo)).join(''):`<div class="tbl-empty">${empty}</div>`)+`</div>`;
   cols.innerHTML =
-    col('Esperando cierre','🟠',pres,'pres','Sin rendiciones presentadas.')+
-    col('Deben reposición','🔴',deben,'deben','Nada pendiente de reponer.')+
+    col('Esperando aprobación','🟠',pres,'pres','Sin rendiciones presentadas.')+
+    col('Falta reponer','🔴',deben,'deben','Nada pendiente de reponer.')+
     col('Repuestas','🟢',ok,'ok','Todavía sin rendiciones completas.');
 }
 function acreditarReposicion(rid,res){
