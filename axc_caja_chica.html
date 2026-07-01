@@ -723,7 +723,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.2';
+const APP_VERSION='Caja Chica v7.3';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2482,27 +2482,82 @@ async function presentarRendicion(){
 let REV_REND=null;
 function closeRev(){ gs('rev-bg').classList.remove('open'); }
 
+// Planilla de rendición imprimible (el residente puede imprimir/guardar PDF y dar seguimiento del estado)
+async function imprimirPlanillaRendicion(rid){
+  const { data:r }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
+  if(!r){ toast('Rendición no encontrada','err'); return; }
+  const { data:movs }=await _SB.from('caja_chica_movimientos')
+    .select('fecha,nro_factura,proveedor,obra,rubro,total,estado')
+    .eq('rendicion_id',rid).order('fecha',{ascending:true});
+  const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
+  const _rl={presentada:'Presentada (en espera de revisión)',observada:'Devuelta al residente',aguardando_acreditacion:'Aprobada · aguardando acreditación',repuesta:'Repuesta (fondo acreditado)',cerrada:'Cerrada'};
+  const _cl={solicitado:'Cargado',aprobado:'Aprobado',observado:'Observado',rechazado:'Rechazado',anulado:'Anulado',borrador:'Borrador'};
+  const filas=(movs||[]).map(m=>`<tr><td>${m.fecha||''}</td><td>${m.nro_factura||''}</td><td>${m.proveedor||''}</td><td>${m.obra||''}</td><td>${m.rubro||''}</td><td class="r">₲ ${fmt(m.total)}</td><td>${_cl[m.estado]||m.estado}</td></tr>`).join('');
+  const total=(movs||[]).reduce((a,m)=>a+Number(m.total||0),0);
+  const pasos=[['Presentada',['presentada','aguardando_acreditacion','repuesta','cerrada']],['Aprobada',['aguardando_acreditacion','repuesta','cerrada']],['Repuesta',['repuesta','cerrada']]];
+  const timeline=pasos.map(p=>{const ok=p[1].includes(r.estado);return `<span style="padding:4px 12px;border-radius:14px;margin-right:8px;font-size:12px;background:${ok?'#1F3864':'#eee'};color:${ok?'#fff':'#999'}">${ok?'✓ ':''}${p[0]}</span>`;}).join('<span style="color:#bbb">→</span> ');
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>${nro} · ${r.residente}</title>
+<style>
+body{font-family:Arial,sans-serif;color:#222;margin:26px;font-size:13px}
+.hdr{border-bottom:3px solid #1F3864;padding-bottom:8px;margin-bottom:6px}
+.hdr .s{color:#C8A028;font-weight:bold;font-size:12px;letter-spacing:.5px}
+.hdr h1{color:#1F3864;margin:4px 0 0;font-size:22px}
+.meta{margin:12px 0;line-height:1.8}
+.state{margin:14px 0 6px}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left}
+th{background:#1F3864;color:#fff}
+td.r,th.r{text-align:right}
+tfoot td{font-weight:bold;background:#f4efe0}
+.ft{margin-top:18px;font-size:11px;color:#888}
+button{background:#1F3864;color:#fff;border:none;padding:9px 18px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:18px}
+@media print{button{display:none}}
+</style></head><body>
+<div class="hdr"><div class="s">AXC CONSTRUCTORA · CAJA CHICA</div><h1>Planilla de rendición ${nro}</h1></div>
+<div class="meta">
+<b>Residente:</b> ${r.residente} &nbsp;·&nbsp; <b>Fecha de corte:</b> ${r.fecha_corte||'—'} &nbsp;·&nbsp; <b>Período:</b> ${r.fecha_desde||'—'} → ${r.fecha_hasta||'—'}<br>
+<b>Estado:</b> ${_rl[r.estado]||r.estado}<br>
+${r.reposicion_solicitada!=null?('<b>Reposición solicitada:</b> ₲ '+fmt(r.reposicion_solicitada)+'<br>'):''}
+${r.reposicion_obs?('<b>Observación:</b> '+r.reposicion_obs+'<br>'):''}
+${(r.estado==='observada'&&r.motivo_observacion)?('<b>Motivo de devolución:</b> '+r.motivo_observacion+'<br>'):''}
+</div>
+<div class="state">${timeline}</div>
+<table><thead><tr><th>Fecha</th><th>Nº Factura</th><th>Proveedor</th><th>Obra</th><th>Rubro</th><th class="r">Total</th><th>Estado</th></tr></thead>
+<tbody>${filas||'<tr><td colspan="7" style="text-align:center;color:#888">Sin comprobantes en esta rendición.</td></tr>'}</tbody>
+<tfoot><tr><td colspan="5">TOTAL RENDIDO</td><td class="r">₲ ${fmt(total)}</td><td></td></tr></tfoot></table>
+<div class="ft">Generado el ${new Date().toLocaleString('es-PY')} · AXC Planificación · Desarrollado por Conexdata</div>
+<button onclick="window.print()">🖨 Imprimir / Guardar PDF</button>
+<script>window.onload=function(){setTimeout(function(){window.print();},400);};<\/script>
+</body></html>`;
+  const w=window.open('','_blank');
+  if(!w){ toast('Habilitá las ventanas emergentes para imprimir la planilla','err'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
 async function revisarRendicion(rid,res){
   const { data:r }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
   if(!r){ toast('Rendición no encontrada','err'); return; }
   REV_REND={id:rid,res,numero:r.numero};
   const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
-  gs('rev-title').textContent='Revisar '+nro;
+  const _rendLabel={presentada:'Presentada · en espera de revisión',observada:'Devuelta al residente',aguardando_acreditacion:'Aprobada · aguardando acreditación',repuesta:'Repuesta · fondo acreditado',cerrada:'Cerrada'}[r.estado]||r.estado;
+  gs('rev-title').textContent='Rendición '+nro;
   const repo = r.reposicion_solicitada!=null ? `Reposición solicitada: <b>₲ ${fmt(r.reposicion_solicitada)}</b>` : 'Sin monto de reposición solicitado';
-  gs('rev-sub').innerHTML=`${res} · Corte ${r.fecha_corte||'—'} · ${repo}${r.reposicion_obs?(' · <i>'+r.reposicion_obs+'</i>'):''}`;
+  gs('rev-sub').innerHTML=`${res} · Corte ${r.fecha_corte||'—'} · Estado: <b>${_rendLabel}</b><br>${repo}${r.reposicion_obs?(' · <i>'+r.reposicion_obs+'</i>'):''}${(r.estado==='observada'&&r.motivo_observacion)?('<br>Motivo devolución: <i>'+r.motivo_observacion+'</i>'):''}`;
   const { data:movs }=await _SB.from('caja_chica_movimientos')
     .select('id,fecha,nro_factura,proveedor,total,estado,caja_chica_adjuntos(id,storage_path,nombre)')
     .eq('rendicion_id',rid).order('fecha',{ascending:true});
   const lista=(movs||[]);
+  const _cEstLabel={solicitado:'Cargado',aprobado:'Aprobado',observado:'Observado',rechazado:'Rechazado',anulado:'Anulado',borrador:'Borrador'};
+  const _cEstClass={solicitado:'solicitado',aprobado:'aprobado',observado:'borrador',rechazado:'borrador',anulado:'borrador',borrador:'borrador'};
   const revisando=(puedeAprobarRendicion() && r.estado==='presentada');
   gs('rev-body').innerHTML = lista.length ? lista.map(m=>{
     const adj=m.caja_chica_adjuntos||[];
     let b='';
     if(adj.length) b+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver</button>`;
     if(revisando) b+=`<button class="act re" onclick="observarComprobante('${m.id}','${rid}','${res.replace(/'/g,"\\'")}')">✕ Rechazar</button>`;
-    return `<div class="rd-line"><span class="f">Fact. ${m.nro_factura||'—'} <span style="color:var(--text3)">${m.proveedor||''}</span></span><span class="t">₲ ${fmt(m.total)}</span><span style="display:flex;gap:6px">${b}</span></div>`;
+    return `<div class="rd-line"><span class="f">Fact. ${m.nro_factura||'—'} <span style="color:var(--text3)">${m.proveedor||''}</span> <span class="st ${_cEstClass[m.estado]||'borrador'}" style="font-size:10px;padding:1px 6px">${_cEstLabel[m.estado]||m.estado}</span></span><span class="t">₲ ${fmt(m.total)}</span><span style="display:flex;gap:6px">${b}</span></div>`;
   }).join('') : '<div class="empty">No quedan comprobantes en esta rendición.</div>';
-  let foot='';
+  let foot=`<button class="act ed" onclick="imprimirPlanillaRendicion('${rid}')">🖨 Imprimir planilla</button>`;
   if(revisando && lista.length){
     foot += `<button class="act ap" onclick="aprobarRendicion('${rid}')">✓ Aprobar rendición</button>`;
     foot += `<button class="act re" onclick="observarRendicion('${rid}')">↩ Rechazar toda la rendición</button>`;
