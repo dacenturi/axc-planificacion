@@ -91,7 +91,7 @@ a{color:inherit;text-decoration:none}
 .tbl-card .monto{font-weight:800;font-size:15px;white-space:nowrap}
 .tbl-card .res{font-size:13px;color:var(--text);margin-top:2px}
 .tbl-card .meta{font-size:11.5px;color:var(--text3);margin-top:3px}
-.tbl-card .act{margin-top:9px}
+.tbl-card .act{margin-top:9px;display:flex;flex-direction:column;gap:6px}
 .tbl-card .act button{width:100%;margin:0}
 .tbl-bdr-pend{border-left:4px solid var(--accent)}
 .tbl-bdr-warn{border-left:4px solid #e74c3c}
@@ -803,7 +803,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.11';
+const APP_VERSION='Caja Chica v7.13';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2946,17 +2946,22 @@ function _tblCard(r, grupo){
   const periodo = (r.fecha_desde&&r.fecha_hasta) ? (r.fecha_desde+' → '+r.fecha_hasta) : (r.fecha_corte||'');
   const bdr = grupo==='pres'?'tbl-bdr-pend':(grupo==='deben'?'tbl-bdr-warn':'tbl-bdr-ok');
   let act='', meta='';
+  const btnPlanilla = `<button class="btn-ghost" onclick="abrirDetalleRendicion('${r.id}')">📄 Planilla</button>`;
+  const btns=[];
   if(grupo==='pres'){
     meta = 'Presentada'+(r.presentada_en?(' · '+String(r.presentada_en).slice(0,10)):'');
-    if(puedeAprobarRendicion()) act = `<div class="act"><button class="act ap btn-save" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button></div>`;
+    if(puedeAprobarRendicion()) btns.push(`<button class="act ap btn-save" onclick="cerrarRendicion('${r.id}')">Cerrar corte</button>`);
+    btns.push(btnPlanilla);
   }else if(grupo==='deben'){
     meta = 'Cerrada'+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'')+' · falta reponer';
-    if(puedeAcreditar()) act = `<div class="act"><button class="act ap btn-save" onclick="acreditarReposicion('${r.id}','${String(r.residente).replace(/'/g,"\\'")}')">Acreditar reposición</button></div>`;
+    if(puedeAcreditar()) btns.push(`<button class="act ap btn-save" onclick="acreditarReposicion('${r.id}','${String(r.residente).replace(/'/g,"\\'")}')">Acreditar reposición</button>`);
+    btns.push(btnPlanilla);
   }else{
     const rep=TABLERO.repuestas[r.id]||0;
     meta = '✓ Repuesto ₲ '+fmt(rep)+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'');
-    act = `<div class="act"><button class="btn-ghost" onclick="abrirDetalleRendicion('${r.id}')">Ver detalle</button></div>`;
+    btns.push(btnPlanilla);
   }
+  act = btns.length ? `<div class="act">${btns.join('')}</div>` : '';
   return `<div class="tbl-card ${bdr}">
     <div class="top"><span class="num">${num}</span><span class="monto">${monto}</span></div>
     <div class="res">${r.residente||'—'}</div>
@@ -3230,16 +3235,31 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
     }
   });
 
-  // Firma del Residente debajo de la planilla
+  // Firmas debajo de la planilla: Residente siempre; Supervisor si ya aprobó
   let fy=doc.lastAutoTable.finalY+20;
   if(fy>PH-45){ doc.addPage(); fy=40; }
-  const colW=100, imgW=colW-28, imgH=18;
+  const colW=(W-24)/2, imgW=Math.min(colW-28,78), imgH=18;
+  // Rinde (Residente)
   try{ if(rend.firma_presentacion) doc.addImage(rend.firma_presentacion,'PNG',20,fy-imgH-1,imgW,imgH); }catch(e){}
   doc.setDrawColor(120); doc.setLineWidth(0.3); doc.line(20,fy,20+colW-24,fy);
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(70);
   doc.text('Rinde (Residente): '+sanPdf(rend.firma_presentacion_nombre||rend.presentada_por||'-'),20,fy+5);
   doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120);
   doc.text('Presentada: '+_fDT(rend.presentada_en),20,fy+9.5);
+  // Aprueba (Supervisor) — solo si la rendición ya fue aprobada/firmada
+  if(rend.firma_aprobacion){
+    const sx=W/2+12;
+    try{ doc.addImage(rend.firma_aprobacion,'PNG',sx,fy-imgH-1,imgW,imgH); }catch(e){}
+    doc.setDrawColor(120); doc.setLineWidth(0.3); doc.line(sx,fy,sx+colW-24,fy);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(70);
+    doc.text('Aprueba (Supervisor): '+sanPdf(rend.firma_aprobacion_nombre||rend.aprobada_por||'-'),sx,fy+5);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120);
+    doc.text('Aprobada: '+_fDT(rend.aprobada_en),sx,fy+9.5);
+    if(rend.obs_aprobacion){
+      const ao=doc.splitTextToSize('Obs. aprobación: '+sanPdf(rend.obs_aprobacion), colW-24);
+      doc.text(ao,sx,fy+13.5);
+    }
+  }
   // Reposición solicitada + observación (en forma discreta, debajo de la firma)
   let ry=fy+15;
   const repoMonto=(rend.reposicion_solicitada!=null && Number(rend.reposicion_solicitada)>0)?Number(rend.reposicion_solicitada):null;
