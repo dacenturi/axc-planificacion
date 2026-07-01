@@ -500,7 +500,7 @@ tr:last-child td{border-bottom:none}
         <div class="card">
           <div class="card-h">
             <div class="ic" style="background:rgba(88,166,255,.14);color:var(--blue)">📋</div>
-            <div><h2>Comprobantes cargados</h2><div class="desc">Aprobá, rechazá o anulá. Solo los aprobados descuentan saldo.</div></div>
+            <div><h2>Comprobantes cargados</h2><div class="desc">Editá, cambiá foto o anulá. La aprobación se hace al revisar la rendición.</div></div>
           </div>
           <div class="card-b">
             <div class="cmp-filters">
@@ -533,7 +533,7 @@ tr:last-child td{border-bottom:none}
       <div class="grid2">
         <div class="card">
           <div class="card-h"><div class="ic" style="background:rgba(240,165,0,.14);color:var(--accent)">🧮</div>
-            <div><h2>Preparar rendición</h2><div class="desc">Agrupa los gastos aprobados aún no rendidos y hace el corte.</div></div></div>
+            <div><h2>Preparar rendición</h2><div class="desc">Agrupá tus comprobantes cargados y presentá el corte para revisión.</div></div></div>
           <div class="card-b">
             <div class="frow">
               <div class="fld"><label>Residente</label><select id="rd-res" onchange="loadRendicionData()"></select></div>
@@ -550,7 +550,7 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="card">
           <div class="card-h"><div class="ic" style="background:rgba(88,166,255,.14);color:var(--blue)">📑</div>
-            <div><h2>Rendiciones</h2><div class="desc">El admin cierra el corte; recién ahí se acredita el nuevo fondo.</div></div></div>
+            <div><h2>Rendiciones</h2><div class="desc">La supervisora revisa y aprueba; recién ahí se acredita la reposición.</div></div></div>
           <div class="card-b" id="rd-list"><div class="empty">Elegí un residente.</div></div>
         </div>
       </div>
@@ -681,6 +681,17 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<div class="set-bg" id="rev-bg" onclick="if(event.target===this)closeRev()">
+  <div class="rdet-card">
+    <div class="rdet-h">
+      <div><h3 id="rev-title">Revisar rendición</h3><div class="rdet-sub" id="rev-sub"></div></div>
+      <button class="btn-ico" onclick="closeRev()">✕</button>
+    </div>
+    <div class="rdet-body" id="rev-body"></div>
+    <div class="rdet-foot" id="rev-foot"></div>
+  </div>
+</div>
+
 <div class="set-bg" id="rdet-bg" onclick="if(event.target===this)closeRdet()">
   <div class="rdet-card">
     <div class="rdet-h">
@@ -712,7 +723,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.0';
+const APP_VERSION='Caja Chica v7.1';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -881,9 +892,11 @@ async function acreditar(){
     await loadSaldos(); renderTopes(); await loadAcreditaciones();
     return;
   }
-  // Regla de rendición: no se puede acreditar si hay una rendición PRESENTADA sin cerrar.
-  const { data:pend }=await _SB.from('caja_chica_rendiciones').select('id').eq('residente',res).eq('estado','presentada').limit(1);
-  if(pend && pend.length){ toast('Hay una rendición presentada sin cerrar para '+res+'. Cerrá el corte antes de acreditar.','err'); return; }
+  // Regla: no acreditar si hay una rendición presentada sin resolver (salvo que sea la reposición de una rendición ya aprobada)
+  if(!(PENDING_REND_LINK && PENDING_REND_LINK.res===res)){
+    const { data:pend }=await _SB.from('caja_chica_rendiciones').select('id').eq('residente',res).eq('estado','presentada').limit(1);
+    if(pend && pend.length){ toast('Hay una rendición presentada sin resolver para '+res+'. Revisala antes de acreditar.','err'); return; }
+  }
   const btn=gs('ac-btn'); btn.disabled=true; btn.textContent='Acreditando…';
   const payload={residente:res,fecha,monto,medio,referencia:ref||null,creado_por:CURRENT_USER.email};
   if(medio!=='efectivo'){ payload.banco=banco||null; payload.nro_operacion=nro||null; }
@@ -898,7 +911,12 @@ async function acreditar(){
   }
   btn.disabled=false; btn.textContent='Acreditar fondo';
   if(error){ toast('Error: '+error.message,'err'); return; }
-  if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){ PENDING_REND_LINK=null; gs('repo-bnr').classList.remove('show'); }
+  if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){
+    const _rid=PENDING_REND_LINK.rid;
+    await _SB.from('caja_chica_rendiciones').update({estado:'repuesta'}).eq('id',_rid);
+    await _SB.from('caja_chica_historial').insert({rendicion_id:_rid,accion:'acreditar_reposicion',estado_nuevo:'repuesta',detalle:`Reposición ₲ ${fmt(monto)} · ${medio}`,hecho_por:CURRENT_USER.email});
+    PENDING_REND_LINK=null; gs('repo-bnr').classList.remove('show');
+  }
   toast(`Acreditado ₲ ${fmt(monto)} a ${res}`,'ok'); gs('ac-monto').value=''; gs('ac-ref').value='';
   if(gs('ac-banco')) gs('ac-banco').value=''; if(gs('ac-nro')) gs('ac-nro').value='';
   await loadSaldos(); renderTopes(); await loadAcreditaciones();
@@ -1738,9 +1756,7 @@ function renderComprobantes(){
     let acts='<div class="cmp-acts">';
     if(m.estado==='solicitado'||m.estado==='borrador'||m.estado==='observado'){
       const enRend=!!m.rendicion_id;
-      if(puedeAprobar()) acts+=`<button class="act ap" onclick="aprobar('${m.id}',${m.total},'${m.residente.replace(/'/g,"\\'")}')">Aprobar</button>`;
       if(!enRend) acts+=`<button class="act ed" onclick="editarComprobante('${m.id}')">✎ Editar</button>`;
-      if(puedeAprobar()) acts+=`<button class="act re" onclick="rechazar('${m.id}')">Rechazar</button>`;
       if(!enRend && _puedeAnularComprob(m)) acts+=`<button class="act an" onclick="anular('${m.id}')">🗑 Anular</button>`;
     } else if(m.estado==='aprobado'){
       if(!m.rendicion_id){ if(puedeAprobar()) acts+=`<button class="act an" onclick="anular('${m.id}')">Anular</button>`; }
@@ -2397,35 +2413,39 @@ async function loadRendicionData(){
   if(!res){ pend.innerHTML='<div class="empty">Elegí un residente.</div>'; list.innerHTML='<div class="empty">Elegí un residente.</div>'; sum.textContent=''; RD_PENDING=[]; return; }
   const corte=gs('rd-corte').value||todayISO();
 
-  // gastos aprobados sin rendir (hasta el corte)
+  // comprobantes cargados sin rendir (hasta el corte) — en el flujo nuevo se aprueban al revisar la rendición
   const { data:movs }=await _SB.from('caja_chica_movimientos')
-    .select('id,fecha,nro_factura,total,numero_orden,obra,caja_chica_adjuntos(id,storage_path,nombre)').eq('residente',res).eq('estado','aprobado').is('rendicion_id',null)
+    .select('id,fecha,nro_factura,total,numero_orden,obra,caja_chica_adjuntos(id,storage_path,nombre)').eq('residente',res).in('estado',['solicitado','observado']).is('rendicion_id',null)
     .order('fecha',{ascending:true});
   RD_PENDING=(movs||[]).filter(m=>!corte || (m.fecha||'')<=corte);
   const totalPend=RD_PENDING.reduce((a,m)=>a+Number(m.total),0);
   const s=SALDOS[res]; const saldo=s?s.saldo:0;
-  sum.innerHTML=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b> · Gastos aprobados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
+  sum.innerHTML=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b> · Comprobantes cargados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
   pend.innerHTML = RD_PENDING.length
     ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura} ${_iconoAdjunto(m.caja_chica_adjuntos||[],false)}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
-    : '<div class="empty">No hay gastos aprobados pendientes de rendir.</div>';
+    : '<div class="empty">No hay comprobantes cargados pendientes de rendir.</div>';
   gs('rd-btn').disabled = !RD_PENDING.length;
 
   // historial de rendiciones del residente (se ocultan las devueltas/reabiertas 'abierta')
   const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
-  const visibles=(rends||[]).filter(r=>r.estado==='presentada'||r.estado==='cerrada');
+  const visibles=(rends||[]).filter(r=>['presentada','observada','aguardando_acreditacion','cerrada','repuesta'].includes(r.estado));
   if(!visibles.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
+  const _estLabel={presentada:'Presentada',observada:'Devuelta al residente',aguardando_acreditacion:'Aguardando acreditación',cerrada:'Cerrada',repuesta:'Repuesta'};
+  const _estClass={presentada:'solicitado',observada:'borrador',aguardando_acreditacion:'solicitado',cerrada:'aprobado',repuesta:'aprobado'};
   list.innerHTML=visibles.map(r=>{
     const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
     const periodo=(r.fecha_desde||r.fecha_hasta)?`Período: ${r.fecha_desde||'—'} → ${r.fecha_hasta||'—'}`:'';
     let btns=`<button class="act adj" onclick="verDetalleEnReporte('${r.id}','${res.replace(/'/g,"\\'")}')">📄 Detalle</button>`;
-    if(r.estado==='presentada') btns+=`<button class="act ap" onclick="cerrarRendicion('${r.id}')">${IS_RESIDENTE?'Cerrar mi rendición':'Cerrar corte'}</button>`;
-    if(r.estado==='cerrada' && puedeAcreditar()) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">Acreditar reposición</button>`;
-    if((r.estado==='presentada'||r.estado==='cerrada') && puedeAprobarRendicion()) btns+=`<button class="act re" onclick="devolverRendicion('${r.id}')">↩ Devolver</button>`;
-    if((r.estado==='presentada'||r.estado==='cerrada') && IS_RESIDENTE) btns+=`<button class="act re" onclick="cancelarMiRendicion('${r.id}')">✕ Cancelar rendición</button>`;
+    if(r.estado==='presentada' && puedeAprobarRendicion()) btns+=`<button class="act ap" onclick="revisarRendicion('${r.id}','${res.replace(/'/g,"\\'")}')">🔍 Revisar / aprobar</button>`;
+    if(r.estado==='presentada' && IS_RESIDENTE) btns+=`<button class="act re" onclick="cancelarMiRendicion('${r.id}')">✕ Cancelar</button>`;
+    if(r.estado==='aguardando_acreditacion' && puedeAcreditar()) btns+=`<button class="act ap" onclick="acreditarReposicion('${r.id}','${res.replace(/'/g,"\\'")}')">💰 Acreditar reposición</button>`;
     const acts=`<div class="cmp-acts">${btns}</div>`;
+    let extra='';
+    if(r.estado==='aguardando_acreditacion' && r.reposicion_solicitada!=null) extra=` · Reposición solicitada: <b>₲ ${fmt(r.reposicion_solicitada)}</b>`;
+    else if(r.estado==='observada' && r.motivo_observacion) extra=` · Motivo: ${r.motivo_observacion}`;
     return `<div class="cmp">
-      <div class="cmp-top"><span class="cmp-fac">${nro}</span><span class="st ${r.estado==='cerrada'?'aprobado':(r.estado==='presentada'?'solicitado':'borrador')}">${r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
-      <div class="cmp-meta">${periodo}${periodo?' · ':''}Corte: ${r.fecha_corte||'—'}${r.cerrada_en?(' · cerrada '+(r.cerrada_en||'').slice(0,10)):''}</div>
+      <div class="cmp-top"><span class="cmp-fac">${nro}</span><span class="st ${_estClass[r.estado]||'borrador'}">${_estLabel[r.estado]||r.estado}</span><span class="cmp-tot">₲ ${fmt(r.total_rendido)}</span></div>
+      <div class="cmp-meta">${periodo}${periodo?' · ':''}Corte: ${r.fecha_corte||'—'}${extra}</div>
       ${acts}</div>`;
   }).join('');
 }
@@ -2455,6 +2475,90 @@ async function presentarRendicion(){
   if(gs('rd-repo-monto')) gs('rd-repo-monto').value='';
   if(gs('rd-repo-obs')) gs('rd-repo-obs').value='';
   await loadRendicionData();
+}
+
+// ═══════ Etapa 3: Revisión de rendición por la supervisora (Dahiana) ═══════
+let REV_REND=null;
+function closeRev(){ gs('rev-bg').classList.remove('open'); }
+
+async function revisarRendicion(rid,res){
+  const { data:r }=await _SB.from('caja_chica_rendiciones').select('*').eq('id',rid).maybeSingle();
+  if(!r){ toast('Rendición no encontrada','err'); return; }
+  REV_REND={id:rid,res,numero:r.numero};
+  const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
+  gs('rev-title').textContent='Revisar '+nro;
+  const repo = r.reposicion_solicitada!=null ? `Reposición solicitada: <b>₲ ${fmt(r.reposicion_solicitada)}</b>` : 'Sin monto de reposición solicitado';
+  gs('rev-sub').innerHTML=`${res} · Corte ${r.fecha_corte||'—'} · ${repo}${r.reposicion_obs?(' · <i>'+r.reposicion_obs+'</i>'):''}`;
+  const { data:movs }=await _SB.from('caja_chica_movimientos')
+    .select('id,fecha,nro_factura,proveedor,total,estado,caja_chica_adjuntos(id,storage_path,nombre)')
+    .eq('rendicion_id',rid).order('fecha',{ascending:true});
+  const lista=(movs||[]);
+  const revisando=(puedeAprobarRendicion() && r.estado==='presentada');
+  gs('rev-body').innerHTML = lista.length ? lista.map(m=>{
+    const adj=m.caja_chica_adjuntos||[];
+    let b='';
+    if(adj.length) b+=`<button class="act adj" onclick='verAdjuntos(${JSON.stringify(adj).replace(/'/g,"&#39;")})'>📎 Ver</button>`;
+    if(revisando) b+=`<button class="act re" onclick="observarComprobante('${m.id}','${rid}','${res.replace(/'/g,"\\'")}')">✕ Rechazar</button>`;
+    return `<div class="rd-line"><span class="f">Fact. ${m.nro_factura||'—'} <span style="color:var(--text3)">${m.proveedor||''}</span></span><span class="t">₲ ${fmt(m.total)}</span><span style="display:flex;gap:6px">${b}</span></div>`;
+  }).join('') : '<div class="empty">No quedan comprobantes en esta rendición.</div>';
+  let foot='';
+  if(revisando && lista.length){
+    foot += `<button class="act ap" onclick="aprobarRendicion('${rid}')">✓ Aprobar rendición</button>`;
+    foot += `<button class="act re" onclick="observarRendicion('${rid}')">↩ Rechazar toda la rendición</button>`;
+  }
+  gs('rev-foot').innerHTML=foot||'<span style="color:var(--text3);font-size:12px">Solo lectura</span>';
+  gs('rev-bg').classList.add('open');
+}
+
+// Rechazar UN comprobante: sale de la rendición y vuelve al residente (observado). La rendición sigue.
+async function observarComprobante(mid,rid,res){
+  if(!puedeAprobarRendicion()) return;
+  const motivo=prompt('Motivo del rechazo de este comprobante (obligatorio):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('Indicá un motivo','err'); return; }
+  const now=new Date().toISOString();
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'observado',rendicion_id:null,observado_por:CURRENT_USER.email,observado_en:now,motivo_observacion:motivo}).eq('id',mid);
+  if(e1){ toast('Error: '+e1.message,'err'); return; }
+  const { data:rest }=await _SB.from('caja_chica_movimientos').select('total').eq('rendicion_id',rid);
+  const nuevoTotal=(rest||[]).reduce((a,x)=>a+Number(x.total||0),0);
+  await _SB.from('caja_chica_rendiciones').update({total_rendido:nuevoTotal}).eq('id',rid);
+  await _SB.from('caja_chica_historial').insert({movimiento_id:mid,rendicion_id:rid,accion:'observar_comprobante',estado_nuevo:'observado',detalle:motivo,hecho_por:CURRENT_USER.email});
+  toast('Comprobante rechazado y devuelto al residente','ok');
+  await loadSaldos(); await revisarRendicion(rid,res); await loadRendicionData();
+}
+
+// Rechazar la rendición ENTERA: vuelve al residente, comprobantes liberados para corregir y re-presentar.
+async function observarRendicion(rid){
+  if(!puedeAprobarRendicion()) return;
+  const { data:acr }=await _SB.from('caja_chica_acreditaciones').select('id').eq('rendicion_id',rid).limit(1);
+  if(acr && acr.length){ showAlert('No se puede rechazar','Esta rendición ya tiene una <b>reposición acreditada</b>.','🚫',true); return; }
+  const motivo=prompt('Motivo del rechazo de TODA la rendición (obligatorio):'); if(motivo===null) return;
+  if(!motivo.trim()){ toast('Indicá un motivo','err'); return; }
+  if(!confirm('Se rechaza toda la rendición: sus comprobantes vuelven al residente para corregir y volver a presentar. ¿Confirmás?')) return;
+  const now=new Date().toISOString();
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'solicitado',rendicion_id:null}).eq('rendicion_id',rid);
+  if(e1){ toast('Error: '+e1.message,'err'); return; }
+  const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'observada',observada_por:CURRENT_USER.email,observada_en:now,motivo_observacion:motivo,total_rendido:0}).eq('id',rid);
+  if(e2){ toast('Error: '+e2.message,'err'); return; }
+  await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'observar_rendicion',estado_nuevo:'observada',detalle:motivo,hecho_por:CURRENT_USER.email});
+  toast('Rendición rechazada y devuelta al residente','ok');
+  closeRev(); await loadSaldos(); await loadRendicionData();
+}
+
+// Aprobar la rendición: comprobantes quedan firmes (aprobado); rendición pasa a aguardar la acreditación.
+async function aprobarRendicion(rid){
+  if(!puedeAprobarRendicion()) return;
+  const { data:movs }=await _SB.from('caja_chica_movimientos').select('id,total').eq('rendicion_id',rid);
+  if(!movs || !movs.length){ toast('La rendición no tiene comprobantes','err'); return; }
+  if(!confirm('¿Aprobar esta rendición? Los comprobantes quedan aprobados (firmes) y la rendición pasa a aguardar la acreditación de la reposición.')) return;
+  const now=new Date().toISOString();
+  const total=movs.reduce((a,x)=>a+Number(x.total||0),0);
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'aprobado',aprobado_por:CURRENT_USER.email,aprobado_en:now}).eq('rendicion_id',rid);
+  if(e1){ toast('Error: '+e1.message,'err'); return; }
+  const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'aguardando_acreditacion',aprobada_por:CURRENT_USER.email,aprobada_en:now,total_rendido:total}).eq('id',rid);
+  if(e2){ toast('Error: '+e2.message,'err'); return; }
+  await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'aprobar_rendicion',estado_nuevo:'aguardando_acreditacion',detalle:`${movs.length} comprob. · ₲ ${fmt(total)}`,hecho_por:CURRENT_USER.email});
+  toast('Rendición aprobada. Queda aguardando acreditación.','ok');
+  closeRev(); await loadSaldos(); renderTopes(); await loadRendicionData();
 }
 
 async function cerrarRendicion(id){
