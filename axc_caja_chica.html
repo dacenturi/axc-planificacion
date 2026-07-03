@@ -803,7 +803,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.17';
+const APP_VERSION='Caja Chica v7.18';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -993,7 +993,8 @@ async function acreditar(){
   if(error){ toast('Error: '+error.message,'err'); return; }
   if(PENDING_REND_LINK && PENDING_REND_LINK.res===res){
     const _rid=PENDING_REND_LINK.rid;
-    await _SB.from('caja_chica_rendiciones').update({estado:'repuesta'}).eq('id',_rid);
+    const rr=await _SB.from('caja_chica_rendiciones').update({estado:'repuesta'}).eq('id',_rid).select('id');
+    if(!rr.error && (!rr.data || rr.data.length===0)){ _avisoRLS('marcar la rendición como repuesta'); }
     await _SB.from('caja_chica_historial').insert({rendicion_id:_rid,accion:'acreditar_reposicion',estado_nuevo:'repuesta',detalle:`Reposición ₲ ${fmt(monto)} · ${medio}`,hecho_por:CURRENT_USER.email});
     PENDING_REND_LINK=null; gs('repo-bnr').classList.remove('show');
   }
@@ -1331,6 +1332,14 @@ function _pp(k){ return !IS_RESIDENTE || (PERMISOS && PERMISOS[k]===true); }
 function puedeAprobar(){ return _pp('cc_aprobar'); }
 function puedeAprobarRendicion(){ return _pp('cc_aprobar_rendicion'); }
 function puedeAcreditar(){ return _pp('cc_acreditar'); }
+// Aviso claro cuando la BASE rechaza el cambio (permiso RLS): Supabase NO devuelve error
+// cuando el UPDATE no toca ninguna fila por RLS, entonces lo detectamos por filas afectadas.
+function _avisoRLS(accion){
+  showAlert('El cambio no se guardó en la base',
+    'Tenés el permiso en la app, pero la <b>base de datos rechazó '+accion+'</b> (regla de seguridad RLS). '
+    +'Por eso figura como si nada hubiera pasado. Pedile al administrador que corra el script '
+    +'<b>axc_caja_chica_v7.18_rls_supervisora.sql</b> en Supabase y volvé a intentar.','🔒',true);
+}
 function puedeConfigurar(){ return _pp('cc_configurar'); }
 function puedeExcepcion(){ return _pp('cc_excepcion'); }
 function puedeVerTodas(){ return _pp('cc_ver_todas'); }
@@ -2822,8 +2831,9 @@ async function observarRendicion(rid){
   const now=new Date().toISOString();
   const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'solicitado',rendicion_id:null}).eq('rendicion_id',rid);
   if(e1){ toast('Error: '+e1.message,'err'); return; }
-  const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'observada',observada_por:CURRENT_USER.email,observada_en:now,motivo_observacion:motivo,total_rendido:0}).eq('id',rid);
-  if(e2){ toast('Error: '+e2.message,'err'); return; }
+  const r2=await _SB.from('caja_chica_rendiciones').update({estado:'observada',observada_por:CURRENT_USER.email,observada_en:now,motivo_observacion:motivo,total_rendido:0}).eq('id',rid).select('id');
+  if(r2.error){ toast('Error: '+r2.error.message,'err'); return; }
+  if(!r2.data || r2.data.length===0){ _avisoRLS('devolver la rendición al residente'); return; }
   await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'observar_rendicion',estado_nuevo:'observada',detalle:motivo,hecho_por:CURRENT_USER.email});
   toast('Rendición rechazada y devuelta al residente','ok');
   closeRev(); await loadSaldos(); await loadRendicionData();
@@ -2839,17 +2849,22 @@ async function aprobarRendicion(rid){
   const aprob=await pedirAprobacion({sub:`${movs.length} comprob. · ₲ ${fmt(total)} · al aprobar, los comprobantes quedan firmes y la rendición aguarda acreditación.`});
   if(!aprob){ toast('Aprobación cancelada','err'); return; }
   const now=new Date().toISOString();
-  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({estado:'aprobado',aprobado_por:CURRENT_USER.email,aprobado_en:now}).eq('rendicion_id',rid);
-  if(e1){ toast('Error: '+e1.message,'err'); return; }
+  // 1) Marcar los comprobantes como aprobados — pedimos .select() para saber si la BASE aplicó el cambio.
+  const mv=await _SB.from('caja_chica_movimientos').update({estado:'aprobado',aprobado_por:CURRENT_USER.email,aprobado_en:now}).eq('rendicion_id',rid).select('id');
+  if(mv.error){ toast('Error: '+mv.error.message,'err'); return; }
+  if(!mv.data || mv.data.length===0){ _avisoRLS('aprobar los comprobantes'); return; }   // RLS bloqueó en silencio
+  // 2) Pasar la rendición a "aguardando acreditación" — también verificamos filas afectadas.
   const _upFull={estado:'aguardando_acreditacion',aprobada_por:CURRENT_USER.email,aprobada_en:now,total_rendido:total,obs_aprobacion:aprob.obs||null,firma_aprobacion:aprob.dataUrl,firma_aprobacion_nombre:aprob.nombre};
-  const up=await _SB.from('caja_chica_rendiciones').update(_upFull).eq('id',rid);
+  const up=await _SB.from('caja_chica_rendiciones').update(_upFull).eq('id',rid).select('id');
   if(up.error){
     if(/firma_aprobacion|obs_aprobacion|column|schema|does not exist/i.test(up.error.message||'')){
       showAlert('Falta actualizar la base','La firma de aprobación es <b>obligatoria</b> y no se puede guardar porque faltan las columnas de firma. Corré el script <b>axc_caja_chica_v7.7_firmas.sql</b> en Supabase y volvé a intentar.','🔏',true);
     } else { toast('Error: '+up.error.message,'err'); }
     return;
   }
-  await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'aprobar_rendicion',estado_nuevo:'aguardando_acreditacion',detalle:`${movs.length} comprob. · ₲ ${fmt(total)}${aprob.obs?(' · Obs: '+aprob.obs):''}`,hecho_por:CURRENT_USER.email});
+  if(!up.data || up.data.length===0){ _avisoRLS('cambiar el estado de la rendición'); return; }   // RLS bloqueó en silencio
+  const hi=await _SB.from('caja_chica_historial').insert({rendicion_id:rid,accion:'aprobar_rendicion',estado_nuevo:'aguardando_acreditacion',detalle:`${movs.length} comprob. · ₲ ${fmt(total)}${aprob.obs?(' · Obs: '+aprob.obs):''}`,hecho_por:CURRENT_USER.email});
+  if(hi.error){ console.warn('Historial no registrado:',hi.error.message); }
   toast('Rendición aprobada y firmada. Queda aguardando acreditación.','ok');
   closeRev(); await loadSaldos(); renderTopes(); await loadRendicionData();
 }
