@@ -1914,6 +1914,50 @@ function _sortGanttActs(acts){
   });
 }
 
+// ─── Orden del Gantt en el PDF exportado (se elige ANTES de exportar) ───
+// false = por INICIO de actividad, sin agrupar (por defecto)
+// true  = por inicio de actividad, AGRUPADO por contratista
+let _ganttPdfGroupByContractor = false;
+
+// Modal que pregunta el orden del Gantt antes de exportar.
+// Devuelve una promesa: 'fecha' | 'contratista' | null (cancelado). Default: 'fecha'.
+function _askGanttOrder(){
+  return new Promise(resolve => {
+    let choice = 'fecha';
+    const optStyle = sel => `display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1.5px solid ${sel?'var(--accent)':'var(--border)'};border-radius:10px;cursor:pointer;margin-bottom:10px;background:${sel?'rgba(240,165,0,.09)':'transparent'};transition:border-color .15s,background .15s`;
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:14px;max-width:460px;width:100%;padding:22px;box-shadow:0 18px 48px rgba(0,0,0,.5);font-family:Mulish,sans-serif';
+    card.innerHTML =
+      '<div style="font-size:15px;font-weight:800;color:var(--text);margin-bottom:4px">\uD83D\uDCC5 Orden del Diagrama Gantt</div>' +
+      '<div style="font-size:12px;color:var(--text2);margin-bottom:16px">Eleg\u00ed c\u00f3mo ordenar las actividades en el PDF antes de exportar.</div>' +
+      '<div id="opt-fecha" style="'+optStyle(true)+'">' +
+        '<span style="font-size:16px">\uD83D\uDDD3\uFE0F</span>' +
+        '<span><span style="font-weight:700;color:var(--text)">Por inicio de actividad</span><br><span style="font-size:11.5px;color:var(--text2)">Todas las actividades ordenadas por fecha de inicio, sin importar el contratista.</span></span>' +
+      '</div>' +
+      '<div id="opt-contr" style="'+optStyle(false)+'">' +
+        '<span style="font-size:16px">\uD83D\uDC77</span>' +
+        '<span><span style="font-weight:700;color:var(--text)">Por inicio de actividad, agrupado por Contratista</span><br><span style="font-size:11.5px;color:var(--text2)">Cada contratista con sus actividades juntas; los grupos se ordenan por su inicio m\u00e1s temprano.</span></span>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">' +
+        '<button id="gantt-ord-cancel" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Cancelar</button>' +
+        '<button id="gantt-ord-ok" style="background:var(--accent);color:#1a1a1a;border:none;border-radius:8px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Exportar PDF</button>' +
+      '</div>';
+    ov.appendChild(card);
+    document.body.appendChild(ov);
+    const optF = card.querySelector('#opt-fecha');
+    const optC = card.querySelector('#opt-contr');
+    const paint = () => { optF.style.cssText = optStyle(choice==='fecha'); optC.style.cssText = optStyle(choice==='contratista'); };
+    optF.onclick = () => { choice='fecha'; paint(); };
+    optC.onclick = () => { choice='contratista'; paint(); };
+    const close = val => { try{ document.body.removeChild(ov); }catch(_){} resolve(val); };
+    card.querySelector('#gantt-ord-cancel').onclick = () => close(null);
+    card.querySelector('#gantt-ord-ok').onclick = () => close(choice);
+    ov.addEventListener('click', e => { if(e.target === ov) close(null); });
+  });
+}
+
 // ★ 08/06/2026 ★ Tooltip enriquecido para las celdas del Gantt.
 // Devuelve un texto multilínea (\n) con todos los datos de la actividad +
 // el estado del día concreto. Se usa en el atributo title nativo de cada
@@ -2222,6 +2266,12 @@ async function exportPDF(modo){
     showToast('❌ Librería jsPDF no disponible. Recargá la página.', 'bad');
     return;
   }
+
+  // ── Elegir el orden del Diagrama Gantt antes de exportar ──
+  const _ganttOrder = await _askGanttOrder();
+  if(_ganttOrder === null){ return; }   // el usuario canceló
+  _ganttPdfGroupByContractor = (_ganttOrder === 'contratista');
+
   showToast(`📄 Generando PDF con ${acts.length} actividades...`, 'info');
 
   // Pequeño delay para que el toast se vea antes del bloqueo de generación
@@ -2248,7 +2298,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-24-gantt-cont-first';
+    const VERSION   = 'global-pdf-26-gantt-orden-export';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2560,13 +2610,13 @@ async function exportPDF(modo){
       const numDays = dates.length;
       if(numDays === 0) return;
 
-      // Ordenar igual que la vista HTML (respeta el selector: por defecto fecha de inicio asc).
-      // ★ En el reporte de Interventores (intv) se ordena por FECHA DE INICIO de
-      //   actividad pero AGRUPANDO por contratista: el contratista cuya primera
-      //   actividad arranca antes va primero, con TODAS sus actividades juntas
-      //   (ordenadas por fecha de inicio), luego el siguiente contratista, etc.
+      // ★ ORDEN DEL GANTT ELEGIDO POR EL USUARIO ANTES DE EXPORTAR ★
+      // _ganttPdfGroupByContractor = false → por INICIO de actividad (sin agrupar, default).
+      // _ganttPdfGroupByContractor = true  → por inicio de actividad AGRUPADO por
+      //   contratista: el contratista cuya primera actividad arranca antes va primero,
+      //   con TODAS sus actividades juntas (ordenadas por fecha de inicio), y así.
       let sortedActs;
-      if(intv){
+      if(_ganttPdfGroupByContractor){
         const _fini = a => _getFechaActividad(a) || a.fecha_inicio || '\uffff';
         // Fecha de inicio MÁS TEMPRANA de cada contratista
         const minByContr = new Map();
@@ -2710,7 +2760,10 @@ async function exportPDF(modo){
         doc.setFontSize(9);
         doc.setTextColor(...GRAY_TEXT);
         // Usar "a" en lugar de flecha (Helvetica no soporta caracteres Unicode como →)
-        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}${intv ? '  |  Orden: por fecha de inicio, agrupado por Contratista' : ''}`, lMX, lMT + 9);
+        const _ordenGanttTxt = _ganttPdfGroupByContractor
+          ? '  |  Orden: por inicio de actividad, agrupado por Contratista'
+          : '  |  Orden: por inicio de actividad';
+        doc.text(`Periodo: ${fmtFecha(minDate)} a ${fmtFecha(maxDate)}  |  ${numDays} dia(s)  |  ${sortedActs.length} actividad${sortedActs.length===1?'':'es'}${_ordenGanttTxt}`, lMX, lMT + 9);
 
         // ─── Cabecera de columna única ───
         const ganttTopY = lMT + 14;
@@ -3400,19 +3453,38 @@ async function exportPDF(modo){
       const iacts = (allActs || []).slice();
       if(!iacts.length) return;
 
-      // ── Color de ESTADO (barra lateral de la tarjeta) ──
+      // ── Color de ESTADO (barra lateral + tinte de la tarjeta) ──
+      // Paleta rediseñada para que cada estado sea claramente distinguible:
+      // azul (en proceso) · verde (cumplido) · amarillo (cumplido c/ atraso) ·
+      // naranja (retrasado) · rojo (no cumple) · gris (neutro) · violeta (imprevista)
       const EST_COLOR = {
-        'Terminado'           : [34,197,94],
-        'Cumple'              : [34,197,94],
-        'Cumplido con atraso' : [245,158,11],
-        'En proceso'          : [59,130,246],
-        'En espera'           : [148,163,184],
-        'Retrasado'           : [249,115,22],
-        'No Cumple'           : [220,38,38],
-        'Cancelado'           : [148,163,184],
-        'Sin asignar'         : [148,163,184]
+        'Terminado'           : [22,163,74],   // verde
+        'Cumple'              : [22,163,74],   // verde
+        'Cumplido con atraso' : [234,179,8],   // amarillo/oro (bien distinto del naranja)
+        'En proceso'          : [37,99,235],   // azul
+        'En espera'           : [100,116,139], // gris
+        'Retrasado'           : [234,88,12],   // naranja fuerte
+        'No Cumple'           : [220,38,38],   // rojo
+        'Cancelado'           : [100,116,139], // gris
+        'Sin asignar'         : [148,163,184]  // gris claro
       };
+      const IMPREV_COL = [147,51,234];         // violeta — imprevista (fuera de la gama cálida)
       const _estColor = e => EST_COLOR[e] || [148,163,184];
+      // Tinte MUY claro y profesional del color de estado (mezcla con blanco al ~90%)
+      const _tint = (rgb, amt=0.11) => rgb.map(c => Math.round(255 - (255 - c) * amt));
+      // Etiqueta amigable del estado para mostrar dentro de la tarjeta
+      const EST_LABEL = {
+        'Terminado'           : 'Cumplido',
+        'Cumple'              : 'Cumplido',
+        'Cumplido con atraso' : 'Cumplido con atraso',
+        'En proceso'          : 'En proceso',
+        'En espera'           : 'En espera',
+        'Retrasado'           : 'Retrasado',
+        'No Cumple'           : 'No cumple',
+        'Cancelado'           : 'Cancelado',
+        'Sin asignar'         : 'Sin asignar'
+      };
+      const _estLabel = e => EST_LABEL[e] || (e || 'Sin asignar');
       // ── CRITICIDAD: fondo MUY claro + color de texto (sin chip pesado) ──
       const CRIT_BG  = { 'Alta':[253,237,237], 'Media':[254,247,233], 'Baja':[237,250,241] };
       const CRIT_TXT = { 'Alta':[183,40,40],   'Media':[178,118,12],  'Baja':[33,140,78] };
@@ -3475,16 +3547,20 @@ async function exportPDF(modo){
       function buildCard(a){
         const crit = _criticidadLabel(a);
         const critOn = (crit === 'Alta' || crit === 'Media' || crit === 'Baja');
-        const bg = critOn ? (CRIT_BG[crit] || GRAY_LIGHT) : GRAY_LIGHT;
+        const estado = _estadoLabel(a);
+        // Color de referencia de la tarjeta: imprevista pisa con violeta, sino el color del estado
+        const refCol = a.imprevista ? IMPREV_COL : _estColor(estado);
+        // Fondo = tinte MUY claro del color de estado (queda todo el fondo teñido, claro y pro)
+        const bg = _tint(refCol);
         // ancho del texto de criticidad (se reserva a la derecha de la obra)
         doc.setFont('helvetica','bold'); doc.setFontSize(5.0);
         const critW = critOn ? (doc.getTextWidth(crit) + 1.5) : 0;
         doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(5.8);
         let descLines = doc.splitTextToSize(String(a.descripcion || '—'), innerW);
         if(descLines.length > 6){ descLines = descLines.slice(0,6); descLines[5] = descLines[5].slice(0, Math.max(1, descLines[5].length-2)) + '…'; }
-        // alto compacto: padTop(2.4)+obra(2.4)+desc(n*2.2)+resid(2.2)+fechas(2.2)+padBot(1.3)
-        const h = Math.max(11, 2.4 + 2.4 + descLines.length*2.2 + 2.2 + 2.2 + 1.3);
-        return { a, descLines, h, crit, critOn, critW, bg, totalDias: _totalDias(a), estado: _estadoLabel(a) };
+        // alto compacto: padTop(2.4)+obra(2.4)+desc(n*2.2)+ESTADO(2.5)+resid(2.2)+fechas(2.2)+padBot(1.3)
+        const h = Math.max(13, 2.4 + 2.4 + descLines.length*2.2 + 2.5 + 2.2 + 2.2 + 1.3);
+        return { a, descLines, h, crit, critOn, critW, bg, refCol, totalDias: _totalDias(a), estado };
       }
       const cardsByCont = {};
       contratistas.forEach(c => {
@@ -3498,12 +3574,12 @@ async function exportPDF(modo){
       // ── Dibujo de una tarjeta ──
       function drawCard(x, y, card){
         const a = card.a, h = card.h;
-        // Fondo MUY claro según criticidad (o gris neutro si no tiene)
+        // Fondo = tinte MUY claro del color de ESTADO (toda la tarjeta teñida, clara y pro)
         doc.setFillColor(...card.bg);
         doc.setDrawColor(...GRAY_BORD); doc.setLineWidth(0.2);
         doc.roundedRect(x, y, colW, h, 1.2, 1.2, 'FD');
-        // Barra lateral = color de ESTADO (imprevista pisa con naranja)
-        const lat = a.imprevista ? ORANGE_IMP : _estColor(card.estado);
+        // Barra lateral = color de ESTADO (imprevista pisa con violeta)
+        const lat = card.refCol;
         doc.setFillColor(...lat); doc.rect(x, y, 1.5, h, 'F');
         const px = x + cardPad + 1.0;
         const rightX = x + colW - cardPad + 0.4;
@@ -3528,8 +3604,18 @@ async function exportPDF(modo){
         cy += 2.4;
         // Descripción
         doc.setFont('helvetica', a.imprevista ? 'bold' : 'normal'); doc.setFontSize(5.8);
-        doc.setTextColor(...(a.imprevista ? ORANGE_IMP : BLACK));
+        doc.setTextColor(...(a.imprevista ? IMPREV_COL : BLACK));
         card.descLines.forEach(ln => { doc.text(ln, px, cy); cy += 2.2; });
+        // Estado (con el mismo color de la tarjeta) — "Estado: <estado>" (+ Imprevista)
+        cy += 0.3;
+        doc.setFont('helvetica','bold'); doc.setFontSize(5.6); doc.setTextColor(...GRAY_TEXT);
+        doc.text('Estado: ', px, cy);
+        const _lblW = doc.getTextWidth('Estado: ');
+        let estTxt = _estLabel(card.estado);
+        if(a.imprevista) estTxt += ' · Imprevista';
+        doc.setTextColor(...card.refCol);
+        doc.text(_trunc(estTxt, innerW - _lblW), px + _lblW, cy);
+        cy += 2.2;
         // Residente responsable + atraso
         const atr = (Number.isFinite(a.dias_atraso) && a.dias_atraso > 0) ? ('  ·  atraso ' + a.dias_atraso + 'd') : '';
         doc.setFont('helvetica','normal'); doc.setFontSize(5.4); doc.setTextColor(...GRAY_TEXT);
@@ -3574,8 +3660,8 @@ async function exportPDF(modo){
         doc.text('Estado (barra lateral):', lx, legY1); lx += doc.getTextWidth('Estado (barra lateral):') + 4;
         doc.setFont('helvetica','normal');
         const estItems = [
-          [[59,130,246],'En proceso'], [[34,197,94],'Cumplido'], [[245,158,11],'C/ atraso'],
-          [[249,115,22],'Retrasado'], [[220,38,38],'No cumple'], [[148,163,184],'Neutro'], [[255,107,53],'Imprevista']
+          [[37,99,235],'En proceso'], [[22,163,74],'Cumplido'], [[234,179,8],'Cumplido con atraso'],
+          [[234,88,12],'Retrasado'], [[220,38,38],'No cumple'], [[100,116,139],'Neutro'], [[147,51,234],'Imprevista']
         ];
         estItems.forEach(([c,l]) => {
           doc.setFillColor(...c); doc.roundedRect(lx, legY1 - 2.4, 3.0, 2.4, 0.5, 0.5, 'F');
