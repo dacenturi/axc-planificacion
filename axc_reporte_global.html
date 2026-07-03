@@ -2298,7 +2298,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-26-gantt-orden-export';
+    const VERSION   = 'global-pdf-27-gantt-orden-fix';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2615,14 +2615,21 @@ async function exportPDF(modo){
       // _ganttPdfGroupByContractor = true  → por inicio de actividad AGRUPADO por
       //   contratista: el contratista cuya primera actividad arranca antes va primero,
       //   con TODAS sus actividades juntas (ordenadas por fecha de inicio), y así.
+      //
+      // Clave de "inicio de actividad" = primer día VISIBLE de la barra en el Gantt
+      // (_getFechaIniClip respeta el filtro de fechas activo), con respaldos. Es
+      // INDEPENDIENTE del selector de orden de la vista HTML: manda la elección del modal.
+      const _ganttStartISO = a =>
+        _getFechaIniClip(a) || _getFechaActividad(a) || a.fecha_inicio ||
+        (_ganttRangoPlanISO(a)[0]) || '\uffff';
+
       let sortedActs;
       if(_ganttPdfGroupByContractor){
-        const _fini = a => _getFechaActividad(a) || a.fecha_inicio || '\uffff';
         // Fecha de inicio MÁS TEMPRANA de cada contratista
         const minByContr = new Map();
         ganttActs.forEach(a => {
           const c = (a.contratista||'').trim() || '\uffff';
-          const f = _fini(a);
+          const f = _ganttStartISO(a);
           if(!minByContr.has(c) || f < minByContr.get(c)) minByContr.set(c, f);
         });
         sortedActs = ganttActs.slice().sort((a,b) => {
@@ -2631,12 +2638,21 @@ async function exportPDF(modo){
           const ma = minByContr.get(ca), mb = minByContr.get(cb);
           if(ma !== mb) return ma < mb ? -1 : 1;          // grupos por fecha de inicio más temprana
           if(ca !== cb) return ca.toLowerCase() < cb.toLowerCase() ? -1 : 1; // desempate estable
-          const fa = _fini(a), fb = _fini(b);
+          const fa = _ganttStartISO(a), fb = _ganttStartISO(b);
           if(fa !== fb) return fa < fb ? -1 : 1;          // dentro del grupo: por fecha de inicio
           return (a.descripcion||'').localeCompare(b.descripcion||'', 'es');
         });
       } else {
-        sortedActs = _sortGanttActs(ganttActs);
+        // Opción por defecto: por INICIO de actividad, SIN importar el contratista.
+        // Orden puro por fecha de inicio (IGNORA el selector de orden de la vista HTML).
+        sortedActs = ganttActs.slice().sort((a,b) => {
+          const fa = _ganttStartISO(a), fb = _ganttStartISO(b);
+          if(fa !== fb) return fa < fb ? -1 : 1;
+          // Desempates estables: contratista y luego descripción
+          const ca = (a.contratista||'').toLowerCase(), cb = (b.contratista||'').toLowerCase();
+          if(ca !== cb) return ca < cb ? -1 : 1;
+          return (a.descripcion||'').localeCompare(b.descripcion||'', 'es');
+        });
       }
 
       // ─── Setup PDF para landscape ───
