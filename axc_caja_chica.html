@@ -91,6 +91,11 @@ a{color:inherit;text-decoration:none}
 .tbl-card .monto{font-weight:800;font-size:15px;white-space:nowrap}
 .tbl-card .res{font-size:13px;color:var(--text);margin-top:2px}
 .tbl-card .meta{font-size:11.5px;color:var(--text3);margin-top:3px}
+.tbl-card .repo{margin-top:7px;padding:6px 8px;border-radius:8px;background:var(--bg2,#faf7ef);border:1px solid var(--line);font-size:11.5px;color:var(--text2)}
+.tbl-card .repo .rl{color:var(--text3)}
+.tbl-card .repo b{color:var(--text);font-size:13px}
+.tbl-card .repo .rmut{color:var(--text3);font-style:italic}
+.tbl-card .repo .obs{margin-top:3px;color:var(--text2);font-size:11px;line-height:1.35}
 .tbl-card .act{margin-top:9px;display:flex;flex-direction:column;gap:6px}
 .tbl-card .act button{width:100%;margin:0}
 .tbl-bdr-pend{border-left:4px solid var(--accent)}
@@ -803,7 +808,7 @@ let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LIS
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.18';
+const APP_VERSION='Caja Chica v7.20';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2046,7 +2051,7 @@ async function reporteResidente(res, opts){
     acr=ra.data||[];
   }
   let qm=_SB.from('caja_chica_movimientos')
-    .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,estado,creado_en,rendicion_id,caja_chica_rendiciones(numero),caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre)')
+    .select('id,fecha,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,numero_orden,total,estado,creado_en,comentario,rendicion_id,caja_chica_rendiciones(numero),caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre)')
     .eq('residente',res);
   if(isRend){ qm=qm.eq('rendicion_id',opts.rendId); } else { qm=qm.in('estado',['solicitado','observado','aprobado']); qm=_dateFilter(qm,'fecha'); }
   const { data:movs } = await qm;
@@ -2067,7 +2072,7 @@ async function reporteResidente(res, opts){
       proveedor:m.proveedor||'',obra:m.obra||'',sector:m.sector||'',rubro:m.rubro||'',contratista:m.contratista||'',
       debitado:Number(m.total||0),creditado:0,rnd:rndCell,total:Number(m.total||0),rendId:m.rendicion_id||'',estado:m.estado,
       adj:m.caja_chica_adjuntos||[],
-      items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
+      items:(its.length?its:[{concepto:(m.comentario||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
       _obra:m.obra||'',_rubro:m.rubro||'',_prov:m.proveedor||''});
   });
   rows.sort((a,b)=>a.key<b.key?-1:(a.key>b.key?1:0));
@@ -2945,7 +2950,7 @@ async function loadTablero(){
   const cols=gs('tbl-cols'); if(cols) cols.innerHTML='<div class="empty">Cargando…</div>';
   try{
     const { data:rends } = await _SB.from('caja_chica_rendiciones')
-      .select('id,residente,numero,estado,total_rendido,fecha_corte,fecha_desde,fecha_hasta,presentada_en,aprobada_en,cerrada_en')
+      .select('id,residente,numero,estado,total_rendido,fecha_corte,fecha_desde,fecha_hasta,presentada_en,aprobada_en,cerrada_en,reposicion_solicitada,reposicion_obs')
       .order('creado_en',{ascending:false});
     const { data:acr } = await _SB.from('caja_chica_acreditaciones')
       .select('rendicion_id,monto').not('rendicion_id','is',null);
@@ -2954,6 +2959,21 @@ async function loadTablero(){
     TABLERO={ rends:rends||[], repuestas };
   }catch(e){ TABLERO={rends:[],repuestas:{}}; }
   renderTablero();
+}
+// Bloque de reposición para el tablero:
+//  · Esperando aprobación / Falta reponer → lo que SOLICITA el residente (monto + justificación)
+//  · Repuestas → sólo el monto CONCEDIDO (acreditado)
+function _tblRepoInfo(r, grupo){
+  if(grupo==='ok'){
+    const rep=TABLERO.repuestas[r.id]||0;
+    return `<div class="repo"><span class="rl">Reposición concedida:</span> <b>₲ ${fmt(rep)}</b></div>`;
+  }
+  const solic=(r.reposicion_solicitada!=null && Number(r.reposicion_solicitada)>0)?Number(r.reposicion_solicitada):null;
+  const linea = solic!=null
+    ? `<span class="rl">Solicita reposición:</span> <b>₲ ${fmt(solic)}</b>`
+    : `<span class="rl">Solicita reposición:</span> <span class="rmut">no indicó monto (rendido ₲ ${fmt(Number(r.total_rendido||0))})</span>`;
+  const obs = r.reposicion_obs ? `<div class="obs">📝 ${_esc(r.reposicion_obs)}</div>` : '';
+  return `<div class="repo">${linea}${obs}</div>`;
 }
 function _tblCard(r, grupo){
   const num = r.numero!=null ? ('RND-'+String(r.numero).padStart(4,'0')) : '—';
@@ -2973,8 +2993,7 @@ function _tblCard(r, grupo){
     if(puedeAcreditar()) btns.push(`<button class="act ap btn-save" onclick="acreditarReposicion('${r.id}','${resEsc}')">Acreditar reposición</button>`);
     btns.push(btnPlanilla);
   }else{
-    const rep=TABLERO.repuestas[r.id]||0;
-    meta = '✓ Repuesto ₲ '+fmt(rep)+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'');
+    meta = 'Completa'+(r.cerrada_en?(' · '+String(r.cerrada_en).slice(0,10)):'');
     btns.push(btnPlanilla);
   }
   const act = btns.length ? `<div class="act">${btns.join('')}</div>` : '';
@@ -2982,6 +3001,7 @@ function _tblCard(r, grupo){
     <div class="top"><span class="num">${num}</span><span class="monto">${monto}</span></div>
     <div class="res">${r.residente||'—'}</div>
     <div class="meta">${periodo?periodo+' · ':''}${meta}</div>
+    ${_tblRepoInfo(r,grupo)}
     ${act}</div>`;
 }
 function renderTablero(){
@@ -3189,7 +3209,7 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
   { const ra=await _SB.from('caja_chica_acreditaciones').select('fecha,monto,medio,creado_en,rendicion_id').eq('residente',res).order('creado_en',{ascending:true}); acrs=ra.data||[]; }
   const { data:rendsAll }=await _SB.from('caja_chica_rendiciones').select('id,numero,total_rendido,estado,presentada_en,aprobada_en').eq('residente',res);
   const { data:movs }=await _SB.from('caja_chica_movimientos')
-    .select('fecha,numero_orden,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,total,estado,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
+    .select('fecha,numero_orden,nro_factura,tipo_comprobante,proveedor,obra,sector,rubro,contratista,total,estado,comentario,caja_chica_movimiento_items(concepto,cantidad,unidad,costo_unit,subtotal,orden),caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
     .eq('rendicion_id',rid).order('fecha',{ascending:true});
 
   // ── Modelo de ciclo ──────────────────────────────────────────────
@@ -3226,7 +3246,7 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
     const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
     rows.push({ kind:'deb', fecha:m.fecha||'', factura:m.nro_factura||'', proveedor:m.proveedor||'', obra:m.obra||'', rubro:m.rubro||'',
       debitado:Number(m.total||0), total:Number(m.total||0), adj:m.caja_chica_adjuntos||[],
-      items:(its.length?its:[{concepto:'(sin detalle)',cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})) });
+      items:(its.length?its:[{concepto:(m.comentario||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})) });
   });
   const sumCred = cycleAcrs.reduce((s,a)=>s+Number(a.monto||0),0);
   const sumDeb = rows.reduce((s,r)=>s+r.debitado,0);
