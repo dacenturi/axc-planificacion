@@ -948,7 +948,7 @@ body{
       <div class="login-error" id="loginError"></div>
     </form>
     <div class="login-footer">
-      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.8 (contado/crédito)
+      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.9 (PDF sin espacios en blanco)
     </div>
   </div>
 </div>
@@ -2583,14 +2583,8 @@ async function exportPDF(incluirDetalle = true){
     y += 26;
 
     // ─── Capturar gráficos como imágenes ───
-    doc.setTextColor(31, 56, 100);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.text('Analisis grafico', M, y);
-    doc.setDrawColor(200, 160, 40);
-    doc.line(M, y+1.5, M+38, y+1.5);
-    y += 6;
-
+    // Solo se consideran los gráficos VISIBLES (según el menú "Secciones") y que
+    // tengan una instancia real de chart. Así no quedan huecos ni hojas en blanco.
     const chartIds = [
       { id: 'chartRubro', title: 'Suma de Valor por Rubro', sec: 'sec-rubro' },
       { id: 'chartProveedor', title: 'Suma de Valor por Proveedor (Top 10)', sec: 'sec-proveedor' },
@@ -2599,51 +2593,61 @@ async function exportPDF(incluirDetalle = true){
       { id: 'chartTipo', title: 'Suma de Valor por Tipo de Compra', sec: 'sec-tipo' },
       { id: 'chartResidente', title: 'Suma de Valor por Residente', sec: 'sec-residente' },
     ];
-
-    // Capturar todos los gráficos
-    for(let i = 0; i < chartIds.length; i++){
-      const ch = chartIds[i];
-      // Saltar gráficos que el usuario ocultó con el menú "Secciones"
-      if(!seccionVisible(ch.sec)) continue;
+    const visibleCharts = chartIds.filter(ch => {
+      if(!seccionVisible(ch.sec)) return false;
       const canvas = document.getElementById(ch.id);
-      if(!canvas || !state.charts[ch.id.replace('chart','').toLowerCase()]) continue;
+      return !!(canvas && state.charts[ch.id.replace('chart','').toLowerCase()]);
+    });
 
-      const imgData = canvas.toDataURL('image/png', 1.0);
-      const imgW = (pageW - M*2 - 4) / 2; // 2 por fila
-      const imgH = imgW * 0.6;
-
-      // Check if we need a new page
-      if(y + imgH + 12 > pageH - 15){
-        doc.addPage();
-        y = 15;
-      }
-
-      const col = i % 2;
-      const x = M + col * (imgW + 4);
-      if(col === 0 && i > 0){
-        y += imgH + 12;
-        if(y + imgH + 12 > pageH - 15){
-          doc.addPage();
-          y = 15;
-        }
-      }
-
-      // Título del gráfico
-      doc.setFillColor(247, 249, 252);
-      doc.setDrawColor(226, 230, 238);
-      doc.setLineWidth(0.3);
-      doc.roundedRect(x, y, imgW, imgH + 8, 2, 2, 'FD');
-
+    // Solo se dibuja la sección si hay al menos un gráfico (evita título huérfano + hueco).
+    if(visibleCharts.length){
       doc.setTextColor(31, 56, 100);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9);
-      doc.text(pdfSafe(ch.title), x + 3, y + 5);
+      doc.setFontSize(12);
+      doc.text('Analisis grafico', M, y);
+      doc.setDrawColor(200, 160, 40);
+      doc.line(M, y+1.5, M+38, y+1.5);
+      y += 6;
 
-      // Imagen del gráfico
-      try {
-        doc.addImage(imgData, 'PNG', x + 2, y + 7, imgW - 4, imgH);
-      } catch(e) {
-        console.warn('Error agregando gráfico:', e);
+      const gap = 4;                         // separación entre gráficos
+      const halfW = (pageW - M*2 - gap) / 2; // ancho de media fila (2 por fila)
+      const fullW = pageW - M*2;             // ancho completo (gráfico impar al final)
+
+      // Se recorren de a 2 por fila. Si al final queda uno solo, ocupa el ancho
+      // completo (aplanado) para no dejar media fila vacía.
+      for(let idx = 0; idx < visibleCharts.length; idx += 2){
+        const rowItems = visibleCharts.slice(idx, idx + 2);
+        const soloUno = rowItems.length === 1;
+        const w = soloUno ? fullW : halfW;
+        const h = soloUno ? w * 0.30 : w * 0.60;  // el full-width se aplana para no ser gigante
+        const rowH = h + 8;                       // + barra de título
+
+        // Salto de página únicamente si la fila no entra (no antes).
+        if(y + rowH > pageH - 15){ doc.addPage(); y = 15; }
+
+        rowItems.forEach((ch, c) => {
+          const canvas = document.getElementById(ch.id);
+          const imgData = canvas.toDataURL('image/png', 1.0);
+          const x = M + c * (halfW + gap);
+
+          doc.setFillColor(247, 249, 252);
+          doc.setDrawColor(226, 230, 238);
+          doc.setLineWidth(0.3);
+          doc.roundedRect(x, y, w, rowH, 2, 2, 'FD');
+
+          doc.setTextColor(31, 56, 100);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.text(pdfSafe(ch.title), x + 3, y + 5);
+
+          try {
+            doc.addImage(imgData, 'PNG', x + 2, y + 7, w - 4, h);
+          } catch(e) {
+            console.warn('Error agregando gráfico:', e);
+          }
+        });
+
+        y += rowH + gap;   // avanzar a la siguiente fila
       }
     }
 
@@ -2655,8 +2659,9 @@ async function exportPDF(incluirDetalle = true){
     // El TOTAL del resumen se calcula SIEMPRE (aunque la tabla esté oculta).
     const tableTotal = sortedItems.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
     if(seccionVisible('sec-tabla')){
-    doc.addPage();
-    y = 15;
+    // No forzamos salto de página: la tabla sigue justo debajo de los gráficos
+    // para no dejar espacio en blanco. Solo saltamos si el encabezado no entra.
+    if(y > pageH - 45){ doc.addPage(); y = 15; } else { y += 6; }
     doc.setTextColor(31, 56, 100);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
