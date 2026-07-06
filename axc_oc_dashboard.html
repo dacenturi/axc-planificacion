@@ -588,6 +588,8 @@ body{
 .kpi-card.aprobado::before{background:linear-gradient(180deg,#1B5524 0%,#2A7A35 100%)}
 .kpi-card.solicitado::before{background:linear-gradient(180deg,var(--gold) 0%,var(--gold-soft) 100%)}
 .kpi-card.rechazado::before{background:linear-gradient(180deg,#A32D2D 0%,#C8302A 100%)}
+.kpi-card.contado::before{background:linear-gradient(180deg,#0EA5E9 0%,#0284C7 100%)}
+.kpi-card.credito::before{background:linear-gradient(180deg,#7C5CFC 0%,#6D28D9 100%)}
 .kpi-label{
   font-size:11px;
   font-weight:700;
@@ -609,6 +611,8 @@ body{
 .kpi-card.aprobado .kpi-icon{background:rgba(27,85,36,.1);color:var(--green)}
 .kpi-card.solicitado .kpi-icon{background:rgba(200,160,40,.15);color:var(--amber)}
 .kpi-card.rechazado .kpi-icon{background:rgba(163,45,45,.1);color:var(--red)}
+.kpi-card.contado .kpi-icon{background:rgba(14,165,233,.12);color:#0284C7}
+.kpi-card.credito .kpi-icon{background:rgba(124,92,252,.14);color:#6D28D9}
 .kpi-value{
   font-family:'Syne',sans-serif;
   font-size:30px;
@@ -944,7 +948,7 @@ body{
       <div class="login-error" id="loginError"></div>
     </form>
     <div class="login-footer">
-      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.6 (PDF sigue al toggle)
+      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v1.8 (contado/crédito)
     </div>
   </div>
 </div>
@@ -1080,6 +1084,18 @@ body{
       <div class="kpi-label">OC Rechazadas</div>
       <div class="kpi-value" id="kpiRechazadas">—</div>
       <div class="kpi-trend" id="kpiRechazadasTrend">&nbsp;</div>
+    </div>
+    <div class="kpi-card contado">
+      <div class="kpi-icon">💵</div>
+      <div class="kpi-label">Total Contado</div>
+      <div class="kpi-value compact" id="kpiContado">—</div>
+      <div class="kpi-trend" id="kpiContadoTrend">&nbsp;</div>
+    </div>
+    <div class="kpi-card credito">
+      <div class="kpi-icon">🧾</div>
+      <div class="kpi-label">Total Crédito</div>
+      <div class="kpi-value compact" id="kpiCredito">—</div>
+      <div class="kpi-trend" id="kpiCreditoTrend">&nbsp;</div>
     </div>
   </div>
 
@@ -1670,6 +1686,20 @@ function renderKPIs(){
   const rech = [...ocsUnicas.values()].filter(s => s === 'Rechazado').length;
   const totalOC = ocsUnicas.size;
 
+  // Monto total solicitado del período: todas las OC solicitadas (aprobadas,
+  // pendientes, observadas o rechazadas), sin importar su estado final.
+  // Se excluyen únicamente las Anuladas (dadas de baja).
+  const noAnuladas = items.filter(it => it.oc_estado !== 'Anulada');
+  const solicitadoMonto = noAnuladas.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
+
+  // Totales por condición de pago (Contado / Crédito), sobre todas las OC
+  // solicitadas del período (excluye Anuladas). Se lee del campo Tipo de compra,
+  // normalizado sin acentos ni mayúsculas para tolerar "Crédito"/"Credito".
+  const contadoMonto = noAnuladas.reduce((acc,it) =>
+    acc + (tipoPago(it.oc_tipo_compra) === 'contado' ? (Number(it.subtotal)||0) : 0), 0);
+  const creditoMonto = noAnuladas.reduce((acc,it) =>
+    acc + (tipoPago(it.oc_tipo_compra) === 'credito' ? (Number(it.subtotal)||0) : 0), 0);
+
   document.getElementById('kpiTotalValor').textContent = fmtMoneyCompact(totalValor);
   document.getElementById('kpiTotalTrend').innerHTML = `Sobre <strong>${totalOC}</strong> OC en el período`;
 
@@ -1678,10 +1708,27 @@ function renderKPIs(){
   document.getElementById('kpiAprobadasTrend').innerHTML = `<strong>${pct}%</strong> del total filtrado`;
 
   document.getElementById('kpiSolicitadas').textContent = solic;
-  document.getElementById('kpiSolicitadasTrend').textContent = 'Aguardando aprobación';
+  document.getElementById('kpiSolicitadasTrend').innerHTML = `<strong>${fmtMoney(solicitadoMonto)}</strong> solicitado en el período`;
 
   document.getElementById('kpiRechazadas').textContent = rech;
   document.getElementById('kpiRechazadasTrend').textContent = 'No aprobadas';
+
+  document.getElementById('kpiContado').textContent = fmtMoneyCompact(contadoMonto);
+  document.getElementById('kpiContado').title = fmtMoney(contadoMonto);
+  document.getElementById('kpiContadoTrend').innerHTML = `<strong>${fmtMoney(contadoMonto)}</strong> en compras al contado`;
+
+  document.getElementById('kpiCredito').textContent = fmtMoneyCompact(creditoMonto);
+  document.getElementById('kpiCredito').title = fmtMoney(creditoMonto);
+  document.getElementById('kpiCreditoTrend').innerHTML = `<strong>${fmtMoney(creditoMonto)}</strong> en compras a crédito`;
+}
+
+// Clasifica el Tipo de compra en condición de pago: 'contado', 'credito' u 'otro'.
+function tipoPago(tc){
+  const s = String(tc||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,''); // quita acentos
+  if(s.includes('contado')) return 'contado';
+  if(s.includes('credito')) return 'credito';
+  return 'otro';
 }
 
 // ─── Charts ──────────────────────────────────────────────
@@ -2459,6 +2506,14 @@ async function exportPDF(incluirDetalle = true){
     const aprob = [...ocsUnicas.values()].filter(s => s === 'Aprobado').length;
     const solic = [...ocsUnicas.values()].filter(s => s === 'Solicitado' || s === 'Observado').length;
     const rech = [...ocsUnicas.values()].filter(s => s === 'Rechazado').length;
+    // Monto total solicitado del período (todas las OC menos las Anuladas)
+    const noAnuladasPdf = state.filtered.filter(it => it.oc_estado !== 'Anulada');
+    const solicitadoMonto = noAnuladasPdf.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
+    // Totales por condición de pago (mismo universo: excluye Anuladas)
+    const contadoMonto = noAnuladasPdf.reduce((acc,it) =>
+      acc + (tipoPago(it.oc_tipo_compra) === 'contado' ? (Number(it.subtotal)||0) : 0), 0);
+    const creditoMonto = noAnuladasPdf.reduce((acc,it) =>
+      acc + (tipoPago(it.oc_tipo_compra) === 'credito' ? (Number(it.subtotal)||0) : 0), 0);
 
     doc.setTextColor(31, 56, 100);
     doc.setFont('helvetica', 'bold');
@@ -2471,7 +2526,7 @@ async function exportPDF(incluirDetalle = true){
     const kpis = [
       ['Valor Total Comprado', fmtPdfMoney(totalValor), [31,56,100]],
       ['OC Aprobadas', String(aprob), [27,85,36]],
-      ['OC Solicitadas', String(solic), [122,86,0]],
+      ['OC Solicitadas', String(solic), [122,86,0], fmtPdfMoney(solicitadoMonto) + ' solicitado'],
       ['OC Rechazadas', String(rech), [163,45,45]],
     ];
     const kpiW = (pageW - M*2 - 6) / 4;
@@ -2491,9 +2546,41 @@ async function exportPDF(incluirDetalle = true){
       doc.setTextColor(k[2][0], k[2][1], k[2][2]);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(13);
+      doc.text(pdfSafe(k[1]), x + 4, y + (k[3] ? 13 : 15));
+      // Subtítulo opcional (ej: monto solicitado bajo el conteo de OC Solicitadas)
+      if(k[3]){
+        doc.setTextColor(120, 130, 150);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.text(pdfSafe(k[3]), x + 4, y + 19);
+      }
+    });
+    y += 26;
+
+    // Segunda fila de KPIs: condición de pago (Contado / Crédito)
+    const kpisPago = [
+      ['Total Contado', fmtPdfMoney(contadoMonto), [2,132,199]],
+      ['Total Credito', fmtPdfMoney(creditoMonto), [109,40,217]],
+    ];
+    const kpiW2 = (pageW - M*2 - 2) / 2;
+    kpisPago.forEach((k, i) => {
+      const x = M + i * (kpiW2 + 2);
+      doc.setFillColor(247, 249, 252);
+      doc.setDrawColor(226, 230, 238);
+      doc.setLineWidth(0.3);
+      doc.roundedRect(x, y, kpiW2, 20, 2, 2, 'FD');
+      doc.setFillColor(k[2][0], k[2][1], k[2][2]);
+      doc.rect(x, y, 1.5, 20, 'F');
+      doc.setTextColor(140, 150, 170);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.text(pdfSafe(k[0]).toUpperCase(), x + 4, y + 6);
+      doc.setTextColor(k[2][0], k[2][1], k[2][2]);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
       doc.text(pdfSafe(k[1]), x + 4, y + 15);
     });
-    y += 28;
+    y += 26;
 
     // ─── Capturar gráficos como imágenes ───
     doc.setTextColor(31, 56, 100);
