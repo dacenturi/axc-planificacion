@@ -1659,12 +1659,14 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
     if(error){ btn.disabled=false; btn.textContent='Actualizar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=opts.editId;
     await _SB.from('caja_chica_movimiento_items').delete().eq('movimiento_id',movId);
-    await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
+    { const { error:itErr }=await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
+      if(itErr){ btn.disabled=false; btn.textContent='Actualizar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Volvé a guardar el comprobante. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; } }
   } else {
     const { data:mov, error }=await _SB.from('caja_chica_movimientos').insert(cab).select('id').single();
     if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=mov.id;
-    await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
+    { const { error:itErr }=await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
+      if(itErr){ btn.disabled=false; btn.textContent='Guardar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Editá el comprobante desde "Comprobantes cargados" y volvé a guardar. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; } }
   }
   await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion, estado_nuevo:cab.estado, detalle, hecho_por:CURRENT_USER.email });
 
@@ -2072,7 +2074,7 @@ async function reporteResidente(res, opts){
       proveedor:m.proveedor||'',obra:m.obra||'',sector:m.sector||'',rubro:m.rubro||'',contratista:m.contratista||'',
       debitado:Number(m.total||0),creditado:0,rnd:rndCell,total:Number(m.total||0),rendId:m.rendicion_id||'',estado:m.estado,
       adj:m.caja_chica_adjuntos||[],
-      items:(its.length?its:[{concepto:(m.comentario||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
+      items:(its.length?its:[{concepto:(m.comentario||[m.proveedor,m.rubro].filter(Boolean).join(' · ')||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})),
       _obra:m.obra||'',_rubro:m.rubro||'',_prov:m.proveedor||''});
   });
   rows.sort((a,b)=>a.key<b.key?-1:(a.key>b.key?1:0));
@@ -3246,7 +3248,7 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
     const its=(m.caja_chica_movimiento_items||[]).sort((x,y)=>(x.orden||0)-(y.orden||0));
     rows.push({ kind:'deb', fecha:m.fecha||'', factura:m.nro_factura||'', proveedor:m.proveedor||'', obra:m.obra||'', rubro:m.rubro||'',
       debitado:Number(m.total||0), total:Number(m.total||0), adj:m.caja_chica_adjuntos||[],
-      items:(its.length?its:[{concepto:(m.comentario||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})) });
+      items:(its.length?its:[{concepto:(m.comentario||[m.proveedor,m.rubro].filter(Boolean).join(' · ')||'(sin detalle)'),cantidad:'',unidad:'',costo_unit:'',subtotal:Number(m.total||0)}]).map(it=>({concepto:it.concepto||'',cant:it.cantidad,un:it.unidad||'',cu:it.costo_unit,sub:Number(it.subtotal||0)})) });
   });
   const sumCred = cycleAcrs.reduce((s,a)=>s+Number(a.monto||0),0);
   const sumDeb = rows.reduce((s,r)=>s+r.debitado,0);
