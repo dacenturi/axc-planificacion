@@ -206,6 +206,7 @@ tr:last-child td{border-bottom:none}
 .acr-item:last-child{border-bottom:none}
 .acr-item .acr-row{border-bottom:none}
 .acr-sub{font-size:11px;color:var(--text2);padding:0 0 9px 2px;margin-top:-4px}
+.acr-audit{font-size:11px;color:var(--text3);padding:0 0 8px 2px;margin-top:-2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg3);border:1px solid var(--border3);border-radius:10px;padding:11px 18px;font-size:13px;font-weight:500;opacity:0;transition:.25s;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -807,8 +808,9 @@ const RES_FALLBACK=['Arq. Ana','Arq. Cecilia','Arq. Gabriela','Arq. Larissa','Ar
 let CURRENT_USER=null, RESIDENTES=[], CONFIG={}, SALDOS={}, COMPROMETIDO={}, LISTAS={}, SECTORES_RAW=[], VENDEDORES_RAW=[];
 let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TIENE_ADJ=false;
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
+let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.20';
+const APP_VERSION='Caja Chica v7.21';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -825,6 +827,27 @@ const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maxi
 const onlyDigits=(s)=>(s||'').replace(/[^\d]/g,'');
 function toast(m,k){const t=gs('toast');t.textContent=m;t.className='toast show '+(k||'');setTimeout(()=>{t.className='toast '+(k||'');},2800);}
 function todayISO(){const d=new Date();const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;}
+// ----- Quién / cuándo (para "Últimas acreditaciones") -----
+// Devuelve el nombre visible del usuario a partir del email; si no lo encuentra, muestra el email.
+function nombreUsuario(email){
+  if(!email) return '—';
+  const e=String(email).trim().toLowerCase();
+  return USUARIOS_MAP[e] || String(email).split('@')[0];
+}
+// Formatea un timestamp de Supabase (creado_en) como "21/07/2026 19:45" en hora local.
+function fechaHora(ts){
+  if(!ts) return '';
+  const d=new Date(ts); if(isNaN(d)) return '';
+  const z=n=>String(n).padStart(2,'0');
+  return `${z(d.getDate())}/${z(d.getMonth()+1)}/${d.getFullYear()} ${z(d.getHours())}:${z(d.getMinutes())}`;
+}
+// Solo la hora "19:45" (se usa junto a la fecha contable del movimiento).
+function soloHora(ts){
+  if(!ts) return '';
+  const d=new Date(ts); if(isNaN(d)) return '';
+  const z=n=>String(n).padStart(2,'0');
+  return `${z(d.getHours())}:${z(d.getMinutes())}`;
+}
 function moneyLive(el){ el.addEventListener('input',e=>{const d=onlyDigits(e.target.value);e.target.value=d?Number(d).toLocaleString('es-PY'):'';}); }
 
 async function switchTab(t){
@@ -883,7 +906,7 @@ async function switchTab(t){
 })();
 
 async function loadAll(){
-  await Promise.all([loadResidentes(), loadConfig(), loadSaldos(), loadListas()]);
+  await Promise.all([loadResidentes(), loadUsuarios(), loadConfig(), loadSaldos(), loadListas()]);
   renderTopes(); fillResSelect(); fillComprobanteCatalogos(); fillReporteFiltros(); fillRendicionResidentes();
   await Promise.all([loadAcreditaciones(), loadComprobantes()]);
 }
@@ -895,6 +918,21 @@ async function loadResidentes(){
     if(data&&data.length){ RESIDENTES=data.filter(p=>p.residente).map(p=>({residente:p.residente,nombre:p.nombre})).sort((a,b)=>a.residente.localeCompare(b.residente)); }
   }catch(e){}
   if(!RESIDENTES.length) RESIDENTES=RES_FALLBACK.map(r=>({residente:r,nombre:r}));
+}
+// Mapa email -> nombre. Intenta 'perfiles' (si tiene columna email) y completa con 'caja_chica_firmas'.
+// Todo defensivo: si algo falla, simplemente se muestra el email en su lugar.
+async function loadUsuarios(){
+  USUARIOS_MAP={};
+  try{
+    const { data, error } = await _SB.from('perfiles').select('email,nombre');
+    if(!error && data){ data.forEach(p=>{ if(p.email&&p.nombre) USUARIOS_MAP[String(p.email).trim().toLowerCase()]=p.nombre; }); }
+  }catch(e){}
+  try{
+    const { data } = await _SB.from('caja_chica_firmas').select('email,nombre');
+    (data||[]).forEach(f=>{ const k=f.email?String(f.email).trim().toLowerCase():''; if(k&&f.nombre&&!USUARIOS_MAP[k]) USUARIOS_MAP[k]=f.nombre; });
+  }catch(e){}
+  // el usuario actual siempre queda resuelto
+  try{ if(CURRENT_USER&&CURRENT_USER.email){ const k=CURRENT_USER.email.toLowerCase(); const n=gs('u-name'); if(!USUARIOS_MAP[k]&&n&&n.textContent.trim()&&n.textContent.indexOf('@')<0) USUARIOS_MAP[k]=n.textContent.trim(); } }catch(e){}
 }
 async function loadConfig(){
   CONFIG={}; const { data } = await _SB.from('caja_chica_config').select('residente,tope_por_factura,alerta_pct');
@@ -1049,17 +1087,26 @@ async function eliminarAcreditacion(id){
 }
 async function loadAcreditaciones(){
   const box=gs('acr-list');
-  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,banco,nro_operacion,rendicion_id').order('creado_en',{ascending:false}).limit(12);
-  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
+  if(!Object.keys(USUARIOS_MAP).length){ try{ await loadUsuarios(); }catch(e){} }
+  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,banco,nro_operacion,rendicion_id,creado_por,creado_en').order('creado_en',{ascending:false}).limit(12);
+  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id,creado_por,creado_en').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
+  if(error){ const r3=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id').order('creado_en',{ascending:false}).limit(12); data=r3.data; error=r3.error; }
   if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
   if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay acreditaciones.</div>'; return; }
   box.innerHTML=data.map(a=>{
     const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'', a.rendicion_id?'Reposición de rendición':'' ].filter(Boolean).join('  ·  ');
     const sub = det ? `<div class="acr-sub">${det}</div>` : '';
+    // Quién cargó la acreditación y a qué hora exacta (creado_en) — dato de auditoría.
+    const quien = a.creado_por ? nombreUsuario(a.creado_por) : '';
+    const cuando = fechaHora(a.creado_en);
+    const audit = (quien||cuando)
+      ? `<div class="acr-audit">👤 ${quien||'—'}${cuando?(' · 🕒 '+cuando):''}</div>`
+      : '';
     const acts = puedeAcreditar() ? `<div class="cmp-acts" style="margin-top:6px"><button class="act ed" onclick="editarAcreditacion('${a.id}')">✎ Editar</button><button class="act an" onclick="eliminarAcreditacion('${a.id}')">🗑 Eliminar</button></div>` : '';
+    const hora = soloHora(a.creado_en);
     return `<div class="acr-item">
-      <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
-      ${sub}${acts}</div>`;
+      <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}${hora?(' · '+hora):''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
+      ${sub}${audit}${acts}</div>`;
   }).join('');
 }
 
