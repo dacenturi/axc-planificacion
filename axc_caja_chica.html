@@ -207,6 +207,13 @@ tr:last-child td{border-bottom:none}
 .acr-item .acr-row{border-bottom:none}
 .acr-sub{font-size:11px;color:var(--text2);padding:0 0 9px 2px;margin-top:-4px}
 .acr-audit{font-size:11px;color:var(--text3);padding:0 0 8px 2px;margin-top:-2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.acr-filtros{border:1px solid var(--border);border-radius:10px;background:var(--bg3);padding:10px 12px;margin-bottom:12px}
+.acr-fgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.acr-fwide{grid-column:1/-1}
+.acr-filtros .fld{margin-bottom:0}
+.acr-facts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+.acr-finfo{font-size:11px;color:var(--text2);margin-left:auto}
+@media(max-width:640px){.acr-fgrid{grid-template-columns:1fr}}
 
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg3);border:1px solid var(--border3);border-radius:10px;padding:11px 18px;font-size:13px;font-weight:500;opacity:0;transition:.25s;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -470,8 +477,36 @@ tr:last-child td{border-bottom:none}
             </div>
           </div>
           <div class="card">
-            <div class="card-h"><div class="ic" style="background:rgba(14,165,233,.14);color:var(--cyan)">🕘</div><div><h2>Últimas acreditaciones</h2></div></div>
-            <div class="card-b"><div class="acr-list" id="acr-list"><div class="empty">Cargando…</div></div></div>
+            <div class="card-h">
+              <div class="ic" style="background:rgba(14,165,233,.14);color:var(--cyan)">🕘</div>
+              <div><h2>Últimas acreditaciones</h2><div class="desc" id="acr-desc">Se muestran las 5 más recientes.</div></div>
+              <button class="btn btn-ghost" id="acr-btn-f" onclick="toggleFiltrosAcr()" style="margin-left:auto;white-space:nowrap">🔎 Buscar</button>
+            </div>
+            <div class="card-b">
+              <div class="acr-filtros" id="acr-filtros" style="display:none">
+                <div class="acr-fgrid">
+                  <div class="fld"><label>Residente</label><select id="fa-res"><option value="">Todos</option></select></div>
+                  <div class="fld"><label>Medio</label><select id="fa-medio">
+                    <option value="">Todos</option><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option>
+                    <option value="banco">Banco</option><option value="cheque">Cheque</option></select></div>
+                  <div class="fld"><label>Desde</label><input type="date" id="fa-desde"></div>
+                  <div class="fld"><label>Hasta</label><input type="date" id="fa-hasta"></div>
+                  <div class="fld"><label>Monto mínimo ₲</label><input id="fa-min" class="money-in" inputmode="numeric" placeholder="0"></div>
+                  <div class="fld"><label>Monto máximo ₲</label><input id="fa-max" class="money-in" inputmode="numeric" placeholder="0"></div>
+                  <div class="fld acr-fwide"><label>Texto libre (banco, Nº op., referencia, quién acreditó)</label>
+                    <input id="fa-q" placeholder="Ej. itaú · 1242994 · reposición · contabilidad" onkeydown="if(event.key==='Enter'){event.preventDefault();buscarAcreditaciones();}"></div>
+                </div>
+                <div class="acr-facts">
+                  <button class="btn-primary" style="width:auto;padding:0 18px" onclick="buscarAcreditaciones()">Buscar</button>
+                  <button class="btn btn-ghost" onclick="limpiarFiltrosAcr()">Limpiar</button>
+                  <span class="acr-finfo" id="acr-info"></span>
+                </div>
+              </div>
+              <div class="acr-list" id="acr-list"><div class="empty">Cargando…</div></div>
+              <div id="acr-more" style="display:none;padding-top:8px">
+                <button class="btn btn-ghost" style="width:100%" onclick="masAcreditaciones()" id="acr-more-btn">Ver más</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -810,7 +845,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.21';
+const APP_VERSION='Caja Chica v7.22';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -987,7 +1022,11 @@ async function saveTope(res,id){  if(!puedeConfigurar()){ showAlert('Sin permiso
 }
 
 // ----- Configuración: acreditar -----
-function fillResSelect(){ gs('ac-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join(''); }
+function fillResSelect(){
+  gs('ac-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  const f=gs('fa-res');
+  if(f){ const prev=f.value; f.innerHTML='<option value="">Todos</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join(''); f.value=prev||''; }
+}
 async function acMedioChange(){
   const m=gs('ac-medio').value, show=(m!=='efectivo');
   gs('fld-banco').style.display=show?'':'none';
@@ -1085,14 +1124,80 @@ async function eliminarAcreditacion(id){
   toast('Acreditación eliminada','ok');
   await loadSaldos(); renderTopes(); await loadAcreditaciones();
 }
+// ===== Últimas acreditaciones: listado 5 + buscador con filtros (server-side) =====
+const ACR_PAGE_BASE=5;    // cuántas se ven sin filtrar
+const ACR_PAGE_MAS=10;    // cuántas suma cada "Ver más"
+let ACR_F={activo:false,res:'',medio:'',desde:'',hasta:'',min:0,max:0,q:''};
+let ACR_LIMIT=ACR_PAGE_BASE, ACR_TOTAL=0;
+
+function toggleFiltrosAcr(){
+  const p=gs('acr-filtros'); if(!p) return;
+  const abrir=(p.style.display==='none');
+  p.style.display=abrir?'':'none';
+  const b=gs('acr-btn-f'); if(b) b.textContent=abrir?'✕ Cerrar':'🔎 Buscar';
+  if(abrir){ if(gs('fa-min')) moneyLive(gs('fa-min')); if(gs('fa-max')) moneyLive(gs('fa-max')); const q=gs('fa-q'); if(q) q.focus(); }
+}
+function _leerFiltrosAcr(){
+  ACR_F={
+    res:(gs('fa-res')?gs('fa-res').value:'')||'',
+    medio:(gs('fa-medio')?gs('fa-medio').value:'')||'',
+    desde:(gs('fa-desde')?gs('fa-desde').value:'')||'',
+    hasta:(gs('fa-hasta')?gs('fa-hasta').value:'')||'',
+    min:parseInt(onlyDigits(gs('fa-min')?gs('fa-min').value:'')||'0',10),
+    max:parseInt(onlyDigits(gs('fa-max')?gs('fa-max').value:'')||'0',10),
+    q:((gs('fa-q')?gs('fa-q').value:'')||'').trim()
+  };
+  ACR_F.activo = !!(ACR_F.res||ACR_F.medio||ACR_F.desde||ACR_F.hasta||ACR_F.min||ACR_F.max||ACR_F.q);
+  return ACR_F;
+}
+async function buscarAcreditaciones(){ _leerFiltrosAcr(); ACR_LIMIT=ACR_F.activo?ACR_PAGE_MAS:ACR_PAGE_BASE; await loadAcreditaciones(); }
+async function limpiarFiltrosAcr(){
+  ['fa-res','fa-medio','fa-desde','fa-hasta','fa-min','fa-max','fa-q'].forEach(id=>{ const el=gs(id); if(el) el.value=''; });
+  ACR_F={activo:false,res:'',medio:'',desde:'',hasta:'',min:0,max:0,q:''};
+  ACR_LIMIT=ACR_PAGE_BASE; await loadAcreditaciones();
+}
+async function masAcreditaciones(){ ACR_LIMIT+=ACR_PAGE_MAS; await loadAcreditaciones(); }
+// Aplica los filtros activos a la consulta. conExtras=false cuando las columnas banco/nro_operacion no existen.
+function _acrFiltrarQuery(q,conExtras){
+  const f=ACR_F; if(!f.activo) return q;
+  if(f.res)   q=q.eq('residente',f.res);
+  if(f.medio) q=q.eq('medio',f.medio);
+  if(f.desde) q=q.gte('fecha',f.desde);
+  if(f.hasta) q=q.lte('fecha',f.hasta);
+  if(f.min)   q=q.gte('monto',f.min);
+  if(f.max)   q=q.lte('monto',f.max);
+  if(f.q){
+    const t=f.q.replace(/[,()%*]/g,' ').trim();
+    if(t){
+      const campos=['residente','referencia','creado_por'].concat(conExtras?['banco','nro_operacion']:[]);
+      q=q.or(campos.map(c=>`${c}.ilike.%${t}%`).join(','));
+    }
+  }
+  return q;
+}
 async function loadAcreditaciones(){
   const box=gs('acr-list');
   if(!Object.keys(USUARIOS_MAP).length){ try{ await loadUsuarios(); }catch(e){} }
-  let { data, error }=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,banco,nro_operacion,rendicion_id,creado_por,creado_en').order('creado_en',{ascending:false}).limit(12);
-  if(error){ const r2=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id,creado_por,creado_en').order('creado_en',{ascending:false}).limit(12); data=r2.data; error=r2.error; }
-  if(error){ const r3=await _SB.from('caja_chica_acreditaciones').select('id,residente,fecha,monto,medio,referencia,rendicion_id').order('creado_en',{ascending:false}).limit(12); data=r3.data; error=r3.error; }
-  if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; return; }
-  if(!data||!data.length){ box.innerHTML='<div class="empty">Todavía no hay acreditaciones.</div>'; return; }
+  // 3 juegos de columnas por si la base todavía no tiene las columnas nuevas
+  const COLS=[
+    'id,residente,fecha,monto,medio,referencia,banco,nro_operacion,rendicion_id,creado_por,creado_en',
+    'id,residente,fecha,monto,medio,referencia,rendicion_id,creado_por,creado_en',
+    'id,residente,fecha,monto,medio,referencia,rendicion_id'
+  ];
+  let data=null,error=null,count=null;
+  for(let i=0;i<COLS.length;i++){
+    let q=_SB.from('caja_chica_acreditaciones').select(COLS[i],{count:'exact'});
+    q=_acrFiltrarQuery(q,i===0);
+    const r=await q.order('creado_en',{ascending:false}).limit(ACR_LIMIT);
+    if(!r.error){ data=r.data; count=r.count; error=null; break; }
+    error=r.error;
+  }
+  if(error){ box.innerHTML='<div class="empty">No se pudo cargar.</div>'; _acrInfo(0,0); return; }
+  ACR_TOTAL=(count==null)?((data||[]).length):count;
+  if(!data||!data.length){
+    box.innerHTML='<div class="empty">'+(ACR_F.activo?'Ninguna acreditación coincide con la búsqueda.':'Todavía no hay acreditaciones.')+'</div>';
+    _acrInfo(0,ACR_TOTAL); return;
+  }
   box.innerHTML=data.map(a=>{
     const det=[ a.banco?('Banco: '+a.banco):'', a.nro_operacion?('Nº op.: '+a.nro_operacion):'', a.referencia?('Ref.: '+a.referencia):'', a.rendicion_id?'Reposición de rendición':'' ].filter(Boolean).join('  ·  ');
     const sub = det ? `<div class="acr-sub">${det}</div>` : '';
@@ -1108,6 +1213,18 @@ async function loadAcreditaciones(){
       <div class="acr-row"><span style="font-weight:600">${a.residente}</span><span class="acr-medio">${a.medio}</span><span style="color:var(--text3)">${a.fecha||''}${hora?(' · '+hora):''}</span><span class="acr-monto">₲ ${fmt(a.monto)}</span></div>
       ${sub}${audit}${acts}</div>`;
   }).join('');
+  _acrInfo(data.length,ACR_TOTAL);
+}
+// Pie del listado: contador, total ₲ del resultado y botón "Ver más"
+function _acrInfo(mostradas,total){
+  const info=gs('acr-info'), more=gs('acr-more'), desc=gs('acr-desc');
+  if(info) info.textContent = total ? `Mostrando ${mostradas} de ${total}` : '';
+  if(desc) desc.textContent = ACR_F.activo ? `Resultado de búsqueda · ${total} acreditación(es)` : 'Se muestran las 5 más recientes.';
+  if(more){
+    const hay = mostradas<total;
+    more.style.display = hay?'':'none';
+    const b=gs('acr-more-btn'); if(b) b.textContent=`Ver más (${Math.min(ACR_PAGE_MAS,total-mostradas)} de ${total-mostradas} restantes)`;
+  }
 }
 
 // ----- Comprobantes -----
