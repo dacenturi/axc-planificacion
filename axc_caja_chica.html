@@ -845,7 +845,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.22';
+const APP_VERSION='Caja Chica v7.23';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -1815,6 +1815,21 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
   opts=opts||{};
   const btn=gs('c-btn'); btn.disabled=true; btn.textContent=opts.editId?'Actualizando…':'Guardando…';
   const itemsOf=(movId)=>lineas.map(l=>({concepto:l.concepto,cantidad:l.cantidad,unidad:l.unidad,costo_unit:l.costo_unit,subtotal:l.subtotal,orden:l.orden,movimiento_id:movId,producto_id:l.producto_id||null,producto_nombre:l.producto_nombre||null}));
+  // Inserta las líneas del detalle de forma resiliente.
+  // Si la base tiene producto_id como UUID pero el catálogo usa IDs numéricos (ej. "2462"),
+  // Postgres devuelve 'invalid input syntax for type uuid'. En ese caso reintenta guardando
+  // el detalle SIN producto_id (se conserva concepto + producto_nombre, que es lo que se ve
+  // en la rendición). Así el detalle nunca se pierde por el desajuste de tipo de columna.
+  async function _insertItems(items){
+    let { error }=await _SB.from('caja_chica_movimiento_items').insert(items);
+    if(error && /producto_id|invalid input syntax for type uuid|uuid/i.test(error.message||'')){
+      const items2=items.map(it=>{ const c=Object.assign({},it); delete c.producto_id; return c; });
+      const r2=await _SB.from('caja_chica_movimiento_items').insert(items2);
+      if(!r2.error) return { error:null, degraded:true };
+      error=r2.error;
+    }
+    return { error, degraded:false };
+  }
   const accion = cab.estado==='aprobado' ? (cab.excepcion?'aprobar_excepcion':(opts.editId?'aprobar':(opts.wasEdit?'aprobar':'aprobar'))) : (opts.editId?'editar':'solicitar');
   const detalle = `${cab.tipo_comprobante} ${cab.nro_factura} · ₲ ${fmt(cab.total)}`+(cab.excepcion?(' · EXCEPCIÓN: '+(cab.excepcion_motivo||'')):'');
   let movId;
@@ -1823,14 +1838,16 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
     if(error){ btn.disabled=false; btn.textContent='Actualizar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=opts.editId;
     await _SB.from('caja_chica_movimiento_items').delete().eq('movimiento_id',movId);
-    { const { error:itErr }=await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
-      if(itErr){ btn.disabled=false; btn.textContent='Actualizar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Volvé a guardar el comprobante. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; } }
+    { const { error:itErr, degraded }=await _insertItems(itemsOf(movId));
+      if(itErr){ btn.disabled=false; btn.textContent='Actualizar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Volvé a guardar el comprobante. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; }
+      if(degraded) toast('Detalle guardado (sin vincular material del catálogo)','ok'); }
   } else {
     const { data:mov, error }=await _SB.from('caja_chica_movimientos').insert(cab).select('id').single();
     if(error){ btn.disabled=false; btn.textContent='Guardar comprobante'; if(_dupFacturaErr(error)){ showAlert('Factura duplicada','Ya existe ese <b>Nº de factura</b> para el mismo proveedor. No se puede cargar dos veces el mismo número.', '🚫', true); } else { toast('Error: '+error.message,'err'); } return false; }
     movId=mov.id;
-    { const { error:itErr }=await _SB.from('caja_chica_movimiento_items').insert(itemsOf(movId));
-      if(itErr){ btn.disabled=false; btn.textContent='Guardar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Editá el comprobante desde "Comprobantes cargados" y volvé a guardar. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; } }
+    { const { error:itErr, degraded }=await _insertItems(itemsOf(movId));
+      if(itErr){ btn.disabled=false; btn.textContent='Guardar comprobante'; showAlert('No se pudieron guardar las líneas de detalle','El comprobante se guardó, pero las <b>líneas del detalle NO se guardaron</b>, por eso aparecería como <b>"(sin detalle)"</b> en la rendición.<br><br>Detalle técnico: '+(itErr.message||itErr)+'<br><br>Editá el comprobante desde "Comprobantes cargados" y volvé a guardar. Si sigue fallando, avisá al administrador.', '⚠️', true); return false; }
+      if(degraded) toast('Detalle guardado (sin vincular material del catálogo)','ok'); }
   }
   await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion, estado_nuevo:cab.estado, detalle, hecho_por:CURRENT_USER.email });
 
