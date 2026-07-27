@@ -560,7 +560,7 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
         <div class="kpi-sub" id="kpi-pct-sub">sobre actividades asignadas</div>
       </div>
       <div class="kpi imp">
-        <div class="kpi-lbl">📌 Imprevistas <button type="button" class="info-icon" tabindex="0" data-tip="Qué mide: actividades NO planificadas que surgieron en el período.&#10;&#10;No afectan el % del plan original (se reportan aparte).&#10;&#10;Resueltas = en estado de cumplimiento (Terminado / Cumplido con atraso / Cumple). Pendientes = el resto, sin contar las canceladas.">ⓘ</button></div>
+        <div class="kpi-lbl">📌 Imprevistas <button type="button" class="info-icon" tabindex="0" data-tip="Qué mide: actividades NO planificadas que surgieron en el período.&#10;&#10;El número grande cuenta ACTIVIDADES. Como una imprevista puede durar de 1 a 5 días hábiles, el subtítulo muestra además los días-actividad totales: una imprevista de 5 días suma 5.&#10;&#10;No afectan el % del plan original (se reportan aparte).&#10;&#10;Resueltas = en estado de cumplimiento (Terminado / Cumplido con atraso / Cumple). Pendientes = el resto, sin contar las canceladas.">ⓘ</button></div>
         <div id="kpi-imp" class="kpi-val">0</div>
         <div class="kpi-sub" id="kpi-imp-sub">—</div>
       </div>
@@ -1401,6 +1401,13 @@ function _contadoresActividad(act){
   return { D, V, R, A, P };
 }
 
+// Días-actividad de un conjunto: suma los días tildados en days[] de cada
+// actividad. Una imprevista de 5 días hábiles suma 5, no 1. Se usa para
+// dimensionar el trabajo imprevisto real, que el conteo de actividades esconde.
+function _diasActividad(list){
+  return (list || []).reduce((acc, a) => acc + _contadoresActividad(a).D, 0);
+}
+
 // Calcula el estado AUTO de una actividad. Misma lógica que la app de origen.
 // Devuelve 'Sin asignar' | 'En proceso' | 'Terminado' | 'Cumplido con atraso'
 // | 'Retrasado' | 'En espera' | 'Cancelado'.
@@ -1576,14 +1583,17 @@ function renderKPIs(){
   const _kns = document.getElementById('kpi-neutras-sub');
   if(_kns) _kns.textContent = total > 0 ? `${Math.round(neutras/total*100)}% no medidas` : 'no entran al %';
 
-  // Card de Imprevistas: total + resueltas + pendientes
+  // Card de Imprevistas: total + días-actividad + resueltas + pendientes.
+  // El número grande cuenta ACTIVIDADES; como una imprevista puede durar de
+  // 1 a 5 días hábiles, el subtítulo expone los días reales de trabajo.
   const impTotal = actsImprev.length;
   const impResueltas = actsImprev.filter(a => _isOK(a)).length;
   const impCanceladas = actsImprev.filter(a => (a.cumple || '').toLowerCase() === 'cancelado').length;
   const impPendientes = impTotal - impResueltas - impCanceladas;
+  const impDias = _diasActividad(actsImprev);
   document.getElementById('kpi-imp').textContent = impTotal;
   document.getElementById('kpi-imp-sub').textContent = impTotal > 0
-    ? `${impResueltas} resueltas · ${impPendientes} pendientes`
+    ? `${impDias} día${impDias === 1 ? '' : 's'} · ${impResueltas} resueltas · ${impPendientes} pend.`
     : 'ninguna en el filtro';
 }
 
@@ -2298,7 +2308,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-27-gantt-orden-fix';
+    const VERSION   = 'global-pdf-28-imprevistas-multidia';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -2416,6 +2426,7 @@ async function exportPDF(modo){
     const impResueltas  = actsImprev.filter(a => _isOK(a)).length;
     const impCanceladas = actsImprev.filter(a => (a.cumple||'').toLowerCase() === 'cancelado').length;
     const impPendientes = actsImprev.length - impResueltas - impCanceladas;
+    const impDias       = _diasActividad(actsImprev);   // días-actividad reales
 
     // ── 1) Banda navy: identidad + tipo de reporte + responsable + período ──
     doc.setFillColor(...NAVY);
@@ -2464,14 +2475,14 @@ async function exportPDF(modo){
     const cgW = (pageW - 2*MX - 3*5) / 4;
     const cgH = 27;
     let cgY = yS + 6;
-    drawKPIc(MX,             cgY, cgW, cgH, 'Total Plan',       actsPlan.length, actsImprev.length ? `+ ${actsImprev.length} imprevistas` : 'sin imprevistas', NAVY);
+    drawKPIc(MX,             cgY, cgW, cgH, 'Total Plan',       actsPlan.length, actsImprev.length ? `+ ${actsImprev.length} imprevistas (${impDias} días)` : 'sin imprevistas', NAVY);
     drawKPIc(MX + (cgW+5),   cgY, cgW, cgH, 'Cumple',           okPlan, asignadasPlan ? `${Math.round(okPlan/asignadasPlan*100)}% de asignadas` : '—', GREEN);
     drawKPIc(MX + 2*(cgW+5), cgY, cgW, cgH, 'No Cumple',        failPlan, asignadasPlan ? `${Math.round(failPlan/asignadasPlan*100)}% de asignadas` : '—', RED);
     drawKPIc(MX + 3*(cgW+5), cgY, cgW, cgH, 'Neutras',          neutrasPlan, 'no entran al %', GRAY);
     cgY += cgH + 5;
     drawKPIc(MX,             cgY, cgW, cgH, '% Cumplimiento',   pctPlan !== null ? pctPlan + '%' : '—', 'sobre asignadas', GOLD);
     drawKPIc(MX + (cgW+5),   cgY, cgW, cgH, 'Días Atraso Tot.', diasAtrasoTot, 'acumulados en el plan', AMBER);
-    drawKPIc(MX + 2*(cgW+5), cgY, cgW, cgH, 'Imprevistas',      actsImprev.length, actsImprev.length ? `${impResueltas} resueltas · ${impPendientes} pend.` : 'sin imprevistas', ORANGE_IMP);
+    drawKPIc(MX + 2*(cgW+5), cgY, cgW, cgH, 'Imprevistas',      actsImprev.length, actsImprev.length ? `${impDias} días · ${impResueltas} resueltas · ${impPendientes} pend.` : 'sin imprevistas', ORANGE_IMP);
 
     // ── 4) Imprevistas del período (banda compacta, ancho completo) ──
     let yD = cgY + cgH + 12;
@@ -2485,7 +2496,7 @@ async function exportPDF(modo){
     doc.text('(no afectan el PPC del plan)', boxX + 78, boxY + 7);
     if(actsImprev.length){
       doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...NAVY);
-      doc.text(`Total: ${actsImprev.length}    ·    Resueltas: ${impResueltas}    ·    Pendientes: ${impPendientes}    ·    Canceladas: ${impCanceladas}`, boxX + 7, boxY + 15);
+      doc.text(`Total: ${actsImprev.length}    ·    Días: ${impDias}    ·    Resueltas: ${impResueltas}    ·    Pendientes: ${impPendientes}    ·    Canceladas: ${impCanceladas}`, boxX + 7, boxY + 15);
       const rMap = new Map();
       actsImprev.forEach(a => { const r=(a.razon||'— Sin razón —').trim()||'— Sin razón —'; rMap.set(r,(rMap.get(r)||0)+1); });
       const topR = [...rMap.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3);
@@ -4232,7 +4243,8 @@ function renderDashboard(){
   else _destroyChart('sector');
 
   // ─── Información de imprevistas (sin charts dedicados, dashboard simplificado):
-  //   - 5° card naranja "📌 Imprevistas" arriba (total, resueltas, pendientes)
+  //   - 5° card naranja "📌 Imprevistas" arriba (total de actividades, días-actividad,
+  //     resueltas y pendientes — una imprevista dura de 1 a 5 días hábiles)
   //   - Badge "📌 IMPR" en filas de la tabla y Vencidas
   //   - Filtro "📌 Tipo de Actividad" en el panel lateral (Plan/Imprevista)
   // 9. Actividades Vencidas
