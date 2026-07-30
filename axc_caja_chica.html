@@ -405,6 +405,13 @@ tr:last-child td{border-bottom:none}
 .rpend-acts .alert-btn:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.6)}
 .rd-warn{margin-top:12px;background:rgba(245,158,11,.12);border:1px solid var(--accent);border-left:4px solid var(--accent);border-radius:12px;padding:11px 14px;font-size:13.5px;line-height:1.55;color:var(--text)}
 .rd-warn b{color:var(--accent)}
+/* v7.26 · desglose del aviso por estado real */
+.rd-warn .rw-list{display:flex;flex-direction:column;gap:5px;margin:7px 0 8px}
+.rd-warn .rw-i{display:flex;align-items:baseline;gap:7px}
+.rd-warn .rw-dot{flex:none;width:8px;height:8px;border-radius:50%;transform:translateY(-1px)}
+.rd-warn .rw-dot.esp{background:var(--accent)}
+.rd-warn .rw-dot.apr{background:var(--green,#22c55e)}
+.rd-warn b.rw-ok{color:var(--green,#22c55e)}
 @media(max-width:640px){.rpend-card{padding:26px 20px}.rpend-card h3{font-size:24px}.rpend-ico{font-size:58px}.rpend-acts{flex-direction:column}}
 .rnd-pill{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;border-radius:20px;padding:2px 9px}
 .rnd-pill.sin{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
@@ -932,7 +939,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.25';
+const APP_VERSION='Caja Chica v7.26';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2898,12 +2905,18 @@ async function loadRendicionData(){
 
   // historial de rendiciones del residente (se ocultan las devueltas/reabiertas 'abierta')
   const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
-  // v7.25: aviso (no bloqueante) de rendiciones aún sin cerrar
-  const _pendRend=(rends||[]).filter(r=>['presentada','aguardando_acreditacion'].includes(r.estado));
-  if(_pendRend.length){
-    const _tp=_pendRend.reduce((a,r)=>a+Number(r.total_rendido||0),0);
-    const _nros=_pendRend.map(r=>r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición').join(', ');
-    sum.innerHTML+=`<div class="rd-warn">⚠️ Tenés <b>${_pendRend.length}</b> rendición(es) sin cerrar por <b>₲ ${fmt(_tp)}</b> (${_nros}) pendiente(s) de aprobación y/o acreditación. Podés presentar igual una nueva rendición: al confirmar te vamos a pedir que aceptes este aviso.</div>`;
+  // v7.26: aviso (no bloqueante) de rendiciones aún sin cerrar — separado por estado real
+  // 'presentada'              => todavía NO fue revisada/aprobada
+  // 'aguardando_acreditacion' => YA está aprobada, falta que le acrediten la reposición
+  const _pAprob=(rends||[]).filter(r=>r.estado==='presentada');
+  const _pAcred=(rends||[]).filter(r=>r.estado==='aguardando_acreditacion');
+  if(_pAprob.length||_pAcred.length){
+    const _nroR=r=>r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
+    const _sumR=arr=>arr.reduce((a,r)=>a+Number(r.total_rendido||0),0);
+    const _partes=[];
+    if(_pAprob.length) _partes.push(`<span class="rw-i"><span class="rw-dot esp"></span><b>${_pAprob.length}</b> esperando aprobación por <b>₲ ${fmt(_sumR(_pAprob))}</b> (${_pAprob.map(_nroR).join(', ')})</span>`);
+    if(_pAcred.length) _partes.push(`<span class="rw-i"><span class="rw-dot apr"></span><b>${_pAcred.length}</b> <b class="rw-ok">ya aprobada(s)</b>, esperando la acreditación de la reposición por <b>₲ ${fmt(_sumR(_pAcred))}</b> (${_pAcred.map(_nroR).join(', ')})</span>`);
+    sum.innerHTML+=`<div class="rd-warn">⚠️ Tenés rendiciones sin cerrar:<div class="rw-list">${_partes.join('')}</div>Podés presentar igual una nueva rendición: al confirmar te vamos a pedir que aceptes este aviso.</div>`;
   }
   const visibles=(rends||[]).filter(r=>['presentada','observada','aguardando_acreditacion','cerrada','repuesta'].includes(r.estado));
   if(!visibles.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
@@ -3862,7 +3875,7 @@ function _rpendResp(ok){ gs('rpend-bg').classList.remove('open'); if(_rpendResol
 function pedirConfirmRendPendiente(res,pendientes){
   const _lbl={presentada:'Presentada · en espera de revisión',aguardando_acreditacion:'Aprobada · aguardando acreditación'};
   const total=pendientes.reduce((a,r)=>a+Number(r.total_rendido||0),0);
-  gs('rpend-sub').innerHTML=`<b>${_esc(res)}</b> tiene <b>${pendientes.length}</b> rendición(es) que todavía no se cerraron por un total de <b>₲ ${fmt(total)}</b>. Podés presentar igual esta nueva rendición, pero revisá primero lo que quedó pendiente:`;
+  gs('rpend-sub').innerHTML=`<b>${_esc(res)}</b> tiene <b>${pendientes.length}</b> rendición(es) que todavía no se cerraron por un total de <b>₲ ${fmt(total)}</b>. Fijate el estado de cada una: algunas pueden estar <b>ya aprobadas</b> y solo faltar la acreditación de la reposición. Podés presentar igual esta nueva rendición:`;
   gs('rpend-list').innerHTML=pendientes.map(r=>{
     const nro=r.numero!=null?('RND-'+String(r.numero).padStart(4,'0')):'Rendición';
     let m2=`Corte: ${_esc(r.fecha_corte||'—')}`;
@@ -3870,7 +3883,7 @@ function pedirConfirmRendPendiente(res,pendientes){
     if(r.reposicion_solicitada!=null) m2+=` · Reposición solicitada: ₲ ${fmt(r.reposicion_solicitada)}`;
     return `<div class="rpend-it"><div class="r1"><span class="nro">${nro}</span><span class="est">${_lbl[r.estado]||_esc(r.estado)}</span><span class="mto">₲ ${fmt(r.total_rendido||0)}</span></div><div class="r2">${m2}</div></div>`;
   }).join('');
-  gs('rpend-tot').innerHTML=`Total pendiente de aprobación / acreditación: <b>₲ ${fmt(total)}</b>`;
+  gs('rpend-tot').innerHTML=`Total sin cerrar (esperando aprobación y/o acreditación): <b>₲ ${fmt(total)}</b>`;
   const c=gs('rpend-ok'); if(c) c.checked=false;
   const b=gs('rpend-go'); if(b) b.disabled=true;
   gs('rpend-bg').classList.add('open');
