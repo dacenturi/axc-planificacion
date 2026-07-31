@@ -443,6 +443,7 @@ tr.row-imprevista td{background-image:linear-gradient(90deg,rgba(255,107,53,.10)
         <div id="dd-estado" class="filter-dd-panel">
           <div id="list-estado">
             <label class="filter-dd-item"><input type="checkbox" value="Cumple" checked onchange="onFilterChange('estado', this)"><span>✓ Cumple</span></label>
+            <label class="filter-dd-item"><input type="checkbox" value="Por ejecutar" checked onchange="onFilterChange('estado', this)"><span>📋 Por ejecutar</span></label>
             <label class="filter-dd-item"><input type="checkbox" value="En proceso" checked onchange="onFilterChange('estado', this)"><span>⏳ En proceso</span></label>
             <label class="filter-dd-item"><input type="checkbox" value="Terminado" checked onchange="onFilterChange('estado', this)"><span>✓ Terminado</span></label>
             <label class="filter-dd-item"><input type="checkbox" value="Cumplido con atraso" checked onchange="onFilterChange('estado', this)"><span>⚠ Cumplido con atraso</span></label>
@@ -840,7 +841,7 @@ window._filters = {
   contratistas: null,
   sectores:     null,
   razones:      null,
-  estado:       new Set(['Cumple','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']),
+  estado:       new Set(['Cumple','Por ejecutar','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']),
   criticidad:   new Set(['Alta','Media','Baja','Sin asignar']),
   tipo:         new Set(['Planificada','Imprevista']),
   fechaDesde:   null,   // 'YYYY-MM-DD'
@@ -914,7 +915,7 @@ function _normalizeCumple(v){
 // Los neutros NO entran al denominador del %.
 const KPI_CUMPLE    = ['Terminado', 'Cumplido con atraso', 'Cumple', 'Sí'];
 const KPI_NO_CUMPLE = ['Retrasado', 'No Cumple', 'No'];
-const KPI_NEUTRO    = ['En proceso', 'En espera', 'Cancelado', 'Sin asignar', ''];
+const KPI_NEUTRO    = ['Por ejecutar', 'En proceso', 'En espera', 'Cancelado', 'Sin asignar', ''];
 const RAZON_OBLIGATORIA = ['Cumplido con atraso', 'En espera', 'Retrasado', 'Cancelado'];
 const ATRASO_STATES = ['Cumplido con atraso', 'Retrasado'];
 // Alias de compatibilidad con el código existente del reporte:
@@ -932,6 +933,7 @@ const _ESTADO_LABEL = {
   'Cumple'              : '✓ Cumple',
   'no'                  : '✗ No cumple',
   'No Cumple'           : '✗ No cumple',
+  'Por ejecutar'        : '📋 Por ejecutar',
   'En proceso'          : '⏳ En proceso',
   'Terminado'           : '✓ Terminado',
   'Cumplido con atraso' : '⚠ Cumplido con atraso',
@@ -947,6 +949,7 @@ const _ESTADO_COLOR = {
   'Cumple'              : '#3fb950',
   'no'                  : '#f85149',
   'No Cumple'           : '#f85149',
+  'Por ejecutar'        : '#39c5cf',
   'En proceso'          : '#58a6ff',
   'Terminado'           : '#3fb950',
   'Cumplido con atraso' : '#f0a500',
@@ -1234,7 +1237,7 @@ function resetFilters(){
   window._filters.contratistas = null;
   window._filters.sectores     = null;
   window._filters.razones      = null;
-  window._filters.estado       = new Set(['Cumple','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']);
+  window._filters.estado       = new Set(['Cumple','Por ejecutar','En proceso','Terminado','Cumplido con atraso','En espera','Retrasado','Cancelado','No Cumple','Sin asignar']);
   window._filters.criticidad   = new Set(['Alta','Media','Baja','Sin asignar']);
   window._filters.tipo         = new Set(['Planificada','Imprevista']);
   _applyDefaultDateRange();
@@ -1409,7 +1412,8 @@ function _diasActividad(list){
 }
 
 // Calcula el estado AUTO de una actividad. Misma lógica que la app de origen.
-// Devuelve 'Sin asignar' | 'En proceso' | 'Terminado' | 'Cumplido con atraso'
+// Devuelve 'Sin asignar' | 'Por ejecutar' | 'En proceso' | 'Terminado'
+// | 'Cumplido con atraso'
 // | 'Retrasado' | 'En espera' | 'Cancelado'.
 function _calcularEstadoAuto(act){
   if(!act) return 'Sin asignar';
@@ -1438,9 +1442,14 @@ function _calcularEstadoAuto(act){
     if(R > 0 && V === 0) return 'Retrasado';
     if(P > 0) return 'Retrasado';
   }
+  // ★ 31/07/2026 ★ Confirmada, EN PLAZO y sin ningun dia marcado (ni verde ni
+  // rojo) -> la ejecucion todavia no arranco: 'Por ejecutar'. Antes caia en
+  // 'En proceso', lo que dejaba la columna 'Por ejecutar' del Kanban en 0 y
+  // mezclaba "todavia no empezo" con "hay avance real".
+  if(V === 0 && R === 0) return 'Por ejecutar';
   if(V >= 1) return 'En proceso';
   if(R >= 1 && V === 0) return 'Retrasado';
-  return 'En proceso';                         // recién confirmada
+  return 'En proceso';                         // defensivo (inalcanzable)
 }
 
 function _estadoLabel(a){
@@ -1605,6 +1614,7 @@ function renderKPIs(){
 const _ESTADO_CHIPS = {
   'Cumple':              { cls: 'chip ok',  ico: '✓', txt: 'Cumple' },
   'Terminado':           { cls: 'chip ok',  ico: '✓', txt: 'Terminado' },
+  'Por ejecutar':        { cls: 'chip',     ico: '📋', txt: 'Por ejecutar', style: 'background:rgba(57,197,207,.18);color:#7fdbe2' },
   'En proceso':          { cls: 'chip',     ico: '⏳', txt: 'En proceso', style: 'background:rgba(59,130,246,.18);color:#93c5fd' },
   'Cumplido con atraso': { cls: 'chip',     ico: '⚠️', txt: 'Cumpl. atraso', style: 'background:rgba(245,158,11,.18);color:#fbbf24' },
   'En espera':           { cls: 'chip',     ico: '⏸', txt: 'En espera', style: 'background:rgba(156,163,175,.18);color:#d1d5db' },
@@ -1622,12 +1632,13 @@ function _estadoChipHtml(estado){
 // ════════════════════════════════════════════════════════════
 // KANBAN — tablero por estado (08/06/2026)
 // Reutiliza window._filteredActs (filtros + app activa) y _estadoLabel().
-// Mapea los 9 estados soportados a 5 columnas de flujo + Cancelado (oculta
+// Mapea los 10 estados soportados a 6 columnas de flujo + Cancelado (oculta
 // si no hay tarjetas). Los estados legacy se pliegan: 'Cumple'→Terminado,
 // 'No Cumple'→Retrasado.
 // ════════════════════════════════════════════════════════════
 const _KANBAN_COLS = [
-  { key:'por_ejecutar', titulo:'Por ejecutar', estados:['Sin asignar'],                              color:'#8b949e' },
+  { key:'sin_confirmar',titulo:'Sin confirmar',estados:['Sin asignar'],                              color:'#8b949e' },
+  { key:'por_ejecutar', titulo:'Por ejecutar', estados:['Por ejecutar'],                             color:'#39c5cf' },
   { key:'en_espera',    titulo:'En espera',    estados:['En espera'],                                color:'#d1d5db' },
   { key:'en_proceso',   titulo:'En proceso',   estados:['En proceso'],                               color:'#58a6ff' },
   { key:'retrasado',    titulo:'Retrasado',    estados:['Retrasado','No Cumple'],                    color:'#fb923c' },
@@ -1679,7 +1690,7 @@ function renderKanban(){
     buckets[col.key].push(a);
   }
 
-  // Columnas a mostrar: las 5 fijas + Cancelado sólo si tiene tarjetas
+  // Columnas a mostrar: las 6 fijas + Cancelado sólo si tiene tarjetas
   const cols = _KANBAN_COLS.slice();
   if(buckets[_KANBAN_CANCEL.key].length) cols.push(_KANBAN_CANCEL);
 
@@ -2308,7 +2319,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-28-imprevistas-multidia';
+    const VERSION   = 'global-pdf-29-por-ejecutar';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -3488,6 +3499,7 @@ async function exportPDF(modo){
         'Terminado'           : [22,163,74],   // verde
         'Cumple'              : [22,163,74],   // verde
         'Cumplido con atraso' : [234,179,8],   // amarillo/oro (bien distinto del naranja)
+        'Por ejecutar'        : [8,145,178],   // cian — confirmada, sin arrancar
         'En proceso'          : [37,99,235],   // azul
         'En espera'           : [100,116,139], // gris
         'Retrasado'           : [234,88,12],   // naranja fuerte
@@ -3504,6 +3516,7 @@ async function exportPDF(modo){
         'Terminado'           : 'Cumplido',
         'Cumple'              : 'Cumplido',
         'Cumplido con atraso' : 'Cumplido con atraso',
+        'Por ejecutar'        : 'Por ejecutar',
         'En proceso'          : 'En proceso',
         'En espera'           : 'En espera',
         'Retrasado'           : 'Retrasado',
@@ -3687,7 +3700,7 @@ async function exportPDF(modo){
         doc.text('Estado (barra lateral):', lx, legY1); lx += doc.getTextWidth('Estado (barra lateral):') + 4;
         doc.setFont('helvetica','normal');
         const estItems = [
-          [[37,99,235],'En proceso'], [[22,163,74],'Cumplido'], [[234,179,8],'Cumplido con atraso'],
+          [[8,145,178],'Por ejecutar'], [[37,99,235],'En proceso'], [[22,163,74],'Cumplido'], [[234,179,8],'Cumplido con atraso'],
           [[234,88,12],'Retrasado'], [[220,38,38],'No cumple'], [[100,116,139],'Neutro'], [[147,51,234],'Imprevista']
         ];
         estItems.forEach(([c,l]) => {
@@ -3788,7 +3801,7 @@ async function exportPDF(modo){
       const cols = baseCols.slice();
       if(buckets[_KANBAN_CANCEL.key].length) cols.push(_KANBAN_CANCEL);
       const colColorMap = {
-        por_ejecutar:[110,118,128], en_espera:[148,163,184], en_proceso:[59,130,246],
+        sin_confirmar:[110,118,128], por_ejecutar:[8,145,178], en_espera:[148,163,184], en_proceso:[59,130,246],
         retrasado:[249,115,22], terminado:[34,197,94], cancelado:[107,114,128]
       };
 
