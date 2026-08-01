@@ -1029,17 +1029,49 @@ async function _bootApp(user){
 // ════════════════════════════════════════════════════════════
 // CARGA DE DATOS
 // ════════════════════════════════════════════════════════════
+// ★ 01/08/2026 ★ Trae TODAS las filas de 'actividades' paginando de a 1000.
+// Devuelve el array completo y deja el total real en window._totalFilasDB
+// para poder detectar una carga incompleta.
+async function _cargarTodasLasFilas(){
+  const PAGE = 1000, MAX_PAGINAS = 500;
+  let desde = 0, filas = [], totalReal = null;
+  for(let i = 0; i < MAX_PAGINAS; i++){
+    const { data, error, count } = await _SB.from('actividades')
+      .select('*', { count: 'exact' })
+      .order('residente',    { ascending: true })
+      .order('fecha_inicio', { ascending: true })
+      .order('orden',        { ascending: true })
+      .range(desde, desde + PAGE - 1);
+    if(error) throw error;
+    if(typeof count === 'number') totalReal = count;
+    filas = filas.concat(data || []);
+    if(!data || data.length < PAGE) break;
+    desde += PAGE;
+  }
+  window._totalFilasDB   = totalReal;
+  window._filasCargadas  = filas.length;
+  if(totalReal !== null && filas.length < totalReal){
+    console.warn('[AXC] Carga INCOMPLETA: ' + filas.length + ' de ' + totalReal + ' filas.');
+  } else {
+    console.log('[AXC] Cargadas ' + filas.length + ' filas' + (totalReal !== null ? ' de ' + totalReal : '') + '.');
+  }
+  return filas;
+}
+
 async function loadData(){
   document.getElementById('loader').style.display = 'flex';
   document.getElementById('main-grid').style.display = 'none';
   try{
     // RLS ya filtra: admin ve todo, residente solo las suyas
-    const { data, error } = await _SB.from('actividades')
-      .select('*')
-      .order('residente', { ascending: true })
-      .order('fecha_inicio', { ascending: true })
-      .order('orden', { ascending: true });
-    if(error) throw error;
+    // ★ 01/08/2026 ★ PAGINACION OBLIGATORIA
+    // Supabase/PostgREST corta la respuesta en 1000 filas por defecto y NO
+    // devuelve error: simplemente entrega menos datos. Como esta consulta
+    // ordena por residente, los ultimos alfabeticamente (ej. "Ing. ...")
+    // quedaban fuera del corte y desaparecian del reporte completo:
+    // no salian en el Kanban, ni en la tabla, ni en el desplegable de
+    // filtros, ni en los KPI. Se pagina en bloques hasta traer todo y se
+    // compara contra el count real de la tabla.
+    const data = await _cargarTodasLasFilas();
     window._allActs = (data||[]).map(r => ({
       id:           r.id,
       user_id:      r.user_id,
@@ -1066,6 +1098,11 @@ async function loadData(){
       imprevista:   !!r.imprevista
     }));
     _updateAppTabsCounts();
+    // ★ 01/08/2026 ★ Si por algun motivo no se trajo todo, avisar en pantalla
+    // en vez de mostrar datos incompletos en silencio.
+    if(typeof window._totalFilasDB === 'number' && window._filasCargadas < window._totalFilasDB){
+      showToast('⚠ Carga incompleta: ' + window._filasCargadas + ' de ' + window._totalFilasDB + ' actividades', 'bad');
+    }
     _toggleContratistaCol(window._currentApp === 'contratista');
     _toggleInterventoresBtn(window._currentApp === 'contratista');
     _buildFilterOptions();
@@ -2319,7 +2356,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-29-por-ejecutar';
+    const VERSION   = 'global-pdf-30-paginacion';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
