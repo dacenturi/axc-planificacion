@@ -1375,7 +1375,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v2.9-pdf-1';
+const _PDF_VERSION = 'v3.0-pdf-1';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -2691,6 +2691,13 @@ function renderTable(){
       if(!_estadosConRazon.includes(se.value) && !_rojos) acts[idx].razon = '';
       // Si el estado no muestra días atraso, resetear
       if(!_estadosConDias.includes(se.value)) acts[idx].dias_atraso = 0;
+      // ★ 06/08/2026 ★ La razon de cancelacion es OBLIGATORIA: sin ella la
+      // actividad no se sube a la nube (queda clasificada como 'incomplete').
+      if(se.value === 'Cancelado' && !(acts[idx].razon || '').trim()){
+        alert('Para CANCELAR una actividad es obligatorio cargar la Razon de cancelacion.\n\n' +
+              'En la columna "Razones" de esta fila vas a ver el selector marcado en rojo. ' +
+              'Mientras este vacio, la actividad NO se guarda en la nube.');
+      }
       save();
       renderTable();
     };
@@ -2718,7 +2725,9 @@ function renderTable(){
       // Highlight visual si la razón es obligatoria pero está vacía (B — no bloquea)
       if(!a.razon){
         sr.classList.add('sel-razon-warn');
-        sr.title = 'Tu actividad se guarda igual, pero completá la razón de este estado (pendiente).';
+        sr.title = (_estadoEfectivo === 'Cancelado')
+          ? 'Razón de CANCELACIÓN obligatoria: sin ella la actividad no se guarda en la nube.'
+          : 'Tu actividad se guarda igual, pero completá la razón de este estado (pendiente).';
       }
       sr.onchange=()=>{
         acts[idx].razon=sr.value;
@@ -4957,7 +4966,11 @@ function _classifyRow(a, hdr){
 
   if(hasDesc && hasDays && hasObra && hasResid && hasFecha){
     // Estados que requieren razón: los 3 nuevos + los legacy 'No' / 'No Cumple'
-    const requiereRazon = RAZON_OBLIGATORIA.includes(_estadoEfectivoExport(a));   // criterio único
+    const _estEf = _estadoEfectivoExport(a);
+    // ★ 06/08/2026 ★ CANCELADO sin razón NO se sube: la cancelación es una
+    // decisión manual y tiene que quedar justificada.
+    if(_estEf === 'Cancelado' && !(a.razon||'').trim()) return 'incomplete';
+    const requiereRazon = RAZON_OBLIGATORIA.includes(_estEf);   // criterio único
     // Solo falta la razón: SE GUARDA IGUAL, marcada como pendiente.
     if(requiereRazon && !(a.razon||'').trim()) return 'falta_razon';
     return 'complete';
@@ -4977,7 +4990,9 @@ function _rowMissingFields(a, hdr){
   if(!(a.obra_row||'').trim())                                 miss.push('Obra');
   if(!(hdr.hdrResidente||'').trim())                           miss.push('Residente (encabezado)');
   if(!hdr.hdrFechaIni)                                         miss.push('Fecha inicio (encabezado)');
-  if(RAZON_OBLIGATORIA.includes(_estadoEfectivoExport(a)) && !(a.razon||'').trim()) miss.push('Razón del estado');   // criterio único
+  const _estMF = _estadoEfectivoExport(a);
+  if(_estMF === 'Cancelado' && !(a.razon||'').trim())                          miss.push('Razón de cancelación (obligatoria)');
+  else if(RAZON_OBLIGATORIA.includes(_estMF) && !(a.razon||'').trim())          miss.push('Razón del estado');   // criterio único
   return miss;
 }
 
