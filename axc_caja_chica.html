@@ -278,6 +278,22 @@ tr:last-child td{border-bottom:none}
 .rep-table td{padding:6px 7px;border-bottom:1px solid var(--border2);word-wrap:break-word;overflow-wrap:anywhere;vertical-align:top}
 .rep-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow-wrap:normal}
 .rep-table .nw{white-space:nowrap;overflow-wrap:normal}
+/* v7.28: filas expandibles del consolidado */
+.rep-table tr.rc-row{cursor:pointer}
+.rep-table tr.rc-row:hover{background:var(--bg3)}
+.rep-table tr.rc-row.open{background:var(--bg3)}
+.rc-caret{display:inline-block;width:12px;color:var(--text3);transition:transform .15s;font-size:9px}
+.rep-table tr.rc-row.open .rc-caret{transform:rotate(90deg)}
+.rc-detalle > td{background:var(--bg2);padding:0 7px 10px !important;border-bottom:2px solid var(--border)}
+.rc-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:2px}
+@media(max-width:820px){.rc-grid{grid-template-columns:1fr}}
+.rc-box h5{margin:0 0 4px;font-size:9.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--text2);font-weight:700}
+.rc-sub{width:100%;border-collapse:collapse;font-size:10.5px}
+.rc-sub td{padding:3px 5px;border-bottom:1px solid var(--border2);vertical-align:top}
+.rc-sub td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rc-sub tr.tot td{border-top:1px solid var(--border);border-bottom:none;font-weight:700;padding-top:5px}
+.rc-vacio{color:var(--text3);font-size:10.5px;padding:3px 5px}
+.rc-tag{font-size:8.5px;padding:1px 5px;border-radius:8px;background:var(--bg3);color:var(--text2);white-space:nowrap}
 .rep-cred{color:var(--green);font-weight:600}
 .rep-saldo{font-weight:700;font-variant-numeric:tabular-nums}
 .rep-saldo.neg{color:var(--red)}
@@ -939,7 +955,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.27';
+const APP_VERSION='Caja Chica v7.28';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2581,42 +2597,74 @@ function renderReporteResidente(res, rows, saldoFinal, hasCat, opts){
   gs('rep-info').textContent=`${rows.length} comprobante(s)/mov.`;
 }
 
+// v7.28: abre/cierra el detalle de un residente en el consolidado
+function toggleRepDetalle(i){
+  const d=document.getElementById('rc-d'+i), r=document.getElementById('rc-r'+i);
+  if(!d||!r) return;
+  const abierto = d.style.display!=='none';
+  d.style.display = abierto?'none':'';
+  r.classList.toggle('open',!abierto);
+}
+window.toggleRepDetalle=toggleRepDetalle;
+
 async function reporteConsolidado(){
   const obraF=gs('r-obra').value, rubroF=gs('r-rubro').value, provF=gs('r-prov').value;
-  // acreditaciones por residente (monto + fecha)
-  let qa=_SB.from('caja_chica_acreditaciones').select('residente,monto,fecha'); qa=_dateFilter(qa,'fecha');
+  // acreditaciones por residente (monto + fecha) — se guarda el detalle para el panel expandible
+  let qa=_SB.from('caja_chica_acreditaciones').select('residente,monto,fecha,medio,referencia,rendicion_id'); qa=_dateFilter(qa,'fecha');
   const { data:acr } = await qa;
   // movimientos aprobados por residente (con filtros de catálogo)
   let qm=_SB.from('caja_chica_movimientos').select('residente,total,fecha,obra,rubro,proveedor').eq('estado','aprobado'); qm=_dateFilter(qm,'fecha');
   if(obraF) qm=qm.eq('obra',obraF); if(rubroF) qm=qm.eq('rubro',rubroF); if(provF) qm=qm.eq('proveedor',provF);
   const { data:movs } = await qm;
-  // rendiciones presentadas/cerradas (fecha de presentación)
-  const { data:rends } = await _SB.from('caja_chica_rendiciones').select('residente,presentada_en,fecha_corte,numero,estado').in('estado',['presentada','cerrada']);
+  // rendiciones ya presentadas (fecha de presentación)
+  // v7.28: antes solo traía ['presentada','cerrada'] y por eso las rendiciones aprobadas,
+  // aguardando acreditación o ya repuestas NO figuraban: varios residentes mostraban "—".
+  const { data:rends } = await _SB.from('caja_chica_rendiciones')
+    .select('residente,presentada_en,fecha_corte,numero,estado,total_rendido')
+    .in('estado',['presentada','aguardando_acreditacion','repuesta','cerrada']);
 
+  const _nuevo=()=>({acreditado:0,debitado:0,ultAcr:'',ultRend:'',rndNro:'',acrs:[],rnds:[]});
   const map={};
-  RESIDENTES.forEach(r=>map[r.residente]={acreditado:0,debitado:0,ultAcr:'',ultRend:'',rndNro:''});
-  (acr||[]).forEach(a=>{ const k=a.residente; if(!map[k]) map[k]={acreditado:0,debitado:0,ultAcr:'',ultRend:'',rndNro:''};
-    map[k].acreditado+=Number(a.monto); if((a.fecha||'')>map[k].ultAcr) map[k].ultAcr=a.fecha||''; });
-  (movs||[]).forEach(m=>{ const k=m.residente; if(!map[k]) map[k]={acreditado:0,debitado:0,ultAcr:'',ultRend:'',rndNro:''};
+  RESIDENTES.forEach(r=>map[r.residente]=_nuevo());
+  (acr||[]).forEach(a=>{ const k=a.residente; if(!map[k]) map[k]=_nuevo();
+    map[k].acreditado+=Number(a.monto); if((a.fecha||'')>map[k].ultAcr) map[k].ultAcr=a.fecha||'';
+    map[k].acrs.push({fecha:a.fecha||'',monto:Number(a.monto),medio:a.medio||'',ref:a.referencia||'',lig:!!a.rendicion_id}); });
+  (movs||[]).forEach(m=>{ const k=m.residente; if(!map[k]) map[k]=_nuevo();
     map[k].debitado+=Number(m.total); });
   (rends||[]).forEach(r=>{ const k=r.residente; if(!map[k]) return; const f=(r.presentada_en||'').slice(0,10)||r.fecha_corte||'';
+    map[k].rnds.push({fecha:f,corte:r.fecha_corte||'',nro:(r.numero!=null)?('RND-'+String(r.numero).padStart(4,'0')):'—',estado:r.estado||'',total:Number(r.total_rendido||0)});
     if(f>map[k].ultRend){ map[k].ultRend=f; map[k].rndNro=(r.numero!=null)?('RND-'+String(r.numero).padStart(4,'0')):''; } });
+  Object.values(map).forEach(d=>{ d.acrs.sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||'')); d.rnds.sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||'')); });
 
   const rows=Object.keys(map).sort((a,b)=>a.localeCompare(b)).map(res=>{
-    const d=map[res]; return {res,acreditado:d.acreditado,debitado:d.debitado,saldo:d.acreditado-d.debitado,ultAcr:d.ultAcr,ultRend:d.ultRend,rndNro:d.rndNro};
+    const d=map[res]; return {res,acreditado:d.acreditado,debitado:d.debitado,saldo:d.acreditado-d.debitado,ultAcr:d.ultAcr,ultRend:d.ultRend,rndNro:d.rndNro,acrs:d.acrs,rnds:d.rnds};
   });
   let tA=0,tD=0,tS=0; rows.forEach(r=>{tA+=r.acreditado;tD+=r.debitado;tS+=r.saldo;});
 
-  const body=rows.map(r=>`<tr>
-    <td class="res-name">${r.res}</td>
+  const _EST={presentada:'a revisar',aguardando_acreditacion:'falta reponer',repuesta:'repuesta',cerrada:'cerrada'};
+  const body=rows.map((r,i)=>{
+    const vacio = !r.acrs.length && !r.rnds.length;
+    const acrHTML = r.acrs.length
+      ? `<table class="rc-sub">${r.acrs.map(a=>`<tr><td class="nw">${a.fecha||'—'}</td><td>${a.medio||''}${a.ref?(' · '+a.ref):''} ${a.lig?'<span class="rc-tag">ligada a rendición</span>':'<span class="rc-tag">fondo suelto</span>'}</td><td class="n">${fmt(a.monto)}</td></tr>`).join('')}<tr class="tot"><td colspan="2">Total acreditado</td><td class="n">${fmt(r.acreditado)}</td></tr></table>`
+      : '<div class="rc-vacio">Sin acreditaciones en el período.</div>';
+    const rndHTML = r.rnds.length
+      ? `<table class="rc-sub">${r.rnds.map(x=>`<tr><td class="nw">${x.fecha||'—'}</td><td class="nw">${x.nro}</td><td><span class="rc-tag">${_EST[x.estado]||x.estado}</span></td><td class="n">${fmt(x.total)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">Total rendido (${r.rnds.length})</td><td class="n">${fmt(r.rnds.reduce((s,x)=>s+x.total,0))}</td></tr></table>`
+      : '<div class="rc-vacio">Sin rendiciones presentadas.</div>';
+    return `<tr class="rc-row" onclick="toggleRepDetalle(${i})" id="rc-r${i}">
+    <td class="res-name"><span class="rc-caret">${vacio?'':'▶'}</span> ${r.res}</td>
     <td>${r.ultAcr||'—'}</td>
     <td class="num rep-cred">${fmt(r.acreditado)}</td>
     <td>${r.ultRend?(r.ultRend+(r.rndNro?(' · '+r.rndNro):'')):'—'}</td>
     <td class="num">${fmt(r.debitado)}</td>
-    <td class="num rep-saldo ${r.saldo<0?'neg':''}">${fmt(r.saldo)}</td></tr>`).join('');
+    <td class="num rep-saldo ${r.saldo<0?'neg':''}">${fmt(r.saldo)}</td></tr>
+  <tr class="rc-detalle" id="rc-d${i}" style="display:none"><td colspan="6"><div class="rc-grid">
+    <div class="rc-box"><h5>💰 Acreditaciones (${r.acrs.length})</h5>${acrHTML}</div>
+    <div class="rc-box"><h5>📋 Rendiciones presentadas (${r.rnds.length})</h5>${rndHTML}</div>
+  </div></td></tr>`;
+  }).join('');
   const catNote=(obraF||rubroF||provF)?' (gastos filtrados por catálogo)':'';
   gs('rep-result').innerHTML=`
-    <div class="rep-meta">Consolidado de todas las cajas${catNote}</div>
+    <div class="rep-meta">Consolidado de todas las cajas${catNote} · <span style="color:var(--text3)">tocá una fila para ver el detalle</span></div>
     <div class="rep-scroll"><table class="rep-table">
       <thead><tr><th>Residente</th><th>Últ. acreditación</th><th class="num">Acreditado ₲</th><th>Últ. rendición present.</th><th class="num">Debitado ₲</th><th class="num">Saldo ₲</th></tr></thead>
       <tbody>${body||'<tr><td colspan="6" class="empty">Sin datos.</td></tr>'}</tbody>
