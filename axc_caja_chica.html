@@ -939,7 +939,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.26';
+const APP_VERSION='Caja Chica v7.27';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2920,17 +2920,44 @@ async function loadRendicionData(){
   const corte=gs('rd-corte').value||todayISO();
 
   // comprobantes cargados sin rendir (hasta el corte) — en el flujo nuevo se aprueban al revisar la rendición
-  const { data:movs }=await _SB.from('caja_chica_movimientos')
+  // v7.27: se captura el error de la consulta. Antes se ignoraba y un bloqueo de RLS / caída de red
+  // se veía EXACTAMENTE igual que "no hay nada que rendir" (lista vacía + botón gris sin explicación).
+  const { data:movs, error:errMovs }=await _SB.from('caja_chica_movimientos')
     .select('id,fecha,nro_factura,total,numero_orden,obra,caja_chica_adjuntos(id,storage_path,nombre)').eq('residente',res).in('estado',['solicitado','observado']).is('rendicion_id',null)
     .order('fecha',{ascending:true});
-  RD_PENDING=(movs||[]).filter(m=>!corte || (m.fecha||'')<=corte);
+  RD_PENDING = errMovs ? [] : (movs||[]).filter(m=>!corte || (m.fecha||'')<=corte);
+  // v7.27: comprobantes que quedaron fuera SOLO por la fecha de corte (causa silenciosa muy común:
+  // factura cargada con fecha futura o con el año mal tipeado). Se avisa en vez de esconderlos.
+  const _fueraCorte = errMovs ? [] : (movs||[]).filter(m=>corte && (m.fecha||'')>corte);
   const totalPend=RD_PENDING.reduce((a,m)=>a+Number(m.total),0);
   const s=SALDOS[res]; const saldo=s?s.saldo:0;
-  sum.innerHTML=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b> · Comprobantes cargados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
-  pend.innerHTML = RD_PENDING.length
-    ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura} ${_iconoAdjunto(m.caja_chica_adjuntos||[],false)}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
-    : '<div class="empty">No hay comprobantes cargados pendientes de rendir.</div>';
-  gs('rd-btn').disabled = !RD_PENDING.length;
+  const _saldoTxt=`Saldo actual: <b style="color:${saldo<0?'var(--red)':'var(--green)'}">₲ ${fmt(saldo)}</b>`;
+  const _btn=gs('rd-btn');
+
+  if(errMovs){
+    sum.innerHTML=_saldoTxt;
+    pend.innerHTML=`<div class="empty" style="color:var(--red)">⚠️ <b>No se pudieron leer tus comprobantes.</b><br>`
+      +`Esto <b>no</b> significa que no tengas nada para rendir: la consulta falló.<br>`
+      +`<span style="color:var(--text3);font-size:11px">Detalle técnico: ${(errMovs.message||errMovs)}</span><br>`
+      +`Actualizá la página y volvé a intentar. Si sigue igual, avisá al administrador.</div>`;
+    _btn.disabled=true;
+    _btn.title='No se pudieron leer los comprobantes: no se puede presentar la rendición hasta resolverlo.';
+  } else {
+    sum.innerHTML=`${_saldoTxt} · Comprobantes cargados sin rendir (hasta corte): <b>₲ ${fmt(totalPend)}</b> (${RD_PENDING.length} comprob.)`;
+    pend.innerHTML = RD_PENDING.length
+      ? RD_PENDING.map(m=>`<div class="rd-line"><span class="f">Fact. ${m.nro_factura} ${_iconoAdjunto(m.caja_chica_adjuntos||[],false)}</span><span style="color:var(--text3)">${m.fecha||''}${m.obra?(' · '+m.obra):''}</span><span class="t">₲ ${fmt(m.total)}</span></div>`).join('')
+      : `<div class="empty">No hay comprobantes cargados pendientes de rendir.<br><span style="font-size:12px">Para presentar una rendición primero cargá comprobantes en la pestaña <b>Comprobantes</b>. Los que ya presentaste no vuelven a aparecer acá.</span></div>`;
+    // v7.27: si hay comprobantes cargados pero con fecha POSTERIOR al corte, decirlo explícitamente
+    if(_fueraCorte.length){
+      const _fMin=_fueraCorte.map(m=>m.fecha).filter(Boolean).sort()[0]||'';
+      pend.innerHTML+=`<div class="empty" style="color:var(--gold,#C8A028)">📅 Tenés <b>${_fueraCorte.length}</b> comprobante(s) con fecha posterior al corte (${corte}) y por eso no entran.`
+        +`${_fMin?` El más próximo es del <b>${_fMin}</b>.`:''} Movete la <b>fecha de corte</b> hacia adelante o corregí la fecha del comprobante.</div>`;
+    }
+    _btn.disabled = !RD_PENDING.length;
+    _btn.title = RD_PENDING.length ? '' :
+      (_fueraCorte.length ? `Sin comprobantes hasta el corte ${corte}. Ampliá la fecha de corte para incluir los ${_fueraCorte.length} posteriores.`
+                          : 'No tenés comprobantes pendientes de rendir. Cargá comprobantes en la pestaña "Comprobantes" para poder presentar una rendición.');
+  }
 
   // historial de rendiciones del residente (se ocultan las devueltas/reabiertas 'abierta')
   const { data:rends }=await _SB.from('caja_chica_rendiciones').select('*').eq('residente',res).order('creado_en',{ascending:false});
@@ -2945,7 +2972,13 @@ async function loadRendicionData(){
     const _partes=[];
     if(_pAprob.length) _partes.push(`<span class="rw-i"><span class="rw-dot esp"></span><b>${_pAprob.length}</b> esperando aprobación por <b>₲ ${fmt(_sumR(_pAprob))}</b> (${_pAprob.map(_nroR).join(', ')})</span>`);
     if(_pAcred.length) _partes.push(`<span class="rw-i"><span class="rw-dot apr"></span><b>${_pAcred.length}</b> <b class="rw-ok">ya aprobada(s)</b>, esperando la acreditación de la reposición por <b>₲ ${fmt(_sumR(_pAcred))}</b> (${_pAcred.map(_nroR).join(', ')})</span>`);
-    sum.innerHTML+=`<div class="rd-warn">⚠️ Tenés rendiciones sin cerrar:<div class="rw-list">${_partes.join('')}</div>Podés presentar igual una nueva rendición: al confirmar te vamos a pedir que aceptes este aviso.</div>`;
+    // v7.27: el cierre del aviso depende de si REALMENTE hay algo para rendir.
+    // Antes decía siempre "Podés presentar igual una nueva rendición" con el botón deshabilitado
+    // justo debajo: la usuaria leía una invitación a hacer algo que la pantalla no le permitía.
+    const _cierre = RD_PENDING.length
+      ? 'Podés presentar igual una nueva rendición: al confirmar te vamos a pedir que aceptes este aviso.'
+      : 'Por ahora <b>no tenés comprobantes nuevos para rendir</b>, así que el botón está deshabilitado. Los de arriba ya fueron presentados y siguen su curso. Para presentar otra rendición, cargá comprobantes nuevos en la pestaña <b>Comprobantes</b>.';
+    sum.innerHTML+=`<div class="rd-warn">⚠️ Tenés rendiciones sin cerrar:<div class="rw-list">${_partes.join('')}</div>${_cierre}</div>`;
   }
   const visibles=(rends||[]).filter(r=>['presentada','observada','aguardando_acreditacion','cerrada','repuesta'].includes(r.estado));
   if(!visibles.length){ list.innerHTML='<div class="empty">Sin rendiciones todavía.</div>'; return; }
@@ -3322,7 +3355,10 @@ async function cancelarMiRendicion(id){
   const { data:acr }=await _SB.from('caja_chica_acreditaciones').select('id').eq('rendicion_id',id).limit(1);
   if(acr && acr.length){ showAlert('No se puede cancelar','Esta rendición ya tiene la <b>reposición acreditada</b>. Ya no se puede cancelar.','🚫',true); return; }
   if(!confirm('¿Cancelar esta rendición? Tus comprobantes vuelven a quedar "sin rendir" para que los puedas juntar con otros y presentar de nuevo.')) return;
-  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null}).eq('rendicion_id',id);
+  // v7.27: además de soltar la rendición hay que devolver el estado a 'solicitado'.
+  // Si la rendición ya estaba aprobada, los movimientos quedaban en 'aprobado' y, al soltarlos,
+  // no los levantaba NI la lista de pendientes NI ninguna rendición: comprobantes invisibles.
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null,estado:'solicitado'}).eq('rendicion_id',id);
   if(e1){ toast('Error: '+e1.message,'err'); return; }
   const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'abierta',total_rendido:0,cerrada_por:null,cerrada_en:null}).eq('id',id);
   if(e2){ toast('Error: '+e2.message,'err'); return; }
@@ -3340,8 +3376,10 @@ async function devolverRendicion(id){
   const motivo=prompt('Motivo de la devolución (se registra en el historial):'); if(motivo===null) return;
   if(!motivo.trim()){ toast('Indicá un motivo','err'); return; }
   if(!confirm('Se devolverá la rendición al residente: sus comprobantes vuelven a quedar libres y deberá presentarla de nuevo. ¿Confirmás?')) return;
-  // liberar comprobantes (vuelven a "aprobado sin rendir")
-  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null}).eq('rendicion_id',id);
+  // liberar comprobantes: vuelven a 'solicitado' (sin rendir)
+  // v7.27: antes solo se ponía rendicion_id=null. Si la rendición ya estaba aprobada, los
+  // movimientos quedaban en 'aprobado' y desaparecían de la lista de pendientes para siempre.
+  const { error:e1 }=await _SB.from('caja_chica_movimientos').update({rendicion_id:null,estado:'solicitado'}).eq('rendicion_id',id);
   if(e1){ toast('Error: '+e1.message,'err'); return; }
   // reabrir la rendición (queda 'abierta' y se oculta de la lista)
   const { error:e2 }=await _SB.from('caja_chica_rendiciones').update({estado:'abierta',total_rendido:0,cerrada_por:null,cerrada_en:null}).eq('id',id);
