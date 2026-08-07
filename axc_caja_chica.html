@@ -757,6 +757,7 @@ tr:last-child td{border-bottom:none}
           </div>
           <div class="rep-filters">
             <div class="fld" id="f-res"><label>Residente</label><select id="r-res" onchange="onResReporte()"></select></div>
+            <div class="fld" id="f-res-cons" style="display:none"><label>Residente</label><select id="r-res-cons"></select></div>
             <div class="fld" id="f-rnd"><label>Rendición</label><select id="r-rnd"></select></div>
             <div class="fld f-cat"><label>Obra</label><select id="r-obra"></select></div>
             <div class="fld f-cat"><label>Rubro</label><select id="r-rubro"></select></div>
@@ -2378,6 +2379,8 @@ let REPORTE_PDF=null;  // datos para el PDF del reporte por residente
 
 function fillReporteFiltros(){
   gs('r-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  // v7.28: mismo listado pero con "Todos" al frente, para filtrar el consolidado
+  gs('r-res-cons').innerHTML='<option value="">Todos los residentes</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
   gs('r-obra').innerHTML=optList(LISTAS.obras,'Todas');
   gs('r-rubro').innerHTML=optList(LISTAS.rubros,'Todos');
   gs('r-prov').innerHTML=optList(LISTAS.proveedores,'Todos');
@@ -2394,8 +2397,16 @@ function onTipoReporte(){
   const t=rTipo();
   const esCons=(t==='consolidado');
   gs('f-res').style.display = esCons?'none':'';
+  gs('f-res-cons').style.display = esCons?'':'none';   // v7.28: filtro de residente para el consolidado
   gs('f-rnd').style.display = esCons?'none':'';
-  const pdfSel=gs('r-pdf-detalle'); if(pdfSel) pdfSel.style.display = esCons?'none':'';
+  // v7.28: en consolidado el selector de detalle sigue visible, con otras etiquetas
+  const pdfSel=gs('r-pdf-detalle');
+  if(pdfSel){
+    pdfSel.style.display='';
+    pdfSel.innerHTML = esCons
+      ? '<option value="detalle">PDF con detalle por residente</option><option value="resumen">PDF resumido (1 línea por residente)</option>'
+      : '<option value="detalle">PDF con detalle por ítem</option><option value="resumen">PDF resumido (1 línea por comprobante)</option>';
+  }
   gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
   REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
   gs('rep-result').innerHTML='<div class="empty">'+(esCons?'Reporte de todos los residentes. Tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
@@ -2609,23 +2620,28 @@ window.toggleRepDetalle=toggleRepDetalle;
 
 async function reporteConsolidado(){
   const obraF=gs('r-obra').value, rubroF=gs('r-rubro').value, provF=gs('r-prov').value;
+  const resF=gs('r-res-cons')?gs('r-res-cons').value:'';   // v7.28: '' = todos
   // acreditaciones por residente (monto + fecha) — se guarda el detalle para el panel expandible
   let qa=_SB.from('caja_chica_acreditaciones').select('residente,monto,fecha,medio,referencia,rendicion_id'); qa=_dateFilter(qa,'fecha');
+  if(resF) qa=qa.eq('residente',resF);
   const { data:acr } = await qa;
   // movimientos aprobados por residente (con filtros de catálogo)
   let qm=_SB.from('caja_chica_movimientos').select('residente,total,fecha,obra,rubro,proveedor').eq('estado','aprobado'); qm=_dateFilter(qm,'fecha');
   if(obraF) qm=qm.eq('obra',obraF); if(rubroF) qm=qm.eq('rubro',rubroF); if(provF) qm=qm.eq('proveedor',provF);
+  if(resF) qm=qm.eq('residente',resF);
   const { data:movs } = await qm;
   // rendiciones ya presentadas (fecha de presentación)
   // v7.28: antes solo traía ['presentada','cerrada'] y por eso las rendiciones aprobadas,
   // aguardando acreditación o ya repuestas NO figuraban: varios residentes mostraban "—".
-  const { data:rends } = await _SB.from('caja_chica_rendiciones')
+  let qr=_SB.from('caja_chica_rendiciones')
     .select('residente,presentada_en,fecha_corte,numero,estado,total_rendido')
     .in('estado',['presentada','aguardando_acreditacion','repuesta','cerrada']);
+  if(resF) qr=qr.eq('residente',resF);
+  const { data:rends } = await qr;
 
   const _nuevo=()=>({acreditado:0,debitado:0,ultAcr:'',ultRend:'',rndNro:'',acrs:[],rnds:[]});
   const map={};
-  RESIDENTES.forEach(r=>map[r.residente]=_nuevo());
+  RESIDENTES.filter(r=>!resF || r.residente===resF).forEach(r=>map[r.residente]=_nuevo());
   (acr||[]).forEach(a=>{ const k=a.residente; if(!map[k]) map[k]=_nuevo();
     map[k].acreditado+=Number(a.monto); if((a.fecha||'')>map[k].ultAcr) map[k].ultAcr=a.fecha||'';
     map[k].acrs.push({fecha:a.fecha||'',monto:Number(a.monto),medio:a.medio||'',ref:a.referencia||'',lig:!!a.rendicion_id}); });
@@ -2662,7 +2678,7 @@ async function reporteConsolidado(){
     <div class="rc-box"><h5>📋 Rendiciones presentadas (${r.rnds.length})</h5>${rndHTML}</div>
   </div></td></tr>`;
   }).join('');
-  const catNote=(obraF||rubroF||provF)?' (gastos filtrados por catálogo)':'';
+  const catNote=((obraF||rubroF||provF)?' (gastos filtrados por catálogo)':'')+(resF?` · filtrado: ${resF}`:'');
   gs('rep-result').innerHTML=`
     <div class="rep-meta">Consolidado de todas las cajas${catNote} · <span style="color:var(--text3)">tocá una fila para ver el detalle</span></div>
     <div class="rep-scroll"><table class="rep-table">
@@ -2727,7 +2743,59 @@ function exportConsolidadoPDF(){
       doc.text('Página '+doc.internal.getNumberOfPages(), pageW-M, ph-6, {align:'right'});
     }
   });
+  // v7.28: si el selector pide detalle, se agrega una hoja por residente
+  const _pdfSel=gs('r-pdf-detalle');
+  if(!_pdfSel || _pdfSel.value!=='resumen'){ _consolidadoDetallePDF(doc, P, M, pageW, san); }
   doc.save(`caja_chica_consolidado_${todayISO()}.pdf`);
+}
+
+// v7.28: secciones de detalle por residente en el PDF del consolidado (espeja el panel de la web)
+function _consolidadoDetallePDF(doc, P, M, pageW, san){
+  const EST={presentada:'a revisar',aguardando_acreditacion:'falta reponer',repuesta:'repuesta',cerrada:'cerrada'};
+  const conDatos=P.rows.filter(r=>(r.acrs&&r.acrs.length)||(r.rnds&&r.rnds.length));
+  if(!conDatos.length) return;
+  conDatos.forEach(r=>{
+    doc.addPage();
+    // encabezado de la sección
+    try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
+    doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(13);
+    doc.text('Detalle · '+san(r.res), pageW-M, 15, {align:'right'});
+    doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,pageW-M,23);
+    doc.setFont('helvetica','normal'); doc.setTextColor(90,90,90); doc.setFontSize(8.5);
+    doc.text(`Acreditado: Gs ${fmt(r.acreditado)}   ·   Debitado: Gs ${fmt(r.debitado)}   ·   Saldo: Gs ${fmt(r.saldo)}`, M, 30);
+
+    const est={font:'helvetica',fontSize:8,cellPadding:1.6,overflow:'linebreak',textColor:[40,40,40],lineColor:[228,228,228],lineWidth:0.1};
+    const estH={fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:8,halign:'center'};
+    const mitad=(pageW-M*2-6)/2;
+
+    // Acreditaciones (columna izquierda)
+    const bodyA=(r.acrs||[]).map(a=>[a.fecha||'-', san((a.medio||'')+(a.ref?(' · '+a.ref):'')+(a.lig?' [ligada]':' [suelto]')), fmt(a.monto)]);
+    bodyA.push(['TOTAL','',fmt(r.acreditado)]);
+    doc.autoTable({
+      head:[['Fecha','Acreditación','Monto']], body:bodyA, startY:35,
+      margin:{left:M, right:M+mitad+6}, tableWidth:mitad,
+      styles:est, headStyles:estH,
+      columnStyles:{0:{cellWidth:20},1:{cellWidth:'auto'},2:{cellWidth:26,halign:'right'}},
+      didParseCell:(d)=>{ if(d.row.index===bodyA.length-1){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; } }
+    });
+
+    // Rendiciones (columna derecha)
+    const totR=(r.rnds||[]).reduce((s,x)=>s+x.total,0);
+    const bodyR=(r.rnds||[]).map(x=>[x.fecha||'-', x.nro, san(EST[x.estado]||x.estado), fmt(x.total)]);
+    bodyR.push(['TOTAL','','',fmt(totR)]);
+    doc.autoTable({
+      head:[['Fecha','Rendición','Estado','Total']], body:bodyR, startY:35,
+      margin:{left:M+mitad+6, right:M}, tableWidth:mitad,
+      styles:est, headStyles:estH,
+      columnStyles:{0:{cellWidth:20},1:{cellWidth:24},2:{cellWidth:'auto'},3:{cellWidth:26,halign:'right'}},
+      didParseCell:(d)=>{ if(d.row.index===bodyR.length-1){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; } }
+    });
+
+    const ph=doc.internal.pageSize.getHeight();
+    doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
+    doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
+    doc.text('Página '+doc.internal.getNumberOfPages(), pageW-M, ph-6, {align:'right'});
+  });
 }
 
 function exportarReportePDF(){
