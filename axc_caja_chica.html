@@ -294,6 +294,15 @@ tr:last-child td{border-bottom:none}
 .rc-sub tr.tot td{border-top:1px solid var(--border);border-bottom:none;font-weight:700;padding-top:5px}
 .rc-vacio{color:var(--text3);font-size:10.5px;padding:3px 5px}
 .rc-tag{font-size:8.5px;padding:1px 5px;border-radius:8px;background:var(--bg3);color:var(--text2);white-space:nowrap}
+/* v7.29: secciones por residente en el reporte de todos */
+.rt-res{border:1px solid var(--border);border-radius:10px;margin:10px 0;overflow:hidden;background:var(--card)}
+.rt-res>summary{cursor:pointer;padding:9px 12px;background:var(--bg3);font-size:12.5px;list-style:none;user-select:none}
+.rt-res>summary::-webkit-details-marker{display:none}
+.rt-res>summary:before{content:'▶';display:inline-block;width:14px;color:var(--text3);font-size:9px;transition:transform .15s}
+.rt-res[open]>summary:before{transform:rotate(90deg)}
+.rt-res>summary .neg{color:var(--red)}
+.rt-res>.rep-meta,.rt-res>.rep-scroll{padding:0 10px}
+.rt-res>.rep-scroll{padding-bottom:10px}
 .rep-cred{color:var(--green);font-weight:600}
 .rep-saldo{font-weight:700;font-variant-numeric:tabular-nums}
 .rep-saldo.neg{color:var(--red)}
@@ -956,7 +965,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.28';
+const APP_VERSION='Caja Chica v7.29';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2378,7 +2387,11 @@ let REPORTE_DATA=null; // {modo, titulo, headers, rows, aoa, filename}
 let REPORTE_PDF=null;  // datos para el PDF del reporte por residente
 
 function fillReporteFiltros(){
-  gs('r-res').innerHTML=RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  // v7.29: "Todos los residentes" en Estado de cuenta — SOLO admin y supervisor de caja.
+  // Se usa !IS_RESIDENTE (rol admin/supervisor_caja), no puedeVerTodas(), porque este último
+  // también habilita a residentes con el permiso cc_ver_todas y acá no corresponde.
+  const _optTodos = !IS_RESIDENTE ? '<option value="__TODOS__">— Todos los residentes —</option>' : '';
+  gs('r-res').innerHTML=_optTodos+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
   // v7.28: mismo listado pero con "Todos" al frente, para filtrar el consolidado
   gs('r-res-cons').innerHTML='<option value="">Todos los residentes</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
   gs('r-obra').innerHTML=optList(LISTAS.obras,'Todas');
@@ -2415,6 +2428,9 @@ function onTipoReporte(){
 async function onResReporte(){
   if(rTipo()==='consolidado') return;
   const res=gs('r-res').value, sel=gs('r-rnd');
+  // v7.29: con "Todos los residentes" el filtro por rendición no aplica
+  if(res==='__TODOS__'){ sel.innerHTML='<option value="">Todas</option>'; gs('f-rnd').style.display='none'; return; }
+  gs('f-rnd').style.display='';
   if(!res){ sel.innerHTML='<option value="">Todas</option>'; return; }
   const { data:rends }=await _SB.from('caja_chica_rendiciones')
     .select('id,numero,estado').eq('residente',res)
@@ -2432,6 +2448,10 @@ async function generarReporte(){
       await reporteConsolidado();
     } else {
       const res=gs('r-res').value;
+      if(res==='__TODOS__'){
+        if(IS_RESIDENTE){ toast('Opción reservada al administrador y a la supervisora de caja','err'); gs('rep-info').textContent=''; return; }
+        await reporteTodosResidentes(); return;
+      }
       if(!res){ gs('rep-result').innerHTML='<div class="empty">Elegí un residente.</div>'; gs('rep-info').textContent=''; return; }
       await reporteResidente(res);
     }
@@ -2443,6 +2463,46 @@ async function reporteRendicionInline(rid){
   const nro=(rend&&rend.numero!=null)?('RND-'+String(rend.numero).padStart(4,'0')):'Rendición';
   const periodo=(rend&&(rend.fecha_desde||rend.fecha_hasta))?`${rend.fecha_desde||'—'} → ${rend.fecha_hasta||'—'}`:'—';
   await reporteResidente(rend?rend.residente:'', { rendId:rid, rend, nro, periodo });
+}
+
+// v7.29: estado de cuenta de TODOS los residentes, uno debajo del otro.
+// Reutiliza reporteResidente() y captura lo que deja en #rep-result, para no duplicar la lógica.
+async function reporteTodosResidentes(){
+  const cont=gs('rep-result');
+  const partes=[], pdfPartes=[];
+  const aoaAll=[['Caja Chica — Estado de cuenta · Todos los residentes'],[]];
+  let totalSaldo=0, totalDeb=0, totalCred=0, totalMovs=0;
+
+  for(const r of RESIDENTES){
+    const nombre=r.residente;
+    gs('rep-info').textContent='Generando… '+nombre;
+    try{ await reporteResidente(nombre); }catch(e){ continue; }
+    if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente' || !REPORTE_PDF.rows.length) continue;
+    const P=REPORTE_PDF, D=REPORTE_DATA;
+    partes.push(`<details class="rt-res" open>
+      <summary><b>${nombre}</b> · ${P.rows.length} mov. · Saldo <span class="${P.saldoFinal<0?'neg':''}">₲ ${fmt(P.saldoFinal)}</span></summary>
+      ${cont.innerHTML}</details>`);
+    pdfPartes.push(P);
+    aoaAll.push([nombre]);
+    if(D && D.aoa) D.aoa.slice(2).forEach(row=>aoaAll.push(row));
+    aoaAll.push([]);
+    totalSaldo+=P.saldoFinal; totalDeb+=P.sumDeb; totalCred+=P.sumCred; totalMovs+=P.rows.length;
+  }
+
+  if(!partes.length){
+    cont.innerHTML='<div class="empty">Ningún residente tiene movimientos en el período seleccionado.</div>';
+    gs('rep-info').textContent=''; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
+    REPORTE_DATA=null; REPORTE_PDF=null; return;
+  }
+
+  cont.innerHTML=`<div class="rep-meta">Estado de cuenta · ${partes.length} residente(s) con movimientos ·
+    Debitado <b>₲ ${fmt(totalDeb)}</b> · Acreditado <b>₲ ${fmt(totalCred)}</b> ·
+    Saldo total <b class="${totalSaldo<0?'neg':''}">₲ ${fmt(totalSaldo)}</b></div>${partes.join('')}`;
+  aoaAll.push(['TOTAL GENERAL','','','','','','','','','','','',totalDeb,totalCred,totalSaldo,'']);
+  REPORTE_DATA={ aoa:aoaAll, filename:`caja_chica_todos_${todayISO()}.xlsx`, sheet:'Todos' };
+  REPORTE_PDF={ mode:'todos', partes:pdfPartes, totalSaldo, totalDeb, totalCred };
+  gs('r-export').disabled=false; gs('r-export-pdf').disabled=false;
+  gs('rep-info').textContent=`${partes.length} residente(s) · ${totalMovs} mov.`;
 }
 
 async function reporteResidente(res, opts){
@@ -2798,13 +2858,66 @@ function _consolidadoDetallePDF(doc, P, M, pageW, san){
   });
 }
 
-function exportarReportePDF(){
-  if(rTipo()==='rendicion'){ return exportRendicionPDF(); }
-  if(REPORTE_PDF && REPORTE_PDF.mode==='consolidado'){ return exportConsolidadoPDF(); }
-  if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente o en "Consolidado"','err'); return; }
+// v7.29: P0/doc0 permiten reutilizar esta función para cada residente dentro de un PDF único.
+// v7.29: un solo PDF con carátula de totales + el estado de cuenta de cada residente
+function exportTodosPDF(){
   const P=REPORTE_PDF;
+  if(!P || P.mode!=='todos' || !P.partes.length){ toast('Generá primero el reporte','err'); return; }
+  if(!window.jspdf || !window.jspdf.jsPDF){ toast('No cargó la librería PDF','err'); return; }
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  const pageW=doc.internal.pageSize.getWidth(), M=12;
+
+  // Carátula
+  try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(15);
+  doc.text('Reporte de Caja Chica · Todos los residentes', pageW-M, 14, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(8.5);
+  doc.text('Emitido: '+todayISO(), pageW-M, 19.5, {align:'right'});
+  doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,pageW-M,23);
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(10);
+  doc.text('Saldo total', pageW-M, 30, {align:'right'});
+  doc.setFontSize(15); doc.setTextColor(P.totalSaldo<0?200:20, P.totalSaldo<0?40:120, 40);
+  doc.text('Gs '+fmt(P.totalSaldo), pageW-M, 37, {align:'right'});
+
+  const body=P.partes.map(p=>[String(p.res), String(p.rows.length), fmt(p.sumDeb), fmt(p.sumCred), fmt(p.saldoFinal)]);
+  body.push(['TOTAL GENERAL','', fmt(P.totalDeb), fmt(P.totalCred), 'Gs '+fmt(P.totalSaldo)]);
+  const totalIdx=body.length-1;
+  doc.autoTable({
+    head:[['Residente','Movimientos','Debitado','Acreditado','Saldo']], body, startY:44, margin:{left:M,right:M},
+    styles:{font:'helvetica',fontSize:9,cellPadding:2,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
+    headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:9,halign:'center'},
+    columnStyles:{0:{cellWidth:'auto',fontStyle:'bold'},1:{cellWidth:28,halign:'center'},2:{cellWidth:40,halign:'right'},3:{cellWidth:40,halign:'right'},4:{cellWidth:44,halign:'right'}},
+    didParseCell:(d)=>{ if(d.row.index===totalIdx){ d.cell.styles.fontStyle='bold'; d.cell.styles.fillColor=[240,236,225]; d.cell.styles.textColor=[31,56,100]; } },
+    didDrawPage:()=>{
+      const ph=doc.internal.pageSize.getHeight();
+      doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
+      doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
+      doc.text('Página '+doc.internal.getNumberOfPages(), pageW-M, ph-6, {align:'right'});
+    }
+  });
+
+  // Una sección por residente, con el mismo formato del estado de cuenta individual
+  P.partes.forEach(p=>{ try{ exportarReportePDF(p, doc); }catch(e){ console.error('PDF de '+p.res, e); } });
+
+  const filename=`caja_chica_todos_${todayISO()}.pdf`;
+  if(gs('r-pdf-adjuntos') && gs('r-pdf-adjuntos').checked){
+    const todas=P.partes.reduce((a,p)=>a.concat(p.rows||[]),[]);
+    _exportarConAdjuntos(doc, todas, filename);
+  } else { doc.save(filename); }
+}
+
+function exportarReportePDF(P0, doc0){
+  if(!P0){
+    if(rTipo()==='rendicion'){ return exportRendicionPDF(); }
+    if(REPORTE_PDF && REPORTE_PDF.mode==='consolidado'){ return exportConsolidadoPDF(); }
+    if(REPORTE_PDF && REPORTE_PDF.mode==='todos'){ return exportTodosPDF(); }
+    if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente o en "Consolidado"','err'); return; }
+  }
+  const P=P0||REPORTE_PDF;
+  const { jsPDF }=window.jspdf;
+  const doc=doc0||new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  if(doc0) doc.addPage();
   const pageW=doc.internal.pageSize.getWidth();
   const M=12;
 
@@ -2899,6 +3012,8 @@ function exportarReportePDF(){
       doc.text('Página '+doc.internal.getNumberOfPages(), pageW-M, ph-6, {align:'right'});
     }
   });
+
+  if(doc0) return;   // v7.29: reutilizado dentro de un PDF combinado — no guardar acá
 
   const filename=`caja_chica_reporte_${P.res.replace(/[^\w]+/g,'_')}_${modo}_${todayISO()}.pdf`;
   if(gs('r-pdf-adjuntos') && gs('r-pdf-adjuntos').checked){
