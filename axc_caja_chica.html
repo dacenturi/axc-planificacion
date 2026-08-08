@@ -626,7 +626,7 @@ tr:last-child td{border-bottom:none}
               <div class="fld"><label>Sector</label><div class="fld-add"><select id="c-sector"></select><button type="button" class="addbtn" title="Agregar sector (a la obra elegida)" onclick="nuevoValorLista('sectores','c-sector')">＋</button></div></div>
             </div>
             <div class="frow">
-              <div class="fld"><label>Rubro</label><div class="fld-add"><select id="c-rubro"></select><button type="button" class="addbtn" title="Agregar rubro" onclick="nuevoValorLista('rubros','c-rubro')">＋</button></div></div>
+              <div class="fld"><label>Rubro</label><div class="fld-add"><select id="c-rubro" onchange="onRubroComprobante()"></select><button type="button" class="addbtn" title="Agregar rubro" onclick="nuevoValorLista('rubros','c-rubro')">＋</button></div></div>
               <div class="fld"><label>Contratista</label><div class="fld-add"><select id="c-contr"></select><button type="button" class="addbtn" title="Agregar contratista" onclick="nuevoValorLista('contratistas','c-contr')">＋</button></div></div>
             </div>
 
@@ -650,7 +650,7 @@ tr:last-child td{border-bottom:none}
               <div id="ia-scan-status" class="ia-status"></div>
             </div>
 
-            <div class="fld" style="margin-top:14px"><label>Comentario (opcional)</label><textarea id="c-coment" rows="2" placeholder="Aclaración o nota sobre este comprobante..." style="width:100%;resize:vertical;font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line,#e0d8c4);border-radius:10px;background:#fff;box-sizing:border-box"></textarea></div>
+            <div class="fld" style="margin-top:14px"><label id="c-coment-label">Comentario (opcional)</label><textarea id="c-coment" rows="2" placeholder="Aclaración o nota sobre este comprobante..." style="width:100%;resize:vertical;font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line,#e0d8c4);border-radius:10px;background:#fff;box-sizing:border-box"></textarea><div id="c-coment-hint" style="display:none;font-size:11.5px;color:var(--gold,#C8A028);margin-top:5px">⛽ Rubro Combustible: escribí el <b>vehículo</b> que cargó (patente o identificación). Sin eso no se puede guardar.</div></div>
 
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
               <button class="btn-primary" id="c-btn" onclick="guardarComprobante()">Guardar comprobante</button>
@@ -965,7 +965,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.29';
+const APP_VERSION='Caja Chica v7.30';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -1481,6 +1481,26 @@ function filtrarVendedorComprobante(prov){
 }
 
 // Alta de valores nuevos en la MISMA base que la OC / Planificación (tabla listas)
+// v7.30: ¿el rubro elegido es combustible? Tolerante a variantes de nombre en el catálogo.
+function _esRubroCombustible(r){
+  const v=String(r||'').toLowerCase().trim();
+  if(!v) return false;
+  return /combustible|nafta|gasoil|gas[ -]?oil|di[eé]sel/.test(v);
+}
+// Marca el comentario como obligatorio y muestra la ayuda cuando corresponde
+function onRubroComprobante(){
+  const es=_esRubroCombustible(gs('c-rubro').value);
+  const lbl=gs('c-coment-label'), hint=gs('c-coment-hint'), ta=gs('c-coment');
+  if(lbl) lbl.innerHTML = es ? 'Comentario · <b style="color:var(--red)">Vehículo obligatorio</b>' : 'Comentario (opcional)';
+  if(hint) hint.style.display = es ? '' : 'none';
+  if(ta){
+    ta.placeholder = es ? 'Indicá el vehículo que cargó combustible (ej.: Hilux ABC 123, Retro CAT 420)' : 'Aclaración o nota sobre este comprobante...';
+    if(es && !(ta.value||'').trim()) toast('Rubro Combustible: anotá en el comentario qué vehículo cargó','info');
+    if(!es) ta.classList.remove('campo-falta');
+  }
+}
+window.onRubroComprobante=onRubroComprobante;
+
 async function nuevoValorLista(tipo, selectId){
   const labels={proveedores:'proveedor',vendedores:'vendedor',obras:'obra',sectores:'sector',rubros:'rubro',contratistas:'contratista'};
   const ph={proveedores:'— Proveedor —',vendedores:'— Vendedor —',obras:'— Obra —',rubros:'— Rubro —',contratistas:'— Contratista —'};
@@ -1930,6 +1950,13 @@ async function guardarComprobante(){
   reqCab.forEach(([id,label])=>{ const v=(gs(id).value||'').trim(); if(!v){ _marcarFalta(id,true); faltan.push(label); } });
   if(!lineas.length){ faltan.push('Al menos una línea con concepto y monto'); const lb=gs('lines-body'); if(lb) lb.classList.add('campo-falta-box'); }
   if(!_hayArchivosNuevos && !_tieneAdjuntoPrevio){ faltan.push('Comprobante adjunto (foto o PDF)'); _marcarFalta('c-files',true); }
+  // v7.30: si el rubro es Combustible, el comentario es obligatorio y debe indicar el vehículo.
+  // La detección es flexible (combustible/combustibles/nafta/gasoil/diesel) para que no se
+  // rompa si mañana el catálogo usa otro nombre parecido.
+  if(_esRubroCombustible(gs('c-rubro').value)){
+    const _com=(gs('c-coment').value||'').trim();
+    if(_com.length<3){ faltan.push('Vehículo en el comentario (obligatorio para el rubro Combustible)'); _marcarFalta('c-coment',true); }
+  }
   if(faltan.length){
     showAlert('Faltan campos obligatorios','No se puede guardar todavía. Completá lo que está marcado en rojo:<br><br>• '+faltan.join('<br>• '), '⚠️', true);
     const first=document.querySelector('.campo-falta, .campo-falta-box'); if(first && first.scrollIntoView) first.scrollIntoView({behavior:'smooth',block:'center'});
@@ -2154,6 +2181,7 @@ async function editarComprobante(id){
   gs('c-obra').value=m.obra||''; filtrarSectorComprobante(m.obra||''); gs('c-sector').value=m.sector||'';
   gs('c-rubro').value=m.rubro||''; gs('c-contr').value=m.contratista||'';
   gs('c-coment').value=m.comentario||'';
+  onRubroComprobante();   // v7.30: refleja la regla de Combustible al editar
   const _eRad=document.querySelector('input[name="c-estado"][value="solicitado"]'); if(_eRad) _eRad.checked=true;
   gs('lines-body').innerHTML='';
   const its=(m.caja_chica_movimiento_items||[]).sort((a,b)=>(a.orden||0)-(b.orden||0));
@@ -2184,6 +2212,7 @@ function limpiarComprobante(skipConfirm){
   gs('c-btn').textContent='Guardar comprobante';
   // Cabecera
   gs('c-fac').value=''; gs('c-ruc').value=''; gs('c-files').value=''; gs('c-coment').value='';
+  onRubroComprobante();   // v7.30: vuelve el comentario a "opcional"
   if(gs('c-fecha')) gs('c-fecha').value=todayISO();
   if(gs('c-tipo')) gs('c-tipo').value='factura';
   // Listas: todas a "sin datos" (placeholder)
