@@ -1376,7 +1376,22 @@ function _idxAISO(act, idx){
   return d ? d.toISOString().slice(0,10) : null;
 }
 
+// ★ v1.3 ★ ACTIVIDAD SIN PLANIFICAR
+// Actividad cargada (obra, contratista, descripción) pero todavía sin ningún
+// día tildado en la grilla. Las apps de Contratista/Residente ahora permiten
+// guardarla mientras NO esté confirmada. No tiene fechas reales: no se dibuja
+// en el Gantt, no cuenta como vencida y no la filtra el rango de fechas.
+function _sinPlanificar(a){
+  if(!a) return false;
+  const hasDays = Array.isArray(a.days) && a.days.some(v => !!v);
+  const hasDom  = Array.isArray(a.domingos) && a.domingos.length > 0;
+  return !hasDays && !hasDom;
+}
+window._sinPlanificar = _sinPlanificar;
+
 function _hasIntersectionWithRange(a, fechaDesde, fechaHasta){
+  // Sin planificar → no tiene fechas que comparar: se muestra siempre.
+  if(_sinPlanificar(a)) return true;
   if(!a.fecha_inicio) return false;
   const inRange = iso =>
     (!fechaDesde || iso >= fechaDesde) &&
@@ -1682,7 +1697,7 @@ function _estadoChipHtml(estado){
 // como 'Pendiente' — SOLO la etiqueta: el valor guardado en la columna
 // `cumple` de la base sigue siendo 'En espera' (ver ESTADOS_MANUALES).
 const _KANBAN_COLS = [
-  { key:'sin_confirmar',titulo:'Sin confirmar',sub:'',                  estados:['Sin asignar'],                              color:'#8b949e' },
+  { key:'sin_confirmar',titulo:'Sin confirmar',sub:'(planificación)',   estados:['Sin asignar'],                              color:'#8b949e' },
   { key:'por_ejecutar', titulo:'Por ejecutar', sub:'(No iniciado)',     estados:['Por ejecutar'],                             color:'#39c5cf' },
   { key:'en_espera',    titulo:'Pendiente',    sub:'',                  estados:['En espera'],                                color:'#eab308' },
   { key:'en_proceso',   titulo:'En proceso',   sub:'(iniciado)',        estados:['En proceso'],                               color:'#58a6ff' },
@@ -1700,6 +1715,10 @@ function _kanbanCardHtml(a){
   const impBadge = a.imprevista
     ? '<span class="imp-badge" title="Imprevista — actividad no planificada"><span class="pin">📌</span>IMPR</span>'
     : '';
+  // ★ v1.3 ★ Actividad cargada pero todavía sin días marcados
+  const sinPlanBadge = _sinPlanificar(a)
+    ? '<span class="chip" style="background:rgba(139,148,158,.18);color:#c9d1d9;font-size:9px" title="Sin planificar: la actividad está cargada pero todavía no tiene días marcados">📅 Sin planificar</span>'
+    : '';
   const critChip  = crit === 'Sin asignar' ? '' : `<span class="chip crit-${crit.toLowerCase()}">${crit}</span>`;
   const atrasoChip = diasAtraso > 0
     ? `<span class="chip" style="background:rgba(240,165,0,.15);color:var(--accent)">⏱ ${diasAtraso}d atraso</span>`
@@ -1712,7 +1731,7 @@ function _kanbanCardHtml(a){
     ${secLine}
     <div class="kb-card-act">${_esc(a.descripcion) || '—'}</div>
     ${resLine}
-    <div class="kb-card-meta"><span class="kb-card-fechas">${fIni} → ${fFin}</span></div>
+    <div class="kb-card-meta"><span class="kb-card-fechas">${sinPlanBadge || (fIni + ' → ' + fFin)}</span></div>
     <div class="kb-card-chips">${_estadoChipHtml(estado)}${critChip}${atrasoChip}</div>
   </div>`;
 }
@@ -1792,9 +1811,13 @@ function renderTable(){
                     : `<span class="chip crit-${crit.toLowerCase()}">${crit}</span>`;
     // Marca visual para imprevistas: clase en tr + badge antes de la descripción
     const trClass = a.imprevista ? 'row-imprevista' : '';
-    const impBadge = a.imprevista
+    const impBadge = (a.imprevista
       ? '<span class="imp-badge" title="Imprevista — actividad no planificada"><span class="pin">📌</span>IMPR</span>'
-      : '';
+      : '')
+      // ★ v1.3 ★ Sin planificar: cargada, sin días marcados, sin confirmar
+      + (_sinPlanificar(a)
+        ? '<span class="chip" style="background:rgba(139,148,158,.18);color:#c9d1d9;font-size:9px;margin-right:5px" title="Sin planificar: la actividad está cargada pero todavía no tiene días marcados">📅 SIN PLANIF.</span>'
+        : '');
     return `<tr class="${trClass}">
       <td style="color:var(--text3);font-family:'DM Mono',monospace;font-size:10px;text-align:center">${i+1}</td>
       <td><strong>${_esc(a.residente)||'—'}</strong></td>
@@ -1875,6 +1898,7 @@ function _diasPlanificados(a, desde, hasta){
 // Fecha de INICIO recortada al filtro de fechas activo (Opción B).
 // Si no hay filtro de fechas, equivale a _getFechaActividad (plan completo).
 function _getFechaIniClip(a){
+  if(_sinPlanificar(a)) return null;   // v1.3: sin días tildados → sin fecha
   const f = window._filters || {};
   const dias = _diasPlanificados(a, f.fechaDesde, f.fechaHasta);
   if(dias.length) return dias[0];
@@ -1886,6 +1910,7 @@ function _getFechaIniClip(a){
 // La fecha fin sigue siendo el último día TILDADO en la grilla, pero acotado
 // al filtro: el último día tildado que cae dentro del rango.
 function _getFechaFinClip(a){
+  if(_sinPlanificar(a)) return null;   // v1.3: sin días tildados → sin fecha
   const f = window._filters || {};
   const dias = _diasPlanificados(a, f.fechaDesde, f.fechaHasta);
   if(dias.length) return dias[dias.length - 1];
@@ -2074,18 +2099,23 @@ function renderGantt(){
   //     tienen grilla cargada, el rango fecha_inicio→fecha_fin.
   //   • Así el Gantt refleja la planificación completa, no solo lo confirmado.
   const totalEnFiltro = window._filteredActs.length;
+  // ★ v1.3 ★ Las actividades SIN PLANIFICAR (sin ningún día tildado) quedan
+  // fuera del Gantt: no tienen fechas reales que dibujar. Se siguen viendo en
+  // la tabla y en el Kanban, columna "Sin confirmar".
   const acts = window._filteredActs.filter(a =>
-    a.fecha_inicio && (
+    a.fecha_inicio && !_sinPlanificar(a) && (
       (Array.isArray(a.days) && a.days.some(d => d)) ||
       (Array.isArray(a.domingos) && a.domingos.length > 0) ||
       _ganttRangoPlanISO(a).length > 0
     )
   );
+  const _sinPlanCount = window._filteredActs.filter(_sinPlanificar).length;
   if(!acts.length){
     cont.innerHTML = '<div class="empty"><span class="empty-ico">📅</span>' +
       'No hay actividades en el filtro actual.' +
       (totalEnFiltro > 0
-        ? '<br><span style="font-size:11px;opacity:.75">Hay ' + totalEnFiltro + ' actividad(es) en el filtro, pero ninguna tiene fechas planificadas para dibujar.</span>'
+        ? '<br><span style="font-size:11px;opacity:.75">Hay ' + totalEnFiltro + ' actividad(es) en el filtro, pero ninguna tiene fechas planificadas para dibujar.' +
+          (_sinPlanCount ? ' ' + _sinPlanCount + ' está(n) sin planificar (sin días marcados).' : '') + '</span>'
         : ''
       ) +
       '</div>';
