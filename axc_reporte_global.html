@@ -2449,7 +2449,7 @@ async function exportPDF(modo){
     const RED       = [220, 38, 38];
     const AMBER     = [245, 158, 11];
     const ORANGE_IMP= [255, 107, 53]; // imprevistas
-    const VERSION   = 'global-pdf-36-turno-kanban';
+    const VERSION   = 'global-pdf-37-turno-kanban-pdf';
     const isCont    = window._currentApp === 'contratista';
     const appLabel  = isCont ? 'Contratista' : 'Residente';
     const tsISO     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -3985,7 +3985,7 @@ async function exportPDF(modo){
       // COMPLETA (antes se recortaba a 1 línea). Cada tarjeta calcula sus
       // líneas de descripción y su alto; cada columna pagina de forma
       // independiente según el alto acumulado.
-      const cardHeightFor = D => Math.max(11, 9.2 + D * 2.4);
+      const cardHeightFor = (D, turnoOn) => Math.max(11, 9.2 + D * 2.4 + (turnoOn ? 2.4 : 0));
       const prep = {};
       cols.forEach(c => {
         prep[c.key] = buckets[c.key].map(a => {
@@ -3995,7 +3995,13 @@ async function exportPDF(modo){
           // Tope de seguridad alto (8) por si una descripción es patológicamente
           // larga; las reales entran en 1-4 líneas.
           if(descLines.length > 8){ descLines = descLines.slice(0,8); descLines[7] = descLines[7].slice(0, Math.max(1, descLines[7].length-2)) + '…'; }
-          return { a, descLines, h: cardHeightFor(descLines.length) };
+          // ★ 12/08/2026 ★ Turno del día. Sin emojis: Helvetica de jsPDF no los
+          // soporta. Si la actividad no tiene turno cargado, la línea no se dibuja
+          // y la tarjeta conserva su alto anterior.
+          const turnoRaw = _turnoTexto(a);
+          const turno    = turnoRaw ? turnoRaw.replace(/[\u0100-\uFFFF]/g, '') : '';
+          const turnoOn  = !!turno;
+          return { a, descLines, turno, turnoOn, h: cardHeightFor(descLines.length, turnoOn) };
         });
       });
       const colPages = {};
@@ -4040,6 +4046,16 @@ async function exportPDF(modo){
         const iniISO = _getFechaIniClip(a), finISO = _getFechaFinClip(a);
         doc.setFontSize(5.5); doc.setTextColor(...GRAY);
         doc.text((iniISO ? fmtFecha(iniISO) : '—') + ' a ' + (finISO ? fmtFecha(finISO) : '—'), x + pad, cy);
+        // Turno — última línea de la tarjeta ("Turno: <valor>"), en cian
+        if(card.turnoOn){
+          cy += 2.4;
+          doc.setFont('helvetica','bold'); doc.setFontSize(5.5); doc.setTextColor(...GRAY_TEXT);
+          doc.text('Turno: ', x + pad, cy);
+          const _tW = doc.getTextWidth('Turno: ');
+          doc.setFont('helvetica','normal'); doc.setTextColor(8, 145, 178);
+          doc.text(_trunc(card.turno, innerW - _tW), x + pad + _tW, cy);
+          doc.setFont('helvetica','normal');
+        }
       }
 
       for(let part = 0; part < totalParts; part++){
