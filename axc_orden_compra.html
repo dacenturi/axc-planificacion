@@ -1764,6 +1764,10 @@ body{
   gap:5px;
 }
 .step-field label.req::after{content:' *';color:#C8302A;font-weight:700}
+.presu-check{display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12.5px;font-weight:600;color:#8a6d10;background:#fbf3da;border:1px solid #e7d9a8;border-radius:8px;padding:7px 10px;cursor:pointer;user-select:none}
+.presu-check input{width:15px;height:15px;accent-color:#b9863a;cursor:pointer;margin:0}
+.presu-check span{line-height:1.2}
+#wrapPresuMotivo .step-textarea{min-height:52px}
 .step-input,.step-select,.step-textarea{
   padding:10px 13px;
   border:1.5px solid var(--border);
@@ -1785,7 +1789,7 @@ body{
   color:var(--text-muted);
   cursor:not-allowed;
 }
-.step-input.error,.step-select.error{
+.step-input.error,.step-select.error,.step-textarea.error{
   border-color:#C8302A;
   background:#FFF5F5;
 }
@@ -3896,7 +3900,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v5.5 · N° de presupuesto de carga libre · Vendedor obligatorio y exclusivo del Proveedor
+      Conexdata · AXC Planificación v5.6 · N° de presupuesto (o sin presupuesto + motivo) · Vendedor obligatorio y exclusivo del Proveedor
     </p>
   </div>
 </div>
@@ -4229,6 +4233,11 @@ body{
             <div class="step-field">
               <label for="fldPresupuesto">N° de presupuesto</label>
               <input type="text" class="step-input" id="fldPresupuesto" placeholder="Ej. 1234" autocomplete="off" maxlength="60">
+              <label class="presu-check"><input type="checkbox" id="chkSinPresupuesto"> <span>Esta compra no tiene presupuesto</span></label>
+              <div id="wrapPresuMotivo" style="display:none;margin-top:8px">
+                <label class="req" for="fldPresuMotivo" style="font-size:11px">Motivo / comentario para control de obra</label>
+                <textarea class="step-textarea" id="fldPresuMotivo" rows="2" maxlength="240" placeholder="Ej. compra de urgencia, imprevisto en obra, adicional no presupuestado..."></textarea>
+              </div>
               <div class="step-help" id="fldPresupuestoHelp">Presupuesto de la obra elaborado por la constructora</div>
             </div>
 
@@ -6670,11 +6679,73 @@ function _cbEls(){ return {
    guarda tal cual en ordenes_compra.presupuesto y se imprime en el PDF.
    Cuando el módulo de Presupuestos entre en producción, acá se resolverá el
    vínculo (los números ya cargados quedan disponibles para hacerlo). */
+const PRESU_SIN_PREFIJO = 'Sin presupuesto';
+
+/* Compone el valor que se guarda en ordenes_compra.presupuesto:
+   - con presupuesto  -> el número tal cual  (ej. "1234")
+   - sin presupuesto  -> "Sin presupuesto — <motivo>"  (queda visible en el PDF y
+     en los listados, que es donde control de obra necesita leerlo) */
+function presuCompose(){
+  const chk = document.getElementById('chkSinPresupuesto');
+  const num = document.getElementById('fldPresupuesto');
+  const mot = document.getElementById('fldPresuMotivo');
+  if(chk && chk.checked){
+    const m = (mot && mot.value || '').trim();
+    return PRESU_SIN_PREFIJO + (m ? ' — ' + m : '');
+  }
+  return (num && num.value || '').trim();
+}
+
+/* Inverso de presuCompose(): reparte el valor guardado en los tres controles. */
+function presuDecompose(val){
+  const txt = (val||'').trim();
+  const chk = document.getElementById('chkSinPresupuesto');
+  const num = document.getElementById('fldPresupuesto');
+  const mot = document.getElementById('fldPresuMotivo');
+  const esSin = txt.toLowerCase().startsWith(PRESU_SIN_PREFIJO.toLowerCase());
+  if(chk) chk.checked = esSin;
+  if(esSin){
+    if(num) num.value = '';
+    if(mot) mot.value = txt.slice(PRESU_SIN_PREFIJO.length).replace(/^\s*[—-]\s*/, '').trim();
+  } else {
+    if(num) num.value = txt;
+    if(mot) mot.value = '';
+  }
+  presuToggleSin();
+}
+
+/* Muestra/oculta el motivo y bloquea el N° cuando no hay presupuesto. */
+function presuToggleSin(){
+  const chk  = document.getElementById('chkSinPresupuesto');
+  const num  = document.getElementById('fldPresupuesto');
+  const wrap = document.getElementById('wrapPresuMotivo');
+  const help = document.getElementById('fldPresupuestoHelp');
+  const sin  = !!(chk && chk.checked);
+  if(wrap) wrap.style.display = sin ? 'block' : 'none';
+  if(num){
+    num.disabled = sin;
+    num.style.opacity = sin ? '.5' : '';
+    if(sin) num.value = '';
+  }
+  if(help){
+    help.textContent = sin
+      ? 'Se registra como compra sin presupuesto; el motivo queda en la OC para control de obra'
+      : 'Presupuesto de la obra elaborado por la constructora';
+    help.style.color = sin ? '#8a6d10' : '';
+  }
+}
+
 function onPresuInputChange(){
-  const fld = document.getElementById('fldPresupuesto');
-  if(!fld) return;
-  wizard.form.presupuesto = (fld.value||'').trim();
+  wizard.form.presupuesto = presuCompose();
   if(typeof saveDraft === 'function') saveDraft();
+}
+
+function onPresuSinChange(){
+  presuToggleSin();
+  onPresuInputChange();
+  const mot = document.getElementById('fldPresuMotivo');
+  const chk = document.getElementById('chkSinPresupuesto');
+  if(chk && chk.checked && mot) mot.focus();
 }
 
 function cbInjectStyles(){
@@ -6749,6 +6820,13 @@ function cartBudgetInit(){
     // Campo libre: solo refleja lo tipeado en wizard.form. Sin consulta al módulo.
     e.dfld.addEventListener('input',  onPresuInputChange);
     e.dfld.addEventListener('change', onPresuInputChange);
+    const _chk = document.getElementById('chkSinPresupuesto');
+    if(_chk) _chk.addEventListener('change', onPresuSinChange);
+    const _mot = document.getElementById('fldPresuMotivo');
+    if(_mot){
+      _mot.addEventListener('input',  onPresuInputChange);
+      _mot.addEventListener('change', onPresuInputChange);
+    }
   }
 }
 
@@ -6779,7 +6857,9 @@ async function setPresupuesto(pp, silent){
   // carrito (que pertenece al módulo de Presupuestos, todavía sin producción). Solo si
   // el campo está vacío se toma el código elegido en el carrito.
   const _fp = document.getElementById('fldPresupuesto');
-  if(!_fp || !(_fp.value||'').trim()) wizard.form.presupuesto = pp;
+  const _fc = document.getElementById('chkSinPresupuesto');
+  if(_fc && _fc.checked){ /* "sin presupuesto" manda: el carrito no lo pisa */ }
+  else if(!_fp || !(_fp.value||'').trim()) wizard.form.presupuesto = pp;
   const e = _cbEls();
   if(e.cno){ e.csi.checked=!!pp; e.cno.checked=!pp; e.csel.style.display=pp?'':'none'; if(e.csel.value!==pp) e.csel.value=pp; }
   if(e.dno){ e.dsi.checked=!!pp; e.dno.checked=!pp; e.dfld.style.display=pp?'':'none'; if(e.dfld.value!==pp) e.dfld.value=pp; }
@@ -6791,10 +6871,9 @@ async function setPresupuesto(pp, silent){
 
 /* Compat con el populate de Detalles */
 function presuInit(){ cartBudgetInit(); }
-/* Al entrar al Paso 2: repone en el input el número ya cargado. Nada más. */
+/* Al entrar al Paso 2: reparte el valor guardado entre N°, tilde y motivo. */
 function presuApplyMode(){
-  const fld = document.getElementById('fldPresupuesto');
-  if(fld) fld.value = (wizard.form.presupuesto||'').trim();
+  presuDecompose(wizard.form.presupuesto||'');
 }
 function loadPresuList(){ cbLoadList('presuListCart'); }
 
@@ -7200,9 +7279,12 @@ function validateStep2(showErrors){
   const fieldMap = [
     ['fldFecha','fecha'], ['fldRubro','rubro'], ['fldObra','obra'], ['fldSector','sector'],
     ['fldResidente','residente'], ['fldContratista','contratista'], ['fldProveedor','proveedor'],
-    ['fldVendedor','vendedor'], ['fldTipoCompra','tipo_compra'], ['fldPresupuesto','presupuesto'],
+    ['fldVendedor','vendedor'], ['fldTipoCompra','tipo_compra'],
     ['fldObservacion','observacion'],
   ];
+  // El N° de presupuesto se arma con el tilde "sin presupuesto" + el motivo, así que
+  // no se lee del input suelto sino de presuCompose().
+  try{ wizard.form.presupuesto = presuCompose(); }catch(_){}
   fieldMap.forEach(([id, key]) => {
     const el = document.getElementById(id);
     if(el && (el.value || '').trim()){
@@ -7257,6 +7339,24 @@ function validateStep2(showErrors){
     document.getElementById(firstError.id).focus();
     return false;
   }
+
+  // Si se tildó "no tiene presupuesto", el motivo es obligatorio: es la única
+  // información que le queda a control de obra para justificar la compra.
+  const _chkSin = document.getElementById('chkSinPresupuesto');
+  const _motSin = document.getElementById('fldPresuMotivo');
+  if(_chkSin && _chkSin.checked){
+    const m = (_motSin && _motSin.value || '').trim();
+    if(m.length < 5){
+      if(showErrors){
+        _motSin && _motSin.classList.add('error');
+        showToast('Indicá el motivo por el que esta compra no tiene presupuesto', 'error');
+        _motSin && _motSin.focus();
+      }
+      return false;
+    }
+    _motSin && _motSin.classList.remove('error');
+  }
+
   return !firstError;
 }
 
