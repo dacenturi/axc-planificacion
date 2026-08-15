@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v5.2 · sin "Efectivo - Caja Chica" en tipo de compra
+      Conexdata · AXC Planificación v5.3 · N° de presupuesto en la carga · Vendedor obligatorio ligado al Proveedor
     </p>
   </div>
 </div>
@@ -4203,13 +4203,14 @@ body{
               </div>
             </div>
             <div class="step-field">
-              <label for="fldVendedor">Vendedor (opcional)</label>
+              <label class="req" for="fldVendedor">Vendedor</label>
               <div class="select-with-add">
-                <select class="step-select" id="fldVendedor">
-                  <option value="">Sin vendedor</option>
+                <select class="step-select" id="fldVendedor" disabled>
+                  <option value="">Primero elegí un proveedor</option>
                 </select>
-                <button type="button" class="btn-add-list" data-add-tipo="vendedores" title="Agregar nuevo vendedor">+</button>
+                <button type="button" class="btn-add-list" data-add-tipo="vendedores" title="Agregar nuevo vendedor para este proveedor">+</button>
               </div>
+              <div class="step-help" id="fldVendedorHelp">Los vendedores se filtran según el proveedor elegido</div>
             </div>
 
             <div class="step-field">
@@ -4220,7 +4221,16 @@ body{
                 <option value="Contado">Contado</option>
               </select>
             </div>
-            <!-- Presupuesto: se elige únicamente en el Carrito (Paso 1). Selector quitado del Paso 2 para evitar duplicación y desincronización; el valor se toma del carrito vía setPresupuesto(). -->
+            <!-- N° de presupuesto de la obra (elaborado por la constructora).
+                 Etapa de transición: se acepta número LIBRE. Si el valor coincide con un
+                 código cargado en el módulo de Presupuestos, se vincula automáticamente y
+                 se activa la imputación de materiales (mismo comportamiento que el carrito). -->
+            <div class="step-field">
+              <label for="fldPresupuesto">N° de presupuesto</label>
+              <input type="text" class="step-input" id="fldPresupuesto" list="presuList" placeholder="Ej. PP43 o número de presupuesto" autocomplete="off">
+              <datalist id="presuList"></datalist>
+              <div class="step-help" id="fldPresupuestoHelp">Presupuesto de la obra elaborado por la constructora</div>
+            </div>
 
             <div class="step-field full">
               <label for="fldObservacion">Observación (opcional)</label>
@@ -6363,20 +6373,28 @@ async function loadListasForForm(){
       wizard.listas.proveedores.sort((a,b)=>a.valor.localeCompare(b.valor,'es'));
     }
 
-    // Cargar vendedores desde el histórico (ordenes_compra.vendedor)
+    // Cargar vendedores desde el histórico (ordenes_compra.vendedor) LIGADOS a su proveedor.
+    // Antes entraban con obra_ref:'' (genéricos) y por eso aparecían para cualquier
+    // proveedor. Ahora cada par proveedor→vendedor del histórico se guarda por separado,
+    // así el filtro por proveedor funciona también con los datos viejos.
     const {data: vendHist} = await sb
       .from('ordenes_compra')
-      .select('vendedor')
+      .select('vendedor,proveedor')
       .not('vendedor','is',null);
     if(vendHist){
-      const existing = new Set(wizard.listas.vendedores.map(p => p.valor.toLowerCase().trim()));
-      const uniq = new Set();
+      const _k = (v,p) => (v||'').toLowerCase().trim()+'|'+(p||'').toLowerCase().trim();
+      const existing = new Set(wizard.listas.vendedores.map(p => _k(p.valor, p.obra_ref)));
       vendHist.forEach(row => {
         const v = (row.vendedor||'').trim();
-        if(v && !existing.has(v.toLowerCase()) && !uniq.has(v.toLowerCase())){
-          uniq.add(v.toLowerCase());
-          wizard.listas.vendedores.push({tipo:'vendedores', valor:v, obra_ref:''});
-        }
+        const p = (row.proveedor||'').trim();
+        if(!v) return;
+        const k = _k(v,p);
+        if(existing.has(k)) return;
+        // Si el vendedor ya está cargado como genérico (obra_ref vacío) en las listas
+        // compartidas, no lo duplicamos: el genérico ya se muestra para todos.
+        if(existing.has(_k(v,''))) return;
+        existing.add(k);
+        wizard.listas.vendedores.push({tipo:'vendedores', valor:v, obra_ref:p});
       });
       wizard.listas.vendedores.sort((a,b)=>a.valor.localeCompare(b.valor,'es'));
     }
@@ -6428,15 +6446,49 @@ function populateFormSelects(){
 function populateVendedorSelect(prov){
   const sel = document.getElementById('fldVendedor');
   if(!sel) return;
+  const help = document.getElementById('fldVendedorHelp');
   const prev = sel.value;
   const provN = (prov||'').trim().toLowerCase();
+
+  // Sin proveedor no hay vendedor posible: el campo queda bloqueado.
+  if(!provN){
+    sel.innerHTML = '<option value="">Primero elegí un proveedor</option>';
+    sel.disabled = true;
+    sel.value = '';
+    wizard.form.vendedor = '';
+    if(help){ help.textContent = 'Los vendedores se filtran según el proveedor elegido'; help.style.color=''; }
+    return;
+  }
+
   const lista = (wizard.listas.vendedores||[]).filter(v => {
     const ref = (v.obra_ref||'').trim().toLowerCase();
-    return ref === '' || (provN !== '' && ref === provN);
+    return ref === '' || ref === provN;
   });
-  sel.innerHTML = '<option value="">Sin vendedor</option>' +
-    lista.map(v => `<option value="${escapeHtml(v.valor)}">${escapeHtml(v.valor)}</option>`).join('');
-  if(prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  // Deduplicar por nombre (un mismo vendedor puede venir del histórico y de las listas)
+  const vistos = new Set();
+  const unicos = lista.filter(v => {
+    const k = (v.valor||'').trim().toLowerCase();
+    if(!k || vistos.has(k)) return false;
+    vistos.add(k); return true;
+  });
+
+  sel.disabled = false;
+  sel.innerHTML = '<option value="">Seleccionar vendedor...</option>' +
+    unicos.map(v => `<option value="${escapeHtml(v.valor)}">${escapeHtml(v.valor)}</option>`).join('');
+
+  // Solo se conserva el vendedor anterior si pertenece al proveedor elegido.
+  if(prev && [...sel.options].some(o => o.value === prev)){ sel.value = prev; }
+  else { sel.value = ''; wizard.form.vendedor = ''; }
+
+  if(help){
+    if(!unicos.length){
+      help.textContent = 'Este proveedor todavía no tiene vendedores cargados — agregá uno con el botón +';
+      help.style.color = '#8a6d10';
+    } else {
+      help.textContent = unicos.length + ' vendedor(es) de ' + escapeHtml(prov);
+      help.style.color = '';
+    }
+  }
 }
 
 // Aplica el bloqueo del campo "Residente" si el usuario NO es admin
@@ -6541,7 +6593,7 @@ async function enterStep2(){
   const total = wizard.cart.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
   document.getElementById('step2ItemsCount').textContent = `${wizard.cart.length} item${wizard.cart.length===1?'':'s'}`;
   document.getElementById('step2ItemsTotal').textContent = fmtMoney(total);
-  (function(){ const el=document.getElementById('step2Presu'); if(!el) return; if(cartBudget && cartBudget.pp){ el.style.display='flex'; el.innerHTML='<span class="isp-tag">📋 '+cartBudget.pp+'</span>'+(cartBudget.nombre?('<span class="isp-nom">'+cartBudget.nombre+'</span>'):''); } else { el.style.display='none'; el.innerHTML=''; } })();
+  (function(){ const el=document.getElementById('step2Presu'); if(!el) return; const _pp=(cartBudget&&cartBudget.pp)||(wizard.form.presupuesto||'').trim(); if(_pp){ el.style.display='flex'; el.innerHTML='<span class="isp-tag">📋 '+escapeHtml(_pp)+'</span>'+(cartBudget.nombre?('<span class="isp-nom">'+cartBudget.nombre+'</span>'):''); } else { el.style.display='none'; el.innerHTML=''; } })();
 
   await loadListasForForm();
 
@@ -6587,11 +6639,14 @@ async function enterStep2(){
   populateVendedorSelect(wizard.form.proveedor || '');
   (function(){
     const sv = document.getElementById('fldVendedor');
-    const vv = wizard.form.vendedor || '';
+    const vv = (wizard.form.vendedor || '').trim();
+    if(!sv) return;
+    if(sv.disabled || !(wizard.form.proveedor||'').trim()){ wizard.form.vendedor = ''; return; }
     if(vv && ![...sv.options].some(o => o.value === vv)){
       const opt = document.createElement('option'); opt.value = vv; opt.textContent = vv; sv.appendChild(opt);
     }
     sv.value = vv;
+    wizard.form.vendedor = sv.value;
   })();
   document.getElementById('fldTipoCompra').value = wizard.form.tipo_compra || '';
   // Presupuesto se gestiona en el Carrito (Paso 1); presuApplyMode() sincroniza el valor actual.
@@ -6605,8 +6660,10 @@ async function enterStep2(){
 [
   ['fldFecha','fecha'],['fldRubro','rubro'],['fldObra','obra'],['fldSector','sector'],
   ['fldResidente','residente'],['fldContratista','contratista'],['fldProveedor','proveedor'],
-  ['fldVendedor','vendedor'],['fldTipoCompra','tipo_compra'],['fldPresupuesto','presupuesto'],
+  ['fldVendedor','vendedor'],['fldTipoCompra','tipo_compra'],
   ['fldObservacion','observacion']
+  // fldPresupuesto NO va acá: tiene su propio handler (onPresuInputChange) que además
+  // decide si el número se vincula al módulo de Presupuestos o queda como número libre.
 ].forEach(([id, key])=>{
   const el = document.getElementById(id);
   if(!el) return;
@@ -6626,6 +6683,77 @@ function _cbEls(){ return {
   dno:document.getElementById('presuNo'), dsi:document.getElementById('presuSi'),
   dfld:document.getElementById('fldPresupuesto')
 }; }
+
+/* ── N° de presupuesto en el Paso 2 (número libre + vínculo opcional) ──────────
+   Etapa de transición: el residente carga el N° de presupuesto de la obra como
+   texto libre. Si ese número coincide con un código existente en presupuesto_cab,
+   la OC se vincula al presupuesto y se activa toda la lógica de imputación
+   (árbol de insumos, cascada de débito, control de excedente). Si no coincide,
+   el número se guarda igual en ordenes_compra.presupuesto y el carrito sigue
+   trabajando con el catálogo normal. Cuando el módulo de Presupuestos entre en
+   producción, los números ya cargados se vinculan solos al coincidir el código. */
+const presuCodes = { set:null, loading:null };
+
+async function presuLoadCodes(force){
+  if(presuCodes.set && !force) return presuCodes.set;
+  if(presuCodes.loading) return presuCodes.loading;
+  presuCodes.loading = (async function(){
+    try{
+      const { data } = await sb.from('presupuesto_cab').select('codigo').eq('activo', true);
+      presuCodes.set = new Set((data||[]).map(function(r){ return _presuNorm(String(r.codigo||'').trim()); }));
+    }catch(e){ console.warn('presuLoadCodes', e); presuCodes.set = new Set(); }
+    presuCodes.loading = null;
+    return presuCodes.set;
+  })();
+  return presuCodes.loading;
+}
+
+function presuIsLinked(txt){
+  const t = _presuNorm(String(txt||'').trim());
+  return !!(t && presuCodes.set && presuCodes.set.has(t));
+}
+
+/* Pista debajo del campo: vinculado / número libre / vacío */
+function presuUpdateHint(){
+  const help = document.getElementById('fldPresupuestoHelp');
+  const fld  = document.getElementById('fldPresupuesto');
+  if(!help) return;
+  const txt = (wizard.form.presupuesto||'').trim();
+  if(!txt){
+    help.textContent = 'Presupuesto de la obra elaborado por la constructora';
+    help.style.color = ''; if(fld) fld.style.borderColor = '';
+    return;
+  }
+  if(presuIsLinked(txt)){
+    help.textContent = '✓ Vinculado al presupuesto ' + txt + (cartBudget.nombre ? (' · ' + cartBudget.nombre) : '') + ' — los materiales se imputan a sus rubros';
+    help.style.color = '#2e7d5b'; if(fld) fld.style.borderColor = '#2e7d5b';
+  } else {
+    help.textContent = 'N° libre — todavía no existe en el módulo de Presupuestos, se guarda igual como referencia';
+    help.style.color = '#8a6d10'; if(fld) fld.style.borderColor = '#c8a028';
+  }
+}
+
+/* Handler del input del Paso 2 */
+async function onPresuInputChange(){
+  const fld = document.getElementById('fldPresupuesto');
+  if(!fld) return;
+  const txt = (fld.value||'').trim();
+  await presuLoadCodes();
+  if(txt && presuIsLinked(txt)){
+    await setPresupuesto(txt);          // vínculo completo (igual que desde el carrito)
+  } else {
+    // Número libre: se guarda, pero NO se activa el modo "Con presupuesto" del carrito.
+    wizard.form.presupuesto = txt;
+    cartBudget.pp=''; cartBudget.mats=null; cartBudget.rubros=null; cartBudget.ocItems=[]; cartBudget.nombre='';
+    const e = _cbEls();
+    if(e.cno){ e.cno.checked=true; e.csi.checked=false; e.csel.style.display='none'; e.csel.value=''; }
+    const _vd=document.getElementById('cbVerDetalle'); if(_vd) _vd.style.display='none';
+    try{ cartBudgetRender(); }catch(_){}
+    try{ renderCart(); }catch(_){}
+    if(typeof saveDraft === 'function') saveDraft();
+  }
+  presuUpdateHint();
+}
 
 function cbInjectStyles(){
   if(document.getElementById('cbStyles')) return;
@@ -6694,6 +6822,13 @@ function cartBudgetInit(){
     e.dsi.addEventListener('change', updD);
     e.dfld.addEventListener('change', function(){ setPresupuesto(e.dfld.value); });
   }
+  // Campo de texto del Paso 2 (sin radios): número libre o vinculado.
+  else if(e.dfld){
+    presuLoadCodes();
+    cbLoadList('presuList');
+    e.dfld.addEventListener('change', onPresuInputChange);
+    e.dfld.addEventListener('blur',   onPresuInputChange);
+  }
 }
 
 async function cbLoadList(id){
@@ -6723,6 +6858,8 @@ async function setPresupuesto(pp, silent){
   const e = _cbEls();
   if(e.cno){ e.csi.checked=!!pp; e.cno.checked=!pp; e.csel.style.display=pp?'':'none'; if(e.csel.value!==pp) e.csel.value=pp; }
   if(e.dno){ e.dsi.checked=!!pp; e.dno.checked=!pp; e.dfld.style.display=pp?'':'none'; if(e.dfld.value!==pp) e.dfld.value=pp; }
+  // Campo de texto del Paso 2 (siempre visible): refleja el número elegido en el carrito.
+  else if(e.dfld && e.dfld.value !== pp){ e.dfld.value = pp; }
   var _vd=document.getElementById('cbVerDetalle'); if(_vd) _vd.style.display = pp?'block':'none';
   if(!silent && typeof saveDraft === 'function') saveDraft();
   if(pp){ await cartBudgetLoad(pp); } else { cartBudget.pp=''; cartBudget.mats=null; cartBudgetRender(); }
@@ -6730,7 +6867,17 @@ async function setPresupuesto(pp, silent){
 
 /* Compat con el populate de Detalles */
 function presuInit(){ cartBudgetInit(); }
-function presuApplyMode(){ setPresupuesto(wizard.form.presupuesto||'', true); }
+/* Al entrar al Paso 2: refleja el número guardado. Solo re-vincula si el código
+   existe en presupuesto_cab; si es un número libre, no toca el modo del carrito. */
+async function presuApplyMode(){
+  const txt = (wizard.form.presupuesto||'').trim();
+  const fld = document.getElementById('fldPresupuesto');
+  if(fld) fld.value = txt;
+  cbLoadList('presuList');
+  await presuLoadCodes();
+  if(txt && presuIsLinked(txt) && cartBudget.pp !== txt){ await setPresupuesto(txt, true); }
+  presuUpdateHint();
+}
 function loadPresuList(){ cbLoadList('presuList'); }
 
 async function loadProductoMap(force){
@@ -7145,6 +7292,13 @@ function validateStep2(showErrors){
     }
   });
 
+  // El vendedor depende del proveedor: si el select se repobló y quedó vacío,
+  // el valor viejo del form NO debe darse por válido. Se sincroniza siempre.
+  (function(){
+    const sv = document.getElementById('fldVendedor');
+    if(sv) wizard.form.vendedor = (sv.value||'').trim();
+  })();
+
   // Refuerzo extra para residente bloqueado: si está vacío en el form pero hay perfil, usarlo
   if(!wizard.form.residente){
     const sel = document.getElementById('fldResidente');
@@ -7164,6 +7318,7 @@ function validateStep2(showErrors){
     {id:'fldObra', key:'obra', label:'Obra'},
     {id:'fldResidente', key:'residente', label:'Solicitado por'},
     {id:'fldProveedor', key:'proveedor', label:'Proveedor'},
+    {id:'fldVendedor', key:'vendedor', label:'Vendedor'},
     {id:'fldTipoCompra', key:'tipo_compra', label:'Tipo de compra'},
   ];
   let firstError = null;
@@ -7364,7 +7519,7 @@ function enterStep3(){
   const obra = wizard.form.obra || '—';
   const prov = wizard.form.proveedor || '—';
   document.getElementById('step3SummaryDesc').textContent = `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${obra} · ${prov}`;
-  (function(){ const el=document.getElementById('step3Presu'); if(!el) return; if(cartBudget && cartBudget.pp){ el.style.display='flex'; el.innerHTML='<span class="isp-tag">📋 '+cartBudget.pp+'</span>'+(cartBudget.nombre?('<span class="isp-nom">'+cartBudget.nombre+'</span>'):''); } else { el.style.display='none'; el.innerHTML=''; } })();
+  (function(){ const el=document.getElementById('step3Presu'); if(!el) return; const _pp=(cartBudget&&cartBudget.pp)||(wizard.form.presupuesto||'').trim(); if(_pp){ el.style.display='flex'; el.innerHTML='<span class="isp-tag">📋 '+escapeHtml(_pp)+'</span>'+(cartBudget.nombre?('<span class="isp-nom">'+cartBudget.nombre+'</span>'):''); } else { el.style.display='none'; el.innerHTML=''; } })();
 
   // Botón submit: texto según rol
   const isAdmin = state.profile?.rol === 'admin';
@@ -7540,7 +7695,8 @@ function openConfirmOC(){
   const field = function(lbl,val){ return val ? ('<div class="cf-field"><span class="cf-lbl">' + lbl + '</span><span class="cf-val">' + escapeHtml(val) + '</span></div>') : ''; };
 
   let presuHtml = '';
-  if(cartBudget.pp){ presuHtml = '<div class="cf-presu"><span class="isp-tag">📋 ' + escapeHtml(cartBudget.pp) + '</span>' + (cartBudget.nombre ? ('<span class="isp-nom">' + escapeHtml(cartBudget.nombre) + '</span>') : '') + '</div>'; }
+  { const _pp = cartBudget.pp || (wizard.form.presupuesto||'').trim();
+    if(_pp){ presuHtml = '<div class="cf-presu"><span class="isp-tag">📋 ' + escapeHtml(_pp) + '</span>' + (cartBudget.nombre ? ('<span class="isp-nom">' + escapeHtml(cartBudget.nombre) + '</span>') : '') + '</div>'; } }
 
   let fieldsHtml = '<div class="cf-grid">' +
     field('Fecha', f.fecha) + field('Obra', f.obra) + field('Sector', f.sector) +
@@ -10689,7 +10845,13 @@ async function confirmAddListItem(){
 
   // Verificar duplicado (case-insensitive)
   const lista = wizard.listas[cfg.listKey] || [];
-  const dup = lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase());
+  // Vendedores: el mismo nombre puede repetirse en proveedores distintos, así que el
+  // duplicado se evalúa dentro del proveedor elegido (obra_ref) o contra los genéricos.
+  const _provActual = (document.getElementById('fldProveedor')?.value || '').trim().toLowerCase();
+  const dup = (cfg.listKey === 'vendedores')
+    ? lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase()
+        && ['', _provActual].includes((x.obra_ref||'').toLowerCase().trim()))
+    : lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase());
   if(dup){
     errBox.textContent = `Ya existe "${dup.valor}" en la lista. Seleccionalo del menú desplegable.`;
     errBox.classList.add('visible');
