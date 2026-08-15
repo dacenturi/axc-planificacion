@@ -1572,7 +1572,7 @@ function actToggleDomingo(act, fecha){
 // Replica exacta del feature en axc_residente.html. Los helpers son
 // inalterados a propósito para mantener consistencia 1:1 entre apps.
 // ════════════════════════════════════════════════════════════════════
-const _CONF_VERSION = 'v2.9-conf-1-paginacion-gantt';
+const _CONF_VERSION = 'v3.0-conf-1-tabla-obra';
 
 // ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
 // Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
@@ -4266,7 +4266,7 @@ function exportPDF(){
         const col = obraColor(obraTxt);
         const bandRow = [{
           content: `OBRA:  ${obraTxt.toUpperCase()}`,
-          colSpan: 9,
+          colSpan: 8,
           styles: {
             fillColor: tint(col, 0.14),
             textColor: col,
@@ -4274,7 +4274,7 @@ function exportPDF(){
             fontSize: 9,
             halign: 'left',
             valign: 'middle',
-            cellPadding: { top: 1.8, right: 3, bottom: 1.8, left: 7 },
+            cellPadding: { top: 1.8, right: 3, bottom: 1.8, left: 8 },
             lineColor: col,
             lineWidth: 0.1
           }
@@ -4290,9 +4290,11 @@ function exportPDF(){
       // Prefijo [IMPR] para imprevistas (Helvetica de jsPDF no soporta emojis Unicode)
       const descBase = (a.descripcion || a.item || '(sin nombre)');
       const desc = a.imprevista ? `[IMPR] ${descBase}` : descBase;
+      // La columna "Obra" se eliminó (15/08/2026): la obra ya la indica la
+      // fila-banda del grupo + la barra de color lateral. El ancho liberado
+      // va a "Nombre de la Actividad" para que casi ninguna fila parta en dos.
       const row = [
         String(idx + 1),
-        (a.obra_act || '—'),
         (a.contratista_act || '—'),
         (a.sector || '—'),
         desc,
@@ -4304,6 +4306,7 @@ function exportPDF(){
       row._imprevista = !!a.imprevista;
       row._grupo      = false;
       row._num        = idx + 1;
+      row._obraTxt    = obraTxt;
       row._color      = obraColor(obraTxt);
       row._grpIdx     = _grpIdx;
       tableRows.push(row);
@@ -4315,9 +4318,25 @@ function exportPDF(){
     // y se dibuja encabezado/pie en cada página nueva vía didDrawPage.
     const _tablePageStart = doc.internal.getCurrentPageInfo().pageNumber;
     const _tableSegs = [];   // {page, top, bottom} para el borde exterior por página
+    const _contPageDone = new Set();  // páginas donde ya se rotuló "(continuación)"
+    // Ancho REAL de la tabla (autoTable 3.8 expone getWidth(), no .width).
+    // Se usa para anclar los textos al marco y que nada quede fuera del borde.
+    function _tblWidth(data){
+      try {
+        if(data && data.table && typeof data.table.getWidth === 'function'){
+          const w = data.table.getWidth(pageW);
+          if(w > 0) return w;
+        }
+        if(data && data.table && data.table.columns){
+          const w = data.table.columns.reduce((s,c) => s + (c.width || 0), 0);
+          if(w > 0) return w;
+        }
+      } catch(e){}
+      return pageW - 2*MX;
+    }
     doc.autoTable({
       startY: curY,
-      head: [['N°', 'Obra', 'Contratista', 'Sector', 'Nombre de la Actividad', 'Inicio', 'Fin', 'Días', 'Estado']],
+      head: [['N°', 'Contratista', 'Sector', 'Nombre de la Actividad', 'Inicio', 'Fin', 'Días', 'Estado']],
       body: tableRows,
       theme: 'plain',
       margin: { left: MX, right: MX, top: 30, bottom: MB + 6 },
@@ -4342,19 +4361,21 @@ function exportPDF(){
       },
       // Sin alternancia por fila: el fondo se define por BLOQUE de obra
       // (ver didParseCell) para que cada obra se lea como un bloque continuo.
+      // Los anchos suman EXACTAMENTE 1.000 del ancho útil: si suman menos,
+      // autoTable deja la tabla más angosta que el borde exterior y todo
+      // parece "desencuadrado" contra la derecha.
       columnStyles: {
-        0: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.04, fontStyle: 'bold', textColor: NAVY },
-        1: { cellWidth: (pageW - 2*MX) * 0.105 },
-        2: { cellWidth: (pageW - 2*MX) * 0.105 },
-        3: { cellWidth: (pageW - 2*MX) * 0.07 },
-        4: { cellWidth: (pageW - 2*MX) * 0.285 },
-        5: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.07 },
-        6: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.07 },
-        7: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.05, fontStyle: 'bold', textColor: NAVY, fontSize: 9 },
-        8: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.19 }
+        0: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.045, fontStyle: 'bold', textColor: NAVY },
+        1: { cellWidth: (pageW - 2*MX) * 0.125 },
+        2: { cellWidth: (pageW - 2*MX) * 0.085 },
+        3: { cellWidth: (pageW - 2*MX) * 0.375 },
+        4: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.075 },
+        5: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.075 },
+        6: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.050, fontStyle: 'bold', textColor: NAVY, fontSize: 9 },
+        7: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.170 }
       },
       didParseCell: function(data){
-        if(data.section === 'head' && (data.column.index === 0 || data.column.index >= 5)){
+        if(data.section === 'head' && (data.column.index === 0 || data.column.index >= 4)){
           data.cell.styles.halign = 'center';
         }
         // Fondo naranja tenue + descripción bold naranja para imprevistas
@@ -4368,10 +4389,10 @@ function exportPDF(){
             data.cell.styles.fillColor = GRAY_LIGHT;
           }
           if(rowData && rowData._imprevista){
-            if(data.column.index !== 0 && data.column.index !== 8){
+            if(data.column.index !== 0 && data.column.index !== 7){
               data.cell.styles.fillColor = [255, 240, 230];
             }
-            if(data.column.index === 4){
+            if(data.column.index === 3){
               data.cell.styles.textColor = [229, 81, 0];
               data.cell.styles.fontStyle = 'bold';
             }
@@ -4385,15 +4406,17 @@ function exportPDF(){
         if(rowData && rowData._grupo){
           if(data.column.index === 0){
             const col = rowData._color;
-            // Bloque de color macizo al inicio de la banda (ancho total de la fila)
+            // Bloque de color macizo al inicio de la banda
             doc.setFillColor(...col);
-            doc.rect(data.cell.x, data.cell.y, 4, data.cell.height, 'F');
-            // Conteo alineado a la derecha de la tabla
+            doc.rect(data.cell.x, data.cell.y, 4.5, data.cell.height, 'F');
+            // Conteo alineado al borde REAL de la tabla (data.table.width), no al
+            // ancho teórico: si la tabla queda más angosta el texto se salía del marco.
+            const tblRight = MX + _tblWidth(data);
             doc.setTextColor(...col);
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(8);
             doc.text(`${rowData._cant} actividad(es)`,
-                     MX + (pageW - 2*MX) - 3, data.cell.y + data.cell.height - 2.2,
+                     tblRight - 3.5, data.cell.y + data.cell.height / 2 + 1.1,
                      { align: 'right' });
           }
           return;
@@ -4420,7 +4443,7 @@ function exportPDF(){
           data.cell.text = [''];
         }
         // Columna Estado: dibujar chip redondeado
-        if(data.section === 'body' && data.column.index === 8){
+        if(rowData && data.column.index === 7){
           const estado = data.cell.raw || '';
           const { bg, fg } = chipColor(estado);
           const chipW = data.cell.width - 4;
@@ -4452,6 +4475,31 @@ function exportPDF(){
         const top = (pno === _tablePageStart) ? curY : (data.settings.margin.top || 30);
         const bottom = (data.cursor && typeof data.cursor.y === 'number') ? data.cursor.y : top;
         _tableSegs.push({ page: pno, top: top, bottom: bottom });
+      },
+      // ── Si una obra se corta entre páginas, se rotula la continuación ──
+      // (la banda del grupo quedó en la página anterior).
+      willDrawCell: function(data){
+        if(data.section !== 'body' || data.column.index !== 0) return;
+        const rowData = tableRows[data.row.index];
+        if(!rowData || rowData._grupo) return;
+        const pno = doc.internal.getCurrentPageInfo().pageNumber;
+        if(pno === _tablePageStart || _contPageDone.has(pno)) return;
+        _contPageDone.add(pno);
+        // Si la fila anterior es la banda del grupo, la obra ya está rotulada
+        const prev = tableRows[data.row.index - 1];
+        if(prev && prev._grupo) return;
+        const y = data.cell.y - 5.4;
+        if(y < 24) return;
+        const col = rowData._color;
+        const tblW = _tblWidth(data);
+        doc.setFillColor(...tint(col, 0.14));
+        doc.rect(MX, y, tblW, 5, 'F');
+        doc.setFillColor(...col);
+        doc.rect(MX, y, 4.5, 5, 'F');
+        doc.setTextColor(...col);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        doc.text(`OBRA:  ${String(rowData._obraTxt || '').toUpperCase()}  (continuación)`, MX + 8, y + 3.4);
       }
     });
 
