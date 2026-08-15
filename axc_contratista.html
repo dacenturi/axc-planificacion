@@ -1572,7 +1572,7 @@ function actToggleDomingo(act, fecha){
 // Replica exacta del feature en axc_residente.html. Los helpers son
 // inalterados a propósito para mantener consistencia 1:1 entre apps.
 // ════════════════════════════════════════════════════════════════════
-const _CONF_VERSION = 'v2.7-conf-1';
+const _CONF_VERSION = 'v2.8-conf-1-agrupado-obra';
 
 // ═══ HELPERS DE CONFIRMACIÓN Y CUMPLIMIENTO ═══════════════════════════
 // Cuando una actividad está confirmada, cada tilde planificada (a.days[i]=true)
@@ -3995,6 +3995,37 @@ function exportPDF(){
     const BLACK     = [0, 0, 0];
 
     // ───────────────────────────────────────────────────────────
+    // AGRUPACIÓN POR OBRA (15/08/2026)
+    // Paleta de identificación por obra. Se eligieron tonos oscuros y
+    // saturados que NO se confunden con los colores de estado del Gantt
+    // (verde cumple / rojo no cumple / naranja imprevista / azul extra).
+    // Se usan solo como barra lateral y banda de grupo, nunca como bloque.
+    // ───────────────────────────────────────────────────────────
+    const OBRA_COLORS = [
+      [30, 64, 175],    // azul índigo
+      [146, 64, 14],    // marrón ámbar
+      [4, 120, 87],     // verde petróleo
+      [109, 40, 217],   // violeta
+      [157, 23, 77],    // magenta oscuro
+      [7, 89, 133],     // celeste oscuro
+      [63, 63, 70],     // grafito
+      [133, 77, 14]     // oliva oscuro
+    ];
+    // Mapa obra → color (se llena al construir la tabla, se reutiliza en el Gantt)
+    const obraColorMap = new Map();
+    function obraColor(obra){
+      const key = (obra || '—').trim() || '—';
+      if(!obraColorMap.has(key)){
+        obraColorMap.set(key, OBRA_COLORS[obraColorMap.size % OBRA_COLORS.length]);
+      }
+      return obraColorMap.get(key);
+    }
+    // Tinte claro del color de obra (mezcla con blanco) para fondos de banda
+    function tint(rgb, factor){
+      return rgb.map(c => Math.round(c * factor + 255 * (1 - factor)));
+    }
+
+    // ───────────────────────────────────────────────────────────
     // Helper: encabezado (navy band + logo + título + línea dorada)
     // ───────────────────────────────────────────────────────────
     function drawHeader(pageNum, totalPages){
@@ -4182,6 +4213,9 @@ function exportPDF(){
         ? `${_nPlanConf} planificada(s) + ${_nImprConf} IMPR. (todas confirmadas)`
         : `${_actsConf.length} actividad(es) confirmada(s)`;
       if(_actsNoConf > 0) _subTxt += ` · ${_actsNoConf} sin confirmar (no incluida${_actsNoConf===1?'':'s'})`;
+      // Cantidad de obras distintas (la tabla va agrupada por obra)
+      const _nObras = new Set(_actsConf.map(a => a.obra_act || '—')).size;
+      if(_nObras > 1) _subTxt += ` · ${_nObras} obras`;
     }
     doc.text(_subTxt, pageW - MX - 3, curY + 4.8, { align: 'right' });
     curY += titleH;
@@ -4191,8 +4225,65 @@ function exportPDF(){
     // Una planificación está "confirmada" cuando el contratista valida el plan
     // (a.confirmada === true). Las pendientes de confirmación no se incluyen
     // ni en esta tabla ni en el resumen final.
-    const actsTablaConfirm = actsExport.filter(a => !!a.confirmada);
-    const tableRows = actsTablaConfirm.map((a, idx) => {
+    // ── AGRUPACIÓN POR OBRA (15/08/2026) ──
+    // Se ordena de forma ESTABLE por obra (conservando el orden de pantalla
+    // dentro de cada obra) y se intercala una fila-banda por cada obra.
+    // La numeración N° sigue siendo correlativa 1..N sobre las actividades
+    // (las bandas no consumen número) y es la misma que usa el Gantt.
+    const actsTablaConfirm = actsExport
+      .filter(a => !!a.confirmada)
+      .map((a, i) => ({ a, i }))
+      .sort((x, y) => {
+        const ox = (x.a.obra_act || '—').toLocaleLowerCase('es');
+        const oy = (y.a.obra_act || '—').toLocaleLowerCase('es');
+        const c = ox.localeCompare(oy, 'es');
+        return c !== 0 ? c : x.i - y.i;   // estable dentro de la obra
+      })
+      .map(x => x.a);
+
+    // Conteo de actividades por obra (para el texto de la banda)
+    const obraCount = new Map();
+    actsTablaConfirm.forEach(a => {
+      const k = (a.obra_act || '—');
+      obraCount.set(k, (obraCount.get(k) || 0) + 1);
+    });
+
+    // Mapa actividad → N° de la tabla. Lo consume el Gantt y la pág. de comentarios
+    // para que la numeración coincida en todo el documento.
+    const numByAct = new Map();
+    actsTablaConfirm.forEach((a, idx) => numByAct.set(a, idx + 1));
+
+    const tableRows = [];
+    let _obraPrev = null;
+    let _grpIdx = -1;
+    actsTablaConfirm.forEach((a, idx) => {
+      const obraTxt = (a.obra_act || '—');
+
+      // Fila-banda al cambiar de obra
+      if(obraTxt !== _obraPrev){
+        _obraPrev = obraTxt;
+        _grpIdx++;
+        const col = obraColor(obraTxt);
+        const bandRow = [{
+          content: `OBRA:  ${obraTxt.toUpperCase()}`,
+          colSpan: 9,
+          styles: {
+            fillColor: tint(col, 0.14),
+            textColor: col,
+            fontStyle: 'bold',
+            fontSize: 9,
+            cellPadding: { top: 1.8, right: 3, bottom: 1.8, left: 7 },
+            lineColor: col,
+            lineWidth: 0.1
+          }
+        }];
+        bandRow._grupo   = true;
+        bandRow._obra    = obraTxt;
+        bandRow._color   = col;
+        bandRow._cant    = obraCount.get(obraTxt) || 0;
+        tableRows.push(bandRow);
+      }
+
       const r = actDateRange(a);
       // Prefijo [IMPR] para imprevistas (Helvetica de jsPDF no soporta emojis Unicode)
       const descBase = (a.descripcion || a.item || '(sin nombre)');
@@ -4209,7 +4300,11 @@ function exportPDF(){
         _estadoEfectivoExport(a)
       ];
       row._imprevista = !!a.imprevista;
-      return row;
+      row._grupo      = false;
+      row._num        = idx + 1;
+      row._color      = obraColor(obraTxt);
+      row._grpIdx     = _grpIdx;
+      tableRows.push(row);
     });
 
     // ── Tabla con autoTable ──
@@ -4237,7 +4332,8 @@ function exportPDF(){
         halign: 'left',
         cellPadding: { top: 2, right: 2, bottom: 2, left: 2 }
       },
-      alternateRowStyles: { fillColor: GRAY_LIGHT },
+      // Sin alternancia por fila: el fondo se define por BLOQUE de obra
+      // (ver didParseCell) para que cada obra se lea como un bloque continuo.
       columnStyles: {
         0: { halign: 'center', cellWidth: (pageW - 2*MX) * 0.04, fontStyle: 'bold', textColor: NAVY },
         1: { cellWidth: (pageW - 2*MX) * 0.09 },
@@ -4257,6 +4353,12 @@ function exportPDF(){
         // No tocar N° (0) ni Estado (8): tienen render personalizado
         if(data.section === 'body'){
           const rowData = tableRows[data.row.index];
+          // Fila-banda de obra: ya trae sus estilos, no aplicar nada más
+          if(rowData && rowData._grupo) return;
+          // Fondo por bloque de obra (alternado entre bloques, no entre filas)
+          if(rowData && rowData._grpIdx % 2 === 1){
+            data.cell.styles.fillColor = GRAY_LIGHT;
+          }
           if(rowData && rowData._imprevista){
             if(data.column.index !== 0 && data.column.index !== 8){
               data.cell.styles.fillColor = [255, 240, 230];
@@ -4269,16 +4371,43 @@ function exportPDF(){
         }
       },
       didDrawCell: function(data){
+        const rowData = (data.section === 'body') ? tableRows[data.row.index] : null;
+
+        // ── Fila-banda de obra: barra de color a la izquierda + conteo a la derecha ──
+        if(rowData && rowData._grupo){
+          if(data.column.index === 0){
+            const col = rowData._color;
+            // Bloque de color macizo al inicio de la banda (ancho total de la fila)
+            doc.setFillColor(...col);
+            doc.rect(data.cell.x, data.cell.y, 4, data.cell.height, 'F');
+            // Conteo alineado a la derecha de la tabla
+            doc.setTextColor(...col);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.text(`${rowData._cant} actividad(es)`,
+                     MX + (pageW - 2*MX) - 3, data.cell.y + data.cell.height - 2.2,
+                     { align: 'right' });
+          }
+          return;
+        }
+
+        // ── Barra vertical de color de obra al borde izquierdo de cada fila ──
+        // Sirve de guía cuando una obra se corta entre páginas.
+        if(rowData && data.column.index === 0){
+          doc.setFillColor(...rowData._color);
+          doc.rect(data.cell.x, data.cell.y, 1.6, data.cell.height, 'F');
+        }
+
         // Columna N°: dibujar círculo dorado con número
-        if(data.section === 'body' && data.column.index === 0){
-          const cx = data.cell.x + data.cell.width / 2;
+        if(rowData && data.column.index === 0){
+          const cx = data.cell.x + data.cell.width / 2 + 0.8;
           const cy = data.cell.y + data.cell.height / 2;
           doc.setFillColor(...GOLD);
           doc.circle(cx, cy, 2.2, 'F');
           doc.setTextColor(...WHITE);
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(7.3);
-          doc.text(String(data.row.index + 1), cx, cy + 0.9, { align: 'center' });
+          doc.text(String(rowData._num), cx, cy + 0.9, { align: 'center' });
           // Limpiar texto original (lo cubre el círculo, pero por seguridad)
           data.cell.text = [''];
         }
@@ -4590,7 +4719,7 @@ function exportPDF(){
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     const gantSubt = numDays > 0
-      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${dates.filter(d => d.getDay()!==0).length} día(s) hábil(es) · solo confirmadas`
+      ? `Período: ${fmt(dates[0])} al ${fmt(dates[numDays-1])} · ${dates.filter(d => d.getDay()!==0).length} día(s) hábil(es) · N° según la Notificación`
       : `Sin días hábiles definidos`;
     doc.text(gantSubt, pageW - MX - 3, ganttTopY + 4.8, { align: 'right' });
 
@@ -4660,15 +4789,21 @@ function exportPDF(){
         doc.rect(MX, rowY, pageW - 2*MX, cellH, 'F');
       }
 
-      // Numeración: círculo dorado con N° de fila al inicio (estilo igual a la tabla "Tareas a ejecutar")
-      const numCx = MX + 4;
+      // Barra vertical con el color de la obra (misma clave visual que la tabla)
+      doc.setFillColor(...obraColor(a.obra_act));
+      doc.rect(MX, rowY, 1.6, cellH, 'F');
+
+      // Numeración: círculo dorado con el MISMO N° que la tabla "Tareas a ejecutar"
+      // (15/08/2026). El Gantt conserva su orden cronológico, por eso los números
+      // no salen correlativos: sirven para ubicar la actividad en la notificación.
+      const numCx = MX + 5;
       const numCy = rowY + cellH/2;
       doc.setFillColor(...GOLD);
       doc.circle(numCx, numCy, 2.2, 'F');
       doc.setTextColor(...WHITE);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7);
-      doc.text(String(idx + 1), numCx, numCy + 0.9, { align: 'center' });
+      doc.text(String(numByAct.get(a) ?? (idx + 1)), numCx, numCy + 0.9, { align: 'center' });
 
       // Texto actividad (línea 1) — empieza después del círculo
       doc.setTextColor(...BLACK);
@@ -4840,14 +4975,26 @@ function exportPDF(){
       lx += doc.getTextWidth(it.label) + 22;
     });
 
+    // Nota aclaratoria (15/08/2026): numeración cruzada + barra de obra
+    const notaY = legChipY + 9;
+    if(notaY < pageH - MB - 2){
+      doc.setTextColor(...GRAY_TEXT);
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(7.5);
+      doc.text('El N° de cada actividad es el mismo de la tabla "Tareas a ejecutar" (página 1). La barra de color de la izquierda identifica la obra.', MX, notaY);
+    }
+
     drawFooter();
 
     // ═══════════════════════════════════════════════════════════
     // PÁGINA 3 (OPCIONAL): COMENTARIOS POR ACTIVIDAD
     // Solo se genera si al menos una actividad tiene comentario.
     // ═══════════════════════════════════════════════════════════
+    // 15/08/2026: el N° mostrado acá ahora es el MISMO de la tabla "Tareas a
+    // ejecutar" (antes usaba el índice de actsExport, que incluía las no
+    // confirmadas y por eso no coincidía con la notificación).
     const actsConComentario = actsExport
-      .map((a, idx) => ({ a, num: idx + 1 }))
+      .map((a, idx) => ({ a, num: numByAct.get(a) ?? (idx + 1) }))
       .filter(x => x.a.comentario && x.a.comentario.trim());
 
     if(actsConComentario.length){
