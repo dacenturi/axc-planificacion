@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v5.4 · N° de presupuesto de carga libre · Vendedor obligatorio ligado al Proveedor
+      Conexdata · AXC Planificación v5.5 · N° de presupuesto de carga libre · Vendedor obligatorio y exclusivo del Proveedor
     </p>
   </div>
 </div>
@@ -6373,31 +6373,11 @@ async function loadListasForForm(){
       wizard.listas.proveedores.sort((a,b)=>a.valor.localeCompare(b.valor,'es'));
     }
 
-    // Cargar vendedores desde el histórico (ordenes_compra.vendedor) LIGADOS a su proveedor.
-    // Antes entraban con obra_ref:'' (genéricos) y por eso aparecían para cualquier
-    // proveedor. Ahora cada par proveedor→vendedor del histórico se guarda por separado,
-    // así el filtro por proveedor funciona también con los datos viejos.
-    const {data: vendHist} = await sb
-      .from('ordenes_compra')
-      .select('vendedor,proveedor')
-      .not('vendedor','is',null);
-    if(vendHist){
-      const _k = (v,p) => (v||'').toLowerCase().trim()+'|'+(p||'').toLowerCase().trim();
-      const existing = new Set(wizard.listas.vendedores.map(p => _k(p.valor, p.obra_ref)));
-      vendHist.forEach(row => {
-        const v = (row.vendedor||'').trim();
-        const p = (row.proveedor||'').trim();
-        if(!v) return;
-        const k = _k(v,p);
-        if(existing.has(k)) return;
-        // Si el vendedor ya está cargado como genérico (obra_ref vacío) en las listas
-        // compartidas, no lo duplicamos: el genérico ya se muestra para todos.
-        if(existing.has(_k(v,''))) return;
-        existing.add(k);
-        wizard.listas.vendedores.push({tipo:'vendedores', valor:v, obra_ref:p});
-      });
-      wizard.listas.vendedores.sort((a,b)=>a.valor.localeCompare(b.valor,'es'));
-    }
+    // Vendedores: NO se traen del histórico de ordenes_compra. Las cargas anteriores
+    // se hicieron sin proveedor, así que ensuciaban el selector (aparecían todas para
+    // cualquier proveedor). Desde ahora la lista sale SOLO de `listas` tipo 'vendedores'
+    // con obra_ref = proveedor, es decir vendedores creados explícitamente para ese
+    // proveedor. Los registros viejos siguen en la base, simplemente no se muestran.
 
     populateFormSelects();
   }catch(e){
@@ -6460,11 +6440,12 @@ function populateVendedorSelect(prov){
     return;
   }
 
+  // Filtro ESTRICTO: solo vendedores creados para este proveedor. Los vendedores
+  // viejos sin proveedor (obra_ref vacío) quedan ocultos a propósito.
   const lista = (wizard.listas.vendedores||[]).filter(v => {
-    const ref = (v.obra_ref||'').trim().toLowerCase();
-    return ref === '' || ref === provN;
+    return (v.obra_ref||'').trim().toLowerCase() === provN;
   });
-  // Deduplicar por nombre (un mismo vendedor puede venir del histórico y de las listas)
+  // Deduplicar por nombre
   const vistos = new Set();
   const unicos = lista.filter(v => {
     const k = (v.valor||'').trim().toLowerCase();
@@ -6642,10 +6623,9 @@ async function enterStep2(){
     const vv = (wizard.form.vendedor || '').trim();
     if(!sv) return;
     if(sv.disabled || !(wizard.form.proveedor||'').trim()){ wizard.form.vendedor = ''; return; }
-    if(vv && ![...sv.options].some(o => o.value === vv)){
-      const opt = document.createElement('option'); opt.value = vv; opt.textContent = vv; sv.appendChild(opt);
-    }
-    sv.value = vv;
+    // Si el vendedor guardado no pertenece a este proveedor, NO se re-inyecta:
+    // hay que volver a elegirlo (o crearlo) dentro del proveedor.
+    sv.value = (vv && [...sv.options].some(o => o.value === vv)) ? vv : '';
     wizard.form.vendedor = sv.value;
   })();
   document.getElementById('fldTipoCompra').value = wizard.form.tipo_compra || '';
@@ -10702,7 +10682,12 @@ function openAddListModal(tipo){
 function renderExistingItems(filterText){
   const cfg = addListState.config;
   if(!cfg) return;
-  const lista = wizard.listas[cfg.listKey] || [];
+  let lista = wizard.listas[cfg.listKey] || [];
+  // Vendedores: mostrar solo los de este proveedor (los viejos sin proveedor quedan ocultos)
+  if(cfg.listKey === 'vendedores'){
+    const _p = (document.getElementById('fldProveedor')?.value || '').trim().toLowerCase();
+    lista = lista.filter(x => (x.obra_ref||'').trim().toLowerCase() === _p);
+  }
   const isAdmin = state.profile?.rol === 'admin';
   const search = (filterText || '').toLowerCase().trim();
 
@@ -10784,11 +10769,11 @@ async function confirmAddListItem(){
   // Verificar duplicado (case-insensitive)
   const lista = wizard.listas[cfg.listKey] || [];
   // Vendedores: el mismo nombre puede repetirse en proveedores distintos, así que el
-  // duplicado se evalúa dentro del proveedor elegido (obra_ref) o contra los genéricos.
+  // duplicado se evalúa SOLO dentro del proveedor elegido (obra_ref).
   const _provActual = (document.getElementById('fldProveedor')?.value || '').trim().toLowerCase();
   const dup = (cfg.listKey === 'vendedores')
     ? lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase()
-        && ['', _provActual].includes((x.obra_ref||'').toLowerCase().trim()))
+        && (x.obra_ref||'').toLowerCase().trim() === _provActual)
     : lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase());
   if(dup){
     errBox.textContent = `Ya existe "${dup.valor}" en la lista. Seleccionalo del menú desplegable.`;
