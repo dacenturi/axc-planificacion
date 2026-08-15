@@ -3896,7 +3896,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v5.3 · N° de presupuesto en la carga · Vendedor obligatorio ligado al Proveedor
+      Conexdata · AXC Planificación v5.4 · N° de presupuesto de carga libre · Vendedor obligatorio ligado al Proveedor
     </p>
   </div>
 </div>
@@ -4222,13 +4222,13 @@ body{
               </select>
             </div>
             <!-- N° de presupuesto de la obra (elaborado por la constructora).
-                 Etapa de transición: se acepta número LIBRE. Si el valor coincide con un
-                 código cargado en el módulo de Presupuestos, se vincula automáticamente y
-                 se activa la imputación de materiales (mismo comportamiento que el carrito). -->
+                 CARGA LIBRE E INDEPENDIENTE: no consulta ni se vincula al módulo de
+                 Presupuestos (presupuesto_cab). Es solo el número de referencia que se
+                 guarda y se imprime en el PDF. Cuando el módulo de Presupuestos entre en
+                 producción se decidirá acá la vinculación. -->
             <div class="step-field">
               <label for="fldPresupuesto">N° de presupuesto</label>
-              <input type="text" class="step-input" id="fldPresupuesto" list="presuList" placeholder="Ej. PP43 o número de presupuesto" autocomplete="off">
-              <datalist id="presuList"></datalist>
+              <input type="text" class="step-input" id="fldPresupuesto" placeholder="Ej. 1234" autocomplete="off" maxlength="60">
               <div class="step-help" id="fldPresupuestoHelp">Presupuesto de la obra elaborado por la constructora</div>
             </div>
 
@@ -6649,7 +6649,7 @@ async function enterStep2(){
     wizard.form.vendedor = sv.value;
   })();
   document.getElementById('fldTipoCompra').value = wizard.form.tipo_compra || '';
-  // Presupuesto se gestiona en el Carrito (Paso 1); presuApplyMode() sincroniza el valor actual.
+  // N° de presupuesto: carga libre en este paso; presuApplyMode() repone el valor guardado.
   presuInit(); presuApplyMode();
   document.getElementById('fldObservacion').value = wizard.form.observacion || '';
 
@@ -6662,8 +6662,8 @@ async function enterStep2(){
   ['fldResidente','residente'],['fldContratista','contratista'],['fldProveedor','proveedor'],
   ['fldVendedor','vendedor'],['fldTipoCompra','tipo_compra'],
   ['fldObservacion','observacion']
-  // fldPresupuesto NO va acá: tiene su propio handler (onPresuInputChange) que además
-  // decide si el número se vincula al módulo de Presupuestos o queda como número libre.
+  // fldPresupuesto NO va acá: tiene su propio handler (onPresuInputChange), que además
+  // guarda el borrador en cada tecla.
 ].forEach(([id, key])=>{
   const el = document.getElementById(id);
   if(!el) return;
@@ -6684,75 +6684,17 @@ function _cbEls(){ return {
   dfld:document.getElementById('fldPresupuesto')
 }; }
 
-/* ── N° de presupuesto en el Paso 2 (número libre + vínculo opcional) ──────────
-   Etapa de transición: el residente carga el N° de presupuesto de la obra como
-   texto libre. Si ese número coincide con un código existente en presupuesto_cab,
-   la OC se vincula al presupuesto y se activa toda la lógica de imputación
-   (árbol de insumos, cascada de débito, control de excedente). Si no coincide,
-   el número se guarda igual en ordenes_compra.presupuesto y el carrito sigue
-   trabajando con el catálogo normal. Cuando el módulo de Presupuestos entre en
-   producción, los números ya cargados se vinculan solos al coincidir el código. */
-const presuCodes = { set:null, loading:null };
-
-async function presuLoadCodes(force){
-  if(presuCodes.set && !force) return presuCodes.set;
-  if(presuCodes.loading) return presuCodes.loading;
-  presuCodes.loading = (async function(){
-    try{
-      const { data } = await sb.from('presupuesto_cab').select('codigo').eq('activo', true);
-      presuCodes.set = new Set((data||[]).map(function(r){ return _presuNorm(String(r.codigo||'').trim()); }));
-    }catch(e){ console.warn('presuLoadCodes', e); presuCodes.set = new Set(); }
-    presuCodes.loading = null;
-    return presuCodes.set;
-  })();
-  return presuCodes.loading;
-}
-
-function presuIsLinked(txt){
-  const t = _presuNorm(String(txt||'').trim());
-  return !!(t && presuCodes.set && presuCodes.set.has(t));
-}
-
-/* Pista debajo del campo: vinculado / número libre / vacío */
-function presuUpdateHint(){
-  const help = document.getElementById('fldPresupuestoHelp');
-  const fld  = document.getElementById('fldPresupuesto');
-  if(!help) return;
-  const txt = (wizard.form.presupuesto||'').trim();
-  if(!txt){
-    help.textContent = 'Presupuesto de la obra elaborado por la constructora';
-    help.style.color = ''; if(fld) fld.style.borderColor = '';
-    return;
-  }
-  if(presuIsLinked(txt)){
-    help.textContent = '✓ Vinculado al presupuesto ' + txt + (cartBudget.nombre ? (' · ' + cartBudget.nombre) : '') + ' — los materiales se imputan a sus rubros';
-    help.style.color = '#2e7d5b'; if(fld) fld.style.borderColor = '#2e7d5b';
-  } else {
-    help.textContent = 'N° libre — todavía no existe en el módulo de Presupuestos, se guarda igual como referencia';
-    help.style.color = '#8a6d10'; if(fld) fld.style.borderColor = '#c8a028';
-  }
-}
-
-/* Handler del input del Paso 2 */
-async function onPresuInputChange(){
+/* ── N° de presupuesto en el Paso 2 (carga libre, independiente del módulo) ────
+   El residente escribe el N° del presupuesto elaborado por la constructora.
+   NO se consulta presupuesto_cab ni se activa ninguna imputación: el valor se
+   guarda tal cual en ordenes_compra.presupuesto y se imprime en el PDF.
+   Cuando el módulo de Presupuestos entre en producción, acá se resolverá el
+   vínculo (los números ya cargados quedan disponibles para hacerlo). */
+function onPresuInputChange(){
   const fld = document.getElementById('fldPresupuesto');
   if(!fld) return;
-  const txt = (fld.value||'').trim();
-  await presuLoadCodes();
-  if(txt && presuIsLinked(txt)){
-    await setPresupuesto(txt);          // vínculo completo (igual que desde el carrito)
-  } else {
-    // Número libre: se guarda, pero NO se activa el modo "Con presupuesto" del carrito.
-    wizard.form.presupuesto = txt;
-    cartBudget.pp=''; cartBudget.mats=null; cartBudget.rubros=null; cartBudget.ocItems=[]; cartBudget.nombre='';
-    const e = _cbEls();
-    if(e.cno){ e.cno.checked=true; e.csi.checked=false; e.csel.style.display='none'; e.csel.value=''; }
-    const _vd=document.getElementById('cbVerDetalle'); if(_vd) _vd.style.display='none';
-    try{ cartBudgetRender(); }catch(_){}
-    try{ renderCart(); }catch(_){}
-    if(typeof saveDraft === 'function') saveDraft();
-  }
-  presuUpdateHint();
+  wizard.form.presupuesto = (fld.value||'').trim();
+  if(typeof saveDraft === 'function') saveDraft();
 }
 
 function cbInjectStyles(){
@@ -6824,10 +6766,9 @@ function cartBudgetInit(){
   }
   // Campo de texto del Paso 2 (sin radios): número libre o vinculado.
   else if(e.dfld){
-    presuLoadCodes();
-    cbLoadList('presuList');
+    // Campo libre: solo refleja lo tipeado en wizard.form. Sin consulta al módulo.
+    e.dfld.addEventListener('input',  onPresuInputChange);
     e.dfld.addEventListener('change', onPresuInputChange);
-    e.dfld.addEventListener('blur',   onPresuInputChange);
   }
 }
 
@@ -6854,12 +6795,15 @@ async function loadInsumoMap(){
 
 async function setPresupuesto(pp, silent){
   pp = (pp||'').trim();
-  wizard.form.presupuesto = pp;
+  // El N° de presupuesto es una carga LIBRE del Paso 2 y manda sobre el selector del
+  // carrito (que pertenece al módulo de Presupuestos, todavía sin producción). Solo si
+  // el campo está vacío se toma el código elegido en el carrito.
+  const _fp = document.getElementById('fldPresupuesto');
+  if(!_fp || !(_fp.value||'').trim()) wizard.form.presupuesto = pp;
   const e = _cbEls();
   if(e.cno){ e.csi.checked=!!pp; e.cno.checked=!pp; e.csel.style.display=pp?'':'none'; if(e.csel.value!==pp) e.csel.value=pp; }
   if(e.dno){ e.dsi.checked=!!pp; e.dno.checked=!pp; e.dfld.style.display=pp?'':'none'; if(e.dfld.value!==pp) e.dfld.value=pp; }
-  // Campo de texto del Paso 2 (siempre visible): refleja el número elegido en el carrito.
-  else if(e.dfld && e.dfld.value !== pp){ e.dfld.value = pp; }
+  // El campo de texto del Paso 2 NO se toca desde el carrito: es carga manual.
   var _vd=document.getElementById('cbVerDetalle'); if(_vd) _vd.style.display = pp?'block':'none';
   if(!silent && typeof saveDraft === 'function') saveDraft();
   if(pp){ await cartBudgetLoad(pp); } else { cartBudget.pp=''; cartBudget.mats=null; cartBudgetRender(); }
@@ -6867,18 +6811,12 @@ async function setPresupuesto(pp, silent){
 
 /* Compat con el populate de Detalles */
 function presuInit(){ cartBudgetInit(); }
-/* Al entrar al Paso 2: refleja el número guardado. Solo re-vincula si el código
-   existe en presupuesto_cab; si es un número libre, no toca el modo del carrito. */
-async function presuApplyMode(){
-  const txt = (wizard.form.presupuesto||'').trim();
+/* Al entrar al Paso 2: repone en el input el número ya cargado. Nada más. */
+function presuApplyMode(){
   const fld = document.getElementById('fldPresupuesto');
-  if(fld) fld.value = txt;
-  cbLoadList('presuList');
-  await presuLoadCodes();
-  if(txt && presuIsLinked(txt) && cartBudget.pp !== txt){ await setPresupuesto(txt, true); }
-  presuUpdateHint();
+  if(fld) fld.value = (wizard.form.presupuesto||'').trim();
 }
-function loadPresuList(){ cbLoadList('presuList'); }
+function loadPresuList(){ cbLoadList('presuListCart'); }
 
 async function loadProductoMap(force){
   if(cartBudget.mapLoaded && !force){ await loadInsumoMap(); return; }
