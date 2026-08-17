@@ -5389,13 +5389,24 @@ function closeWizard(force=false){
 document.getElementById('btnCloseWizard').addEventListener('click', ()=>closeWizard());
 document.getElementById('btnCancelWizard').addEventListener('click', ()=>closeWizard());
 
+// ─── Origen del material (migración LK 17/08/2026) ──────
+// Sufijo gris discreto que marca los materiales importados del sistema LK.
+// Poner en false para apagarlo (p. ej. cuando se carguen los precios).
+const LK_BADGE_VISIBLE = true;
+function lkSuf(p){
+  return (LK_BADGE_VISIBLE && p && p.origen === 'LK')
+    ? '<span style="color:#9aa3b0;font-size:11px;font-weight:500;margin-left:6px">LK</span>'
+    : '';
+}
+
 // ─── Conteo total catálogo ──────────────────────────────
 async function loadCatalogTotalCount(){
   try{
     const {count,error} = await sb
       .from('productos_catalogo')
       .select('*', {count:'exact', head:true})
-      .eq('activo', true);
+      .eq('activo', true)
+      .is('id_maestro', null);
     if(error) throw error;
     wizard.catalog.totalCount = count;
     document.getElementById('catTabAllCount').textContent = count.toLocaleString('es-PY');
@@ -5452,13 +5463,14 @@ async function loadCatalogPage(reset=false){
   try{
     // SELECT con las columnas nuevas (marca, unidad_medida, creado_por).
     // Si la BD aún no tiene esas columnas, hacemos fallback al SELECT viejo.
-    const NEW_COLS = 'id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por';
+    const NEW_COLS = 'id, nombre, precio_referencia, url_imagen, url_producto, marca, unidad_medida, creado_por, origen';
     const OLD_COLS = 'id, nombre, precio_referencia, url_imagen, url_producto';
 
     function buildQuery(cols){
       let q = sb.from('productos_catalogo')
         .select(cols, {count:'exact'})
-        .eq('activo', true);
+        .eq('activo', true)
+        .is('id_maestro', null);
       const query = wizard.catalog.query.trim();
       if(query.length >= 2){
         const safe = query.replace(/[%_]/g, c => '\\'+c);
@@ -5577,7 +5589,7 @@ function renderCatalog(showLoading){
           ${imgUrl ? `<img src="${escapeHtml(imgUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.innerHTML='<div class=&quot;prod-img-fallback&quot;>📦</div>'">` : '<div class="prod-img-fallback">📦</div>'}
         </div>
         <div class="prod-info">
-          <div class="prod-name">${escapeHtml(p.nombre)}</div>
+          <div class="prod-name">${escapeHtml(p.nombre)}${lkSuf(p)}</div>
           ${metaRow}
           <div>
             <div class="prod-pvr-label">PVR</div>
@@ -8618,8 +8630,8 @@ function openDetailProductPicker(mode, itemId){
     try{
       const safe = q.replace(/[%_]/g, function(c){ return '\\'+c; });
       const { data } = await sb.from('productos_catalogo')
-        .select('id, nombre, precio_referencia, url_imagen')
-        .eq('activo', true).ilike('nombre', '%'+safe+'%')
+        .select('id, nombre, precio_referencia, url_imagen, origen')
+        .eq('activo', true).is('id_maestro', null).ilike('nombre', '%'+safe+'%')
         .order('nombre').limit(40);
       if(mySeq !== seq) return;
       const list = data || [];
@@ -12084,13 +12096,13 @@ async function searchProductFor(idx, q){
     const safe = q.replace(/[%_]/g, function(c){ return '\\'+c; });
     const LIMIT = 50;
     const { data, error } = await sb.from('productos_catalogo')
-      .select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%'+safe+'%').order('nombre').limit(LIMIT);
+      .select('id,nombre,precio_referencia,codigo,origen').eq('activo', true).is('id_maestro', null).ilike('nombre', '%'+safe+'%').order('nombre').limit(LIMIT);
     if(error) throw error;
     if(seq !== _rcSearchSeq) return;
     if(!data || !data.length){ box.innerHTML = '<div class="rc-hint">Sin resultados.</div>'; return; }
     let _html = data.map(function(p){
       const cod = p.codigo ? p.codigo : ('#'+p.id);
-      return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+' <span class="rc-code">'+_rcEsc(cod)+'</span></span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
+      return '<div class="rc-result" data-pid="'+p.id+'"><span>'+_rcEsc(p.nombre)+lkSuf(p)+' <span class="rc-code">'+_rcEsc(cod)+'</span></span><span class="rc-price">'+fmtMoney(Number(p.precio_referencia)||0)+'</span></div>';
     }).join('');
     if(data.length >= LIMIT){ _html += '<div class="rc-hint">Mostrando los primeros '+LIMIT+'. Escribí más letras para afinar.</div>'; }
     box.innerHTML = _html;
@@ -13631,12 +13643,12 @@ function pbtMarcaSearch(rk, ci, q, inputEl){
     box.style.display='block'; box.innerHTML='<div class="pbt-mr-empty">Buscando…</div>';
     try{
       const esc2 = safe.replace(/[%_]/g,' ');
-      const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%' + esc2 + '%').order('nombre').limit(20);
+      const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo,origen').eq('activo', true).is('id_maestro', null).ilike('nombre', '%' + esc2 + '%').order('nombre').limit(20);
       if(!data || !data.length){ box.innerHTML='<div class="pbt-mr-empty">Sin resultados en el catálogo</div>'; return; }
       box.innerHTML = data.map(function(p){
         const pr = Number(p.precio_referencia)||0;
         return '<div class="pbt-mr-item" data-pbt-marcapick="' + pbtEsc(rk) + '|' + pbtEsc(ci) + '|' + pbtEsc(String(p.id)) + '" data-nm="' + pbtEsc(p.nombre||'') + '" data-pr="' + pr + '">' +
-          '<span class="pbt-mr-nm">' + pbtEsc(p.nombre||'') + '</span>' +
+          '<span class="pbt-mr-nm">' + pbtEsc(p.nombre||'') + lkSuf(p) + '</span>' +
           '<span class="pbt-mr-pr">' + (pr ? ('₲ ' + Math.round(pr).toLocaleString('es-PY')) : '') + '</span>' +
         '</div>';
       }).join('');
@@ -13854,12 +13866,12 @@ async function pbtNpSearch(q){
   box.innerHTML = '<div class="pbt-empty">Buscando…</div>';
   try{
     const safe = q.replace(/[%_]/g, function(c){ return '\\' + c; });
-    const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo').eq('activo', true).ilike('nombre', '%' + safe + '%').order('nombre').limit(30);
+    const { data } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo,origen').eq('activo', true).is('id_maestro', null).ilike('nombre', '%' + safe + '%').order('nombre').limit(30);
     if(seq !== pbtUI.npSeq) return;
     if(!data || !data.length){ box.innerHTML = '<div class="pbt-empty">Sin resultados.</div>'; return; }
     box.innerHTML = data.map(function(p){
       const cod = p.codigo ? p.codigo : ('#' + p.id);
-      return '<div class="pbt-np-res" data-pbt-np-add="' + p.id + '"><span>' + pbtEsc(p.nombre) + ' <span class="pbt-np-code">' + pbtEsc(cod) + '</span></span><span>' + pbtMoney(Number(p.precio_referencia)||0) + '</span></div>';
+      return '<div class="pbt-np-res" data-pbt-np-add="' + p.id + '"><span>' + pbtEsc(p.nombre) + lkSuf(p) + ' <span class="pbt-np-code">' + pbtEsc(cod) + '</span></span><span>' + pbtMoney(Number(p.precio_referencia)||0) + '</span></div>';
     }).join('');
     pbtUI._npCache = {}; data.forEach(function(p){ pbtUI._npCache[String(p.id)] = p; });
   }catch(e){ console.warn('pbtNpSearch', e); box.innerHTML = '<div class="pbt-empty">Error al buscar.</div>'; }
