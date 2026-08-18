@@ -1230,7 +1230,7 @@ async function doLogout_ORIG_UNUSED(){
 async function _loadUserPerfil(userId){
   try{
     const { data, error } = await _SB.from('perfiles')
-      .select('rol, residente, nombre')
+      .select('rol, residente, nombre, permisos')
       .eq('id', userId)
       .maybeSingle();
     if(error) throw error;
@@ -1240,6 +1240,210 @@ async function _loadUserPerfil(userId){
     return null;
   }
 }
+
+
+// ════════════════════════════════════════════════════════════
+// COBERTURA / SUPLENCIA TEMPORAL  ★ 17/08/2026 ★
+// ------------------------------------------------------------
+// Permite que un residente opere la planificacion de OTRO residente
+// (vacaciones, licencia, reposo) SIN reasignar las actividades: el campo
+// `residente` de cada fila NUNCA cambia, asi los reportes, el ranking de
+// desempeno y el historico siguen atribuidos al titular.
+//
+// En modo cobertura el suplente SOLO puede registrar ejecucion:
+//    PERMITIDO : marcar cumplimiento (verde/rojo/azul), estado, razon,
+//                criticidad y comentarios.
+//    BLOQUEADO : crear, duplicar, borrar, confirmar/desbloquear, editar
+//                obra/sector/descripcion/fechas/dias/turnos e imprevistos.
+//
+// Fuente de verdad: public.perfiles.permisos (jsonb)
+//   { "cobertura": [ { "residente":"Ing. Azucena",
+//                      "desde":"2026-08-17", "hasta":"2026-08-29" } ] }
+// La delegacion VENCE SOLA por fecha: nadie tiene que acordarse de revertirla.
+// ════════════════════════════════════════════════════════════
+
+// Fecha de hoy en horario LOCAL (no UTC: en Paraguay el toISOString()
+// nocturno adelanta un dia y activaria/venceria coberturas antes de tiempo).
+function _hoyISOLocal(){
+  const d = new Date();
+  return d.getFullYear() + '-' +
+         String(d.getMonth() + 1).padStart(2, '0') + '-' +
+         String(d.getDate()).padStart(2, '0');
+}
+
+// Devuelve la lista de residentes que este usuario puede operar.
+// Siempre incluye el propio (perfiles.residente) en primer lugar.
+function _parseCoberturas(perfil){
+  const base = perfil ? (perfil.residente || '') : '';
+  const out  = base ? [base] : [];
+  try{
+    let p = perfil && perfil.permisos;
+    if(typeof p === 'string') p = JSON.parse(p);
+    let c = p && (p.cobertura || p.coberturas);
+    if(!c) return out;
+    if(!Array.isArray(c)) c = [c];
+    const hoy = _hoyISOLocal();
+    c.forEach(x => {
+      if(!x) return;
+      const nom = (typeof x === 'string') ? x : (x.residente || '');
+      if(!nom) return;
+      if(typeof x === 'object'){
+        if(x.desde && hoy < x.desde) return;   // todavia no empezo
+        if(x.hasta && hoy > x.hasta) return;   // ya vencio
+      }
+      if(!out.includes(nom)) out.push(nom);
+    });
+  }catch(e){ console.warn('perfiles.permisos.cobertura ilegible:', e); }
+  return out;
+}
+
+// Residente FORZADO. Devuelve '' cuando el usuario puede elegir
+// (admin, o residente con una cobertura vigente). Reemplaza al viejo
+// patron  (!window._axcEsAdmin && window._axcResidente).
+function _residenteFijo(){
+  if(window._axcEsAdmin) return '';
+  const L = window._axcResidentesOK || [];
+  return (L.length === 1) ? L[0] : '';
+}
+
+// Residente sobre el que se esta trabajando ahora mismo.
+function _residenteSeleccionado(){
+  const fijo = _residenteFijo();
+  if(fijo) return fijo;
+  const sel = document.getElementById('inp-residente');
+  return (sel && sel.value) ? sel.value : '';
+}
+
+// true = estoy operando la planificacion de otro residente.
+function _esCobertura(){
+  if(window._axcEsAdmin) return false;
+  const base = window._axcResidenteBase || '';
+  const act  = _residenteSeleccionado();
+  return !!(base && act && act !== base);
+}
+
+// Controles que SIGUEN habilitados en modo cobertura (registro de ejecucion).
+//   .sel-e = estado · .sel-r = razon · .sel-crit = criticidad
+//   .db    = celda de dia (solo en filas confirmadas: cicla cumplimiento)
+//   .btn-com-act = comentario de la actividad
+const _COB_PERMITIDO = '.sel-e, .sel-r, .sel-crit, .db, .btn-com-act';
+const _COB_MSG = 'Modo cobertura: la planificacion pertenece al residente titular. ' +
+                 'Solo podes registrar cumplimiento, estado, razon y comentarios.';
+
+function _cobBanner(on, quien){
+  let b = document.getElementById('cob-banner');
+  if(!on){ if(b) b.style.display = 'none'; return; }
+  if(!b){
+    b = document.createElement('div');
+    b.id = 'cob-banner';
+    b.style.cssText = 'display:flex;align-items:center;gap:10px;margin:0 0 10px 0;' +
+      'padding:9px 14px;border-radius:10px;font-family:Mulish,sans-serif;font-size:12.5px;' +
+      'font-weight:700;letter-spacing:.2px;border:1.5px solid rgba(88,166,255,.55);' +
+      'background:rgba(88,166,255,.12);color:#58a6ff';
+    const wrap = document.getElementById('app-wrap');
+    if(wrap) wrap.insertBefore(b, wrap.firstChild);
+  }
+  b.style.display = 'flex';
+  b.innerHTML = '<span style="font-size:16px">🤝</span>' +
+    '<span>MODO COBERTURA — estas operando la planificacion de <b>' + quien + '</b>. ' +
+    'Podes marcar cumplimiento, estado, razones y comentarios; ' +
+    'la planificacion sigue siendo del titular y no se puede modificar.</span>';
+}
+
+// Se ejecuta al final de cada renderAll(). Es la capa de UX;
+// la garantia real esta en el snapshot que se aplica al guardar.
+function _coberturaAplicarBloqueos(){
+  const on = _esCobertura();
+  try{ document.body.classList.toggle('modo-cobertura', on); }catch(e){}
+  _cobBanner(on, _residenteSeleccionado());
+
+  // Botones de encabezado: crear actividades/imprevistos no corresponde al suplente
+  ['btn-nueva-actividad', 'btn-imprevisto'].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.disabled = on;
+    el.style.display = on ? 'none' : '';
+  });
+
+  if(!on) return;
+
+  const tb = document.getElementById('tbody');
+  if(!tb) return;
+
+  const bloquear = el => {
+    try{
+      if('disabled' in el) el.disabled = true;
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '.55';
+      el.style.cursor  = 'not-allowed';
+      el.title = _COB_MSG;
+    }catch(e){}
+  };
+
+  tb.querySelectorAll('tr').forEach(tr => {
+    const esTurno = tr.classList.contains('turno-row');
+    const esConf  = tr.classList.contains('row-confirmed');
+    tr.querySelectorAll('select, textarea, input, button, .db, .dc').forEach(el => {
+      let ok = !esTurno && el.matches(_COB_PERMITIDO);
+      // Las celdas de dia solo son de cumplimiento si la fila esta CONFIRMADA;
+      // en una fila sin confirmar el click movería la planificacion.
+      if(ok && el.classList.contains('db') && !esConf) ok = false;
+      if(!ok) bloquear(el);
+    });
+    // Filas sin confirmar / fila de turnos: atenuadas, son de solo lectura
+    if(esTurno || !esConf) tr.style.opacity = '.6';
+  });
+}
+
+
+// ── ALCANCE POR OBRA ★ 17/08/2026 ★ ──────────────────────────
+// Una cobertura puede limitarse a algunas obras del titular:
+//   {"residente":"Ing. Azucena","obras":["Omni","09-EDIFICIO DAY SUKE"], ...}
+// Sin la clave "obras" (o con lista vacia) se delegan TODAS.
+// RLS ya impide leer o guardar fuera del alcance; esto evita que el
+// desplegable ofrezca obras que devolverian cero filas.
+
+function _parseAlcanceObras(perfil){
+  const map = {};
+  try{
+    let p = perfil && perfil.permisos;
+    if(typeof p === 'string') p = JSON.parse(p);
+    let c = p && (p.cobertura || p.coberturas);
+    if(!c) return map;
+    if(!Array.isArray(c)) c = [c];
+    c.forEach(x => {
+      if(!x || typeof x !== 'object' || !x.residente) return;
+      if(Array.isArray(x.obras) && x.obras.length) map[x.residente] = x.obras.slice();
+    });
+  }catch(e){ console.warn('permisos.cobertura.obras ilegible:', e); }
+  return map;
+}
+
+// Lista de obras habilitadas, o null cuando no hay limite.
+function _obrasPermitidas(){
+  if(!_esCobertura()) return null;
+  const l = (window._axcAlcanceObras || {})[_residenteSeleccionado()];
+  return (Array.isArray(l) && l.length) ? l : null;
+}
+
+// Se envuelve getABMList en lugar de tocar cada uno de sus usos.
+// Las obras presentes en las filas cargadas se agregan siempre: si una
+// quedara sin opcion, el select se mostraria vacio y un guardado podria
+// borrar el campo obra de esa fila.
+(function(){
+  if(typeof getABMList !== 'function') return;
+  const _orig = getABMList;
+  window.getABMList = function(key){
+    const out = _orig(key);
+    if(key !== 'obras' || !Array.isArray(out)) return out;
+    const permitidas = _obrasPermitidas();
+    if(!permitidas) return out;
+    const vivas = new Set(permitidas);
+    try{ (typeof acts !== 'undefined' && Array.isArray(acts) ? acts : [])
+         .forEach(a => { if(a && a.obra) vivas.add(a.obra); }); }catch(e){}
+    return out.filter(o => vivas.has(o));
+  };
+})();
 
 async function _bootApp(user){
   window._axcUid   = user.id;
@@ -1263,6 +1467,13 @@ async function _bootApp(user){
   window._axcPerfil    = perfil;
   window._axcEsAdmin   = !!(perfil && perfil.rol === 'admin');
   window._axcResidente = perfil ? (perfil.residente || '') : '';
+  // ★ 17/08/2026 ★ Cobertura: residente propio + delegaciones vigentes
+  window._axcResidenteBase = window._axcResidente;
+  window._axcResidentesOK  = _parseCoberturas(perfil);
+  window._axcAlcanceObras  = _parseAlcanceObras(perfil);
+  if((window._axcResidentesOK||[]).length > 1){
+    console.info('Cobertura vigente. Residentes habilitados:', window._axcResidentesOK);
+  }
   // Nombre humano del usuario logueado (ej. "Arq. Vladimir Denis").
   // Fallback al email si no hay perfil o el nombre está vacío.
   window._axcNombre    = (perfil && perfil.nombre && perfil.nombre.trim())
@@ -1288,23 +1499,46 @@ async function _bootApp(user){
 
   // Configurar dropdown "Residente" según rol
   const selResidente = document.getElementById('inp-residente');
-  if(!window._axcEsAdmin && window._axcResidente){
+  const _fijoBoot = _residenteFijo();
+  const _permitidos = window._axcResidentesOK || [];
+  if(!window._axcEsAdmin && !_fijoBoot && _permitidos.length > 1){
+    // ★ 17/08/2026 ★ COBERTURA VIGENTE: dropdown habilitado pero LIMITADO
+    // a los residentes que este usuario tiene permitido operar.
+    Array.from(selResidente.options).forEach(o => {
+      if(!_permitidos.includes(o.value)) o.remove();
+    });
+    _permitidos.forEach(n => {
+      if(!Array.from(selResidente.options).some(o => o.value === n)){
+        const opt = document.createElement('option');
+        opt.value = n; opt.textContent = n;
+        selResidente.appendChild(opt);
+      }
+    });
+    // Arranca SIEMPRE en el residente propio; el suplente cambia a mano.
+    selResidente.value = window._axcResidenteBase || _permitidos[0];
+    selResidente.disabled = false;
+    selResidente.style.opacity = '';
+    selResidente.style.cursor = '';
+    selResidente.title = 'Cobertura vigente. Podes operar: ' + _permitidos.join('  ·  ');
+    const addBtnC = selResidente.parentElement?.querySelector('.abm-add-btn, [onclick*="residentes"]');
+    if(addBtnC) addBtnC.style.display = 'none';
+  } else if(_fijoBoot){
     // Residente: precargar su nombre y deshabilitar el dropdown.
     // Si la opción no existe en el dropdown (porque el residente todavía
     // no fue agregado a la tabla `listas`), la creamos al vuelo así
     // selResidente.value puede tomar ese valor.
-    const yaExiste = Array.from(selResidente.options).some(o => o.value === window._axcResidente);
+    const yaExiste = Array.from(selResidente.options).some(o => o.value === _fijoBoot);
     if(!yaExiste){
       const opt = document.createElement('option');
-      opt.value = window._axcResidente;
-      opt.textContent = window._axcResidente;
+      opt.value = _fijoBoot;
+      opt.textContent = _fijoBoot;
       selResidente.appendChild(opt);
     }
-    selResidente.value = window._axcResidente;
+    selResidente.value = _fijoBoot;
     selResidente.disabled = true;
     selResidente.style.opacity = '0.75';
     selResidente.style.cursor = 'not-allowed';
-    selResidente.title = 'Asignación fija: ' + window._axcResidente;
+    selResidente.title = 'Asignación fija: ' + _fijoBoot;
     // Ocultar el botón "+" de agregar residente si existe al lado
     const addBtn = selResidente.parentElement?.querySelector('.abm-add-btn, [onclick*="residentes"]');
     if(addBtn) addBtn.style.display = 'none';
@@ -1412,7 +1646,7 @@ const PDF_COLORS = {
 };
 
 // Versión visible en el footer del PDF (incrementar al sumar fases).
-const _PDF_VERSION = 'v3.2-turno-corte';
+const _PDF_VERSION = 'v3.4-alcance-obra';
 
 // Devuelve true si el plan está en BORRADOR (alguna actividad sin baseline confirmada).
 // Mientras la feature de baseline freezing no esté implementada, baseline_confirmada
@@ -2018,10 +2252,17 @@ function addWorkDays(start,n){
 // pero por las dudas lo fuerza a su valor asignado.
 async function onResidenteChange(){
   // Para residentes (no admin): forzar el valor del dropdown a su asignación fija.
-  if(!window._axcEsAdmin && window._axcResidente){
+  {
+    const _fijo = _residenteFijo();
     const sel = document.getElementById('inp-residente');
-    if(sel.value !== window._axcResidente){
-      sel.value = window._axcResidente;
+    if(_fijo && sel && sel.value !== _fijo){
+      sel.value = _fijo;
+    } else if(!_fijo && !window._axcEsAdmin && sel){
+      // ★ 17/08/2026 ★ Cobertura: solo se aceptan residentes habilitados
+      const _L = window._axcResidentesOK || [];
+      if(sel.value && !_L.includes(sel.value)){
+        sel.value = window._axcResidenteBase || _L[0] || '';
+      }
     }
     // (Antes retornaba acá sin cargar actividades. Ahora seguimos
     // a la carga unificada por filtro residente= así el residente
@@ -2073,9 +2314,7 @@ async function onResidenteChange(){
   // que cada residente vea solo lo que le corresponde.
   {
     // Para residente (no admin) usamos su nombre fijo; para admin usamos lo elegido.
-    const selResid = (!window._axcEsAdmin && window._axcResidente)
-      ? window._axcResidente
-      : document.getElementById('inp-residente').value;
+    const selResid = _residenteSeleccionado();
     if(selResid && selResid !== window._ultimoResidenteCargado){
       window._ultimoResidenteCargado = selResid;
       try{
@@ -2128,6 +2367,29 @@ async function onResidenteChange(){
           // Feature "Imprevista" (Fase 1): true = actividad NO planificada que surgió en el día
           imprevista: !!r.imprevista
         }));
+
+        // ★ 17/08/2026 ★ SNAPSHOT DE COBERTURA — defensa en profundidad.
+        // Guardamos los campos de PLANIFICACION tal como vinieron de la nube.
+        // Si el usuario esta operando como suplente, al guardar se restauran
+        // desde aca, de modo que aunque falle un bloqueo de UI la planificacion
+        // del titular queda intacta.
+        window._axcSnapCob = {};
+        (data || []).forEach(r => {
+          window._axcSnapCob[r.id] = {
+            fecha_inicio:   r.fecha_inicio || null,
+            fecha_fin:      r.fecha_fin || null,
+            obra:           r.obra || '',
+            sector:         r.sector || '',
+            descripcion:    r.descripcion || '',
+            days:           Array.isArray(r.days) ? r.days : [],
+            turnos:         Array.isArray(r.turnos) ? r.turnos : [],
+            confirmada:     !!r.confirmada,
+            confirmada_at:  r.confirmada_at || null,
+            confirmada_por: r.confirmada_por || '',
+            imprevista:     !!r.imprevista,
+            residente:      r.residente || ''
+          };
+        });
 
         // ★ 12/08/2026 ★ Sincronizar turnos/cumplimiento por turno con days[]
         // y recalcular la marca POR DÍA derivada (compatibilidad TV/contratista).
@@ -2733,6 +2995,7 @@ function renderTable(){
       bComAct.textContent = '💬';
       bComAct.title = 'Agregar comentario a esta actividad';
     }
+    bComAct.classList.add('btn-com-act');
     bComAct.onclick = () => openCommentModal(idx);
     wAct.appendChild(bComAct);
 
@@ -3538,9 +3801,10 @@ function limpiarPantalla(){
       if(el){ el.value=''; }
     });
     // Re-aplicar el residente asignado si no es admin
-    if(!window._axcEsAdmin && window._axcResidente){
+    if(!window._axcEsAdmin){
       const sel = document.getElementById('inp-residente');
-      if(sel) sel.value = window._axcResidente;
+      const _r  = _residenteSeleccionado();
+      if(sel && _r) sel.value = _r;
     }
     obra = {};
     localStorage.removeItem('axc_obra');
@@ -3556,6 +3820,11 @@ function limpiarPantalla(){
 }
 
 function addRow(){
+  // ★ 17/08/2026 ★ El suplente no crea actividades del titular
+  if(_esCobertura()){
+    showToast('🤝 Modo cobertura: no podes crear actividades del residente titular.', 'warn');
+    return;
+  }
   {
     // Validar Obra y Residente del encabezado
     const rv = document.getElementById('inp-residente')?.value?.trim();
@@ -3645,7 +3914,7 @@ function showToast(msg, type='info'){
   t._tid=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';},3000);
 }
 
-function renderAll(){renderTable();renderReport();renderGantt();try{_updateValidationUI();}catch(e){}}
+function renderAll(){renderTable();renderReport();renderGantt();try{_updateValidationUI();}catch(e){}try{_coberturaAplicarBloqueos();}catch(e){console.warn('cobertura:',e);}}
 
 function showPage(name){
   ['carga','reporte','gantt'].forEach(p=>{
@@ -3979,11 +4248,7 @@ function exportXLSX(){
 // el resto del módulo (línea ~1459): si es residente no-admin, usa la
 // asignación fija de window._axcResidente; si es admin, lee del select.
 function _residenteActivoNombre(){
-  if(!window._axcEsAdmin && window._axcResidente){
-    return window._axcResidente;
-  }
-  const sel = document.getElementById('inp-residente');
-  return (sel && sel.value) ? sel.value : '';
+  return _residenteSeleccionado();
 }
 
 // Arma el nombre de archivo del PDF: AXC_Planificacion_Residentes_<NombreSlug>_<YYYY-MM-DD>.pdf
@@ -5620,38 +5885,40 @@ async function _syncActsToSupabase(){
     // Si el usuario NO es admin y tiene residente asignado en su perfil,
     // hdrResidente DEBE coincidir con _axcResidente. Si no coincide,
     // ABORTAR el guardado para prevenir reasignación masiva accidental.
-    if(!window._axcEsAdmin && window._axcResidente){
-      if(hdrResidente !== window._axcResidente){
+    // ★ 17/08/2026 ★ La guarda ahora acepta CUALQUIERA de los residentes
+    // habilitados (propio + coberturas vigentes). Todo lo demas se aborta igual.
+    const _resOK = window._axcResidentesOK || [];
+    if(!window._axcEsAdmin && _resOK.length){
+      if(!_resOK.includes(hdrResidente)){
+        const _fallback = window._axcResidenteBase || _resOK[0];
         const msg = 'Guardado cancelado: el residente del header ("' + 
                     (hdrResidente || '[vacío]') + 
-                    '") no coincide con tu perfil ("' + window._axcResidente + 
+                    '") no está entre los que podés operar ("' + _resOK.join('", "') + 
                     '"). Recargá la página y volvé a intentar.';
         console.error('GUARDA RESIDENTE (RESIDENTE):', msg, {
           hdrResidente,
-          perfilResidente: window._axcResidente,
+          residentesHabilitados: _resOK,
           uid: window._axcUid
         });
         _showSyncError(msg);
         _setSyncStatus('error');
         const selFix = document.getElementById('inp-residente');
         if(selFix){
-          const ya = Array.from(selFix.options).some(o => o.value === window._axcResidente);
+          const ya = Array.from(selFix.options).some(o => o.value === _fallback);
           if(!ya){
             const opt = document.createElement('option');
-            opt.value = window._axcResidente;
-            opt.textContent = window._axcResidente;
+            opt.value = _fallback;
+            opt.textContent = _fallback;
             selFix.appendChild(opt);
           }
-          selFix.value = window._axcResidente;
+          selFix.value = _fallback;
         }
         return;
       }
     }
 
     // Residente efectivo: defensa en profundidad.
-    const residenteEfectivo = (!window._axcEsAdmin && window._axcResidente)
-      ? window._axcResidente
-      : hdrResidente;
+    const residenteEfectivo = _residenteFijo() || hdrResidente;
     hdrResidente = residenteEfectivo;
 
     // Mappers para cumplir con los CHECK constraints de la tabla:
@@ -5752,6 +6019,47 @@ async function _syncActsToSupabase(){
         orden:         i
       });
     });
+
+    // ════════════════════════════════════════════════════════
+    // ★ 17/08/2026 ★ MODO COBERTURA — defensa en profundidad
+    // ════════════════════════════════════════════════════════
+    // Si el usuario esta operando como SUPLENTE, restauramos desde el
+    // snapshot de carga todos los campos de PLANIFICACION. Los campos de
+    // EJECUCION (cumple, razon, dias_atraso, criticidad, comentario,
+    // cumplimiento, cumplimiento_turnos, domingos) se guardan normalmente.
+    // Esto hace inofensivo cualquier bypass de la UI.
+    if(_esCobertura()){
+      const CAMPOS_PLAN = ['fecha_inicio','fecha_fin','obra','sector','descripcion',
+                           'days','turnos','confirmada','confirmada_at',
+                           'confirmada_por','imprevista','residente'];
+      const snapAll = window._axcSnapCob || {};
+      let _restauradas = 0, _descartadas = 0;
+      for(let i = rowsToSave.length - 1; i >= 0; i--){
+        const r = rowsToSave[i];
+        const snap = snapAll[r.id];
+        if(!snap){
+          // Fila que no existia al cargar: creada durante la cobertura. No se sube.
+          rowsToSave.splice(i, 1);
+          _descartadas++;
+          continue;
+        }
+        let cambio = false;
+        CAMPOS_PLAN.forEach(k => {
+          const antes = JSON.stringify(r[k]);
+          r[k] = snap[k];
+          if(antes !== JSON.stringify(r[k])) cambio = true;
+        });
+        if(cambio) _restauradas++;
+      }
+      if(_restauradas || _descartadas){
+        console.warn('COBERTURA: se protegio la planificacion del titular.',
+                     { filasRestauradas: _restauradas, filasDescartadas: _descartadas });
+      }
+      if(_descartadas){
+        showToast('🤝 Modo cobertura: ' + _descartadas +
+                  ' fila(s) nueva(s) no se guardaron. Solo el titular puede crear actividades.', 'warn');
+      }
+    }
 
     // Estrategia: upsert por id (agrega/actualiza). NO borra masivamente.
     // El borrado masivo fue eliminado el 21/05/2026 (ver nota más abajo).
@@ -6629,6 +6937,11 @@ async function saveCommentModal(opts){
 
 // Abre el modal: valida pre-requisitos, popula los dropdowns y muestra
 function openImprevistoModal(){
+  // ★ 17/08/2026 ★ El suplente no registra imprevistos del titular
+  if(_esCobertura()){
+    showToast('🤝 Modo cobertura: los imprevistos los carga el residente titular.', 'warn');
+    return;
+  }
   // Pre-requisitos del header (mismo criterio que addRow)
   const rv = document.getElementById('inp-residente')?.value?.trim();
   if(!rv){
