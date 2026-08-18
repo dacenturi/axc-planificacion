@@ -68,6 +68,8 @@ td:last-child{border-right:1px solid var(--line);border-radius:0 var(--r) var(--
 .b-fut{background:rgba(240,165,0,.2);color:#7A5400}
 .b-ven{background:rgba(46,42,34,.09);color:var(--ink2)}
 .b-cmp{background:rgba(62,142,78,.14);color:#2A6B37}
+.b-mot{background:rgba(120,90,160,.16);color:#4C3468}
+.req{color:#B3261E;font-weight:800}
 .empty{color:var(--ink3);font-size:13px;padding:14px 2px}
 
 .alert{padding:11px 14px;border-radius:var(--r);font-size:12.5px;font-weight:600;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start}
@@ -138,6 +140,12 @@ td:last-child{border-right:1px solid var(--line);border-radius:0 var(--r) var(--
             <option value="completo">Completo — además planificar y confirmar</option>
           </select>
           <span class="help">Completo si hay que cargar planificación nueva</span></div>
+        <div class="f"><label>Motivo <span class="req">*</span></label>
+          <select id="f-motivo"></select>
+          <span class="help">Por qué se cambia la asignación</span></div>
+        <div class="f"><label>Detalle <span id="f-det-req" class="req hidden">*</span></label>
+          <input id="f-detalle" type="text" maxlength="160" placeholder="Aclaración administrativa (opcional)">
+          <span class="help" id="f-det-help">Obligatorio si el motivo es Licencia u Otro</span></div>
       </div>
 
       <div class="obras">
@@ -170,7 +178,7 @@ td:last-child{border-right:1px solid var(--line);border-radius:0 var(--r) var(--
       <div id="huecos"><div class="empty">—</div></div>
     </div>
 
-    <div class="foot">Sistema de Planificación AXC · Módulo de Coberturas v1.0 · Conexdata</div>
+    <div class="foot">Sistema de Planificación AXC · Módulo de Coberturas v1.1-motivo · Conexdata</div>
   </div>
 </div>
 
@@ -181,6 +189,27 @@ const _SB = supabase.createClient(
   'https://zvucnezwhgfgupasgqnd.supabase.co',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg'
 );
+
+/* Catálogo único de motivos de cambio de asignación.
+   Debe coincidir con el dominio public.motivo_asignacion de la base
+   (motivo_asignacion.sql) para que coberturas y traspasos se puedan
+   sumar en un mismo reporte de rotación. */
+const MOTIVOS = [
+  ['vacaciones',     'Vacaciones'],
+  ['licencia',       'Licencia (médica / maternidad / familiar)'],
+  ['permiso',        'Permiso particular'],
+  ['capacitacion',   'Capacitación o viaje de trabajo'],
+  ['redistribucion', 'Redistribución de carga de obra'],
+  ['desvinculacion', 'Desvinculación o cambio de puesto'],
+  ['otro',           'Otro (requiere detalle)']
+];
+const MOTIVO_DETALLE = ['licencia','otro'];   // exigen detalle
+const motivoLabel = v => (MOTIVOS.find(m => m[0] === v) || [null, v || '—'])[1];
+const motivoCorto = v => v === 'licencia' ? 'licencia'
+                       : v === 'capacitacion' ? 'capacitación'
+                       : v === 'redistribucion' ? 'redistribución'
+                       : v === 'desvinculacion' ? 'desvinculación'
+                       : (v || '—');
 
 let PERFILES = [];     // todos los perfiles con residente cargado
 let OBRAS_POR_RES = {}; // { residente: [{obra, n}] }
@@ -239,9 +268,32 @@ async function cargarDatos(){
   });
 
   llenarSelects();
+  llenarMotivos();
+  avisoDetalle();
   pintarObras();
   pintarLista();
   pintarHuecos();
+}
+
+function llenarMotivos(){
+  const sm = $('f-motivo');
+  if(sm.options.length) return;                 // una sola vez
+  sm.innerHTML = '<option value="">— elegir —</option>' +
+    MOTIVOS.map(([v,t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+}
+
+/* El detalle pasa a obligatorio para licencia y otro. */
+function avisoDetalle(){
+  const m = $('f-motivo').value;
+  const obliga = MOTIVO_DETALLE.includes(m);
+  $('f-det-req').classList.toggle('hidden', !obliga);
+  $('f-detalle').placeholder = obliga
+    ? (m === 'licencia' ? 'Referencia administrativa (sin datos médicos)'
+                        : 'Explicá brevemente el motivo')
+    : 'Aclaración administrativa (opcional)';
+  $('f-det-help').textContent = (m === 'licencia')
+    ? 'No registrar diagnósticos ni datos de salud.'
+    : 'Obligatorio si el motivo es Licencia u Otro';
 }
 
 function llenarSelects(){
@@ -296,6 +348,12 @@ function validar(){
   if(!d)    return 'Indicá la fecha de inicio.';
   if(!h)    return 'Indicá la fecha de fin. Una cobertura sin fecha de fin no vence nunca.';
   if(h < d) return 'La fecha de fin es anterior a la de inicio.';
+  const mot = $('f-motivo').value;
+  const det = ($('f-detalle').value || '').trim();
+  if(!mot) return 'Elegí el motivo del cambio de asignación.';
+  if(!MOTIVOS.some(m => m[0] === mot)) return 'El motivo elegido no es válido.';
+  if(MOTIVO_DETALLE.includes(mot) && !det)
+    return `El motivo "${motivoLabel(mot)}" necesita un detalle.`;
   if(!obrasElegidas().length) return 'Marcá al menos una obra.';
   // ¿otro suplente ya tiene alguna de estas obras del mismo titular?
   const choque = [];
@@ -346,14 +404,18 @@ async function otorgar(){
   const tit = $('f-titular').value;
   const todas = obrasElegidas().length === document.querySelectorAll('.ck-obra').length;
 
+  const det = ($('f-detalle').value || '').trim();
+
   const nueva = {
     residente: tit,
     desde: $('f-desde').value,
     hasta: $('f-hasta').value,
     nivel: $('f-nivel').value,
+    motivo: $('f-motivo').value,
     otorgado_por: MI_MAIL,
     otorgado_en: hoyISO()
   };
+  if(det) nueva.detalle = det;
   if(!todas) nueva.obras = obrasElegidas();
 
   // Se conservan las coberturas que el suplente ya tuviera sobre otros titulares
@@ -396,7 +458,7 @@ function pintarLista(){
   if(!filas.length){ $('lista').innerHTML = '<div class="empty">No hay coberturas cargadas.</div>'; return; }
   filas.sort((a,b) => (a.c.residente||'').localeCompare(b.c.residente||''));
   $('lista').innerHTML =
-    `<table><thead><tr><th>Titular</th><th>Suplente</th><th>Obras</th><th>Período</th><th>Nivel</th><th>Otorgó</th><th></th></tr></thead><tbody>` +
+    `<table><thead><tr><th>Titular</th><th>Suplente</th><th>Obras</th><th>Período</th><th>Motivo</th><th>Nivel</th><th>Otorgó</th><th></th></tr></thead><tbody>` +
     filas.map(({p,c}) => {
       const [cls, txt] = estadoDe(c);
       const obras = (Array.isArray(c.obras) && c.obras.length) ? c.obras.join(' · ') : 'todas las obras';
@@ -405,6 +467,10 @@ function pintarLista(){
         <td>${esc(p.residente)}</td>
         <td style="max-width:220px">${esc(obras)}</td>
         <td>${esc(c.desde||'—')} → ${esc(c.hasta||'sin fin')} <span class="badge ${cls}">${txt}</span></td>
+        <td>${c.motivo
+              ? `<span class="badge b-mot" title="${esc(motivoLabel(c.motivo))}${c.detalle ? ' — ' + esc(c.detalle) : ''}">${esc(motivoCorto(c.motivo))}</span>${
+                  c.detalle ? `<div style="font-size:11px;color:var(--ink3);margin-top:3px">${esc(c.detalle)}</div>` : ''}`
+              : '<span class="help" style="color:var(--ink3)">sin registrar</span>'}</td>
         <td><span class="badge ${c.nivel==='completo'?'b-cmp':'b-ven'}">${esc(c.nivel||'ejecucion')}</span></td>
         <td style="font-size:11.5px;color:var(--ink3)">${esc(c.otorgado_por||'—')}<br>${esc(c.otorgado_en||'')}</td>
         <td><button class="btn danger" data-rev="${p.id}" data-tit="${esc(c.residente)}">Quitar</button></td>
@@ -458,8 +524,10 @@ $('f-limpiar').addEventListener('click', () => {
   $('f-titular').value = ''; $('f-suplente').value = '';
   $('f-desde').value = hoyISO(); $('f-hasta').value = '';
   $('f-nivel').value = 'ejecucion';
-  pintarObras(); avisoPlazo();
+  $('f-motivo').value = ''; $('f-detalle').value = '';
+  pintarObras(); avisoPlazo(); avisoDetalle();
 });
+$('f-motivo').addEventListener('change', avisoDetalle);
 
 /* Modo embebido: cuando se abre dentro del menú Configuración se oculta
    la barra superior propia, para no repetir el encabezado de la app. */
