@@ -266,7 +266,7 @@ td:last-child{border-right:1px solid var(--line);border-radius:0 var(--r) var(--
     </div>
     </div><!-- /pane-tra -->
 
-    <div class="foot">Sistema de Planificación AXC · Módulo de Asignación de Residentes v1.2-traspaso · Conexdata</div>
+    <div class="foot">Sistema de Planificación AXC · Módulo de Asignación de Residentes v1.2.1-traspaso · Conexdata</div>
   </div>
 </div>
 
@@ -338,6 +338,25 @@ async function arrancar(user){
   await cargarDatos();
 }
 
+/* PostgREST devuelve como máximo 1000 filas por pedido. La tabla
+   actividades ya pasa de 1600 registros, así que TODA lectura de
+   actividades tiene que paginarse o los conteos y los ids salen
+   incompletos. */
+async function _traerTodo(tabla, cols, filtrar){
+  const paso = 1000; let desde = 0; const out = [];
+  for(;;){
+    let q = _SB.from(tabla).select(cols).range(desde, desde + paso - 1);
+    if(filtrar) q = filtrar(q);
+    const {data, error} = await q;
+    if(error) return {error};
+    const lote = data || [];
+    out.push(...lote);
+    if(lote.length < paso) break;
+    desde += paso;
+  }
+  return {data: out};
+}
+
 /* ══════════ DATOS ══════════ */
 async function cargarDatos(){
   const {data:pf, error:e1} = await _SB.from('perfiles')
@@ -345,8 +364,8 @@ async function cargarDatos(){
   if(e1){ toast('No se pudieron leer los perfiles: ' + e1.message); return; }
   PERFILES = (pf || []).filter(p => (p.residente || '').trim() !== '');
 
-  const {data:ac, error:e2} = await _SB.from('actividades')
-    .select('residente, obra').is('eliminado_en', null);
+  const {data:ac, error:e2} = await _traerTodo('actividades', 'residente, obra',
+    q => q.is('eliminado_en', null));
   if(e2){ toast('No se pudieron leer las actividades: ' + e2.message); }
   OBRAS_POR_RES = {};
   (ac || []).forEach(r => {
@@ -609,13 +628,17 @@ let TRAS_TABLA_OK = true;
 
 function tLlenarSelects(){
   const so = $('t-origen'), sd = $('t-destino');
-  if(so.options.length) return;
+  if(!PERFILES.length) return;          // sin datos todavía: se rellena al volver
+  const prevO = so.value, prevD = sd.value;
   const opts = '<option value="">— elegir —</option>' +
     PERFILES.map(p => `<option value="${esc(p.residente)}">${esc(p.residente)}</option>`).join('');
   so.innerHTML = opts; sd.innerHTML = opts;
-  $('t-motivo').innerHTML = '<option value="">— elegir —</option>' +
-    MOTIVOS.map(([v,t]) => `<option value="${v}">${esc(t)}</option>`).join('');
-  $('t-corte').value = hoyISO();
+  so.value = prevO; sd.value = prevD;
+  if(!$('t-motivo').options.length){
+    $('t-motivo').innerHTML = '<option value="">— elegir —</option>' +
+      MOTIVOS.map(([v,t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+  }
+  if(!$('t-corte').value) $('t-corte').value = hoyISO();
 }
 
 function tAvisoDetalle(){
@@ -655,11 +678,12 @@ async function tPrever(){
     $('t-n-mover').textContent = '—'; $('t-n-queda').textContent = '—';
     tHabilitar(); return;
   }
-  const {data, error} = await _SB.from('actividades')
-    .select('id, obra, fecha_fin')
-    .eq('residente', ori).is('eliminado_en', null).in('obra', obras);
+  const {data, error} = await _traerTodo('actividades', 'id, obra, fecha_fin',
+    q => q.eq('residente', ori).is('eliminado_en', null));
   if(error){ toast('No se pudieron leer las actividades: ' + error.message); tHabilitar(); return; }
-  (data || []).forEach(a => {
+  const sel = new Set(obras);            // filtrado por obra en el cliente:
+  (data || []).forEach(a => {            // evita problemas de comillas en el filtro in()
+    if(!sel.has(a.obra)) return;
     if(!a.fecha_fin || a.fecha_fin >= corte) TRAS_CAND.push(a); else TRAS_HIST++;
   });
   $('t-n-mover').textContent = TRAS_CAND.length;
