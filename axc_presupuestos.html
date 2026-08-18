@@ -573,15 +573,14 @@ body{
       <div class="pm-addbar">
         <input id="pmInsCod" class="pm-input" list="insLista" placeholder="Insumo (INS-…)" style="max-width:200px">
         <datalist id="insLista"></datalist>
-        <input id="pmInsMat" class="pm-input" placeholder="Material / descripción" style="max-width:180px" title="Nombre del material, o la descripción si vas a cargar mano de obra">
+        <input id="pmInsMat" class="pm-input" placeholder="Material" style="max-width:150px">
         <input id="pmInsUni" class="pm-input" placeholder="Unidad" style="max-width:90px">
         <input id="pmInsCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:100px">
         <select id="pmInsRubro" class="pm-input" style="max-width:200px"><option value="">General (sin rubro)</option></select>
         <button id="pmInsAdd" class="pm-btn" type="button">Agregar insumo</button>
-        <button id="pmInsAddMO" class="pm-btn" type="button" style="background:#C8A028;color:#fff;border-color:#C8A028" title="Usá los campos «Material / descripción», «Unidad» y «Cantidad» de esta misma barra; el precio unitario se carga después en la tabla">👷 Agregar mano de obra</button>
         <button id="pmInsCalc" class="pm-btn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864">🧮 Calcular desde recetas</button>
       </div>
-      <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> (👷 MO-…) suma al costo del rubro y al total general, pero <b>no entra en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
+      <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> se carga desde su propio bloque (👷), más abajo: suma al costo del rubro y al total general, pero <b>no entra en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
@@ -687,6 +686,27 @@ body{
       </div>
       <div id="inDupWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="inCancel">Cancelar</button><button type="button" class="pm-btn" id="inSave">Crear y usar</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Pop-up dedicado: línea de mano de obra -->
+<div class="mini-overlay" id="moOverlay" style="z-index:10002">
+  <div class="mini-modal">
+    <div class="mini-head" style="background:#8a6d10"><span id="moTitle">👷 Nueva línea de mano de obra</span><button type="button" class="mini-x" id="moClose">&times;</button></div>
+    <div class="mini-body">
+      <div id="moCtx" class="mini-ctx"></div>
+      <label class="pm-label">Descripción *</label>
+      <input id="moDesc" class="pm-input" placeholder="Ej. Oficial albañil + ayudante" maxlength="160" autocomplete="off">
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <div style="flex:0 0 110px"><label class="pm-label">Unidad</label><input id="moUni" class="pm-input" placeholder="jor, ml, m2…" maxlength="20"></div>
+        <div style="flex:1"><label class="pm-label">Cantidad</label><input id="moCant" class="pm-input" type="number" step="any" placeholder="0" style="text-align:right"></div>
+        <div style="flex:1"><label class="pm-label">Precio unitario (Gs)</label><input id="moPrecio" class="pm-input" type="number" step="any" placeholder="0" style="text-align:right"></div>
+      </div>
+      <label class="pm-label" style="margin-top:10px">Rubro</label>
+      <select id="moRubro" class="pm-input"><option value="">General (sin rubro)</option></select>
+      <div id="moTotalPrev" style="margin-top:12px;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:9px 11px;font-size:13px;color:#8a6d10;display:flex;justify-content:space-between"><span>Subtotal de la línea</span><b id="moTotalPrevV">₲ 0</b></div>
+      <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="moCancel">Cancelar</button><button type="button" class="pm-btn" id="moSave" style="background:#C8A028;border-color:#C8A028;color:#fff">Guardar línea</button></div>
     </div>
   </div>
 </div>
@@ -1005,6 +1025,8 @@ body{
   .ins-tbl input{width:100%;border:1px solid #d3d9e3;border-radius:6px;padding:3px 6px;font-size:12.5px;box-sizing:border-box}
   .ins-tbl tr.mo-row{background:#fdf7e8}
   .ins-tbl tr.mo-row td{border-top:1px solid #f0e2bd}
+  .mo-edit{background:#fff;border:1px solid #C8A028;color:#8a6d10;border-radius:6px;cursor:pointer;padding:2px 7px;font-size:12px;margin-right:4px}
+  .mo-edit:hover{background:#C8A028;color:#fff}
   .mo-badge{display:inline-block;background:#C8A028;color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:999px;white-space:nowrap}
   .ins-total.mo{border-color:#C8A028;margin-top:10px}
   .ins-total.mo .ins-total-head{background:#C8A028;color:#2b2312}
@@ -1507,10 +1529,32 @@ function _populateInsRubroSelect(){
   }).join('');
   sel.value = cur;
 }
+function _moBlockHtml(moRows, moTotal){
+  let h = '<div class="ins-total mo"><div class="ins-total-head"><span>👷 MANO DE OBRA (no entra en la orden de compra)</span><span>'+(moRows.length?(moRows.length+' línea'+(moRows.length===1?'':'s')+' · ₲ '+fmtGs(moTotal)):'sin líneas')+'</span></div>';
+  if(moRows.length){
+    h += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Descripción</th><th>Rubro</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
+    moRows.forEach(function(t){
+      h += '<tr><td><span class="mo-badge">'+escapeHtml(t.codigo)+'</span></td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.rubro||'General')+'</td><td>'+escapeHtml(t.unidad||'')+'</td>'+
+        '<td class="n"><b>'+_qty(Math.round((Number(t.cantidad)||0)*1000)/1000)+'</b></td>'+
+        '<td class="n">'+(t.precio>0?fmtGs(t.precio):'<span style="color:#c0392b">s/precio</span>')+'</td>'+
+        '<td class="n"><b>'+fmtGs(t.sub)+'</b></td>'+
+        '<td style="white-space:nowrap"><button type="button" class="mo-edit" data-moedit="'+t.idx+'" title="Editar esta línea">✎</button><button type="button" class="pm-delx" data-del="'+t.idx+'" title="Quitar">×</button></td></tr>';
+    });
+    h += '</tbody><tfoot><tr><td colspan="6" style="text-align:right;font-weight:700">TOTAL MANO DE OBRA ₲</td><td class="n" style="font-weight:800;color:#8a6d10">'+fmtGs(moTotal)+'</td><td></td></tr></tfoot></table></div>';
+  } else {
+    h += '<div style="padding:12px 14px;color:#8a6d10;font-size:12.5px;background:#fdf7e8">Sin mano de obra cargada. Viene sola de las recetas al usar «🧮 Calcular desde recetas», o la podés agregar acá.</div>';
+  }
+  h += '<div style="padding:9px 12px;background:#fdf7e8;border-top:1px solid #f0e2bd"><button type="button" id="moAddBtn" class="pm-btn" style="background:#fff;color:#8a6d10;border:1px dashed #C8A028;font-weight:700">＋ Agregar línea de mano de obra</button></div>';
+  return h + '</div>';
+}
+function _bindMOBlock(){
+  const b = document.getElementById('moAddBtn'); if(b) b.addEventListener('click', function(){ openMO(null); });
+  document.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
+}
 function renderInsumos(){
   _populateInsRubroSelect();
   const box = document.getElementById('pmInsView');
-  if(!ed.insumos.length){ box.innerHTML = '<div class="pm-emptyr" style="padding:14px;color:#8893a5">Sin insumos. Agregá rubros con receta y usá «Calcular desde recetas», o cargalos a mano.</div>'; return; }
+  if(!ed.insumos.length){ box.innerHTML = '<div class="pm-emptyr" style="padding:14px;color:#8893a5">Sin insumos. Agregá rubros con receta y usá «Calcular desde recetas», o cargalos a mano.</div>' + _moBlockHtml([], 0); _bindMOBlock(); return; }
   // ordenar grupos: rubros en orden de ed.rubros, luego General
   const order = ed.rubros.map(function(r){ return r.rubro_codigo; }).filter(Boolean);
   const groups = {}; ed.insumos.forEach(function(it,idx){ const k=it.rubro_codigo||''; (groups[k]=groups[k]||[]).push(idx); });
@@ -1577,7 +1621,7 @@ function renderInsumos(){
   });
   // total consolidado por material (cantidad + valor en Gs)
   const agg = {}; const moRows = []; let moTotal = 0;
-  ed.insumos.forEach(function(it){
+  ed.insumos.forEach(function(it, _moIdx){
     const kk=it.codigo_insumo;
     if(_isMO(it)){
       const rubMO = rubByCod[it.rubro_codigo||''];
@@ -1586,7 +1630,7 @@ function renderInsumos(){
       const qMO = calcMO ? _recipeQtyRaw(it, cantRubMO) : (Number(it.cantidad)||0);
       const prMO = _prl(it); const subMO = Math.round(qMO*prMO);
       moTotal += subMO;
-      moRows.push({ codigo:kk, material:it.material, unidad:it.unidad, cantidad:qMO, precio:prMO, sub:subMO, rubro:it.rubro_codigo||'' });
+      moRows.push({ codigo:kk, material:it.material, unidad:it.unidad, cantidad:qMO, precio:prMO, sub:subMO, rubro:it.rubro_codigo||'', idx:_moIdx });
       return;
     }
     const rub2 = rubByCod[it.rubro_codigo||''];
@@ -1605,14 +1649,12 @@ function renderInsumos(){
   tot.forEach(function(t){ const pr=Number(t.precio)||0; const exacto=Math.round((Number(t.cantidad)||0)*1000)/1000; html += '<tr><td>'+escapeHtml(t.codigo)+'</td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.unidad||'')+'</td><td class="n" title="Exacto: '+_qty(exacto)+'"><b>'+_qty(t.cantRedond)+'</b></td><td class="n">'+(pr>0?fmtGs(pr):'—')+'</td><td class="n"><b>'+fmtGs(t.subRedond)+'</b></td></tr>'; });
   html += '</tbody><tfoot><tr><td colspan="5" style="text-align:right;font-weight:700">TOTAL ₲</td><td class="n" style="font-weight:800;color:#1F3864">'+fmtGs(totRound)+'</td></tr></tfoot></table></div></div>';
   // bloque de mano de obra (fuera del control de la orden de compra)
+  html += _moBlockHtml(moRows, moTotal);
   if(moRows.length){
-    html += '<div class="ins-total mo"><div class="ins-total-head"><span>👷 MANO DE OBRA (no entra en la orden de compra)</span><span>'+moRows.length+' línea'+(moRows.length===1?'':'s')+' · ₲ '+fmtGs(moTotal)+'</span></div>';
-    html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Descripción</th><th>Rubro</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th></tr></thead><tbody>';
-    moRows.forEach(function(t){ html += '<tr><td>'+escapeHtml(t.codigo)+'</td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.rubro||'General')+'</td><td>'+escapeHtml(t.unidad||'')+'</td><td class="n"><b>'+_qty(Math.round((Number(t.cantidad)||0)*1000)/1000)+'</b></td><td class="n">'+(t.precio>0?fmtGs(t.precio):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n"><b>'+fmtGs(t.sub)+'</b></td></tr>'; });
-    html += '</tbody><tfoot><tr><td colspan="6" style="text-align:right;font-weight:700">TOTAL MANO DE OBRA ₲</td><td class="n" style="font-weight:800;color:#8a6d10">'+fmtGs(moTotal)+'</td></tr></tfoot></table></div></div>';
     html += '<div class="ins-total gral"><div class="ins-total-head"><span>TOTAL GENERAL (materiales + mano de obra)</span><span>₲ '+fmtGs(totRound+moTotal)+'</span></div></div>';
   }
   box.innerHTML = html;
+  _bindMOBlock();
   // handlers
   box.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
@@ -1703,21 +1745,55 @@ function addInsumo(){
   renderInsumos();
 }
 
-function addManoObra(){
-  const mat = (document.getElementById('pmInsMat').value||'').trim();
-  const uni = (document.getElementById('pmInsUni').value||'').trim() || 'jor';
-  const cant = Number(document.getElementById('pmInsCant').value)||0;
-  const rubro = (document.getElementById('pmInsRubro').value||'').trim();
-  if(!mat){
-    const c=document.getElementById('pmInsMat');
-    showToast('Para cargar mano de obra: escribí la descripción en el campo «Material / descripción» (ej. Albañil + ayudante), la unidad (jor, ml, m2) y la cantidad; después tocá este botón.', 'error');
-    if(c){ c.focus(); c.style.borderColor='#C8A028'; c.style.boxShadow='0 0 0 3px rgba(200,160,40,.25)'; setTimeout(function(){ c.style.borderColor=''; c.style.boxShadow=''; }, 2500); }
-    return;
+// ── Pop-up dedicado de mano de obra ─────────────────────
+var _moEditIdx = null;
+function _moPreview(){
+  const c = Number(document.getElementById('moCant').value)||0;
+  const p = Number(document.getElementById('moPrecio').value)||0;
+  const el = document.getElementById('moTotalPrevV'); if(el) el.textContent = '₲ '+fmtGs(Math.round(c*p));
+}
+function openMO(idx){
+  _moEditIdx = (idx==null||idx==='') ? null : Number(idx);
+  const it = _moEditIdx!=null ? ed.insumos[_moEditIdx] : null;
+  const sel = document.getElementById('moRubro');
+  sel.innerHTML = '<option value="">General (sin rubro)</option>' + ed.rubros.filter(function(r){ return r.rubro_codigo; }).map(function(r){
+    return '<option value="'+escapeHtml(r.rubro_codigo)+'">'+escapeHtml(r.rubro_codigo+' · '+(r.descripcion||''))+'</option>';
+  }).join('');
+  document.getElementById('moTitle').textContent = it ? ('👷 Editar '+(it.codigo_insumo||'mano de obra')) : '👷 Nueva línea de mano de obra';
+  document.getElementById('moDesc').value = it ? (it.material||'') : '';
+  document.getElementById('moUni').value = it ? (it.unidad||'jor') : 'jor';
+  document.getElementById('moCant').value = it ? (Number(it.cantidad)||0) : '';
+  document.getElementById('moPrecio').value = it ? (it.precio_unitario!=null && it.precio_unitario!=='' ? Number(it.precio_unitario) : '') : '';
+  sel.value = it ? (it.rubro_codigo||'') : '';
+  // si la cantidad viene calculada desde la receta, no se edita acá
+  const rub = it ? ed.rubros.find(function(r){ return r.rubro_codigo===(it.rubro_codigo||''); }) : null;
+  const derivada = !!(it && rub && rub.tiene_receta && (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0);
+  const cantEl = document.getElementById('moCant');
+  cantEl.disabled = derivada; cantEl.style.opacity = derivada ? '.55' : '1';
+  const ctx = document.getElementById('moCtx');
+  if(derivada){ ctx.textContent = 'La cantidad de esta línea se calcula desde la receta del rubro '+(it.rubro_codigo||'')+' (COEF1 × cantidad del rubro ÷ COEF2). Para cambiarla, editá la composición en 🧩 o los coeficientes en la tabla.'; ctx.classList.add('show'); }
+  else { ctx.textContent=''; ctx.classList.remove('show'); }
+  _moPreview();
+  document.getElementById('moOverlay').classList.add('show');
+  setTimeout(function(){ document.getElementById('moDesc').focus(); }, 30);
+}
+function closeMO(){ document.getElementById('moOverlay').classList.remove('show'); _moEditIdx=null; }
+function saveMO(){
+  const desc = (document.getElementById('moDesc').value||'').trim();
+  const uni = (document.getElementById('moUni').value||'').trim() || 'jor';
+  const cant = Number(document.getElementById('moCant').value)||0;
+  const precio = Number(document.getElementById('moPrecio').value)||0;
+  const rubro = (document.getElementById('moRubro').value||'').trim();
+  if(!desc){ const d=document.getElementById('moDesc'); showToast('Poné una descripción para la mano de obra', 'error'); d.focus(); return; }
+  if(_moEditIdx!=null && ed.insumos[_moEditIdx]){
+    const it = ed.insumos[_moEditIdx];
+    it.material = desc; it.unidad = uni; it.rubro_codigo = rubro;
+    it.precio_unitario = precio; it.precio_origen = 'manual';
+    if(!document.getElementById('moCant').disabled) it.cantidad = cant;
+  } else {
+    ed.insumos.push({ codigo_insumo:_nextMOCode(ed.insumos), material:desc, unidad:uni, cantidad:cant, rubro_codigo:rubro, tipo:'mano_obra', precio_unitario:precio, precio_origen:'manual', producto_id:'' });
   }
-  ed.insumos.push({ codigo_insumo:_nextMOCode(ed.insumos), material:mat, unidad:uni, cantidad:cant, rubro_codigo:rubro, tipo:'mano_obra', precio_unitario:0, precio_origen:'manual', producto_id:'' });
-  document.getElementById('pmInsCod').value=''; document.getElementById('pmInsMat').value=''; document.getElementById('pmInsUni').value=''; document.getElementById('pmInsCant').value='';
-  renderInsumos();
-  showToast('Mano de obra agregada — cargá su precio unitario en la tabla', 'success');
+  closeMO(); renderInsumos();
 }
 
 // ── Guardar (commit idempotente) ────────────────────────
@@ -2210,13 +2286,19 @@ document.getElementById('miniCancel').addEventListener('click', closeMini);
 document.getElementById('miniSave').addEventListener('click', saveMini);
 document.getElementById('miniInput').addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); saveMini(); } });
 document.getElementById('miniOverlay').addEventListener('click', function(e){ if(e.target===this) closeMini(); });
+document.getElementById('moClose').addEventListener('click', closeMO);
+document.getElementById('moCancel').addEventListener('click', closeMO);
+document.getElementById('moSave').addEventListener('click', saveMO);
+document.getElementById('moOverlay').addEventListener('click', function(e){ if(e.target===this) closeMO(); });
+document.getElementById('moCant').addEventListener('input', _moPreview);
+document.getElementById('moPrecio').addEventListener('input', _moPreview);
+document.getElementById('moDesc').addEventListener('keydown', function(e){ if(e.key==='Enter') saveMO(); });
 document.getElementById('pmManageObraBtn').addEventListener('click', function(){ openManage('obra'); });
 document.getElementById('pmManageSectorBtn').addEventListener('click', function(){ openManage('sector'); });
 document.getElementById('mgClose').addEventListener('click', closeManage);
 document.getElementById('mgDone').addEventListener('click', closeManage);
 document.getElementById('mgOverlay').addEventListener('click', function(e){ if(e.target===this) closeManage(); });
 document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
-document.getElementById('pmInsAddMO').addEventListener('click', addManoObra);
 document.getElementById('pmInsCod').addEventListener('input', _insLiveUpdate);
 document.getElementById('pmInsCod').addEventListener('change', _insLiveUpdate);
 document.getElementById('pmInsCalc').addEventListener('click', calcInsumosFromRecetas);
