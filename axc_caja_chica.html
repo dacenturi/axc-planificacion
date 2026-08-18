@@ -974,7 +974,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.33';
+const APP_VERSION='Caja Chica v7.34';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -2095,6 +2095,42 @@ function _dupFacturaErr(error){
   const m=(error.message||'')+' '+(error.details||'');
   return error.code==='23505' && /nro_factura|factura|uq_cc_factura/i.test(m);
 }
+// v7.34 — Adjuntos: nombre de archivo seguro para Storage.
+// Supabase rechaza claves con acentos, ñ o símbolos raros ("Invalid key"), y el
+// nombre venía usándose crudo. Se sacan tildes, se reemplaza todo lo no permitido
+// y se recorta el largo, conservando la extensión.
+function _ccSafeName(nombre){
+  const n=String(nombre||'archivo');
+  const i=n.lastIndexOf('.');
+  let base=(i>0?n.slice(0,i):n), ext=(i>0?n.slice(i+1):'');
+  const limpiar=s=>String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9._-]/g,'_').replace(/_{2,}/g,'_').replace(/^[._-]+|[._-]+$/g,'');
+  base=limpiar(base).slice(0,60) || 'archivo';
+  ext=limpiar(ext).slice(0,10).toLowerCase();
+  return ext ? base+'.'+ext : base;
+}
+
+// v7.34 — Traduce el error de Storage a una pista accionable para el residente.
+function _ccPistaAdjunto(msg){
+  const m=String(msg||'').toLowerCase();
+  if(m.includes('exceeded')&&m.includes('maximum')||m.includes('payload too large')||m.includes('413')||m.includes('size'))
+    return 'Parece que <b>el archivo es demasiado grande</b>. Sacá la foto con menor resolución o mandala por WhatsApp a vos mismo y subí esa copia (queda más liviana).';
+  if(m.includes('invalid key')||m.includes('invalid_key'))
+    return 'El <b>nombre del archivo</b> tiene caracteres que el servidor no acepta. Renombralo sin tildes, ñ ni símbolos y volvé a intentar.';
+  if(m.includes('mime')||m.includes('content type')||m.includes('not supported'))
+    return 'El <b>formato del archivo</b> no está habilitado. Subí la foto en JPG o PNG, o el comprobante en PDF.';
+  if(m.includes('row-level security')||m.includes('policy')||m.includes('unauthorized')||m.includes('403'))
+    return 'Es un <b>problema de permisos</b> en el servidor, no del archivo. Avisá al administrador.';
+  if(m.includes('quota')||m.includes('storage limit')||m.includes('exceeded the storage'))
+    return 'El <b>espacio de almacenamiento del sistema está lleno</b>. Avisá al administrador.';
+  if(m.includes('already exists')||m.includes('duplicate'))
+    return 'Ya existe un archivo con ese nombre para este comprobante. Volvé a intentar en unos segundos.';
+  if(m.includes('failed to fetch')||m.includes('network')||m.includes('timeout'))
+    return 'Se <b>cortó la conexión</b> durante la subida. Verificá internet y adjuntá el archivo de nuevo.';
+  if(m.includes('bucket')&&m.includes('not found'))
+    return 'Falta crear el bucket "caja-chica" en el servidor. Avisá al administrador.';
+  return 'Anotá el motivo de arriba y pasáselo al administrador.';
+}
+
 async function ccPersistComprobante(cab, lineas, fileList, opts){
   opts=opts||{};
   const btn=gs('c-btn'); btn.disabled=true; btn.textContent=opts.editId?'Actualizando…':'Guardando…';
@@ -2135,12 +2171,12 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
   }
   await _SB.from('caja_chica_historial').insert({ movimiento_id:movId, accion, estado_nuevo:cab.estado, detalle, hecho_por:CURRENT_USER.email });
 
-  let adjWarn=false, adjDbWarn=false;
+  let adjWarn=false, adjDbWarn=false, adjErrMsg='', adjErrFile='';
   if(fileList && fileList.length){
     for(const f of fileList){
-      const path=`${movId}/${Date.now()}_${f.name}`;
-      const up=await _SB.storage.from('caja-chica').upload(path,f,{contentType:f.type,upsert:false});
-      if(up.error){ adjWarn=true; continue; }
+      const path=`${movId}/${Date.now()}_${_ccSafeName(f.name)}`;
+      const up=await _SB.storage.from('caja-chica').upload(path,f,{contentType:f.type||'application/octet-stream',upsert:false});
+      if(up.error){ adjWarn=true; adjErrMsg=(up.error.message||String(up.error)); adjErrFile=f.name; console.error('[caja-chica] upload falló',{archivo:f.name,path,tamano:f.size,tipo:f.type,error:up.error}); continue; }
       const ins=await _SB.from('caja_chica_adjuntos').insert({movimiento_id:movId,storage_path:path,nombre:f.name,tipo_mime:f.type,tamano_bytes:f.size,creado_por:CURRENT_USER.email});
       if(ins.error){ adjDbWarn=true; }
     }
@@ -2150,7 +2186,7 @@ async function ccPersistComprobante(cab, lineas, fileList, opts){
   cancelarEdicion();
   btn.disabled=false;
   toast(cab.excepcion?'Comprobante aprobado CON EXCEPCIÓN':(opts.wasEdit?'Comprobante actualizado':(cab.estado==='aprobado'?`Comprobante aprobado · ₲ ${fmt(cab.total)}`:'Comprobante guardado (solicitado)')),'ok');
-  if(adjWarn) setTimeout(()=>toast('Aviso: no se subieron adjuntos (falta crear el bucket "caja-chica").','err'),1000);
+  if(adjWarn) setTimeout(()=>{ showAlert('No se pudo subir el comprobante adjunto','El <b>comprobante quedó guardado</b>, pero la foto/PDF <b>no se subió</b>.<br><br>Archivo: <b>'+_esc(adjErrFile)+'</b><br>Motivo informado por el servidor: <b>'+_esc(adjErrMsg)+'</b><br><br>'+_ccPistaAdjunto(adjErrMsg)+'<br><br>No hace falta volver a cargar el comprobante: entrá en <b>Comprobantes cargados</b> y usá <b>Cambiar comprobante</b> para adjuntar el archivo.','📎',true); },1000);
   if(adjDbWarn) setTimeout(()=>toast('La foto se subió pero NO se registró (permiso de la tabla de adjuntos). Avisá al administrador.','err'),1400);
   await loadSaldos(); renderTopes(); await loadComprobantes();
   return true;
@@ -2383,9 +2419,9 @@ function reemplazarAdjunto(movId, adjActuales){
     toast('Subiendo nuevo comprobante…','ok');
     try{
       // 1) subir el archivo nuevo
-      const path=`${movId}/${Date.now()}_${f.name}`;
-      const up=await _SB.storage.from('caja-chica').upload(path,f,{contentType:f.type,upsert:false});
-      if(up.error){ toast('No se pudo subir: '+up.error.message,'err'); return; }
+      const path=`${movId}/${Date.now()}_${_ccSafeName(f.name)}`;
+      const up=await _SB.storage.from('caja-chica').upload(path,f,{contentType:f.type||'application/octet-stream',upsert:false});
+      if(up.error){ console.error('[caja-chica] upload falló',{archivo:f.name,path,tamano:f.size,tipo:f.type,error:up.error}); showAlert('No se pudo subir el comprobante','Archivo: <b>'+_esc(f.name)+'</b> ('+(f.size/1048576).toFixed(1)+' MB)<br>Motivo informado por el servidor: <b>'+_esc(up.error.message||String(up.error))+'</b><br><br>'+_ccPistaAdjunto(up.error.message),'📎',true); return; }
       // 2) registrar el nuevo
       const ins=await _SB.from('caja_chica_adjuntos').insert({movimiento_id:movId,storage_path:path,nombre:f.name,tipo_mime:f.type,tamano_bytes:f.size,creado_por:CURRENT_USER.email});
       if(ins.error){ toast('La foto se subió pero no se registró: '+ins.error.message,'err'); return; }
