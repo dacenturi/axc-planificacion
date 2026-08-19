@@ -1461,7 +1461,9 @@ function renderRubros(){
       (r.tiene_receta
         ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>'
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
-      '<td><button class="pm-delx" data-del="'+i+'" type="button">×</button></td></tr>';
+      '<td style="white-space:nowrap">'+
+        (r.rubro_codigo ? '<button class="mo-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" type="button" title="Agregar mano de obra a este rubro">👷</button>' : '')+
+        '<button class="pm-delx" data-del="'+i+'" type="button">×</button></td></tr>';
   }).join('');
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
@@ -1472,6 +1474,7 @@ function renderRubros(){
     });
   });
   tb.querySelectorAll('[data-del]').forEach(function(b){ b.addEventListener('click', function(){ ed.rubros.splice(Number(b.dataset.del),1); renderRubros(); }); });
+  tb.querySelectorAll('[data-moadd]').forEach(function(b){ b.addEventListener('click', function(){ openMO(null, b.getAttribute('data-moadd')); }); });
   if(typeof _populateInsRubroSelect==='function') _populateInsRubroSelect();
 }
 
@@ -1542,14 +1545,18 @@ function _moBlockHtml(moRows, moTotal){
     });
     h += '</tbody><tfoot><tr><td colspan="6" style="text-align:right;font-weight:700">TOTAL MANO DE OBRA ₲</td><td class="n" style="font-weight:800;color:#8a6d10">'+fmtGs(moTotal)+'</td><td></td></tr></tfoot></table></div>';
   } else {
-    h += '<div style="padding:12px 14px;color:#8a6d10;font-size:12.5px;background:#fdf7e8">Sin mano de obra cargada. Viene sola de las recetas al usar «🧮 Calcular desde recetas», o la podés agregar acá.</div>';
+    h += '<div style="padding:12px 14px;color:#8a6d10;font-size:12.5px;background:#fdf7e8">Sin mano de obra cargada. Viene sola de las recetas al usar «🧮 Calcular desde recetas»; también podés agregarla acá o con el botón 👷 de cada rubro, para que quede imputada a ese rubro.</div>';
   }
   h += '<div style="padding:9px 12px;background:#fdf7e8;border-top:1px solid #f0e2bd"><button type="button" id="moAddBtn" class="pm-btn" style="background:#fff;color:#8a6d10;border:1px dashed #C8A028;font-weight:700">＋ Agregar línea de mano de obra</button></div>';
   return h + '</div>';
 }
 function _bindMOBlock(){
   const b = document.getElementById('moAddBtn'); if(b) b.addEventListener('click', function(){ openMO(null); });
-  document.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
+  const box = document.getElementById('pmInsView');
+  if(box){
+    box.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
+    box.querySelectorAll('[data-moadd]').forEach(function(el){ el.addEventListener('click', function(){ openMO(null, el.getAttribute('data-moadd')); }); });
+  }
 }
 function renderInsumos(){
   _populateInsRubroSelect();
@@ -1577,7 +1584,9 @@ function renderInsumos(){
     idxs.forEach(function(idx){ const r=ed.insumos[idx]; const calc=(Number(r.coef1)||0)>0&&(Number(r.coef2)||0)>0&&conReceta; const q=calc?_recipeQtyRaw(r,cantRubro):(Number(r.cantidad)||0); subGs += q*_prl(r); });
     subGs = Math.round(subGs); totalGsPresu += subGs;
     const headExtra = conReceta ? (' · cantidad rubro: '+_qty(cantRubro)+' '+escapeHtml(rub.unidad||'')) : '';
-    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+'</span><span class="sub">'+idxs.length+' insumo'+(idxs.length===1?'':'s')+headExtra+' · <b style="color:#1F3864">Subtotal ₲ '+fmtGs(subGs)+'</b></span></div>';
+    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+
+      (isGen?'':' <button type="button" class="mo-edit" data-moadd="'+escapeHtml(k)+'" title="Agregar mano de obra a este rubro">👷 ＋ mano de obra</button>')+
+      '</span><span class="sub">'+idxs.length+' insumo'+(idxs.length===1?'':'s')+headExtra+' · <b style="color:#1F3864">Subtotal ₲ '+fmtGs(subGs)+'</b></span></div>';
     if(conReceta){
       html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n" title="Consumo por unidad de rubro">COEF1</th><th class="n" title="Contenido del envase">COEF2</th><th class="n" title="Merma (0,05 = 5%)">Merma</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
       idxs.forEach(function(idx){
@@ -1752,19 +1761,24 @@ function _moPreview(){
   const p = Number(document.getElementById('moPrecio').value)||0;
   const el = document.getElementById('moTotalPrevV'); if(el) el.textContent = '₲ '+fmtGs(Math.round(c*p));
 }
-function openMO(idx){
+function openMO(idx, presetRubro){
   _moEditIdx = (idx==null||idx==='') ? null : Number(idx);
   const it = _moEditIdx!=null ? ed.insumos[_moEditIdx] : null;
   const sel = document.getElementById('moRubro');
-  sel.innerHTML = '<option value="">General (sin rubro)</option>' + ed.rubros.filter(function(r){ return r.rubro_codigo; }).map(function(r){
+  const conRubro = ed.rubros.filter(function(r){ return r.rubro_codigo; });
+  sel.innerHTML = conRubro.map(function(r){
     return '<option value="'+escapeHtml(r.rubro_codigo)+'">'+escapeHtml(r.rubro_codigo+' · '+(r.descripcion||''))+'</option>';
-  }).join('');
+  }).join('') + '<option value="">General (sin rubro asignado)</option>';
   document.getElementById('moTitle').textContent = it ? ('👷 Editar '+(it.codigo_insumo||'mano de obra')) : '👷 Nueva línea de mano de obra';
   document.getElementById('moDesc').value = it ? (it.material||'') : '';
   document.getElementById('moUni').value = it ? (it.unidad||'jor') : 'jor';
   document.getElementById('moCant').value = it ? (Number(it.cantidad)||0) : '';
   document.getElementById('moPrecio').value = it ? (it.precio_unitario!=null && it.precio_unitario!=='' ? Number(it.precio_unitario) : '') : '';
-  sel.value = it ? (it.rubro_codigo||'') : '';
+  // rubro: el de la línea al editar; el preseleccionado si vino de un rubro; si hay uno solo, ese
+  if(it) sel.value = it.rubro_codigo||'';
+  else if(presetRubro) sel.value = presetRubro;
+  else if(conRubro.length===1) sel.value = conRubro[0].rubro_codigo;
+  else sel.value = '';
   // si la cantidad viene calculada desde la receta, no se edita acá
   const rub = it ? ed.rubros.find(function(r){ return r.rubro_codigo===(it.rubro_codigo||''); }) : null;
   const derivada = !!(it && rub && rub.tiene_receta && (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0);
@@ -1772,6 +1786,7 @@ function openMO(idx){
   cantEl.disabled = derivada; cantEl.style.opacity = derivada ? '.55' : '1';
   const ctx = document.getElementById('moCtx');
   if(derivada){ ctx.textContent = 'La cantidad de esta línea se calcula desde la receta del rubro '+(it.rubro_codigo||'')+' (COEF1 × cantidad del rubro ÷ COEF2). Para cambiarla, editá la composición en 🧩 o los coeficientes en la tabla.'; ctx.classList.add('show'); }
+  else if(!conRubro.length){ ctx.textContent = 'Todavía no cargaste ningún rubro en este presupuesto. La línea va a quedar como «General»; si querés imputarla a un rubro, agregalo primero arriba y después asignala con ✎.'; ctx.classList.add('show'); }
   else { ctx.textContent=''; ctx.classList.remove('show'); }
   _moPreview();
   document.getElementById('moOverlay').classList.add('show');
@@ -1785,6 +1800,9 @@ function saveMO(){
   const precio = Number(document.getElementById('moPrecio').value)||0;
   const rubro = (document.getElementById('moRubro').value||'').trim();
   if(!desc){ const d=document.getElementById('moDesc'); showToast('Poné una descripción para la mano de obra', 'error'); d.focus(); return; }
+  if(!rubro && ed.rubros.some(function(r){ return r.rubro_codigo; })){
+    if(!confirm('Esta línea de mano de obra va a quedar como «General», sin imputar a ningún rubro.\n\nAsí no suma al costo de ningún rubro en el reporte, aunque sí al total.\n\n¿Guardarla igual?')) return;
+  }
   if(_moEditIdx!=null && ed.insumos[_moEditIdx]){
     const it = ed.insumos[_moEditIdx];
     it.material = desc; it.unidad = uni; it.rubro_codigo = rubro;
