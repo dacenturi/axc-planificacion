@@ -580,7 +580,7 @@ body{
         <button id="pmInsAdd" class="pm-btn" type="button">Agregar insumo</button>
         <button id="pmInsCalc" class="pm-btn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864">🧮 Calcular desde recetas</button>
       </div>
-      <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> se carga desde su propio bloque (👷), más abajo: suma al costo del rubro y al total general, pero <b>no entra en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
+      <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> (👷) y la <b>logística</b> (🚛) se cargan desde sus propios bloques, más abajo, o con los botones de cada rubro: siempre van imputadas a un rubro, suman al costo del rubro y al total general, pero <b>no entran en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
@@ -696,7 +696,11 @@ body{
     <div class="mini-head" style="background:#8a6d10"><span id="moTitle">👷 Nueva línea de mano de obra</span><button type="button" class="mini-x" id="moClose">&times;</button></div>
     <div class="mini-body">
       <div id="moCtx" class="mini-ctx"></div>
-      <label class="pm-label">Descripción *</label>
+      <div id="moTipoWrap" style="display:none">
+        <label class="pm-label">Tipo de logística *</label>
+        <select id="moTipoLog" class="pm-input"></select>
+      </div>
+      <label class="pm-label" id="moDescLbl" style="margin-top:10px">Descripción *</label>
       <input id="moDesc" class="pm-input" placeholder="Ej. Oficial albañil + ayudante" maxlength="160" autocomplete="off">
       <div style="display:flex;gap:10px;margin-top:10px">
         <div style="flex:0 0 110px"><label class="pm-label">Unidad</label><input id="moUni" class="pm-input" placeholder="jor, ml, m2…" maxlength="20"></div>
@@ -1025,6 +1029,13 @@ body{
   .ins-tbl input{width:100%;border:1px solid #d3d9e3;border-radius:6px;padding:3px 6px;font-size:12.5px;box-sizing:border-box}
   .ins-tbl tr.mo-row{background:#fdf7e8}
   .ins-tbl tr.mo-row td{border-top:1px solid #f0e2bd}
+  .ins-tbl tr.lg-row{background:#edf7fa}
+  .ins-tbl tr.lg-row td{border-top:1px solid #cbe6ee}
+  .lg-badge{display:inline-block;background:#0E7490;color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:999px;white-space:nowrap}
+  .lg-edit{background:#fff;border:1px solid #0E7490;color:#0b5c74;border-radius:6px;cursor:pointer;padding:2px 7px;font-size:12px;margin-right:4px}
+  .lg-edit:hover{background:#0E7490;color:#fff}
+  .ins-total.lg{border-color:#0E7490;margin-top:10px}
+  .ins-total.lg .ins-total-head{background:#0E7490}
   .mo-edit{background:#fff;border:1px solid #C8A028;color:#8a6d10;border-radius:6px;cursor:pointer;padding:2px 7px;font-size:12px;margin-right:4px}
   .mo-edit:hover{background:#C8A028;color:#fff}
   .mo-badge{display:inline-block;background:#C8A028;color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:999px;white-space:nowrap}
@@ -1147,7 +1158,7 @@ async function _enrichListTotals(){
     const tot={};
     (rub.data||[]).forEach(function(r){ if(!r.tiene_receta){ tot[r.presupuesto]=(tot[r.presupuesto]||0)+(Number(r.precio_total)||0); } });
     (ins.data||[]).forEach(function(m){
-      const esMO = /^MO-/i.test(String(m.codigo_insumo||''));
+      const esMO = /^(MO|LG)-/i.test(String(m.codigo_insumo||''));
       const pu = esMO ? (Number(m.precio_unitario)||0) : (precioByCod[m.codigo_insumo]||0);
       tot[m.presupuesto]=(tot[m.presupuesto]||0)+(Number(m.cantidad)||0)*pu;
     });
@@ -1416,7 +1427,8 @@ async function openEdit(codigo){
       return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta, capitulo:cap };
     });
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
-    ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : 'insumo')) }; });
+    ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''),
+      tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
     renderRubros(); renderInsumos();
   }catch(e){ console.warn('openEdit', e); showToast('Error cargando el presupuesto', 'error'); }
 }
@@ -1462,7 +1474,8 @@ function renderRubros(){
         ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>'
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
       '<td style="white-space:nowrap">'+
-        (r.rubro_codigo ? '<button class="mo-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" type="button" title="Agregar mano de obra a este rubro">👷</button>' : '')+
+        (r.rubro_codigo ? '<button class="mo-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" data-mokind="mano_obra" type="button" title="Agregar mano de obra a este rubro">👷</button>'+
+                          '<button class="lg-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" data-mokind="logistica" type="button" title="Agregar logística a este rubro">🚛</button>' : '')+
         '<button class="pm-delx" data-del="'+i+'" type="button">×</button></td></tr>';
   }).join('');
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
@@ -1474,7 +1487,7 @@ function renderRubros(){
     });
   });
   tb.querySelectorAll('[data-del]').forEach(function(b){ b.addEventListener('click', function(){ ed.rubros.splice(Number(b.dataset.del),1); renderRubros(); }); });
-  tb.querySelectorAll('[data-moadd]').forEach(function(b){ b.addEventListener('click', function(){ openMO(null, b.getAttribute('data-moadd')); }); });
+  tb.querySelectorAll('[data-moadd]').forEach(function(b){ b.addEventListener('click', function(){ openMO(null, b.getAttribute('data-moadd'), b.getAttribute('data-mokind')||'mano_obra'); }); });
   if(typeof _populateInsRubroSelect==='function') _populateInsRubroSelect();
 }
 
@@ -1514,10 +1527,21 @@ function addRubro(){
 // Mano de obra: tipo='mano_obra' (columna nueva) con respaldo por prefijo MO- en el código,
 // para que los módulos que no leen la columna (OC, reporte de avance) igual la puedan excluir.
 function _isMO(r){ return !!r && (r.tipo==='mano_obra' || /^MO-/i.test(String(r.codigo_insumo||''))); }
-function _nextMOCode(list){
-  let n=0; (list||[]).forEach(function(x){ const m=/^MO-(\d+)$/i.exec(String(x.codigo_insumo||'')); if(m){ const v=parseInt(m[1],10); if(v>n) n=v; } });
-  return 'MO-'+String(n+1).padStart(2,'0');
+function _isLG(r){ return !!r && (r.tipo==='logistica' || /^LG-/i.test(String(r.codigo_insumo||''))); }
+function _isNoCompra(r){ return _isMO(r) || _isLG(r); }
+function _kindOf(r){ return _isLG(r) ? 'logistica' : (_isMO(r) ? 'mano_obra' : 'insumo'); }
+function _nextCode(list, pref){
+  const rx = new RegExp('^'+pref+'-(\\d+)$','i');
+  let n=0; (list||[]).forEach(function(x){ const m=rx.exec(String(x.codigo_insumo||'')); if(m){ const v=parseInt(m[1],10); if(v>n) n=v; } });
+  return pref+'-'+String(n+1).padStart(2,'0');
 }
+function _nextMOCode(list){ return _nextCode(list,'MO'); }
+// Tipos de logística — editá esta lista para agregar o sacar opciones
+var LOGISTICA_TIPOS = ['Limpieza','Traslado de escombro','Flete / traslado de materiales','Alquiler de equipos','Andamios / apuntalamiento','Movimiento de suelo','Otro'];
+var _EXTRA_CFG = {
+  mano_obra: { pref:'MO', label:'Mano de obra', icon:'👷', color:'#8a6d10', badge:'mo-badge', row:'mo-row', block:'mo', head:'MANO DE OBRA', ph:'Ej. Oficial albañil + ayudante' },
+  logistica: { pref:'LG', label:'Logística',    icon:'🚛', color:'#0b5c74', badge:'lg-badge', row:'lg-row', block:'lg', head:'LOGÍSTICA',      ph:'Ej. Camión volquete 6 m³ · 3 viajes' }
+};
 function _insRubroLabel(code){
   if(!code) return 'General (sin rubro)';
   const r = ed.rubros.find(function(x){ return x.rubro_codigo===code; });
@@ -1532,36 +1556,45 @@ function _populateInsRubroSelect(){
   }).join('');
   sel.value = cur;
 }
-function _moBlockHtml(moRows, moTotal){
-  let h = '<div class="ins-total mo"><div class="ins-total-head"><span>👷 MANO DE OBRA (no entra en la orden de compra)</span><span>'+(moRows.length?(moRows.length+' línea'+(moRows.length===1?'':'s')+' · ₲ '+fmtGs(moTotal)):'sin líneas')+'</span></div>';
-  if(moRows.length){
-    h += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Descripción</th><th>Rubro</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
-    moRows.forEach(function(t){
-      h += '<tr><td><span class="mo-badge">'+escapeHtml(t.codigo)+'</span></td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.rubro||'General')+'</td><td>'+escapeHtml(t.unidad||'')+'</td>'+
+function _moBlockHtml(kind, rows, total){
+  const CFG = _EXTRA_CFG[kind];
+  const bg = kind==='logistica' ? '#edf7fa' : '#fdf7e8';
+  const bd = kind==='logistica' ? '#cbe6ee' : '#f0e2bd';
+  const bcol = kind==='logistica' ? '#0E7490' : '#C8A028';
+  let h = '<div class="ins-total '+CFG.block+'"><div class="ins-total-head"><span>'+CFG.icon+' '+CFG.head+' (no entra en la orden de compra)</span><span>'+(rows.length?(rows.length+' línea'+(rows.length===1?'':'s')+' · ₲ '+fmtGs(total)):'sin líneas')+'</span></div>';
+  if(rows.length){
+    const colTipo = kind==='logistica';
+    h += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th>'+(colTipo?'<th>Tipo</th>':'')+'<th>'+(colTipo?'Detalle':'Descripción')+'</th><th>Rubro</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
+    rows.forEach(function(t){
+      h += '<tr><td><span class="'+CFG.badge+'">'+escapeHtml(t.codigo)+'</span></td>'+
+        (colTipo?('<td>'+escapeHtml(t.subtipo||'—')+'</td>'):'')+
+        '<td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.rubro||'General')+'</td><td>'+escapeHtml(t.unidad||'')+'</td>'+
         '<td class="n"><b>'+_qty(Math.round((Number(t.cantidad)||0)*1000)/1000)+'</b></td>'+
         '<td class="n">'+(t.precio>0?fmtGs(t.precio):'<span style="color:#c0392b">s/precio</span>')+'</td>'+
         '<td class="n"><b>'+fmtGs(t.sub)+'</b></td>'+
-        '<td style="white-space:nowrap"><button type="button" class="mo-edit" data-moedit="'+t.idx+'" title="Editar esta línea">✎</button><button type="button" class="pm-delx" data-del="'+t.idx+'" title="Quitar">×</button></td></tr>';
+        '<td style="white-space:nowrap"><button type="button" class="'+(kind==='logistica'?'lg-edit':'mo-edit')+'" data-moedit="'+t.idx+'" title="Editar esta línea">✎</button><button type="button" class="pm-delx" data-del="'+t.idx+'" title="Quitar">×</button></td></tr>';
     });
-    h += '</tbody><tfoot><tr><td colspan="6" style="text-align:right;font-weight:700">TOTAL MANO DE OBRA ₲</td><td class="n" style="font-weight:800;color:#8a6d10">'+fmtGs(moTotal)+'</td><td></td></tr></tfoot></table></div>';
+    h += '</tbody><tfoot><tr><td colspan="'+(colTipo?7:6)+'" style="text-align:right;font-weight:700">TOTAL '+CFG.head+' ₲</td><td class="n" style="font-weight:800;color:'+CFG.color+'">'+fmtGs(total)+'</td><td></td></tr></tfoot></table></div>';
   } else {
-    h += '<div style="padding:12px 14px;color:#8a6d10;font-size:12.5px;background:#fdf7e8">Sin mano de obra cargada. Viene sola de las recetas al usar «🧮 Calcular desde recetas»; también podés agregarla acá o con el botón 👷 de cada rubro, para que quede imputada a ese rubro.</div>';
+    const txt = kind==='logistica'
+      ? 'Sin logística cargada. Agregala acá o con el botón 🚛 de cada rubro (limpieza, traslado de escombro, fletes, alquiler de equipos…).'
+      : 'Sin mano de obra cargada. Viene sola de las recetas al usar «🧮 Calcular desde recetas»; también podés agregarla acá o con el botón 👷 de cada rubro.';
+    h += '<div style="padding:12px 14px;color:'+CFG.color+';font-size:12.5px;background:'+bg+'">'+txt+'</div>';
   }
-  h += '<div style="padding:9px 12px;background:#fdf7e8;border-top:1px solid #f0e2bd"><button type="button" id="moAddBtn" class="pm-btn" style="background:#fff;color:#8a6d10;border:1px dashed #C8A028;font-weight:700">＋ Agregar línea de mano de obra</button></div>';
+  h += '<div style="padding:9px 12px;background:'+bg+';border-top:1px solid '+bd+'"><button type="button" class="pm-btn" data-moaddbtn="'+kind+'" style="background:#fff;color:'+CFG.color+';border:1px dashed '+bcol+';font-weight:700">＋ Agregar línea de '+CFG.label.toLowerCase()+'</button></div>';
   return h + '</div>';
 }
 function _bindMOBlock(){
-  const b = document.getElementById('moAddBtn'); if(b) b.addEventListener('click', function(){ openMO(null); });
   const box = document.getElementById('pmInsView');
-  if(box){
-    box.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
-    box.querySelectorAll('[data-moadd]').forEach(function(el){ el.addEventListener('click', function(){ openMO(null, el.getAttribute('data-moadd')); }); });
-  }
+  if(!box) return;
+  box.querySelectorAll('[data-moaddbtn]').forEach(function(el){ el.addEventListener('click', function(){ openMO(null, null, el.getAttribute('data-moaddbtn')); }); });
+  box.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
+  box.querySelectorAll('[data-moadd]').forEach(function(el){ el.addEventListener('click', function(){ openMO(null, el.getAttribute('data-moadd'), el.getAttribute('data-mokind')||'mano_obra'); }); });
 }
 function renderInsumos(){
   _populateInsRubroSelect();
   const box = document.getElementById('pmInsView');
-  if(!ed.insumos.length){ box.innerHTML = '<div class="pm-emptyr" style="padding:14px;color:#8893a5">Sin insumos. Agregá rubros con receta y usá «Calcular desde recetas», o cargalos a mano.</div>' + _moBlockHtml([], 0); _bindMOBlock(); return; }
+  if(!ed.insumos.length){ box.innerHTML = '<div class="pm-emptyr" style="padding:14px;color:#8893a5">Sin insumos. Agregá rubros con receta y usá «Calcular desde recetas», o cargalos a mano.</div>' + _moBlockHtml('mano_obra', [], 0) + _moBlockHtml('logistica', [], 0); _bindMOBlock(); return; }
   // ordenar grupos: rubros en orden de ed.rubros, luego General
   const order = ed.rubros.map(function(r){ return r.rubro_codigo; }).filter(Boolean);
   const groups = {}; ed.insumos.forEach(function(it,idx){ const k=it.rubro_codigo||''; (groups[k]=groups[k]||[]).push(idx); });
@@ -1585,7 +1618,8 @@ function renderInsumos(){
     subGs = Math.round(subGs); totalGsPresu += subGs;
     const headExtra = conReceta ? (' · cantidad rubro: '+_qty(cantRubro)+' '+escapeHtml(rub.unidad||'')) : '';
     html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+
-      (isGen?'':' <button type="button" class="mo-edit" data-moadd="'+escapeHtml(k)+'" title="Agregar mano de obra a este rubro">👷 ＋ mano de obra</button>')+
+      (isGen?'':' <button type="button" class="mo-edit" data-moadd="'+escapeHtml(k)+'" data-mokind="mano_obra" title="Agregar mano de obra a este rubro">👷 ＋ mano de obra</button>'+
+                ' <button type="button" class="lg-edit" data-moadd="'+escapeHtml(k)+'" data-mokind="logistica" title="Agregar logística a este rubro">🚛 ＋ logística</button>')+
       '</span><span class="sub">'+idxs.length+' insumo'+(idxs.length===1?'':'s')+headExtra+' · <b style="color:#1F3864">Subtotal ₲ '+fmtGs(subGs)+'</b></span></div>';
     if(conReceta){
       html += '<div style="overflow-x:auto"><table class="ins-tbl"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n" title="Consumo por unidad de rubro">COEF1</th><th class="n" title="Contenido del envase">COEF2</th><th class="n" title="Merma (0,05 = 5%)">Merma</th><th class="n">Cantidad</th><th class="n">P.unit ₲</th><th class="n">Subtotal ₲</th><th></th></tr></thead><tbody>';
@@ -1594,9 +1628,10 @@ function renderInsumos(){
         const calc = (Number(r.coef1)||0)>0 && (Number(r.coef2)||0)>0;
         if(calc){ r.cantidad = Math.round(_recipeQtyRaw(r, cantRubro)*1000)/1000; }
         const pr = _prl(r); const sub = Math.round((Number(r.cantidad)||0)*pr);
-        const mo = _isMO(r);
-        html += '<tr'+(mo?' class="mo-row"':'')+'>'+
-          '<td'+(mo?' title="Mano de obra — no entra en la orden de compra"':'')+'>'+(mo?'<span class="mo-badge">👷 '+escapeHtml(r.codigo_insumo)+'</span>':escapeHtml(r.codigo_insumo))+'</td>'+
+        const mo = _isNoCompra(r); const lg = _isLG(r);
+        const kcfg = lg ? _EXTRA_CFG.logistica : _EXTRA_CFG.mano_obra;
+        html += '<tr'+(mo?(' class="'+kcfg.row+'"'):'')+'>'+
+          '<td'+(mo?(' title="'+kcfg.label+' — no entra en la orden de compra"'):'')+'>'+(mo?('<span class="'+kcfg.badge+'">'+kcfg.icon+' '+escapeHtml(r.codigo_insumo)+'</span>'):escapeHtml(r.codigo_insumo))+'</td>'+
           '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
           '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:58px"></td>'+
           '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="coef1" data-rubrok="'+escapeHtml(k)+'" value="'+(r.coef1===''?'':r.coef1)+'" style="max-width:68px"></td>'+
@@ -1615,9 +1650,10 @@ function renderInsumos(){
       idxs.forEach(function(idx){
         const r = ed.insumos[idx];
         const pr = _prl(r); const sub = Math.round((Number(r.cantidad)||0)*pr);
-        const mo = _isMO(r);
-        html += '<tr'+(mo?' class="mo-row"':'')+'>'+
-          '<td'+(mo?' title="Mano de obra — no entra en la orden de compra"':'')+'>'+(mo?'<span class="mo-badge">👷 '+escapeHtml(r.codigo_insumo)+'</span>':escapeHtml(r.codigo_insumo))+'</td>'+
+        const mo = _isNoCompra(r); const lg = _isLG(r);
+        const kcfg = lg ? _EXTRA_CFG.logistica : _EXTRA_CFG.mano_obra;
+        html += '<tr'+(mo?(' class="'+kcfg.row+'"'):'')+'>'+
+          '<td'+(mo?(' title="'+kcfg.label+' — no entra en la orden de compra"'):'')+'>'+(mo?('<span class="'+kcfg.badge+'">'+kcfg.icon+' '+escapeHtml(r.codigo_insumo)+'</span>'):escapeHtml(r.codigo_insumo))+'</td>'+
           '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
           '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:70px"></td>'+
           '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="cantidad" value="'+r.cantidad+'"></td>'+
@@ -1629,17 +1665,17 @@ function renderInsumos(){
     }
   });
   // total consolidado por material (cantidad + valor en Gs)
-  const agg = {}; const moRows = []; let moTotal = 0;
+  const agg = {}; const moRows = []; let moTotal = 0; const lgRows = []; let lgTotal = 0;
   ed.insumos.forEach(function(it, _moIdx){
     const kk=it.codigo_insumo;
-    if(_isMO(it)){
+    if(_isNoCompra(it)){
       const rubMO = rubByCod[it.rubro_codigo||''];
       const cantRubMO = rubMO ? (Number(rubMO.cantidad)||0) : 0;
       const calcMO = (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0 && rubMO && rubMO.tiene_receta;
       const qMO = calcMO ? _recipeQtyRaw(it, cantRubMO) : (Number(it.cantidad)||0);
       const prMO = _prl(it); const subMO = Math.round(qMO*prMO);
-      moTotal += subMO;
-      moRows.push({ codigo:kk, material:it.material, unidad:it.unidad, cantidad:qMO, precio:prMO, sub:subMO, rubro:it.rubro_codigo||'', idx:_moIdx });
+      const fila = { codigo:kk, material:it.material, subtipo:it.subtipo||'', unidad:it.unidad, cantidad:qMO, precio:prMO, sub:subMO, rubro:it.rubro_codigo||'', idx:_moIdx };
+      if(_isLG(it)){ lgTotal += subMO; lgRows.push(fila); } else { moTotal += subMO; moRows.push(fila); }
       return;
     }
     const rub2 = rubByCod[it.rubro_codigo||''];
@@ -1658,9 +1694,11 @@ function renderInsumos(){
   tot.forEach(function(t){ const pr=Number(t.precio)||0; const exacto=Math.round((Number(t.cantidad)||0)*1000)/1000; html += '<tr><td>'+escapeHtml(t.codigo)+'</td><td>'+escapeHtml(t.material||'')+'</td><td>'+escapeHtml(t.unidad||'')+'</td><td class="n" title="Exacto: '+_qty(exacto)+'"><b>'+_qty(t.cantRedond)+'</b></td><td class="n">'+(pr>0?fmtGs(pr):'—')+'</td><td class="n"><b>'+fmtGs(t.subRedond)+'</b></td></tr>'; });
   html += '</tbody><tfoot><tr><td colspan="5" style="text-align:right;font-weight:700">TOTAL ₲</td><td class="n" style="font-weight:800;color:#1F3864">'+fmtGs(totRound)+'</td></tr></tfoot></table></div></div>';
   // bloque de mano de obra (fuera del control de la orden de compra)
-  html += _moBlockHtml(moRows, moTotal);
-  if(moRows.length){
-    html += '<div class="ins-total gral"><div class="ins-total-head"><span>TOTAL GENERAL (materiales + mano de obra)</span><span>₲ '+fmtGs(totRound+moTotal)+'</span></div></div>';
+  html += _moBlockHtml('mano_obra', moRows, moTotal);
+  html += _moBlockHtml('logistica', lgRows, lgTotal);
+  if(moRows.length || lgRows.length){
+    const partes = ['materiales']; if(moRows.length) partes.push('mano de obra'); if(lgRows.length) partes.push('logística');
+    html += '<div class="ins-total gral"><div class="ins-total-head"><span>TOTAL GENERAL ('+partes.join(' + ')+')</span><span>₲ '+fmtGs(totRound+moTotal+lgTotal)+'</span></div></div>';
   }
   box.innerHTML = html;
   _bindMOBlock();
@@ -1755,21 +1793,43 @@ function addInsumo(){
 }
 
 // ── Pop-up dedicado de mano de obra ─────────────────────
-var _moEditIdx = null;
+var _moEditIdx = null; var _moKind = 'mano_obra';
 function _moPreview(){
   const c = Number(document.getElementById('moCant').value)||0;
   const p = Number(document.getElementById('moPrecio').value)||0;
   const el = document.getElementById('moTotalPrevV'); if(el) el.textContent = '₲ '+fmtGs(Math.round(c*p));
 }
-function openMO(idx, presetRubro){
+function openMO(idx, presetRubro, kind){
   _moEditIdx = (idx==null||idx==='') ? null : Number(idx);
   const it = _moEditIdx!=null ? ed.insumos[_moEditIdx] : null;
+  _moKind = it ? _kindOf(it) : (kind==='logistica' ? 'logistica' : 'mano_obra');
+  if(_moKind==='insumo') _moKind='mano_obra';
+  const CFG = _EXTRA_CFG[_moKind];
+  const esLog = _moKind==='logistica';
+  document.querySelector('#moOverlay .mini-head').style.background = esLog ? '#0E7490' : '#8a6d10';
+  document.getElementById('moSave').style.background = esLog ? '#0E7490' : '#C8A028';
+  document.getElementById('moSave').style.borderColor = esLog ? '#0E7490' : '#C8A028';
+  document.getElementById('moTotalPrev').style.background = esLog ? '#edf7fa' : '#fdf7e8';
+  document.getElementById('moTotalPrev').style.borderColor = esLog ? '#cbe6ee' : '#f0e2bd';
+  document.getElementById('moTotalPrev').style.color = CFG.color;
+  document.getElementById('moDesc').placeholder = CFG.ph;
+  document.getElementById('moDescLbl').textContent = esLog ? 'Detalle *' : 'Descripción *';
+  const tw = document.getElementById('moTipoWrap');
+  tw.style.display = esLog ? '' : 'none';
+  if(esLog){
+    const selT = document.getElementById('moTipoLog');
+    const actual = it ? (it.subtipo||'') : '';
+    const lista = LOGISTICA_TIPOS.slice();
+    if(actual && lista.indexOf(actual)<0) lista.unshift(actual);
+    selT.innerHTML = lista.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(t)+'</option>'; }).join('');
+    selT.value = actual || lista[0];
+  }
   const sel = document.getElementById('moRubro');
   const conRubro = ed.rubros.filter(function(r){ return r.rubro_codigo; });
-  sel.innerHTML = conRubro.map(function(r){
+  sel.innerHTML = '<option value="">— Elegí el rubro —</option>' + conRubro.map(function(r){
     return '<option value="'+escapeHtml(r.rubro_codigo)+'">'+escapeHtml(r.rubro_codigo+' · '+(r.descripcion||''))+'</option>';
-  }).join('') + '<option value="">General (sin rubro asignado)</option>';
-  document.getElementById('moTitle').textContent = it ? ('👷 Editar '+(it.codigo_insumo||'mano de obra')) : '👷 Nueva línea de mano de obra';
+  }).join('');
+  document.getElementById('moTitle').textContent = it ? (CFG.icon+' Editar '+(it.codigo_insumo||CFG.label)) : (CFG.icon+' Nueva línea de '+CFG.label.toLowerCase());
   document.getElementById('moDesc').value = it ? (it.material||'') : '';
   document.getElementById('moUni').value = it ? (it.unidad||'jor') : 'jor';
   document.getElementById('moCant').value = it ? (Number(it.cantidad)||0) : '';
@@ -1786,7 +1846,7 @@ function openMO(idx, presetRubro){
   cantEl.disabled = derivada; cantEl.style.opacity = derivada ? '.55' : '1';
   const ctx = document.getElementById('moCtx');
   if(derivada){ ctx.textContent = 'La cantidad de esta línea se calcula desde la receta del rubro '+(it.rubro_codigo||'')+' (COEF1 × cantidad del rubro ÷ COEF2). Para cambiarla, editá la composición en 🧩 o los coeficientes en la tabla.'; ctx.classList.add('show'); }
-  else if(!conRubro.length){ ctx.textContent = 'Todavía no cargaste ningún rubro en este presupuesto. La línea va a quedar como «General»; si querés imputarla a un rubro, agregalo primero arriba y después asignala con ✎.'; ctx.classList.add('show'); }
+  else if(!conRubro.length){ ctx.textContent = 'Todavía no cargaste ningún rubro en este presupuesto. Agregá el rubro arriba: toda línea de '+CFG.label.toLowerCase()+' tiene que quedar imputada a un rubro.'; ctx.classList.add('show'); }
   else { ctx.textContent=''; ctx.classList.remove('show'); }
   _moPreview();
   document.getElementById('moOverlay').classList.add('show');
@@ -1794,22 +1854,29 @@ function openMO(idx, presetRubro){
 }
 function closeMO(){ document.getElementById('moOverlay').classList.remove('show'); _moEditIdx=null; }
 function saveMO(){
-  const desc = (document.getElementById('moDesc').value||'').trim();
-  const uni = (document.getElementById('moUni').value||'').trim() || 'jor';
+  const CFG = _EXTRA_CFG[_moKind];
+  const esLog = _moKind==='logistica';
+  const subtipo = esLog ? (document.getElementById('moTipoLog').value||'') : '';
+  const desc = (document.getElementById('moDesc').value||'').trim() || (esLog ? subtipo : '');
+  const uni = (document.getElementById('moUni').value||'').trim() || (esLog ? 'gl' : 'jor');
   const cant = Number(document.getElementById('moCant').value)||0;
   const precio = Number(document.getElementById('moPrecio').value)||0;
   const rubro = (document.getElementById('moRubro').value||'').trim();
-  if(!desc){ const d=document.getElementById('moDesc'); showToast('Poné una descripción para la mano de obra', 'error'); d.focus(); return; }
-  if(!rubro && ed.rubros.some(function(r){ return r.rubro_codigo; })){
-    if(!confirm('Esta línea de mano de obra va a quedar como «General», sin imputar a ningún rubro.\n\nAsí no suma al costo de ningún rubro en el reporte, aunque sí al total.\n\n¿Guardarla igual?')) return;
+  if(!desc){ const d=document.getElementById('moDesc'); showToast('Poné el detalle de la línea de '+CFG.label.toLowerCase(), 'error'); d.focus(); return; }
+  if(!rubro){
+    const hay = ed.rubros.some(function(r){ return r.rubro_codigo; });
+    showToast(hay ? ('Elegí a qué rubro se imputa esta '+CFG.label.toLowerCase()) : ('Cargá primero el rubro arriba: la '+CFG.label.toLowerCase()+' tiene que quedar imputada a un rubro'), 'error');
+    if(hay) document.getElementById('moRubro').focus();
+    return;
   }
   if(_moEditIdx!=null && ed.insumos[_moEditIdx]){
     const it = ed.insumos[_moEditIdx];
     it.material = desc; it.unidad = uni; it.rubro_codigo = rubro;
     it.precio_unitario = precio; it.precio_origen = 'manual';
+    if(esLog) it.subtipo = subtipo;
     if(!document.getElementById('moCant').disabled) it.cantidad = cant;
   } else {
-    ed.insumos.push({ codigo_insumo:_nextMOCode(ed.insumos), material:desc, unidad:uni, cantidad:cant, rubro_codigo:rubro, tipo:'mano_obra', precio_unitario:precio, precio_origen:'manual', producto_id:'' });
+    ed.insumos.push({ codigo_insumo:_nextCode(ed.insumos, CFG.pref), material:desc, unidad:uni, cantidad:cant, rubro_codigo:rubro, tipo:_moKind, subtipo:subtipo, precio_unitario:precio, precio_origen:'manual', producto_id:'' });
   }
   closeMO(); renderInsumos();
 }
@@ -1862,16 +1929,16 @@ async function saveBudget(){
         row.precio_origen = i.precio_origen || 'catalogo';
         row.congelado_en = new Date().toISOString();
         if(_hayCoef){ row.coef1 = (i.coef1!=null && i.coef1!=='') ? Number(i.coef1) : null; row.coef2 = (i.coef2!=null && i.coef2!=='') ? Number(i.coef2) : null; row.merma_pct = (i.merma_pct!=null && i.merma_pct!=='') ? Number(i.merma_pct) : null; }
-        row.tipo = _isMO(i) ? 'mano_obra' : 'insumo';
-        if(row.tipo==='mano_obra'){ row.producto_id = null; row.precio_origen = 'manual'; }
+        row.tipo = _kindOf(i);
+        if(row.tipo!=='insumo'){ row.producto_id = null; row.precio_origen = 'manual'; row.subtipo = i.subtipo || null; }
         return row;
       });
       let ii = await sb.from('presupuesto_insumos').insert(payload);
-      if(ii.error && /tipo/i.test(ii.error.message||'')){
-        // la columna «tipo» todavía no existe: guardo sin ella (el prefijo MO- sigue marcando la mano de obra)
-        const payload2 = payload.map(function(r){ const c=Object.assign({},r); delete c.tipo; return c; });
+      if(ii.error && /tipo|subtipo/i.test(ii.error.message||'')){
+        // faltan las columnas nuevas: guardo sin ellas (los prefijos MO-/LG- siguen marcando el tipo)
+        const payload2 = payload.map(function(r){ const c=Object.assign({},r); delete c.tipo; delete c.subtipo; return c; });
         ii = await sb.from('presupuesto_insumos').insert(payload2);
-        if(!ii.error) showToast('Guardado, pero falta correr el SQL de la columna «tipo» en presupuesto_insumos', 'error');
+        if(!ii.error) showToast('Guardado, pero falta correr el SQL de las columnas «tipo» y «subtipo» en presupuesto_insumos', 'error');
       }
       if(ii.error) throw ii.error;
     }
@@ -1893,7 +1960,7 @@ function _reporteCompute(){
   const _prl = function(r){ return (r && r.precio_unitario!=null && r.precio_unitario!=='') ? (Number(r.precio_unitario)||0) : _pr(r && r.codigo_insumo); };
   const rubByCod = {}; ed.rubros.forEach(function(r){ if(r.rubro_codigo) rubByCod[r.rubro_codigo]=r; });
   const insCostByRubro = {}; const insByRubro = {};
-  let matTotalRep = 0, moTotalRep = 0;
+  let matTotalRep = 0, moTotalRep = 0, lgTotalRep = 0;
   (ed.insumos||[]).forEach(function(it){
     const k = it.rubro_codigo||'';
     const rub = rubByCod[k];
@@ -1902,10 +1969,10 @@ function _reporteCompute(){
     const calc = (Number(it.coef1)||0)>0 && (Number(it.coef2)||0)>0 && conReceta;
     const q = calc ? _recipeQtyRaw(it, cantRubro) : (Number(it.cantidad)||0);
     const pr = _prl(it); const sub = q*pr;
-    const esMO = _isMO(it);
-    if(esMO){ moTotalRep += sub; } else { matTotalRep += sub; }
+    const esMO = _isNoCompra(it);
+    if(_isLG(it)){ lgTotalRep += sub; } else if(esMO){ moTotalRep += sub; } else { matTotalRep += sub; }
     insCostByRubro[k] = (insCostByRubro[k]||0) + sub;
-    (insByRubro[k]=insByRubro[k]||[]).push({ cod:it.codigo_insumo, material:it.material, unidad:it.unidad, cantidad:q, precio:pr, sub:sub, mo:esMO });
+    (insByRubro[k]=insByRubro[k]||[]).push({ cod:it.codigo_insumo, material:it.material, unidad:it.unidad, cantidad:q, precio:pr, sub:sub, mo:esMO, lg:_isLG(it) });
   });
   function rubroCost(r){ return r.tiene_receta ? Math.round(insCostByRubro[r.rubro_codigo]||0) : Math.round(Number(r.precio_total)||0); }
   const rows = ed.rubros.map(function(r){
@@ -1917,7 +1984,7 @@ function _reporteCompute(){
   if(genCost>0){ byCap['(Insumos sin imputar)']={sub:genCost,rows:[]}; bySec['(Insumos sin imputar)']=(bySec['(Insumos sin imputar)']||0)+genCost; }
   const total = rows.reduce(function(a,x){return a+x.costo;},0) + genCost;
   const servTotal = rows.reduce(function(a,x){ return a + (x.tiene_receta?0:x.costo); }, 0);
-  return { rows, byCap, bySec, insByRubro, rubByCod, genCost, total, matTotal:Math.round(matTotalRep), moTotal:Math.round(moTotalRep), servTotal:Math.round(servTotal) };
+  return { rows, byCap, bySec, insByRubro, rubByCod, genCost, total, matTotal:Math.round(matTotalRep), moTotal:Math.round(moTotalRep), lgTotal:Math.round(lgTotalRep), servTotal:Math.round(servTotal) };
 }
 
 function buildReporte(){
@@ -1973,7 +2040,7 @@ function buildReporte(){
     if(!r.tiene_receta) return;
     const items=D.insByRubro[r.rubro_codigo]; if(!items||!items.length) return;
     let body=''; let sub=0;
-    items.forEach(function(it){ sub+=it.sub; body+='<tr'+(it.mo?' style="background:#fdf7e8"':'')+'><td class="cod">'+(it.mo?'👷 ':'')+escapeHtml(it.cod)+'</td><td>'+escapeHtml(it.material)+'</td><td class="c">'+escapeHtml(it.unidad)+'</td><td class="n">'+_qty(it.cantidad)+'</td><td class="n">'+(it.precio>0?('₲ '+fmtGs(it.precio)):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n"><b>₲ '+fmtGs(Math.round(it.sub))+'</b></td></tr>'; });
+    items.forEach(function(it){ sub+=it.sub; body+='<tr'+(it.lg?' style="background:#edf7fa"':(it.mo?' style="background:#fdf7e8"':''))+'><td class="cod">'+(it.lg?'🚛 ':(it.mo?'👷 ':''))+escapeHtml(it.cod)+'</td><td>'+escapeHtml(it.material)+'</td><td class="c">'+escapeHtml(it.unidad)+'</td><td class="n">'+_qty(it.cantidad)+'</td><td class="n">'+(it.precio>0?('₲ '+fmtGs(it.precio)):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n"><b>₲ '+fmtGs(Math.round(it.sub))+'</b></td></tr>'; });
     comp+='<div class="comp-blk"><div class="comp-head"><span><b>'+escapeHtml(r.rubro_codigo)+'</b> · '+escapeHtml(r.descripcion)+' <span class="muted">('+_qty(Number(r.cantidad)||0)+' '+escapeHtml(r.unidad||'')+')</span></span><span>Subtotal ₲ '+fmtGs(Math.round(sub))+'</span></div>'+
       '<table class="t comp"><thead><tr><th>Código</th><th>Material</th><th>Unid.</th><th class="n">Cantidad</th><th class="n">P.unit</th><th class="n">Subtotal</th></tr></thead><tbody>'+body+'</tbody></table></div>';
   });
@@ -2025,6 +2092,7 @@ function buildReporte(){
 '<h3>Composición del costo</h3><table class="t"><thead><tr><th>Concepto</th><th class="n">Subtotal</th><th class="n">Incidencia</th></tr></thead><tbody>'+
 '<tr><td>Materiales</td><td class="n">₲ '+fmtGs(D.matTotal)+'</td><td class="n">'+pct(D.matTotal)+'</td></tr>'+
 '<tr><td>Mano de obra</td><td class="n">₲ '+fmtGs(D.moTotal)+'</td><td class="n">'+pct(D.moTotal)+'</td></tr>'+
+(D.lgTotal>0?('<tr><td>Logística</td><td class="n">₲ '+fmtGs(D.lgTotal)+'</td><td class="n">'+pct(D.lgTotal)+'</td></tr>'):'')+
 (D.servTotal>0?('<tr><td>Rubros por precio total (servicios)</td><td class="n">₲ '+fmtGs(D.servTotal)+'</td><td class="n">'+pct(D.servTotal)+'</td></tr>'):'')+
 '</tbody><tfoot><tr class="cap"><td>TOTAL</td><td class="n">₲ '+fmtGs(T)+'</td><td class="n">100%</td></tr></tfoot></table>'+
 '<h3>Detalle por capítulo</h3><table class="t"><thead><tr><th>Código</th><th>Rubro</th><th>Sector</th><th class="c">Unid.</th><th class="n">Cant.</th><th class="n">P.unit</th><th class="n">Total</th></tr></thead><tbody>'+detalle+'</tbody></table>'+
@@ -2311,6 +2379,10 @@ document.getElementById('moOverlay').addEventListener('click', function(e){ if(e
 document.getElementById('moCant').addEventListener('input', _moPreview);
 document.getElementById('moPrecio').addEventListener('input', _moPreview);
 document.getElementById('moDesc').addEventListener('keydown', function(e){ if(e.key==='Enter') saveMO(); });
+document.getElementById('moTipoLog').addEventListener('change', function(){
+  const d=document.getElementById('moDesc');
+  if(!d.value.trim() || LOGISTICA_TIPOS.indexOf(d.value.trim())>=0) d.value = this.value==='Otro' ? '' : this.value;
+});
 document.getElementById('pmManageObraBtn').addEventListener('click', function(){ openManage('obra'); });
 document.getElementById('pmManageSectorBtn').addEventListener('click', function(){ openManage('sector'); });
 document.getElementById('mgClose').addEventListener('click', closeManage);
@@ -2554,8 +2626,8 @@ async function loadReport(){
     ]);
     REP.cab = (cab.data||[]).slice().sort(function(a,b){ const na=parseInt((/(\d+)/.exec(a.codigo)||[])[1]||'0',10), nb=parseInt((/(\d+)/.exec(b.codigo)||[])[1]||'0',10); return na-nb; });
     REP.rubros = rub.data||[];
-    // la mano de obra (MO-…) no se compra por orden de compra: queda fuera del control de avance
-    REP.insumos = (ins.data||[]).filter(function(i){ return !/^MO-/i.test(String(i.codigo_insumo||'')); });
+    // mano de obra (MO-…) y logística (LG-…) no se compran por orden de compra: quedan fuera del control de avance
+    REP.insumos = (ins.data||[]).filter(function(i){ return !/^(MO|LG)-/i.test(String(i.codigo_insumo||'')); });
     REP.map = {}; REP.rmap = {};
     (ppm.data||[]).forEach(function(r){ REP.map[String(r.producto_id)]=r.material||''; REP.rmap[String(r.producto_id)]=r.rubro_codigo||''; });
     REP.insMap = {}; (insu.data||[]).forEach(function(i){ if(i.producto_id!=null) REP.insMap[String(i.producto_id)]=i.codigo; });
