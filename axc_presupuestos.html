@@ -1038,6 +1038,18 @@ body{
   .ins-total.lg .ins-total-head{background:#0E7490}
   .mo-edit{background:#fff;border:1px solid #C8A028;color:#8a6d10;border-radius:6px;cursor:pointer;padding:2px 7px;font-size:12px;margin-right:4px}
   .mo-edit:hover{background:#C8A028;color:#fff}
+  .org-badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.3px;padding:1px 6px;border-radius:999px;white-space:nowrap;vertical-align:middle;margin-left:6px}
+  .org-rev{background:#FDF3D8;color:#8a6d10;border:1px solid #E7D9A8}
+  .org-obra{background:#E4F3E7;color:#1B5524;border:1px solid #BFE0C7}
+  .org-axc{background:#EDEFF4;color:#4a5568;border:1px solid #D3D9E3}
+  .ci-precio.ref{background:#FDF7E8;border-color:#C8A028;color:#8a6d10;font-weight:700}
+  .ci-refdot{color:#C8A028;font-weight:800;margin-left:3px;cursor:help}
+  .val-seg{display:inline-flex;border:1px solid #d3d9e3;border-radius:8px;overflow:hidden}
+  .val-seg button{border:none;background:#fff;padding:5px 12px;font-size:12px;cursor:pointer;color:#4a5568;font-weight:600}
+  .val-seg button.on{background:#1F3864;color:#fff}
+  .val-seg button.on.ref{background:#C8A028;color:#2b2312}
+  .comp-copybar{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .comp-refbar{margin-top:8px;background:#FDF7E8;border:1px solid #F0E2BD;border-radius:8px;padding:8px 11px;font-size:12.5px;color:#8a6d10;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
   .mo-badge{display:inline-block;background:#C8A028;color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:999px;white-space:nowrap}
   .ins-total.mo{border-color:#C8A028;margin-top:10px}
   .ins-total.mo .ins-total-head{background:#C8A028;color:#2b2312}
@@ -1220,6 +1232,11 @@ async function loadArbol(){
   try{
     const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
+    try{
+      const { data:recs } = await sb.from('recetas').select('rubro_codigo,origen').eq('activo', true);
+      const om={}; (recs||[]).forEach(function(x){ if(!(x.rubro_codigo in om)) om[x.rubro_codigo]=x.origen||''; });
+      ed.arbol.forEach(function(r){ r.origen = om[r.codigo] || ''; });
+    }catch(e2){ console.warn('origen recetas', e2); }
     ed.arbolByCod = {}; ed.byCap = {};
     ed.arbol.forEach(function(r){
       ed.arbolByCod[String(r.codigo)] = r;
@@ -1254,7 +1271,8 @@ function _fillCompSelect(){
   sel.innerHTML = '<option value="">Composición…</option>' +
     items.map(function(r){
       const icon = r.tiene_receta ? '🧱 ' : '💰 ';
-      return '<option value="'+escapeHtml(r.codigo)+'">'+icon+escapeHtml(r.codigo+' · '+r.nombre)+'</option>';
+      const org = _origenLabel(r.origen);
+      return '<option value="'+escapeHtml(r.codigo)+'">'+icon+escapeHtml(r.codigo+' · '+r.nombre)+(org?escapeHtml('   [ '+org+' ]'):'')+'</option>';
     }).join('');
   sel.disabled = false;
 }
@@ -2849,7 +2867,7 @@ function renderCompTree(){
         '<button type="button" class="rub-del" data-cod="'+escapeHtml(r.codigo)+'" title="Dar de baja rubro">✕</button>'+
         '<span class="rdot">'+dot+'</span>'+
         '<span class="rc">'+escapeHtml(r.codigo)+'</span>'+
-        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+'</span>'+
+        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+_origenBadge(r.origen)+'</span>'+
       '</div>';
     });
   });
@@ -2864,13 +2882,13 @@ function renderCompTree(){
 
 async function selectCompRubro(codigo){
   const r=ed.arbolByCod[String(codigo)]; if(!r) return;
-  comp.rubro=r; comp.recetaId=null; comp.items=[];
+  comp.rubro=r; comp.recetaId=null; comp.items=[]; comp.origen='';
   const right=document.getElementById('compRight');
   right.innerHTML='<div class="comp-empty-r">Cargando composición…</div>';
   try{
-    const { data:recs } = await sb.from('recetas').select('id').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    const { data:recs } = await sb.from('recetas').select('id,origen').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
     if(recs && recs.length){
-      comp.recetaId=recs[0].id;
+      comp.recetaId=recs[0].id; comp.origen=recs[0].origen||'';
       const { data:items } = await sb.from('receta_items').select('*').eq('receta_id', comp.recetaId).eq('activo', true).order('orden');
       comp.items=(items||[]).map(function(it){ return {
         id:it.id, tipo:it.tipo_componente||'insumo', codigo_catalogo:it.codigo_catalogo||'',
@@ -2884,10 +2902,48 @@ async function selectCompRubro(codigo){
   renderCompEditor();
 }
 
+// ── Origen de la composición ────────────────────────────
+var ORIGEN_OPCIONES = ['AXC','Revista Costos ago-2026','Medido en obra'];
+// modo de valuación del APU: 'cat' = catálogo AXC · 'ref' = precios de referencia de la composición
+var _valMode = 'cat';
+function _origenClass(o){
+  const t=String(o||'').toLowerCase();
+  if(t.indexOf('costos')>=0 || t.indexOf('revista')>=0) return 'org-rev';
+  if(t.indexOf('obra')>=0) return 'org-obra';
+  return 'org-axc';
+}
+function _origenLabel(o){
+  const t=String(o||'').trim();
+  if(!t || t==='manual' || t==='import') return '';   // los viejos no se etiquetan
+  return t;
+}
+function _origenBadge(o){
+  const l=_origenLabel(o); if(!l) return '';
+  return '<span class="org-badge '+_origenClass(l)+'">'+escapeHtml(l)+'</span>';
+}
+
+// Precio de referencia (opción B): si la línea trae precio propio, ese manda en el APU.
+// El presupuesto y la orden de compra siguen usando el catálogo.
+function _hasRef(it){ return it && it.tipo==='insumo' && it.precio_unit!=null && it.precio_unit!=='' && Number(it.precio_unit)>0; }
+function _catPrice(it){ const p=ed.precioByIns[it.codigo_catalogo]; return (p!=null && p>0)?p:0; }
 function _priceOf(it){
-  if(it.tipo==='insumo'){ const p=ed.precioByIns[it.codigo_catalogo]; if(p!=null && p>0) return p; return Number(it.precio_unit)||0; }
+  if(it.tipo==='insumo'){
+    if(_valMode==='ref' && _hasRef(it)) return Number(it.precio_unit)||0;
+    const c=_catPrice(it);
+    if(c>0) return c;
+    return _hasRef(it) ? (Number(it.precio_unit)||0) : 0;   // sin precio en catálogo, cae a la referencia
+  }
   return Number(it.precio_unit)||0;
 }
+// costo del mismo APU pero valuado con el catálogo AXC
+function _priceAlt(it){
+  if(it.tipo!=='insumo') return Number(it.precio_unit)||0;
+  if(_valMode==='ref'){ const c=_catPrice(it); return c>0?c:(Number(it.precio_unit)||0); }
+  return _hasRef(it) ? (Number(it.precio_unit)||0) : _catPrice(it);
+}
+function _lineCostAlt(it){ return _lineQty(it)*_priceAlt(it); }
+function _unitTotalAlt(){ return comp.items.filter(function(x){return !x._removed;}).reduce(function(s,it){ return s+_lineCostAlt(it); },0); }
+function _hayRef(){ return comp.items.some(function(x){ return !x._removed && _hasRef(x); }); }
 function _lineQty(it){ const c1=Number(it.coef1)||0, c2=Number(it.coef2)||0, m=Number(it.merma_pct)||0; if(c2<=0) return 0; return c1*(1+m)/c2; }
 function _lineCost(it){ return _lineQty(it)*_priceOf(it); }
 function _unitTotal(){ return comp.items.filter(function(x){return !x._removed;}).reduce(function(s,it){ return s+_lineCost(it); },0); }
@@ -2908,8 +2964,17 @@ function _rowHtml(it,i){
   } else {
     mid='<input class="ci-mat" data-i="'+i+'" value="'+escapeHtml(it.material||'')+'" placeholder="Ej. Oficial albañil">';
   }
-  const precioVal=isMat?_priceOf(it):(it.precio_unit!=null?it.precio_unit:'');
-  const precioRO=isMat?' readonly':'';
+  const esRef=_hasRef(it);
+  const editandoRef = isMat && _valMode==='ref';
+  const precioVal = isMat
+    ? (editandoRef ? (esRef ? Number(it.precio_unit) : _catPrice(it)) : _catPrice(it))
+    : (it.precio_unit!=null?it.precio_unit:'');
+  const precioRO = (isMat && !editandoRef) ? ' readonly' : '';
+  const precioTit=isMat
+    ? (editandoRef
+        ? ' title="Precio de referencia de esta composición. Escribí el de la revista. El presupuesto y la orden de compra siguen usando el catálogo ('+fmtGs(_catPrice(it))+')."'
+        : ' title="Precio del catálogo de insumos'+(esRef?('. Esta línea tiene precio de referencia cargado: '+fmtGs(Number(it.precio_unit))):'')+'. Para editarlo, cambiá el modo a «Precio referencia»."')
+    : '';
   const mermaDisp=(Number(it.merma_pct)||0)*100;
   return '<tr class="'+(isMat?'':'comp-tipo-mo')+'" data-i="'+i+'">'+
     '<td>'+tipoSel+'</td>'+
@@ -2918,7 +2983,8 @@ function _rowHtml(it,i){
     '<td class="n"><input class="ci-c1" data-i="'+i+'" value="'+escapeHtml(String(it.coef1!=null?it.coef1:''))+'" style="text-align:right"></td>'+
     '<td class="n"><input class="ci-c2" data-i="'+i+'" value="'+escapeHtml(String(it.coef2!=null?it.coef2:''))+'" style="text-align:right"></td>'+
     '<td class="n"><input class="ci-merma" data-i="'+i+'" value="'+escapeHtml(String(mermaDisp||0))+'" style="text-align:right"></td>'+
-    '<td class="n"><input class="ci-precio'+(isMat?' ro':'')+'" data-i="'+i+'" value="'+escapeHtml(String(precioVal===''?'':(precioVal||0)))+'"'+precioRO+' style="text-align:right"></td>'+
+    '<td class="n" style="white-space:nowrap"><input class="ci-precio'+((esRef&&editandoRef)?' ref':'')+'" data-i="'+i+'" value="'+escapeHtml(String(precioVal===''?'':(precioVal||0)))+'"'+precioRO+precioTit+' style="text-align:right;width:88px">'+
+      (esRef?'<span class="ci-refdot" title="Precio de referencia — catálogo: '+fmtGs(_catPrice(it))+'">◆</span>':'')+'</td>'+
     '<td class="n ci-linecost" data-i="'+i+'">'+fmtGs(_lineCost(it))+'</td>'+
     '<td><button type="button" class="ci-del" data-i="'+i+'">✕</button></td>'+
   '</tr>';
@@ -2937,7 +3003,10 @@ function renderCompEditor(){
     '<div class="comp-rmeta">'+
       '<div class="comp-mini-field"><label>Unidad del rubro</label><input id="compRubUnidad" value="'+escapeHtml(r.unidad||'')+'" style="width:100px"></div>'+
       '<div class="comp-mini-field"><label>Capítulo</label><input id="compRubCap" list="compCapList" value="'+escapeHtml(r.capitulo||'')+'" style="width:220px"></div>'+
+      '<div class="comp-mini-field"><label>Origen del dato</label><input id="compOrigen" list="compOrigenList" value="'+escapeHtml(_origenLabel(comp.origen))+'" placeholder="AXC" style="width:200px" title="De dónde salieron los rendimientos de esta composición"></div>'+
+      '<div class="comp-mini-field" style="align-self:flex-end;padding-bottom:6px">'+_origenBadge(comp.origen)+'</div>'+
     '</div>'+
+    '<datalist id="compOrigenList">'+ORIGEN_OPCIONES.map(function(o){return '<option value="'+escapeHtml(o)+'">';}).join('')+'</datalist>'+
     '<datalist id="compCapList">'+capOpts+'</datalist>'+
     '<table class="comp-tbl"><thead><tr>'+
       '<th style="width:120px">Tipo</th><th>Insumo / Descripción</th><th style="width:64px">Unid.</th>'+
@@ -2954,8 +3023,22 @@ function renderCompEditor(){
       '<button type="button" id="compAddMat">＋ Material</button>'+
       '<button type="button" id="compAddMO">＋ Mano de obra</button>'+
     '</div>'+
+    '<div class="comp-copybar">'+
+      '<span style="font-size:12px;color:#4a5568;font-weight:600">Valuar con:</span>'+
+      '<span class="val-seg"><button type="button" id="valCat" class="'+(_valMode==='cat'?'on':'')+'">Catálogo AXC</button>'+
+      '<button type="button" id="valRef" class="'+(_valMode==='ref'?'on ref':'')+'">Precio referencia</button></span>'+
+      '<span style="flex:1"></span>'+
+      '<input id="compCopyFrom" list="compRubList" placeholder="Copiar componentes desde el rubro…" style="width:250px;border:1px solid #d3d9e3;border-radius:7px;padding:5px 9px;font-size:12.5px">'+
+      '<button type="button" id="compCopyBtn" class="pm-btn-ghost" style="font-size:12.5px">Copiar</button>'+
+    '</div>'+
+    '<datalist id="compRubList">'+(ed.arbol||[]).filter(function(x){return x.tiene_receta && x.codigo!==r.codigo;}).map(function(x){return '<option value="'+escapeHtml(x.codigo)+'">'+escapeHtml(x.nombre||'')+'</option>';}).join('')+'</datalist>'+
+    '<div class="comp-refbar"><span>'+
+      (_valMode==='ref'
+        ? '◆ Valuado con los <b>precios de referencia</b> de esta composición'+(_origenLabel(comp.origen)?(' ('+escapeHtml(_origenLabel(comp.origen))+')'):'')+'. El presupuesto y la orden de compra <b>siempre</b> usan el catálogo AXC.'
+        : 'Valuado con el <b>catálogo AXC</b>, que es lo que va a cotizar el presupuesto y controlar la orden de compra.')+
+      '</span><span style="white-space:nowrap">'+(_valMode==='ref'?'Con catálogo AXC':'Con precios de referencia')+': <b>Gs '+fmtGs(_unitTotalAlt())+'</b> / '+escapeHtml(r.unidad||'unidad')+'</span></div>'+
     '<div class="comp-foot">'+
-      '<div class="comp-total">Costo unitario del rubro:&nbsp; <b id="compUnitTotal">Gs '+fmtGs(_unitTotal())+'</b> <span style="color:#8893a5">/ '+escapeHtml(r.unidad||'unidad')+'</span></div>'+
+      '<div class="comp-total">Costo unitario del rubro:&nbsp; <b id="compUnitTotal">Gs '+fmtGs(_unitTotal())+'</b> <span style="color:#8893a5">/ '+escapeHtml(r.unidad||'unidad')+'</span>'+_origenBadge(comp.origen)+'</div>'+
       '<div class="comp-foot-actions">'+
         '<button type="button" class="pm-btn-ghost" id="compCancel">Cancelar</button>'+
         '<button type="button" class="pm-btn" id="compSave" style="background:#1B5524;border-color:#1B5524;color:#fff">Guardar composición</button>'+
@@ -2990,16 +3073,59 @@ function _bindEditor(){
   right.querySelectorAll('.ci-c1').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); comp.items[i].coef1=_numCoef(el.value); _recalcRow(i); }); });
   right.querySelectorAll('.ci-c2').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); comp.items[i].coef2=_numCoef(el.value); _recalcRow(i); }); });
   right.querySelectorAll('.ci-merma').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); comp.items[i].merma_pct=_numCoef(el.value)/100; _recalcRow(i); }); });
-  right.querySelectorAll('.ci-precio').forEach(function(el){ el.addEventListener('input', function(){ const i=+el.getAttribute('data-i'); if(comp.items[i].tipo!=='insumo'){ comp.items[i].precio_unit=_numInt(el.value); _recalcRow(i); } }); });
+  right.querySelectorAll('.ci-precio').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i=+el.getAttribute('data-i'); const it=comp.items[i];
+      const v=el.value.trim();
+      if(it.tipo==='insumo'){
+        if(_valMode!=='ref') return;              // en modo catálogo el precio no se edita
+        const n=_numInt(v);
+        it.precio_unit = (v==='' || n<=0) ? null : n;
+      } else {
+        it.precio_unit=_numInt(v);
+      }
+      _recalcRow(i);
+    });
+    el.addEventListener('change', function(){ renderCompEditor(); });
+  });
   right.querySelectorAll('.ci-newins').forEach(function(el){ el.addEventListener('click', function(){ openNewInsumo(+el.getAttribute('data-i')); }); });
   right.querySelectorAll('.ci-del').forEach(function(el){ el.addEventListener('click', function(){ const i=+el.getAttribute('data-i'); comp.items[i]._removed=true; renderCompEditor(); }); });
   const nm=document.getElementById('compRubNombre'); if(nm) nm.addEventListener('input', function(){ comp.rubro.nombre=nm.value; });
   const un=document.getElementById('compRubUnidad'); if(un) un.addEventListener('input', function(){ comp.rubro.unidad=un.value; });
   const cp=document.getElementById('compRubCap'); if(cp) cp.addEventListener('input', function(){ comp.rubro.capitulo=cp.value; });
+  const og=document.getElementById('compOrigen'); if(og){ og.addEventListener('input', function(){ comp.origen=og.value; }); og.addEventListener('change', function(){ renderCompEditor(); }); }
+  const vc=document.getElementById('valCat'); if(vc) vc.addEventListener('click', function(){ _valMode='cat'; renderCompEditor(); });
+  const vr=document.getElementById('valRef'); if(vr) vr.addEventListener('click', function(){ _valMode='ref'; renderCompEditor(); });
+  const cb=document.getElementById('compCopyBtn'); if(cb) cb.addEventListener('click', copiarComponentesDesde);
   document.getElementById('compAddMat').addEventListener('click', function(){ comp.items.push({id:null,tipo:'insumo',codigo_catalogo:'',material:'',unidad:'',coef1:1,coef2:1,merma_pct:0,precio_unit:null,producto_id:null,_removed:false}); renderCompEditor(); });
   document.getElementById('compAddMO').addEventListener('click', function(){ comp.items.push({id:null,tipo:'mano_obra',codigo_catalogo:'',material:'',unidad:'jor',coef1:1,coef2:1,merma_pct:0,precio_unit:0,producto_id:null,_removed:false}); renderCompEditor(); });
   document.getElementById('compCancel').addEventListener('click', function(){ selectCompRubro(comp.rubro.codigo); });
   document.getElementById('compSave').addEventListener('click', saveComposicion);
+}
+
+async function copiarComponentesDesde(){
+  const cod=(document.getElementById('compCopyFrom').value||'').trim();
+  if(!cod){ showToast('Elegí el rubro del que querés copiar','error'); return; }
+  if(cod===comp.rubro.codigo){ showToast('Es el mismo rubro','error'); return; }
+  const vivos=comp.items.filter(function(x){return !x._removed;}).length;
+  if(vivos && !confirm('Esta composición ya tiene '+vivos+' componente(s).\n\nLos componentes de '+cod+' se AGREGAN abajo, no reemplazan nada.\n\n¿Continuar?')) return;
+  const btn=document.getElementById('compCopyBtn'); const old=btn.textContent; btn.disabled=true; btn.textContent='Copiando…';
+  try{
+    const { data:recs } = await sb.from('recetas').select('id').eq('rubro_codigo',cod).eq('activo',true).order('created_at').limit(1);
+    if(!recs || !recs.length){ showToast('El rubro '+cod+' no tiene composición','error'); return; }
+    const { data:items } = await sb.from('receta_items').select('*').eq('receta_id',recs[0].id).eq('activo',true).order('orden');
+    if(!items || !items.length){ showToast('La composición de '+cod+' está vacía','error'); return; }
+    items.forEach(function(it){
+      comp.items.push({ id:null, tipo:it.tipo_componente||'insumo', codigo_catalogo:it.codigo_catalogo||'',
+        material:it.material||'', unidad:it.unidad||'', coef1:Number(it.coef1)||0, coef2:Number(it.coef2)||1,
+        merma_pct:Number(it.merma_pct)||0, precio_unit:(it.precio_unit!=null?Number(it.precio_unit):null),
+        producto_id:null, _removed:false });
+    });
+    document.getElementById('compCopyFrom').value='';
+    renderCompEditor();
+    showToast(items.length+' componente(s) copiados de '+cod+' — ajustá los rendimientos y guardá','success');
+  }catch(e){ console.warn('copiar', e); showToast('No se pudo copiar','error'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
 }
 
 async function saveComposicion(){
@@ -3016,11 +3142,11 @@ async function saveComposicion(){
     await sb.from('rubros').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||null, capitulo:(r.capitulo||'')||null }).eq('codigo', r.codigo);
     let recetaId=comp.recetaId;
     if(!recetaId){
-      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:'manual', activo:true, creado_por:_userTag() }).select('id').single();
+      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:(String(comp.origen||'').trim()||'manual'), activo:true, creado_por:_userTag() }).select('id').single();
       if(insR.error) throw insR.error;
       recetaId=insR.data.id; comp.recetaId=recetaId;
     } else {
-      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'' }).eq('id', recetaId);
+      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', origen:(String(comp.origen||'').trim()||null) }).eq('id', recetaId);
     }
     let orden=0;
     for(const it of comp.items){
