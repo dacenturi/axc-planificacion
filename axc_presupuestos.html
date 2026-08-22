@@ -1044,6 +1044,7 @@ body{
   .pref-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 4px;background:#FDF7E8;border:1px solid #F0E2BD;border-radius:8px;padding:8px 11px;font-size:12.5px;color:#8a6d10}
   .pref-bar button{border:1px solid #C8A028;background:#fff;color:#8a6d10;border-radius:7px;padding:5px 11px;font-size:12px;cursor:pointer;font-weight:700}
   .pref-bar button:hover{background:#C8A028;color:#fff}
+  .nomo-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;white-space:nowrap;vertical-align:middle;margin-left:5px;background:#FDECEC;color:#8B1F1F;border:1px solid #F2C9C9;cursor:help}
   .org-badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.3px;padding:1px 6px;border-radius:999px;white-space:nowrap;vertical-align:middle;margin-left:6px}
   .org-rev{background:#FDF3D8;color:#8a6d10;border:1px solid #E7D9A8}
   .org-obra{background:#E4F3E7;color:#1B5524;border:1px solid #BFE0C7}
@@ -1239,9 +1240,20 @@ async function loadArbol(){
     const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
     try{
-      const { data:recs } = await sb.from('recetas').select('rubro_codigo,origen').eq('activo', true);
-      const om={}; (recs||[]).forEach(function(x){ if(!(x.rubro_codigo in om)) om[x.rubro_codigo]=x.origen||''; });
-      ed.arbol.forEach(function(r){ r.origen = om[r.codigo] || ''; });
+      const { data:recs } = await sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true);
+      const om={}, rid={};
+      (recs||[]).forEach(function(x){ if(!(x.rubro_codigo in om)){ om[x.rubro_codigo]=x.origen||''; rid[x.rubro_codigo]=x.id; } });
+      // rubros cuya composición no tiene mano de obra con importe
+      const conMO={};
+      const ids=Object.keys(rid).map(function(k){return rid[k];});
+      if(ids.length){
+        const { data:its } = await sb.from('receta_items').select('receta_id,tipo_componente,precio_unit').eq('activo', true).in('receta_id', ids);
+        (its||[]).forEach(function(x){ if(x.tipo_componente==='mano_obra' && Number(x.precio_unit)>0) conMO[x.receta_id]=true; });
+      }
+      ed.arbol.forEach(function(r){
+        r.origen = om[r.codigo] || '';
+        r.sin_mo = !!rid[r.codigo] && !conMO[rid[r.codigo]];
+      });
     }catch(e2){ console.warn('origen recetas', e2); }
     ed.arbolByCod = {}; ed.byCap = {};
     ed.arbol.forEach(function(r){
@@ -1278,7 +1290,7 @@ function _fillCompSelect(){
     items.map(function(r){
       const icon = r.tiene_receta ? '🧱 ' : '💰 ';
       const org = _origenLabel(r.origen);
-      return '<option value="'+escapeHtml(r.codigo)+'">'+icon+escapeHtml(r.codigo+' · '+r.nombre)+(org?escapeHtml('   [ '+org+' ]'):'')+'</option>';
+      return '<option value="'+escapeHtml(r.codigo)+'">'+icon+escapeHtml(r.codigo+' · '+r.nombre)+(org?escapeHtml('   [ '+org+' ]'):'')+(r.sin_mo?escapeHtml('   ⚠ sin M.O.'):'')+'</option>';
     }).join('');
   sel.disabled = false;
 }
@@ -2921,7 +2933,7 @@ function renderCompTree(){
         '<button type="button" class="rub-del" data-cod="'+escapeHtml(r.codigo)+'" title="Dar de baja rubro">✕</button>'+
         '<span class="rdot">'+dot+'</span>'+
         '<span class="rc">'+escapeHtml(r.codigo)+'</span>'+
-        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+_origenBadge(r.origen)+'</span>'+
+        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+_origenBadge(r.origen)+_sinMOBadge(r)+'</span>'+
       '</div>';
     });
   });
@@ -2970,6 +2982,9 @@ function _origenLabel(o){
   const t=String(o||'').trim();
   if(!t || t==='manual' || t==='import') return '';   // los viejos no se etiquetan
   return t;
+}
+function _sinMOBadge(r){
+  return (r && r.sin_mo) ? '<span class="nomo-badge" title="Esta composición no tiene mano de obra: el costo que muestra es solo material">⚠ sin M.O.</span>' : '';
 }
 function _origenBadge(o){
   const l=_origenLabel(o); if(!l) return '';
@@ -3091,6 +3106,9 @@ function renderCompEditor(){
         ? '◆ Valuado con los <b>precios de referencia</b> de esta composición'+(_origenLabel(comp.origen)?(' ('+escapeHtml(_origenLabel(comp.origen))+')'):'')+'. El presupuesto y la orden de compra <b>siempre</b> usan el catálogo AXC.'
         : 'Valuado con el <b>catálogo AXC</b>, que es lo que va a cotizar el presupuesto y controlar la orden de compra.')+
       '</span><span style="white-space:nowrap">'+(_valMode==='ref'?'Con catálogo AXC':'Con precios de referencia')+': <b>Gs '+fmtGs(_unitTotalAlt())+'</b> / '+escapeHtml(r.unidad||'unidad')+'</span></div>'+
+    (comp.items.some(function(x){return !x._removed;}) && !comp.items.some(function(x){ return !x._removed && x.tipo==='mano_obra' && Number(x.precio_unit)>0; })
+      ? '<div class="comp-refbar" style="background:#FDECEC;border-color:#F2C9C9;color:#8B1F1F"><span>⚠ Esta composición <b>no tiene mano de obra</b>. El costo unitario es solo material: si cotizás con este rubro, el jornal queda afuera.</span></div>'
+      : '')+
     '<div class="comp-foot">'+
       '<div class="comp-total">Costo unitario del rubro:&nbsp; <b id="compUnitTotal">Gs '+fmtGs(_unitTotal())+'</b> <span style="color:#8893a5">/ '+escapeHtml(r.unidad||'unidad')+'</span>'+_origenBadge(comp.origen)+'</div>'+
       '<div class="comp-foot-actions">'+
