@@ -1427,6 +1427,21 @@ async function loadData(){
         oc_obra: oc.obra || '',
         oc_sector: oc.sector || '',
         oc_rubro: oc.rubro || '',
+        // Rubros propios del material (OC nuevas). Si no tiene, cae al rubro de
+        // la cabecera, que es como venían todas las OC hasta el 25/08/2026.
+        item_rubros: (function(){
+          const v = it.rubro_aplicacion;
+          let arr = [];
+          if(Array.isArray(v)) arr = v;
+          else if(typeof v === 'string'){
+            const t = v.trim();
+            if(t.startsWith('{') && t.endsWith('}')){
+              arr = t.slice(1,-1).split(',').map(x => x.replace(/^"|"$/g,'').trim());
+            } else if(t) arr = [t];
+          }
+          arr = arr.filter(x => (x||'').trim());
+          return arr.length ? arr : ((oc.rubro||'').trim() ? [oc.rubro.trim()] : []);
+        })(),
         oc_proveedor: oc.proveedor || '',
         oc_residente: oc.residente || '',
         oc_tipo_compra: oc.tipo_compra || '',
@@ -1452,7 +1467,11 @@ function populateFilterOptions(){
   const uniq = (arr, key) => [...new Set(arr.map(x => x[key]).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es'));
 
   const obras = uniq(state.ocs, 'obra');
-  const rubros = uniq(state.ocs, 'rubro');
+  // Los rubros salen de los materiales, no de la cabecera: así aparecen los
+  // rubros reales en vez de un "Varios" que no se puede filtrar.
+  const rubros = [...new Set(
+    state.items.flatMap(it => it.item_rubros || []).filter(Boolean)
+  )].sort((a,b)=>a.localeCompare(b,'es'));
   const proveedores = uniq(state.ocs, 'proveedor');
   const residentes = uniq(state.ocs, 'residente');
   const tipos = uniq(state.ocs, 'tipo_compra');
@@ -1633,7 +1652,9 @@ function applyFilters(){
     if(f.fechaDesde && (it.oc_fecha||'') < f.fechaDesde) return false;
     if(f.fechaHasta && (it.oc_fecha||'') > f.fechaHasta) return false;
     if(!has(f.obra, it.oc_obra)) return false;
-    if(!has(f.rubro, it.oc_rubro)) return false;
+    // Un material puede tener varios rubros: entra si coincide con alguno.
+    if(f.rubro && f.rubro.length &&
+       !(it.item_rubros||[]).some(r => f.rubro.includes(r))) return false;
     if(!has(f.proveedor, it.oc_proveedor)) return false;
     if(!has(f.residente, it.oc_residente)) return false;
     if(!has(f.tipoCompra, it.oc_tipo_compra)) return false;
@@ -1800,7 +1821,21 @@ function renderRubroChart(){
   // las OC estaban pendientes. Ahora incluye también Solicitado/Observado (excluye
   // Rechazado y Anulada), igual que el gráfico de Proveedor.
   const items = state.filtered.filter(it => it.oc_estado !== 'Rechazado' && it.oc_estado !== 'Anulada');
-  let data = groupSum(items, 'oc_rubro');
+
+  // ★ 25/08/2026: el rubro pasó a cargarse por material. Cada material suma en
+  // TODOS sus rubros con el monto completo (criterio definido por Dirección).
+  // Consecuencia: si hay materiales con más de un rubro, la suma del gráfico
+  // supera el valor total de la OC. Se avisa debajo del título.
+  const _map = new Map();
+  let _inflado = 0;
+  items.forEach(it => {
+    const rs = (it.item_rubros && it.item_rubros.length) ? it.item_rubros : ['(sin)'];
+    const v = Number(it.subtotal) || 0;
+    if(rs.length > 1) _inflado += v * (rs.length - 1);
+    rs.forEach(r => _map.set(r, (_map.get(r)||0) + v));
+  });
+  let data = [..._map.entries()].map(([k,v]) => ({ label:k, value:v }))
+                .sort((a,b)=>b.value-a.value);
 
   // Top 7 + "Otros"
   if(data.length > 8){
@@ -1810,7 +1845,9 @@ function renderRubroChart(){
   }
 
   document.getElementById('chartRubroMeta').textContent =
-    data.length === 0 ? 'Sin datos' : `${data.length} rubro${data.length===1?'':'s'}`;
+    data.length === 0 ? 'Sin datos'
+      : `${data.length} rubro${data.length===1?'':'s'}` +
+        (_inflado > 0 ? ' · incluye materiales con más de un rubro: la suma supera el total' : '');
 
   destroyChart('rubro');
   const canvas = document.getElementById('chartRubro');
@@ -2302,7 +2339,7 @@ function renderTable(){
         <td><span class="oc-toggle" style="display:inline-block;width:14px;color:#1F3864;font-weight:700">${state.verDetalleTabla ? '▾' : '▸'}</span><strong>${escapeHtml(numero)}</strong></td>
         <td>${escapeHtml(it0.oc_obra)}</td>
         <td${!it0.oc_residente ? ' style="color:#8B93A7"' : ''}>${escapeHtml(it0.oc_residente || '—')}</td>
-        <td${!it0.oc_rubro ? ' style="color:#8B93A7"' : ''}>${escapeHtml(it0.oc_rubro || '—')}</td>
+        <td${!(it0.item_rubros||[]).length ? ' style="color:#8B93A7"' : ''}>${escapeHtml((it0.item_rubros||[]).join(', ') || '—')}</td>
         <td>${escapeHtml(it0.oc_proveedor)}</td>
         <td${!it0.oc_tipo_compra ? ' style="color:#8B93A7"' : ''}>${escapeHtml(it0.oc_tipo_compra || 'Sin especificar')}</td>
         <td style="color:#5b6478;font-style:italic">${nItems} ítem${nItems===1?'':'s'} ▾</td>
@@ -2319,7 +2356,7 @@ function renderTable(){
         <td></td>
         <td></td>
         <td></td>
-        <td>${escapeHtml(it.oc_rubro)}</td>
+        <td>${escapeHtml((it.item_rubros||[]).join(', '))}</td>
         <td></td>
         <td></td>
         <td style="padding-left:14px">${escapeHtml(it.producto_nombre || '—')}</td>
