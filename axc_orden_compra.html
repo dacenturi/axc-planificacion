@@ -5415,6 +5415,11 @@ function openWizard(){
   wizard.open = true;
   document.getElementById('wizardOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
+  // Las listas se cargan por adelantado para que el selector de áreas del Paso 2
+  // ya tenga contenido apenas se llega, sin esperar una segunda consulta.
+  loadListasForForm()
+    .then(()=>{ if((wizard.currentStep||1) >= 2){ try{ renderCart(); }catch(e){} } })
+    .catch(e => console.warn('loadListasForForm', e));
   restoreDraftIfAny();
   loadCatalogTotalCount();
   loadCatalogPage(true);
@@ -5954,7 +5959,7 @@ function renderCart(){
     `${wizard.cart.length} item${wizard.cart.length===1?'':'s'} · ${fmtMoney(total)}` +
     (_sinRubro>0 ? `  ·  ⚠ ${_sinRubro} sin rubro` : '');
   const _itemHtml = wizard.cart.map((it, idx)=>{
-    const _sinArea = (OC_AREA_APLICACION && itemAreas(it).length === 0) ? ' sin-area' : '';
+    const _sinArea = (areaUIVisible() && itemAreas(it).length === 0) ? ' sin-area' : '';
     let _badge = '';
     if(_cbActive && !it.es_mano_obra){
       try{
@@ -6417,10 +6422,13 @@ async function loadListasForForm(){
   if(wizard.listas.obras.length > 0) return;
 
   try{
+    // Sin límite explícito, PostgREST devuelve solo las primeras 1000 filas y
+    // las áreas (ordenadas alfabéticamente junto al resto) podrían quedar afuera.
     const {data, error} = await sb
       .from('listas')
       .select('*')
-      .order('valor', {ascending: true});
+      .order('valor', {ascending: true})
+      .limit(5000);
     if(error) throw error;
 
     const byTipo = {};
@@ -6687,6 +6695,12 @@ const OC_AREA_OBLIGATORIA = true;
 // Ítem que pidió crear un área desde su propio selector
 let _areaTargetIdx = null;
 
+// El Paso 1 es carga rápida de materiales: la imputación del área recién
+// aparece en el Paso 2, junto con el resto de los datos de la compra.
+function areaUIVisible(){
+  return OC_AREA_APLICACION && (wizard.currentStep || 1) >= 2;
+}
+
 // Áreas de un ítem, siempre como arreglo limpio
 // Texto plano de las áreas de un ítem, tal como llega de la base o del carrito
 function areasTexto(v){
@@ -6732,7 +6746,7 @@ function areaRemove(idx, valor){
 
 // Bloque de chips + selector de un ítem del carrito
 function renderAreaChips(it, idx){
-  if(!OC_AREA_APLICACION) return '';
+  if(!areaUIVisible()) return '';
   const usadas = itemAreas(it);
   const disp = (wizard.listas.areas || [])
     .filter(a => !usadas.some(u => u.toLowerCase() === (a.valor||'').toLowerCase()));
@@ -6761,7 +6775,7 @@ function renderAreaBar(){
   const sel  = document.getElementById('areaBulkSel');
   if(!bar || !hint || !sel) return;
 
-  if(!OC_AREA_APLICACION || wizard.cart.length === 0){
+  if(!areaUIVisible() || wizard.cart.length === 0){
     bar.style.display = 'none';
     return;
   }
@@ -6909,6 +6923,7 @@ async function enterStep2(){
   presuInit(); presuApplyMode();
   document.getElementById('fldObservacion').value = wizard.form.observacion || '';
 
+  renderCart(); // muestra los selectores de área, que solo viven a partir del Paso 2
   triggerSmartAnalysis();
 }
 
