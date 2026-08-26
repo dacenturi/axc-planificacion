@@ -8545,6 +8545,94 @@ function renderDetailBody(){
 // Admin: cualquier OC no archivada.
 // Residente: SOLO la OC que él creó (solicitado_por) y SOLO si está Solicitado u
 // Observado, para corregirla. Si estaba Observado, al guardar vuelve a Solicitado.
+
+/* ═══════════════════════════════════════════════════════════════════
+   RUBRO DE APLICACIÓN EN EL DETALLE (modo edición)
+   ───────────────────────────────────────────────────────────────────
+   Permite cargar o corregir los rubros de cada material en una OC ya
+   creada que todavía se puede editar (Solicitado / Observado, o admin).
+   Sirve tanto para arreglar una carga como para completar las OC
+   anteriores al cambio, que no tienen ningún rubro por material.
+
+   La celda se repinta sola, sin volver a dibujar la tabla, para no
+   pisar lo que el usuario esté escribiendo en cantidad o precio.
+   ═══════════════════════════════════════════════════════════════════ */
+
+// Ítem del detalle que pidió crear un rubro nuevo
+let _rapDetailTargetId = null;
+
+// Rubros de un ítem del detalle, normalizados a arreglo
+function detailItemRubros(it){
+  const v = it && it.rubro_aplicacion;
+  if(Array.isArray(v)) return v.filter(x => (x||'').trim());
+  if(typeof v === 'string'){
+    const t = v.trim();
+    if(t.startsWith('{') && t.endsWith('}')){
+      return t.slice(1,-1).split(',').map(x => x.replace(/^"|"$/g,'').trim()).filter(Boolean);
+    }
+    return t ? [t] : [];
+  }
+  return [];
+}
+
+function detailRubroApEditor(it){
+  const usados = detailItemRubros(it);
+  const disp = (wizard.listas.rubros || [])
+    .filter(r => !usados.some(u => u.toLowerCase() === (r.valor||'').toLowerCase()));
+
+  const chips = usados.map(r =>
+    `<span class="cia-chip">${escapeHtml(r)}<button type="button" data-rapd-del="${it.id}" data-rapd-val="${escapeHtml(r)}" title="Quitar">×</button></span>`
+  ).join('');
+
+  const opts = disp.map(r => `<option value="${escapeHtml(r.valor)}">${escapeHtml(r.valor)}</option>`).join('');
+  const sel = `<select class="cia-add" data-rapd-add="${it.id}">
+      <option value="">${usados.length ? '+ Otro' : '+ Elegir rubro'}</option>
+      ${opts}
+      <option value="__new">➕ Crear rubro nuevo...</option>
+    </select>`;
+
+  return `<div class="cia-chips">${chips}${sel}</div>`;
+}
+
+// Repinta SOLO la celda del ítem, para no perder lo tipeado en la fila
+function refrescarCeldaRubroAp(id){
+  const it = detail.items.find(x => String(x.id) === String(id));
+  const cell = document.querySelector(`[data-rapd-cell="${id}"]`);
+  if(it && cell) cell.innerHTML = detailRubroApEditor(it);
+}
+
+document.addEventListener('change', function(e){
+  const sel = e.target.closest?.('[data-rapd-add]');
+  if(!sel) return;
+  const id = sel.getAttribute('data-rapd-add');
+  const v = sel.value;
+  sel.value = '';
+  if(!v) return;
+  const it = detail.items.find(x => String(x.id) === String(id));
+  if(!it) return;
+  if(v === '__new'){
+    _rapDetailTargetId = id;
+    openAddListModal('rubros');
+    return;
+  }
+  const act = detailItemRubros(it);
+  if(!act.some(r => r.toLowerCase() === v.toLowerCase())){
+    it.rubro_aplicacion = act.concat([v]);
+    refrescarCeldaRubroAp(id);
+  }
+});
+
+document.addEventListener('click', function(e){
+  const del = e.target.closest?.('[data-rapd-del]');
+  if(!del) return;
+  const id = del.getAttribute('data-rapd-del');
+  const val = del.getAttribute('data-rapd-val');
+  const it = detail.items.find(x => String(x.id) === String(id));
+  if(!it) return;
+  it.rubro_aplicacion = detailItemRubros(it).filter(r => r.toLowerCase() !== (val||'').toLowerCase());
+  refrescarCeldaRubroAp(id);
+});
+
 function _puedeEditarOC(oc){
   if(!oc) return false;
   const isAdmin = state.profile?.rol === 'admin';
@@ -8719,7 +8807,9 @@ function renderItemsSection(editing){
 
     // Rubro de aplicación del material (solo lectura en el detalle)
     const _rapTxt = rubrosApTexto(it.rubro_aplicacion);
-    const rubroApCell = `<td style="font-size:11.5px;color:var(--text2,#7a6f55)">${_rapTxt ? escapeHtml(_rapTxt) : '—'}</td>`;
+    const rubroApCell = editing
+      ? `<td data-rapd-cell="${it.id}">${detailRubroApEditor(it)}</td>`
+      : `<td style="font-size:11.5px;color:var(--text2,#7a6f55)">${_rapTxt ? escapeHtml(_rapTxt) : '—'}</td>`;
 
     if(editing && esMO){
       // Mano de obra: cantidad fija 1, se edita el monto (precio = subtotal)
@@ -9580,6 +9670,7 @@ async function saveDetailEdits(){
         subtotal: subtotal,
         rubro_codigo: it.rubro_codigo || (it.es_mano_obra ? null : (_rubroCabDet || null)),
         es_mano_obra: !!it.es_mano_obra,
+        rubro_aplicacion: (detailItemRubros(it).length ? detailItemRubros(it) : null),
         orden: _orden,
       });
     } else {
@@ -9591,6 +9682,7 @@ async function saveDetailEdits(){
         producto_id: it.es_mano_obra ? null : it.producto_id,
         producto_nombre: it.producto_nombre,
         rubro_codigo: it.rubro_codigo || (it.es_mano_obra ? null : (_rubroCabDet || null)),
+        rubro_aplicacion: (detailItemRubros(it).length ? detailItemRubros(it) : null),
       });
     }
     nuevoTotal += subtotal;
@@ -9631,7 +9723,7 @@ async function saveDetailEdits(){
     for(const u of updates){
       const { data: d1, error: e1 } = await sb
         .from('ordenes_compra_items')
-        .update({ cantidad: u.cantidad, precio_unit: u.precio_unit, subtotal: u.subtotal, producto_id: u.producto_id, producto_nombre: u.producto_nombre, rubro_codigo: u.rubro_codigo })
+        .update({ cantidad: u.cantidad, precio_unit: u.precio_unit, subtotal: u.subtotal, producto_id: u.producto_id, producto_nombre: u.producto_nombre, rubro_codigo: u.rubro_codigo, rubro_aplicacion: u.rubro_aplicacion })
         .eq('id', u.id)
         .select();
       if(e1) throw e1;
@@ -11200,7 +11292,8 @@ function closeAddListModal(){
   addListState.open = false;
   addListState.tipo = null;
   addListState.config = null;
-  _rapTargetIdx = null; // si se cerró sin guardar, ningún ítem queda esperando
+  _rapTargetIdx = null;      // si se cerró sin guardar, ningún ítem queda esperando
+  _rapDetailTargetId = null;
   document.getElementById('addListBackdrop').classList.remove('visible');
 }
 
@@ -11279,7 +11372,20 @@ async function confirmAddListItem(){
     wizard.listas[cfg.listKey].push(data);
     wizard.listas[cfg.listKey].sort((a,b) => (a.valor||'').localeCompare(b.valor||'','es'));
 
-    // Área creada desde el selector de un material: se le asigna a ESE ítem
+    // Rubro creado desde el detalle de una OC ya existente
+    if(cfg.listKey === 'rubros' && _rapDetailTargetId != null){
+      const id = _rapDetailTargetId;
+      _rapDetailTargetId = null;
+      const it = detail.items.find(x => String(x.id) === String(id));
+      if(it) it.rubro_aplicacion = detailItemRubros(it).concat([val]);
+      refreshOneSelect(cfg);
+      refrescarCeldaRubroAp(id);
+      showToast(`✓ Rubro "${val}" creado y asignado al material`, 'success');
+      closeAddListModal();
+      return;
+    }
+
+    // Rubro creado desde el carrito: se le asigna a ESE ítem
     if(cfg.listKey === 'rubros' && _rapTargetIdx != null){
       const i = _rapTargetIdx;
       _rapTargetIdx = null;
