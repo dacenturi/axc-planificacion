@@ -2969,19 +2969,34 @@ async function selectCompRubro(codigo){
 }
 
 // ── Origen de la composición ────────────────────────────
-var ORIGEN_OPCIONES = ['AXC','Revista Costos ago-2026','Medido en obra'];
+// Valor canónico que va a la base  ·  etiqueta que ve el usuario
+var ORIGEN_OPCIONES = [
+  { v:'manual',  l:'AXC' },
+  { v:'revista', l:'Revista Costos #371 · ago 2026' },
+  { v:'obra',    l:'Medido en obra' }
+];
+// Normaliza los valores que quedaron sueltos de cargas anteriores
+function _origenValor(o){
+  const t=String(o||'').trim().toLowerCase();
+  if(!t) return 'manual';
+  if(t.indexOf('revista')>=0 || t.indexOf('costos')>=0) return 'revista';
+  if(t.indexOf('obra')>=0 && t.indexOf('mano')<0)       return 'obra';
+  if(t==='axc' || t==='manual' || t==='import')          return 'manual';
+  return 'manual';
+}
 // modo de valuación del APU: 'cat' = catálogo AXC · 'ref' = precios de referencia de la composición
 var _valMode = 'cat';
 function _origenClass(o){
-  const t=String(o||'').toLowerCase();
-  if(t.indexOf('costos')>=0 || t.indexOf('revista')>=0) return 'org-rev';
-  if(t.indexOf('obra')>=0) return 'org-obra';
+  const v=_origenValor(o);
+  if(v==='revista') return 'org-rev';
+  if(v==='obra')    return 'org-obra';
   return 'org-axc';
 }
 function _origenLabel(o){
-  const t=String(o||'').trim();
-  if(!t || t==='manual' || t==='import') return '';   // los viejos no se etiquetan
-  return t;
+  const v=_origenValor(o);
+  if(v==='manual') return '';          // lo propio de AXC no lleva etiqueta
+  const op=ORIGEN_OPCIONES.filter(function(x){return x.v===v;})[0];
+  return op ? op.l : '';
 }
 function _sinMOBadge(r){
   return (r && r.sin_mo) ? '<span class="nomo-badge" title="Esta composición no tiene mano de obra: el costo que muestra es solo material">⚠ sin M.O.</span>' : '';
@@ -3072,11 +3087,12 @@ function renderCompEditor(){
     '<div class="comp-rmeta">'+
       '<div class="comp-mini-field"><label>Unidad del rubro</label><input id="compRubUnidad" value="'+escapeHtml(r.unidad||'')+'" style="width:100px"></div>'+
       '<div class="comp-mini-field"><label>Capítulo</label><input id="compRubCap" list="compCapList" value="'+escapeHtml(r.capitulo||'')+'" style="width:220px"></div>'+
-      '<div class="comp-mini-field"><label>Origen del dato</label><input id="compOrigen" list="compOrigenList" value="'+escapeHtml(_origenLabel(comp.origen))+'" placeholder="AXC" style="width:200px" title="De dónde salieron los rendimientos de esta composición"></div>'+
+      '<div class="comp-mini-field"><label>Origen del dato</label><select id="compOrigen" style="width:230px" title="De dónde salieron los rendimientos de esta composición">'+
+        ORIGEN_OPCIONES.map(function(o){ return '<option value="'+o.v+'"'+(_origenValor(comp.origen)===o.v?' selected':'')+'>'+escapeHtml(o.l)+'</option>'; }).join('')+
+      '</select></div>'+
       '<div class="comp-mini-field" style="align-self:flex-end;padding-bottom:6px">'+_origenBadge(comp.origen)+'</div>'+
     '</div>'+
-    '<datalist id="compOrigenList">'+ORIGEN_OPCIONES.map(function(o){return '<option value="'+escapeHtml(o)+'">';}).join('')+'</datalist>'+
-    '<datalist id="compCapList">'+capOpts+'</datalist>'+
+        '<datalist id="compCapList">'+capOpts+'</datalist>'+
     '<table class="comp-tbl"><thead><tr>'+
       '<th style="width:120px">Tipo</th><th>Insumo / Descripción</th><th style="width:64px">Unid.</th>'+
       '<th class="n" style="width:74px" title="coef1: consumo por unidad de rubro">Rend.</th>'+
@@ -3165,7 +3181,7 @@ function _bindEditor(){
   const nm=document.getElementById('compRubNombre'); if(nm) nm.addEventListener('input', function(){ comp.rubro.nombre=nm.value; });
   const un=document.getElementById('compRubUnidad'); if(un) un.addEventListener('input', function(){ comp.rubro.unidad=un.value; });
   const cp=document.getElementById('compRubCap'); if(cp) cp.addEventListener('input', function(){ comp.rubro.capitulo=cp.value; });
-  const og=document.getElementById('compOrigen'); if(og){ og.addEventListener('input', function(){ comp.origen=og.value; }); og.addEventListener('change', function(){ renderCompEditor(); }); }
+  const og=document.getElementById('compOrigen'); if(og){ og.addEventListener('change', function(){ comp.origen=_origenValor(og.value); renderCompEditor(); }); }
   const vc=document.getElementById('valCat'); if(vc) vc.addEventListener('click', function(){ _valMode='cat'; renderCompEditor(); });
   const vr=document.getElementById('valRef'); if(vr) vr.addEventListener('click', function(){ _valMode='ref'; renderCompEditor(); });
   const cb=document.getElementById('compCopyBtn'); if(cb) cb.addEventListener('click', copiarComponentesDesde);
@@ -3214,11 +3230,11 @@ async function saveComposicion(){
     await sb.from('rubros').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||null, capitulo:(r.capitulo||'')||null }).eq('codigo', r.codigo);
     let recetaId=comp.recetaId;
     if(!recetaId){
-      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:(String(comp.origen||'').trim()||'manual'), activo:true, creado_por:_userTag() }).select('id').single();
+      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:_origenValor(comp.origen), activo:true, creado_por:_userTag() }).select('id').single();
       if(insR.error) throw insR.error;
       recetaId=insR.data.id; comp.recetaId=recetaId;
     } else {
-      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', origen:(String(comp.origen||'').trim()||null) }).eq('id', recetaId);
+      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', origen:_origenValor(comp.origen) }).eq('id', recetaId);
     }
     let orden=0;
     for(const it of comp.items){
