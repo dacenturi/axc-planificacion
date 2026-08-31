@@ -1090,6 +1090,8 @@ body{
   .val-seg button{border:none;background:#fff;padding:5px 12px;font-size:12px;cursor:pointer;color:#4a5568;font-weight:600}
   .val-seg button.on{background:#1F3864;color:#fff}
   .val-seg button.on.ref{background:#C8A028;color:#2b2312}
+  .comp-reflink{background:none;border:none;color:#8893a5;font-size:12px;font-weight:600;cursor:pointer;padding:2px 0;text-decoration:underline;text-underline-offset:3px}
+  .comp-reflink:hover{color:#1F3864}
   .comp-copybar{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
   .comp-refbar{margin-top:8px;background:#FDF7E8;border:1px solid #F0E2BD;border-radius:8px;padding:8px 11px;font-size:12.5px;color:#8a6d10;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
   .mo-badge{display:inline-block;background:#C8A028;color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:999px;white-space:nowrap}
@@ -3061,7 +3063,7 @@ async function selectCompRubro(codigo){
   try{
     const { data:recs } = await sb.from('recetas').select('id,origen').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
     if(recs && recs.length){
-      comp.recetaId=recs[0].id; comp.origen=recs[0].origen||'';
+      comp.recetaId=recs[0].id; comp.origen=recs[0].origen||''; _valMode='cat';
       const { data:items } = await sb.from('receta_items').select('*').eq('receta_id', comp.recetaId).eq('activo', true).order('orden');
       comp.items=(items||[]).map(function(it){ return {
         id:it.id, tipo:it.tipo_componente||'insumo', codigo_catalogo:it.codigo_catalogo||'',
@@ -3221,19 +3223,22 @@ function renderCompEditor(){
       '<button type="button" id="compAddMO">＋ Mano de obra</button>'+
     '</div>'+
     '<div class="comp-copybar">'+
-      '<span style="font-size:12px;color:#4a5568;font-weight:600">Valuar con:</span>'+
-      '<span class="val-seg"><button type="button" id="valCat" class="'+(_valMode==='cat'?'on':'')+'">Catálogo AXC</button>'+
-      '<button type="button" id="valRef" class="'+(_valMode==='ref'?'on ref':'')+'">Precio referencia</button></span>'+
+      (_hayItems(comp)
+        ? ('<button type="button" id="valToggleRef" class="comp-reflink">'+(_valMode==='ref'?'▴ ocultar precios de referencia':'▾ ver precios de referencia')+'</button>'+
+           (_valMode==='ref'
+             ? '<span class="val-seg"><button type="button" id="valCat" class="">Catálogo AXC</button>'+
+               '<button type="button" id="valRef" class="on ref">Precio referencia</button></span>'
+             : ''))
+        : '')+
       '<span style="flex:1"></span>'+
       '<input id="compCopyFrom" list="compRubList" placeholder="Copiar componentes desde el rubro…" style="width:250px;border:1px solid #d3d9e3;border-radius:7px;padding:5px 9px;font-size:12.5px">'+
       '<button type="button" id="compCopyBtn" class="pm-btn-ghost" style="font-size:12.5px">Copiar</button>'+
     '</div>'+
     '<datalist id="compRubList">'+(ed.arbol||[]).filter(function(x){return x.tiene_receta && x.codigo!==r.codigo;}).map(function(x){return '<option value="'+escapeHtml(x.codigo)+'">'+escapeHtml(x.nombre||'')+'</option>';}).join('')+'</datalist>'+
-    '<div class="comp-refbar"><span>'+
-      (_valMode==='ref'
-        ? '◆ Valuado con los <b>precios de referencia</b> de esta composición'+(_origenLabel(comp.origen)?(' ('+escapeHtml(_origenLabel(comp.origen))+')'):'')+'. El presupuesto y la orden de compra <b>siempre</b> usan el catálogo AXC.'
-        : 'Valuado con el <b>catálogo AXC</b>, que es lo que va a cotizar el presupuesto y controlar la orden de compra.')+
-      '</span><span style="white-space:nowrap">'+(_valMode==='ref'?'Con catálogo AXC':'Con precios de referencia')+': <b>Gs '+fmtGs(_unitTotalAlt())+'</b> / '+escapeHtml(r.unidad||'unidad')+'</span></div>'+
+    (_hayItems(comp) && _valMode==='ref'
+      ? '<div class="comp-refbar"><span>◆ Valuado con los <b>precios de referencia</b> de esta composición'+(_origenLabel(comp.origen)?(' ('+escapeHtml(_origenLabel(comp.origen))+')'):'')+'. El presupuesto y la orden de compra <b>siempre</b> usan el catálogo AXC.'+
+        '</span><span style="white-space:nowrap">Con catálogo AXC: <b>Gs '+fmtGs(_unitTotalAlt())+'</b> / '+escapeHtml(r.unidad||'unidad')+'</span></div>'
+      : '')+
     (comp.items.some(function(x){return !x._removed;}) && !comp.items.some(function(x){ return !x._removed && x.tipo==='mano_obra' && Number(x.precio_unit)>0; })
       ? '<div class="comp-refbar" style="background:#FDECEC;border-color:#F2C9C9;color:#8B1F1F"><span>⚠ Esta composición <b>no tiene mano de obra</b>. El costo unitario es solo material: si cotizás con este rubro, el jornal queda afuera.</span></div>'
       : '')+
@@ -3245,6 +3250,11 @@ function renderCompEditor(){
       '</div>'+
     '</div>';
   _bindEditor();
+}
+
+// ¿La composición tiene al menos un componente vivo?
+function _hayItems(c){
+  return !!(c && c.items && c.items.some(function(x){ return !x._removed; }));
 }
 
 function _recalcRow(i){
@@ -3294,6 +3304,8 @@ function _bindEditor(){
   const un=document.getElementById('compRubUnidad'); if(un) un.addEventListener('input', function(){ comp.rubro.unidad=un.value; });
   const cp=document.getElementById('compRubCap'); if(cp) cp.addEventListener('input', function(){ comp.rubro.capitulo=cp.value; });
   // El origen no se edita a mano: queda como lo dejó la carga.
+  const vt=document.getElementById('valToggleRef');
+  if(vt) vt.addEventListener('click', function(){ _valMode = (_valMode==='ref' ? 'cat' : 'ref'); renderCompEditor(); });
   const vc=document.getElementById('valCat'); if(vc) vc.addEventListener('click', function(){ _valMode='cat'; renderCompEditor(); });
   const vr=document.getElementById('valRef'); if(vr) vr.addEventListener('click', function(){ _valMode='ref'; renderCompEditor(); });
   const cb=document.getElementById('compCopyBtn'); if(cb) cb.addEventListener('click', copiarComponentesDesde);
