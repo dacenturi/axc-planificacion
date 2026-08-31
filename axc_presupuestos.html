@@ -616,7 +616,8 @@ body{
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
-      <button class="pm-toggle" id="pmReporteBtn" type="button" style="background:#0E7C86;color:#fff;border-color:#0E7C86">📄 Reporte</button>
+      <button class="pm-toggle" id="pmCotBtn" type="button" style="background:#1B5524;color:#fff;border-color:#1B5524" title="Presupuesto para el cliente, con IVA y observaciones">💰 Presupuesto cliente</button>
+      <button class="pm-toggle" id="pmReporteBtn" type="button" style="background:#0E7C86;color:#fff;border-color:#0E7C86" title="Reporte interno de costos">📄 Reporte interno</button>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
       <button class="pm-save" id="pmSaveBtn" type="button">Guardar presupuesto</button>
     </div>
@@ -2177,6 +2178,127 @@ function _reporteCompute(){
   return { rows, byCap, bySec, insByRubro, rubByCod, genCost, total, matTotal:Math.round(matTotalRep), moTotal:Math.round(moTotalRep), lgTotal:Math.round(lgTotalRep), servTotal:Math.round(servTotal) };
 }
 
+// ── Presupuesto para el cliente ─────────────────────────
+// Muestra precios de venta agrupados por sector, con IVA, observaciones y firmas.
+// No expone insumos ni costos internos.
+var COT_CFG = {
+  iva: 5,
+  observaciones: '- LOS RUBROS NO INCLUIDOS QUEDAN A CUENTA DEL PROPIETARIO\n- CANTIDADES Y PRECIOS AJUSTADOS A PROYECTO FINAL',
+  noIncluye: '- PROVISIÓN DE PORCELANATO PARA PISO\n- INSTALACIONES SANITARIAS\n- INSTALACIONES ELÉCTRICAS\n- INSTALACIONES CONTRA INCENDIO\n- INSTALACIONES DE SEÑALES DÉBILES\n- INSTALACIÓN DE A.A.\n- AISLACIÓN ACÚSTICA'
+};
+try{
+  const _g=localStorage.getItem('axc_cot_cfg');
+  if(_g) COT_CFG = Object.assign(COT_CFG, JSON.parse(_g));
+}catch(e){}
+
+function buildCotizacion(){
+  if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
+  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+  const codigo = (document.getElementById('pmCodigo').value||'').trim();
+  const obra   = (document.getElementById('pmObra').value||'').trim();
+  const desc   = (document.getElementById('pmDescripcion').value||'').trim();
+  const D = _reporteCompute();
+  const hoy = new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'});
+
+  // Agrupado por sector, y dentro por capítulo, con numeración 1 / 1,1
+  const porSector = {};
+  D.rows.forEach(function(r){
+    const sec = r.sector || '(Sin sector)';
+    (porSector[sec] = porSector[sec] || []).push(r);
+  });
+  const secs = Object.keys(porSector).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); });
+
+  let cuerpo=''; let totalGral=0; let nSec=0;
+  secs.forEach(function(sec){
+    const filas = porSector[sec];
+    const subSec = filas.reduce(function(a,x){ return a+x.costo; },0);
+    totalGral += subSec;
+    cuerpo += '<tr class="sec"><td colspan="4">'+escapeHtml((obra? obra+' - ':'')+sec)+'</td>'+
+              '<td class="lbl">SUB-TOTAL</td><td class="n">'+fmtGs(subSec)+'</td></tr>';
+    const porCap={};
+    filas.forEach(function(r){ (porCap[r.capitulo]=porCap[r.capitulo]||[]).push(r); });
+    Object.keys(porCap).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); })
+    .forEach(function(cap){
+      nSec++;
+      const nombreCap = String(cap).replace(/^\d+\s*/,'').toUpperCase();
+      cuerpo += '<tr class="cap"><td class="ref">'+nSec+'</td><td colspan="5">'+escapeHtml(nombreCap)+'</td></tr>';
+      porCap[cap].forEach(function(r,i){
+        const pu = r.cantidad>0 ? Math.round(r.costo/r.cantidad) : r.costo;
+        cuerpo += '<tr>'+
+          '<td class="ref">'+nSec+','+(i+1)+'</td>'+
+          '<td>'+escapeHtml(r.descripcion||r.codigo)+'</td>'+
+          '<td class="c">'+escapeHtml(r.unidad||'')+'</td>'+
+          '<td class="c">'+(Number(r.cantidad)||0).toLocaleString('es-PY',{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>'+
+          '<td class="n">'+fmtGs(pu)+'</td>'+
+          '<td class="n">'+fmtGs(r.costo)+'</td></tr>';
+      });
+    });
+  });
+
+  const iva  = Math.round(totalGral * (Number(COT_CFG.iva)||0) / 100);
+  const conIva = totalGral + iva;
+  const lineas = function(txt){
+    return String(txt||'').split('\n').filter(function(l){return l.trim();})
+      .map(function(l){ return '<div>'+escapeHtml(l)+'</div>'; }).join('');
+  };
+
+  const w = window.open('', '_blank');
+  if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
+  w.document.write(
+'<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Presupuesto '+escapeHtml(codigo)+'</title><style>'+
+'*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;background:#eef1f5;margin:0;color:#111}'+
+'.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:10px 18px;display:flex;gap:10px;align-items:center;font-size:13px;z-index:5}'+
+'.bar .sp{margin-left:auto;display:flex;gap:8px;align-items:center}'+
+'.bar button{background:#C9A961;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer;font-size:13px}'+
+'.bar label{font-size:12px;opacity:.85}.bar input{width:56px;border:0;border-radius:6px;padding:6px 8px;font-size:13px;text-align:right}'+
+'.page{max-width:1000px;margin:18px auto;background:#fff;padding:34px 38px;box-shadow:0 2px 14px rgba(0,0,0,.1)}'+
+'.logo{height:52px;margin-bottom:18px}'+
+'table{width:100%;border-collapse:collapse;font-size:13px}'+
+'th,td{border:1px solid #333;padding:5px 8px}'+
+'thead th{background:#8ea4c4;font-weight:700;text-align:center;font-size:13.5px}'+
+'.fecha{text-align:right;font-weight:700;background:#FDF3D8;border:1px solid #333;padding:5px 10px}'+
+'.titulo{background:#9DC3E6;text-align:center;font-weight:800;font-size:17px;padding:7px}'+
+'tr.sec td{background:#BDD7EE;font-weight:700}'+
+'tr.cap td{background:#BFBFBF;font-weight:700}'+
+'td.ref{text-align:right;font-weight:700;width:78px}'+
+'td.c{text-align:center}td.n{text-align:right}td.lbl{text-align:right;font-weight:700}'+
+'tr.tot td{background:#D9D9D9;font-weight:800}'+
+'tr.tiva td{background:#A9D08E;font-weight:800;font-size:14px}'+
+'.obs{margin-top:26px;font-size:13px;line-height:1.6}'+
+'.obs h4{margin:16px 0 6px;font-size:13.5px;letter-spacing:.3px}'+
+'.firmas{margin-top:52px;display:flex;justify-content:space-between;font-weight:700;font-size:13px}'+
+'@media print{.bar{display:none}body{background:#fff}.page{margin:0;padding:0;box-shadow:none;max-width:100%}tr{page-break-inside:avoid}}'+
+'</style></head><body>'+
+'<div class="bar">Presupuesto '+escapeHtml(codigo)+' — vista para el cliente'+
+  '<span class="sp"><label>IVA %</label><input id="ivaIn" type="number" step="0.01" value="'+(Number(COT_CFG.iva)||0)+'">'+
+  '<button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></span></div>'+
+'<div class="page">'+
+'<img class="logo" src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
+'<table>'+
+'<tr><td colspan="5" style="border:none"></td><td class="fecha">FECHA: '+hoy+'</td></tr>'+
+'<tr><td colspan="6" class="titulo">PRESUPUESTO '+escapeHtml(codigo.replace(/^PP/i,''))+(desc?(' — '+escapeHtml(desc)):'')+'</td></tr>'+
+'<thead><tr><th style="width:78px">Referencia</th><th>Descripcion</th><th style="width:64px">Unid.</th>'+
+'<th style="width:78px">Cant.</th><th style="width:120px">Prec. Unit</th><th style="width:130px">Prec. Total</th></tr></thead>'+
+'<tbody>'+cuerpo+
+'<tr class="tot"><td colspan="4" style="border:none"></td><td class="lbl">TOTAL</td><td class="n" id="tTot">'+fmtGs(totalGral)+'</td></tr>'+
+'<tr class="tot"><td colspan="3" style="border:none"></td><td class="lbl">IVA</td><td class="c" id="tPct">'+(Number(COT_CFG.iva)||0)+'%</td><td class="n" id="tIva">'+fmtGs(iva)+'</td></tr>'+
+'<tr class="tiva"><td colspan="4" style="border:none"></td><td class="lbl">TOTAL GRAL IVA INCLUIDO</td><td class="n" id="tCon">'+fmtGs(conIva)+'</td></tr>'+
+'</tbody></table>'+
+'<div class="obs"><h4>OBSERVACIONES</h4>'+lineas(COT_CFG.observaciones)+
+'<h4>NO SE INCLUYEN</h4>'+lineas(COT_CFG.noIncluye)+'</div>'+
+'<div class="firmas"><div>APROBADO POR:</div><div>ARQUITECTO:</div></div>'+
+'</div>'+
+'<script>(function(){var b='+totalGral+',f=function(n){return Math.round(n).toLocaleString("es-PY")};'+
+'var i=document.getElementById("ivaIn");i.addEventListener("input",function(){'+
+'var p=Number(i.value)||0,v=Math.round(b*p/100);'+
+'document.getElementById("tPct").textContent=p+"%";'+
+'document.getElementById("tIva").textContent=f(v);'+
+'document.getElementById("tCon").textContent=f(b+v);});})();<\/script>'+
+'</body></html>');
+  w.document.close();
+  showToast('Presupuesto generado','success', codigo+' · '+D.rows.length+' rubro'+(D.rows.length===1?'':'s')+' · Gs '+fmtGs(conIva)+' con IVA');
+}
+
 function buildReporte(){
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
   if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
@@ -2404,6 +2526,7 @@ document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
+document.getElementById('pmCotBtn').addEventListener('click', buildCotizacion);
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
