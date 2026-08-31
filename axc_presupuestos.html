@@ -289,8 +289,15 @@ body{
   transition:all .25s;
 }
 .toast.show{transform:translateY(0);opacity:1}
+@keyframes pmShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+.pm-modal.shake,.comp-modal.shake{animation:pmShake .32s ease}
 .toast.error{background:#8B1F1F}
 .toast.success{background:#1B5524}
+.toast{min-width:280px;max-width:min(460px,92vw);align-items:flex-start;padding:14px 18px}
+.toast-ico{flex:none;width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;line-height:1;margin-top:1px}
+.toast-txt{display:flex;flex-direction:column;gap:3px;line-height:1.35}
+.toast-txt b{font-size:14px;font-weight:700}
+.toast-txt small{font-size:12px;opacity:.88;font-weight:400}
 
 
 /* === LISTA DE PRESUPUESTOS === */
@@ -1119,7 +1126,16 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const state = { user:null, profile:null, list:[], filtered:[] };
 
 function escapeHtml(s){ if(s==null)return ''; return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function showToast(msg, type='info'){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show '+(type||''); setTimeout(()=>t.classList.remove('show'),3000); }
+function showToast(msg, type='info', detalle){
+  const t=document.getElementById('toast');
+  const ico = type==='success' ? '✓' : (type==='error' ? '!' : 'i');
+  t.innerHTML = '<span class="toast-ico">'+ico+'</span>'+
+                '<span class="toast-txt"><b>'+escapeHtml(String(msg))+'</b>'+
+                (detalle ? '<small>'+escapeHtml(String(detalle))+'</small>' : '')+'</span>';
+  t.className='toast show '+(type||'');
+  clearTimeout(t._tm);
+  t._tm = setTimeout(function(){ t.classList.remove('show'); }, detalle ? 5000 : 3200);
+}
 function initialsFrom(name){ if(!name)return '?'; const p=String(name).trim().split(/\s+/); if(p.length===1)return p[0].slice(0,2).toUpperCase(); return (p[0][0]+p[p.length-1][0]).toUpperCase(); }
 function nfmt(n){ return (Number(n)||0).toLocaleString('es-PY'); }
 function fmtGs(n){ return Math.round(Number(n)||0).toLocaleString('es-PY'); }
@@ -2114,7 +2130,9 @@ async function saveBudget(){
       }
       if(ii.error) throw ii.error;
     }
-    showToast('Presupuesto guardado', 'success');
+    showToast('Presupuesto guardado', 'success',
+      (ed.codigo||'')+' · '+ed.rubros.length+' rubro'+(ed.rubros.length===1?'':'s')+
+      ' · '+ed.insumos.length+' insumo'+(ed.insumos.length===1?'':'s'));
     _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
   }catch(e){ console.warn('saveBudget', e); showToast('No se pudo guardar: ' + (e.message||''), 'error'); }
@@ -2585,7 +2603,23 @@ document.getElementById('pmInsAdd').addEventListener('click', addInsumo);
 document.getElementById('pmInsCod').addEventListener('input', _insLiveUpdate);
 document.getElementById('pmInsCod').addEventListener('change', _insLiveUpdate);
 document.getElementById('pmInsCalc').addEventListener('click', calcInsumosFromRecetas);
-document.getElementById('ppOverlay').addEventListener('click', function(e){ if(e.target === this) closeModal(); });
+// El clic fuera NO cierra: se pierde lo cargado. Se cierra con la X, con Cancelar o con Escape.
+document.getElementById('ppOverlay').addEventListener('click', function(e){
+  if(e.target === this){
+    const m = this.querySelector('.pm-modal');
+    if(m){ m.classList.remove('shake'); void m.offsetWidth; m.classList.add('shake'); }
+    showToast('Usá «Cancelar» o la ✕ para cerrar', 'info');
+  }
+});
+// Escape cierra el modal que esté abierto arriba de todo
+document.addEventListener('keydown', function(e){
+  if(e.key!=='Escape') return;
+  const abiertos = Array.prototype.slice.call(document.querySelectorAll('.pm-overlay.show, .comp-overlay.show, .mini-overlay.show'));
+  if(!abiertos.length) return;
+  const top = abiertos[abiertos.length-1];
+  const x = top.querySelector('.pm-x, .comp-x, .mini-x, #pmCloseBtn, #pmCancelBtn');
+  if(x) x.click();
+});
 document.getElementById('ppSearch').addEventListener('input', function(){
   const q = this.value.trim().toLowerCase();
   state.filtered = !q ? state.list.slice() : state.list.filter(function(x){
@@ -3378,7 +3412,10 @@ async function saveComposicion(){
     comp.rubro=ed.arbolByCod[savedCod]||r;
     renderCompTree();
     renderCompEditor();
-    showToast('Composición guardada', 'success');
+    showToast('Composición guardada', 'success',
+      comp.rubro.codigo+' · '+comp.items.filter(function(x){return !x._removed;}).length+
+      ' componente'+(comp.items.filter(function(x){return !x._removed;}).length===1?'':'s')+
+      ' · Gs '+fmtGs(_unitTotal())+' / '+(comp.rubro.unidad||'unidad'));
     _audit('composicion', r.codigo, 'guardar', {componentes: comp.items.length, costo_unit: Math.round(_unitTotal())});
   }catch(e){ console.warn('saveComposicion', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
