@@ -351,6 +351,12 @@ body{
 .pm-addrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center}
 .pm-addrow .pm-input{flex:1;min-width:140px}
 .pm-btn{background:var(--gold);border:none;color:var(--navy);font-weight:700;font-size:14px;padding:9px 16px;border-radius:8px;cursor:pointer;font-family:inherit}
+  .pm-calc{background:#eef1f5;color:#8893a5;border:1px solid #dfe4ec}
+  .pm-calc.desfasado{background:#C8A028;color:#1F3864;border-color:#a8851f;animation:pmPulse 1.6s ease-in-out infinite}
+  @keyframes pmPulse{0%,100%{box-shadow:0 0 0 0 rgba(200,160,40,.55)}50%{box-shadow:0 0 0 7px rgba(200,160,40,0)}}
+  .pm-desf-aviso{margin-top:8px;padding:9px 12px;border-radius:8px;background:#FDF3D8;border:1px solid #E7D9A8;color:#8a6d10;font-size:12.5px;display:none}
+  .pm-desf-aviso.show{display:block}
+  .pm-rub-desf{outline:2px solid #C8A028;outline-offset:-2px}
 .pm-btn:hover{filter:brightness(.96)}
 .pm-btn2{background:var(--navy);border:none;color:#fff;font-weight:600;font-size:13px;padding:9px 14px;border-radius:8px;cursor:pointer;font-family:inherit}
 .pm-empty2{padding:18px;text-align:center;color:#8893a5;font-size:14px}
@@ -596,8 +602,9 @@ body{
         <input id="pmInsCant" class="pm-input" type="number" step="any" placeholder="Cantidad" style="max-width:100px">
         <select id="pmInsRubro" class="pm-input" style="max-width:200px"><option value="">General (sin rubro)</option></select>
         <button id="pmInsAdd" class="pm-btn" type="button">Agregar insumo</button>
-        <button id="pmInsCalc" class="pm-btn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864">🧮 Calcular desde recetas</button>
+        <button id="pmInsCalc" class="pm-btn pm-calc" type="button" title="Vuelve a calcular los insumos de los rubros con receta a partir de su cantidad">🧮 <span id="pmInsCalcTxt">Recalcular desde recetas</span></button>
       </div>
+      <div id="pmDesfAviso" class="pm-desf-aviso"></div>
       <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> (👷) y la <b>logística</b> (🚛) se cargan desde sus propios bloques, más abajo, o con los botones de cada rubro: siempre van imputadas a un rubro, suman al costo del rubro y al total general, pero <b>no entran en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
     </div>
     <div class="pm-foot">
@@ -1523,6 +1530,7 @@ async function toggleEstado(){
 
 // ── Rubros (memoria) ────────────────────────────────────
 function renderRubros(){
+  setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
   const tb = document.getElementById('pmRubTbody');
   if(!ed.rubros.length){ tb.innerHTML = '<tr><td colspan="7" class="pm-emptyr">Sin rubros todavía. Agregá abajo.</td></tr>'; return; }
   tb.innerHTML = ed.rubros.map(function(r,i){
@@ -1686,6 +1694,48 @@ function _bindMOBlock(){
   box.querySelectorAll('[data-moedit]').forEach(function(el){ el.addEventListener('click', function(){ openMO(el.getAttribute('data-moedit')); }); });
   box.querySelectorAll('[data-moadd]').forEach(function(el){ el.addEventListener('click', function(){ openMO(null, el.getAttribute('data-moadd'), el.getAttribute('data-mokind')||'mano_obra'); }); });
 }
+// ¿Hay rubros con receta cuya cantidad ya no coincide con la de sus insumos?
+// Compara la cantidad del insumo contra coef1/coef2 x (1+merma) x cantidad del rubro.
+function _rubrosDesfasados(){
+  const fuera=[];
+  ed.rubros.forEach(function(r){
+    if(!r.tiene_receta || !r.rubro_codigo) return;
+    const cant=Number(r.cantidad)||0;
+    const items=ed.insumos.filter(function(x){ return x.rubro_codigo===r.rubro_codigo; });
+    if(!items.length){ if(cant>0) fuera.push(r.rubro_codigo); return; }
+    const hay=items.some(function(it){
+      const c1=Number(it.coef1)||0, c2=Number(it.coef2)||0, m=Number(it.merma_pct)||0;
+      if(c2<=0) return false;                       // cargado a mano, no se controla
+      const esperado=c1*(1+m/100)/c2*cant;
+      const actual=Number(it.cantidad)||0;
+      return Math.abs(esperado-actual) > Math.max(0.001, esperado*0.001);
+    });
+    if(hay) fuera.push(r.rubro_codigo);
+  });
+  return fuera;
+}
+
+function _pintarDesfasaje(){
+  const btn=document.getElementById('pmInsCalc');
+  const avi=document.getElementById('pmDesfAviso');
+  if(!btn) return;
+  const fuera=_rubrosDesfasados();
+  if(fuera.length){
+    btn.classList.add('desfasado');
+    if(avi){
+      avi.classList.add('show');
+      avi.innerHTML='⚠️ <b>'+fuera.length+' rubro'+(fuera.length>1?'s':'')+
+        '</b> con la cantidad cambiada después de cargar sus insumos: <b>'+
+        fuera.map(escapeHtml).join(', ')+'</b>. Los insumos siguen con la cantidad anterior. '+
+        'Apretá «Recalcular desde recetas» para ponerlos al día.';
+    }
+  } else {
+    btn.classList.remove('desfasado');
+    if(avi) avi.classList.remove('show');
+  }
+  return fuera;
+}
+
 function renderInsumos(){
   _populateInsRubroSelect();
   const box = document.getElementById('pmInsView');
@@ -1698,6 +1748,7 @@ function renderInsumos(){
   if(groups['']) keys.push('');
   const rubByCod = {}; ed.rubros.forEach(function(r){ rubByCod[r.rubro_codigo]=r; });
   const PR = ed.precioByIns || {};
+  setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
   const _pr = function(cod){ return Number(PR[cod])||0; };
   const _prl = function(r){ return (r && r.precio_unitario!=null && r.precio_unitario!=='') ? (Number(r.precio_unitario)||0) : _pr(r && r.codigo_insumo); };
   let html='';
@@ -2065,7 +2116,7 @@ async function saveBudget(){
     _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
   }catch(e){ console.warn('saveBudget', e); showToast('No se pudo guardar: ' + (e.message||''), 'error'); }
-  finally{ btn.disabled = false; btn.textContent = old; }
+  finally{ btn.disabled = false; if(txt) txt.textContent = old; }
 }
 
 
@@ -2235,14 +2286,16 @@ async function calcInsumosFromRecetas(silent){
   const conCodigo = ed.rubros.filter(function(r){ return r.rubro_codigo && (Number(r.cantidad)||0) > 0; });
   if(!conCodigo.length){ if(!silent) showToast('Cargá rubros con código y cantidad primero', 'error'); return; }
   if(!silent && ed.insumos.some(function(x){ return x.rubro_codigo && x.rubro_codigo!==''; }) && !confirm('Esto recalcula los insumos de los rubros con receta (mantiene los cargados a mano y los «General»). ¿Continuar?')) return;
-  const btn = document.getElementById('pmInsCalc'); const old = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Calculando…';
+  const btn = document.getElementById('pmInsCalc');
+  const txt = document.getElementById('pmInsCalcTxt');
+  const old = txt ? txt.textContent : 'Recalcular desde recetas';
+  btn.disabled = true; if(txt) txt.textContent = 'Calculando…';
   try{
     const codes = Array.from(new Set(conCodigo.map(function(r){ return r.rubro_codigo; })));
     const { data:recs } = await sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes);
     const recByRubro = {}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo] = r.id; });
     const recetaIds = Array.from(new Set(Object.values(recByRubro)));
-    if(!recetaIds.length){ if(!silent) showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    if(!recetaIds.length){ if(!silent) showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
     const { data:items } = await sb.from('receta_items').select('receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo,precio_unit').eq('activo', true).in('receta_id', recetaIds);
     const itemsByRec = {}; (items||[]).forEach(function(it){ (itemsByRec[it.receta_id] = itemsByRec[it.receta_id] || []).push(it); });
     const recetaRubros = {}; conCodigo.forEach(function(r){ if(recByRubro[r.rubro_codigo]) recetaRubros[r.rubro_codigo]=1; });
@@ -2271,14 +2324,14 @@ async function calcInsumosFromRecetas(silent){
       Object.keys(agg).forEach(function(k){ const a=agg[k]; a.cantidad=Math.round(a.cantidad*1000)/1000; nuevos.push(a); });
       Object.keys(aggMO).forEach(function(k){ const a=aggMO[k]; a.cantidad=Math.round(a.cantidad*1000)/1000; moSeq++; moCount++; a.codigo_insumo='MO-'+String(moSeq).padStart(2,'0'); nuevos.push(a); });
     });
-    if(!nuevos.length){ if(!silent) showToast('Las recetas no tienen insumos con código ni mano de obra', 'error'); btn.disabled=false; btn.textContent=old; return; }
+    if(!nuevos.length){ if(!silent) showToast('Las recetas no tienen insumos con código ni mano de obra', 'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
     ed.insumos = nuevos.concat(preservados); renderInsumos();
     let msg = (nuevos.length - moCount) + ' insumo(s) calculados por rubro';
     if(moCount) msg += ' · ' + moCount + ' línea(s) de mano de obra';
     if(sinReceta) msg += ' · ' + sinReceta + ' rubro(s) sin receta';
     showToast(msg + (silent?'':' — revisá y Guardá'), 'success');
   }catch(e){ console.warn('calcInsumos', e); if(!silent) showToast('Error calculando insumos: ' + (e.message||''), 'error'); }
-  finally{ btn.disabled = false; btn.textContent = old; }
+  finally{ btn.disabled = false; if(txt) txt.textContent = old; }
 }
 
 function _rubLiveUpdate(){
@@ -2386,7 +2439,7 @@ async function saveMini(){
       showToast('Obra «'+nombre+'» agregada', 'success'); closeMini();
     } else {
       var obra = (document.getElementById('pmObra').value||'').trim();
-      if(!obra){ showToast('Elegí la obra primero', 'error'); btn.disabled=false; btn.textContent=old; return; }
+      if(!obra){ showToast('Elegí la obra primero', 'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
       var res2 = await sb.from('listas').select('id,valor,obra_ref,activo').eq('tipo','sectores_presu');
       var dup2 = (res2.data||[]).find(function(x){
         return _obraMatch(_normObra(x.obra_ref||''), obra) && (x.valor||'').trim().toLowerCase()===nombre.toLowerCase();
@@ -3432,7 +3485,7 @@ async function saveNewRubro(){
     const ex=await sb.from('rubros').select('codigo,activo').eq('codigo', cod).maybeSingle();
     if(ex.data){
       if(ex.data.activo===false){ const up=await sb.from('rubros').update({activo:true,nombre:nom,unidad:uni||null,capitulo:capLabel}).eq('codigo',cod); if(up.error) throw up.error; }
-      else { showToast('Ya existe un rubro con el código '+cod,'error'); btn.disabled=false; btn.textContent=old; return; }
+      else { showToast('Ya existe un rubro con el código '+cod,'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
     } else {
       const ins=await sb.from('rubros').insert({ codigo:cod, nombre:nom, unidad:uni||null, capitulo:capLabel, tiene_receta:false, activo:true, fuente:'manual' });
       if(ins.error) throw ins.error;
