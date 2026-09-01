@@ -77,6 +77,9 @@ a{color:inherit}
 :root[data-theme="light"] .badge.admin,:root[data-theme="warm"] .badge.admin{color:#fff;background:var(--navy)}
 
 .perm-note{margin-top:12px;font-size:12px;color:var(--text2);background:var(--bg3);border:1px dashed var(--border3);border-radius:9px;padding:9px 12px}
+.perm-grupo{margin-top:16px;margin-bottom:2px;font-size:11px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--text2)}
+.perm-item.sensible{border-color:#C8A028;background:#FDF8EC}
+.perm-item.sensible .pl::after{content:' · sensible';font-size:10px;font-weight:700;color:#8a6d10;letter-spacing:.3px}
 .perm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:14px}
 .perm-item{display:flex;gap:9px;align-items:flex-start;background:var(--bg3);border:1px solid var(--border2);border-radius:9px;padding:9px 11px;cursor:pointer}
 .perm-item input{margin-top:3px;width:16px;height:16px;accent-color:var(--gold);cursor:pointer}
@@ -195,14 +198,17 @@ document.getElementById('logo').src=AXC_LOGO;
 let CURRENT_USER=null, ROL=null, USERS=[], HIST=[], HIST_TS_KEY='created_at';
 
 const PERMISOS_CC = [
-  {key:'cc_cargar',           label:'Cargar comprobantes',        desc:'Registrar comprobantes y montos de facturas'},
-  {key:'cc_aprobar',          label:'Aprobar / rechazar',         desc:'Aprobar, rechazar u observar comprobantes'},
-  {key:'cc_aprobar_rendicion',label:'Aprobar rendiciones',        desc:'Aprobar y cerrar rendiciones'},
-  {key:'cc_acreditar',        label:'Acreditar fondos',           desc:'Cargar y editar acreditaciones'},
-  {key:'cc_configurar',       label:'Configurar Caja Chica',      desc:'Topes, alertas y configuración'},
-  {key:'cc_excepcion',        label:'Aprobar excepciones',        desc:'Aprobar comprobantes que superan el tope'},
-  {key:'cc_ver_todas',        label:'Ver todas las cajas',        desc:'No solo la caja propia'},
-  {key:'cc_ia',               label:'Escanear con IA',            desc:'Leer facturas con inteligencia artificial'},
+  {key:'cc_cargar',           label:'Cargar comprobantes',        desc:'Registrar comprobantes y montos de facturas', grupo:'Caja Chica'},
+  {key:'cc_aprobar',          label:'Aprobar / rechazar',         desc:'Aprobar, rechazar u observar comprobantes', grupo:'Caja Chica'},
+  {key:'cc_aprobar_rendicion',label:'Aprobar rendiciones',        desc:'Aprobar y cerrar rendiciones', grupo:'Caja Chica'},
+  {key:'cc_acreditar',        label:'Acreditar fondos',           desc:'Cargar y editar acreditaciones', grupo:'Caja Chica'},
+  {key:'cc_configurar',       label:'Configurar Caja Chica',      desc:'Topes, alertas y configuración', grupo:'Caja Chica'},
+  {key:'cc_excepcion',        label:'Aprobar excepciones',        desc:'Aprobar comprobantes que superan el tope', grupo:'Caja Chica'},
+  {key:'cc_ver_todas',        label:'Ver todas las cajas',        desc:'No solo la caja propia', grupo:'Caja Chica'},
+  {key:'cc_ia',               label:'Escanear con IA',            desc:'Leer facturas con inteligencia artificial', grupo:'Caja Chica'},
+
+  // Presupuestos · el coeficiente de ganancia es información sensible
+  {key:'pres_margen',         label:'Coeficiente y márgenes',     desc:'Ver el costo, aplicar el coeficiente de ganancia y emitir la propuesta económica al cliente', grupo:'Presupuestos'},
 ];
 
 function gs(id){ return document.getElementById(id); }
@@ -282,21 +288,37 @@ function renderPermisos(){
       return `<div class="user-card">
         <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
         <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. No necesita permisos individuales.</div>
+        <div class="perm-grupo">Presupuestos</div>
+        <div class="perm-grid">
+          <label class="perm-item sensible" for="chk_${u.id}_pres_margen">
+            <input type="checkbox" id="chk_${u.id}_pres_margen" ${perm.pres_margen===true?'checked':''}>
+            <span><span class="pl">Coeficiente y márgenes</span><span class="pd">Ver el costo, aplicar el coeficiente de ganancia y emitir la propuesta económica al cliente</span></span>
+          </label>
+        </div>
+        <div class="user-actions">
+          <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
+        </div>
       </div>`;
     }
 
-    const grid = PERMISOS_CC.map(p=>{
-      const id='chk_'+u.id+'_'+p.key;
-      const ck = perm[p.key]===true ? 'checked' : '';
-      return `<label class="perm-item" for="${id}">
-        <input type="checkbox" id="${id}" ${ck}>
-        <span><span class="pl">${escapeHtml(p.label)}</span><span class="pd">${escapeHtml(p.desc)}</span></span>
-      </label>`;
+    const grupos = [];
+    PERMISOS_CC.forEach(p=>{ const g=p.grupo||'General'; if(!grupos.includes(g)) grupos.push(g); });
+    const grid = grupos.map(g=>{
+      const items = PERMISOS_CC.filter(p=>(p.grupo||'General')===g).map(p=>{
+        const id='chk_'+u.id+'_'+p.key;
+        const ck = perm[p.key]===true ? 'checked' : '';
+        const sens = p.key==='pres_margen' ? ' sensible' : '';
+        return `<label class="perm-item${sens}" for="${id}">
+          <input type="checkbox" id="${id}" ${ck}>
+          <span><span class="pl">${escapeHtml(p.label)}</span><span class="pd">${escapeHtml(p.desc)}</span></span>
+        </label>`;
+      }).join('');
+      return `<div class="perm-grupo">${escapeHtml(g)}</div><div class="perm-grid">${items}</div>`;
     }).join('');
 
     return `<div class="user-card">
       <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
-      <div class="perm-grid">${grid}</div>
+      ${grid}
       <div class="user-actions">
         <button class="btn btn-sm" onclick="resetPermisos('${u.id}')">Restablecer</button>
         <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
