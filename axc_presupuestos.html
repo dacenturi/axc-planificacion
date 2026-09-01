@@ -549,10 +549,6 @@ body{
           <label class="pm-label">Descripción</label>
           <input id="pmDescripcion" class="pm-input" placeholder="Ej. Albañilería NP5" maxlength="160">
         </div>
-        <div class="pm-field" style="grid-column:1/-1">
-          <label class="pm-label">Observaciones <span style="font-weight:400;color:#8893a5">· salen impresas en el presupuesto</span></label>
-          <textarea id="pmObs" class="pm-input" rows="3" placeholder="Una por línea. Ej.&#10;- LOS RUBROS NO INCLUIDOS QUEDAN A CUENTA DEL PROPIETARIO&#10;- CANTIDADES Y PRECIOS AJUSTADOS A PROYECTO FINAL" style="resize:vertical;font-family:inherit;line-height:1.5"></textarea>
-        </div>
         <div class="pm-field">
           <label class="pm-label">Estado</label>
           <div id="pmEstadoBadge" class="pm-estbadge" style="margin-top:6px">—</div>
@@ -617,6 +613,9 @@ body{
       </div>
       <div id="pmDesfAviso" class="pm-desf-aviso"></div>
       <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> (👷) y la <b>logística</b> (🚛) se cargan desde sus propios bloques, más abajo, o con los botones de cada rubro: siempre van imputadas a un rubro, suman al costo del rubro y al total general, pero <b>no entran en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
+      <div class="pm-sectitle" style="margin-top:26px">OBSERVACIONES <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#8893a5">· se imprimen al pie del presupuesto</span></div>
+      <textarea id="pmObs" class="pm-input" rows="4" placeholder="Una por línea. Ej.&#10;- LOS RUBROS NO INCLUIDOS QUEDAN A CUENTA DEL PROPIETARIO&#10;- CANTIDADES Y PRECIOS AJUSTADOS A PROYECTO FINAL" style="resize:vertical;font-family:inherit;line-height:1.55;width:100%"></textarea>
+      <div class="pm-hint" style="margin-bottom:6px">Se cargan al final, cuando ya están todos los rubros. Quedan guardadas con este presupuesto.</div>
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
@@ -2218,6 +2217,18 @@ function buildCotizacion(){
   const desc   = (document.getElementById('pmDescripcion').value||'').trim();
   const estado = ed.activo ? 'PUBLICADO' : 'BORRADOR';
   const D = _reporteCompute();
+  // Los materiales se compran por entero: el costo de cada rubro se recalcula con la
+  // cantidad redondeada, igual que el consolidado. Mano de obra y logística no se redondean.
+  const _redond = {};
+  Object.keys(D.insByRubro||{}).forEach(function(k){
+    _redond[k] = (D.insByRubro[k]||[]).reduce(function(a,x){
+      const q = (x.mo || x.lg) ? (Number(x.cantidad)||0) : Math.round(Number(x.cantidad)||0);
+      return a + q*(Number(x.precio)||0);
+    }, 0);
+  });
+  D.rows.forEach(function(r){
+    if(r.tiene_receta && _redond[r.codigo]!=null) r.costo = Math.round(_redond[r.codigo]);
+  });
   const hoy = new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'});
   const nf2 = function(v){ return (Number(v)||0).toLocaleString('es-PY',{minimumFractionDigits:2,maximumFractionDigits:2}); };
 
@@ -2327,7 +2338,7 @@ function buildCotizacion(){
 '</tbody></table>'+ obsHtml +
 '<div class="firmas"><div>APROBADO POR</div><div>ARQUITECTO</div></div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(codigo)+'</span>'+
-'<span>Precios en guaraníes, IVA incluido · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
+'<span>Precios en guaraníes, IVA incluido · Cantidades de material redondeadas a entero · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
   showToast('Presupuesto generado','success', codigo+' · '+D.rows.length+' rubro'+(D.rows.length===1?'':'s')+' · Gs '+fmtGs(total));
