@@ -549,6 +549,10 @@ body{
           <label class="pm-label">Descripción</label>
           <input id="pmDescripcion" class="pm-input" placeholder="Ej. Albañilería NP5" maxlength="160">
         </div>
+        <div class="pm-field" style="grid-column:1/-1">
+          <label class="pm-label">Observaciones <span style="font-weight:400;color:#8893a5">· salen impresas en el presupuesto</span></label>
+          <textarea id="pmObs" class="pm-input" rows="3" placeholder="Una por línea. Ej.&#10;- LOS RUBROS NO INCLUIDOS QUEDAN A CUENTA DEL PROPIETARIO&#10;- CANTIDADES Y PRECIOS AJUSTADOS A PROYECTO FINAL" style="resize:vertical;font-family:inherit;line-height:1.5"></textarea>
+        </div>
         <div class="pm-field">
           <label class="pm-label">Estado</label>
           <div id="pmEstadoBadge" class="pm-estbadge" style="margin-top:6px">—</div>
@@ -1066,7 +1070,17 @@ body{
   .ins-grp-head .sub{font-weight:600;color:#8893a5;font-size:11.5px}
   .ins-grp.general .ins-grp-head{background:#f3f1ea;color:#8a6d10}
   .ins-total{border:2px solid #1F3864;border-radius:10px;margin-top:6px;overflow:hidden}
-  .ins-total-head{background:#1F3864;color:#fff;padding:8px 12px;font-weight:800;font-size:12.5px;display:flex;justify-content:space-between}
+  .ins-total-head{cursor:pointer;user-select:none}
+.ins-total-head::before{content:'▾';display:inline-block;margin-right:8px;font-size:11px;opacity:.75;transition:transform .18s}
+.ins-total.plegado .ins-total-head::before{transform:rotate(-90deg)}
+.ins-total.plegado > *:not(.ins-total-head){display:none !important}
+.ins-total.gral .ins-total-head{cursor:default}
+.ins-total.gral .ins-total-head::before{content:'';margin:0}
+.ins-rub .ins-rub-head{cursor:pointer;user-select:none}
+.ins-rub .ins-rub-head::before{content:'▾';display:inline-block;margin-right:7px;font-size:11px;opacity:.65;transition:transform .18s}
+.ins-rub.plegado .ins-rub-head::before{transform:rotate(-90deg)}
+.ins-rub.plegado > *:not(.ins-rub-head){display:none !important}
+.ins-total-head{background:#1F3864;color:#fff;padding:8px 12px;font-weight:800;font-size:12.5px;display:flex;justify-content:space-between}
   .ins-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
   .ins-tbl th{background:#f7f9fc;color:#42506a;text-align:left;padding:5px 10px;font-weight:700}
   .ins-tbl th.n,.ins-tbl td.n{text-align:right}
@@ -1478,6 +1492,7 @@ function openNew(){
   document.getElementById('pmRubComp').disabled = true;
   document.getElementById('pmRubCod').value = '';
   document.getElementById('pmDescripcion').value = '';
+  document.getElementById('pmObs').value = '';
   ed.activo = false; renderEstadoUI();
   renderRubros(); renderInsumos(); loadArbol(); loadInsList(); loadListas();
   document.getElementById('ppOverlay').style.display = 'flex';
@@ -1507,6 +1522,7 @@ async function openEdit(codigo){
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
   document.getElementById('pmDescripcion').value = h.descripcion || '';
+  document.getElementById('pmObs').value = h.observaciones || '';
   ed.activo = h.activo !== false; renderEstadoUI();
   document.getElementById('ppOverlay').style.display = 'flex';
   renderRubros(); renderInsumos(); loadInsList();
@@ -1889,6 +1905,19 @@ function renderInsumos(){
     html += '<div class="ins-total gral"><div class="ins-total-head"><span>TOTAL GENERAL ('+partes.join(' + ')+')</span><span>₲ '+fmtGs(totRound+moTotal+lgTotal)+'</span></div></div>';
   }
   box.innerHTML = html;
+  // Plegar / desplegar bloques. El estado se recuerda mientras dure la sesión.
+  window._plegados = window._plegados || {};
+  box.querySelectorAll('.ins-total-head, .ins-rub-head').forEach(function(h){
+    const cont = h.parentElement;
+    if(cont.classList.contains('gral')) return;
+    const key = (h.textContent||'').slice(0,60);
+    if(window._plegados[key]) cont.classList.add('plegado');
+    h.addEventListener('click', function(ev){
+      if(ev.target.closest('button, a, input, select')) return;
+      cont.classList.toggle('plegado');
+      window._plegados[key] = cont.classList.contains('plegado');
+    });
+  });
   _bindMOBlock();
   // handlers
   box.querySelectorAll('input[data-f]').forEach(function(inp){
@@ -2086,13 +2115,14 @@ async function saveBudget(){
   const btn = document.getElementById('pmSaveBtn'); const old = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando…';
   try{
+    const observaciones = (document.getElementById('pmObs').value||'').trim();
     const r1 = await sb.from('presupuesto_cab').upsert({ codigo:codigo, obra:obra, descripcion:descripcion, activo:activo }, { onConflict:'codigo' });
     if(r1.error) throw r1.error;
     // Metadata de auditoría en la cabecera (best-effort: las columnas pueden no existir aún)
     try{
       const _now=new Date().toISOString(); const _u=_userTag();
       const _prev = (state.list||[]).find(function(p){ return p.codigo===codigo; }) || {};
-      const _meta={ actualizado_por:_u, actualizado_en:_now };
+      const _meta={ actualizado_por:_u, actualizado_en:_now, observaciones:observaciones };
       if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
       if(activo && !_prev.publicado_en){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
@@ -2223,6 +2253,14 @@ function buildCotizacion(){
     });
   });
 
+  const obsTxt = (document.getElementById('pmObs') ? (document.getElementById('pmObs').value||'') : '').trim();
+  const obsHtml = obsTxt
+    ? '<div class="obs"><h4>OBSERVACIONES</h4>'+
+      obsTxt.split('\n').filter(function(l){return l.trim();})
+            .map(function(l){ return '<div>'+escapeHtml(l)+'</div>'; }).join('')+
+      '</div>'
+    : '';
+
   const w = window.open('', '_blank');
   if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
   w.document.write(
@@ -2254,7 +2292,9 @@ function buildCotizacion(){
 'td.c{text-align:center;white-space:nowrap}td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'+
 'td.lbl{text-align:right;font-weight:700}'+
 'tr.tot td{background:#1F3864;color:#fff;font-weight:800;font-size:14px;border-color:#1F3864;padding:11px 9px}'+
-'.firmas{display:flex;justify-content:space-around;margin-top:64px;padding:0 24px;font-size:12px;color:#5a6677}'+
+'.obs{margin:20px 24px 0;font-size:12px;line-height:1.65;color:#33405c}'+
+'.obs h4{margin:0 0 6px;font-size:12px;letter-spacing:.8px;color:#1F3864}'+
+'.firmas{display:flex;justify-content:space-around;margin-top:48px;padding:0 24px;font-size:12px;color:#5a6677}'+
 '.firmas div{border-top:1px solid #8893a5;padding-top:7px;width:230px;text-align:center;font-weight:700;color:#1a1f2b}'+
 '.pie{margin-top:26px;padding:9px 24px 0;border-top:1px solid #e6e9ee;font-size:10px;color:#9aa4b2;display:flex;justify-content:space-between}'+
 '@media print{.bar{display:none}body{background:#fff}.page{width:auto;margin:0;box-shadow:none}'+
@@ -2282,8 +2322,9 @@ function buildCotizacion(){
 '<th style="width:86px">Cant.</th><th style="width:120px">Prec. Unit</th><th style="width:140px">Prec. Total</th></tr></thead>'+
 '<tbody>'+cuerpo+
 '<tr class="tot"><td colspan="4" style="border:none;background:#fff"></td>'+
-'<td class="lbl">TOTAL GENERAL</td><td class="n">'+fmtGs(total)+'</td></tr>'+
-'</tbody></table>'+
+'<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">IVA INCLUIDO</span></td>'+
+'<td class="n" style="font-size:16px">'+fmtGs(total)+'</td></tr>'+
+'</tbody></table>'+ obsHtml +
 '<div class="firmas"><div>APROBADO POR</div><div>ARQUITECTO</div></div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(codigo)+'</span>'+
 '<span>Precios en guaraníes, IVA incluido · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
