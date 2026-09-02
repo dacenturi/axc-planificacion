@@ -3915,6 +3915,23 @@ body{
 .fp-mpre{text-align:right;font-size:12px;color:#6b7585;font-variant-numeric:tabular-nums}
 .fp-mpre small{display:block;font-size:9.5px;color:#b0b8c4}
 .fp-msub{text-align:right;font-size:13px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
+.fp-mk-ov{position:fixed;inset:0;background:rgba(20,30,55,.5);z-index:10050;display:flex;align-items:center;justify-content:center;padding:20px}
+.fp-mk-ov[hidden]{display:none}
+.fp-mk{background:#fff;border-radius:14px;width:min(680px,96vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.32);overflow:hidden}
+.fp-mk-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px;background:#1F3864;color:#fff}
+.fp-mk-head b{display:block;font-size:15px}
+.fp-mk-head span{display:block;font-size:12px;opacity:.8;margin-top:2px}
+.fp-mk-x{background:none;border:0;color:#fff;font-size:26px;line-height:1;cursor:pointer;padding:0}
+.fp-mk #fpMkQ{margin:14px 18px 10px;width:calc(100% - 36px)}
+.fp-mk-list{overflow:auto;padding:0 10px 14px}
+.fp-mk-it{display:grid;grid-template-columns:1fr 132px;gap:12px;align-items:center;padding:11px 13px;border-radius:9px;cursor:pointer;border:1px solid transparent}
+.fp-mk-it:hover{background:#f4f8fd;border-color:#d6e2f0}
+.fp-mk-it.actual{background:#EDF3FB;border-color:#1F3864}
+.fp-mk-nm{font-size:13px;color:#2c3547;line-height:1.35}
+.fp-mk-nm small{display:block;font-size:11px;color:#8893a5;margin-top:2px}
+.fp-mk-pr{text-align:right;font-size:13.5px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
+.fp-mk-pr small{display:block;font-size:10px;font-weight:600;color:#9aa4b2}
+.fp-mk-empty{padding:26px;text-align:center;color:#8893a5;font-size:13px}
 .fp-link{display:block;margin-top:3px;background:none;border:0;color:#0E7C86;font-size:10.5px;font-weight:700;text-decoration:underline;text-underline-offset:2px;cursor:pointer;font-family:inherit;padding:0;margin-left:auto}
 .fp-link:hover{color:#1F3864}
 .fp-tag{display:inline-block;margin-left:7px;font-size:9.5px;font-weight:700;color:#8a6d10;background:#FDF3D8;border:1px solid #E7D9A8;border-radius:999px;padding:1px 7px;vertical-align:middle}
@@ -4223,7 +4240,18 @@ body{
         <div class="fp-o-hint" id="fpOHint">Elegí productos del catálogo y el sistema los imputa al presupuesto.</div>
       </div>
 
-      <div class="fp-panel" id="fpPanel" hidden>
+      <div class="fp-mk-ov" id="fpMkOv" hidden>
+  <div class="fp-mk">
+    <div class="fp-mk-head">
+      <div><b id="fpMkTit">Elegir producto</b><span id="fpMkSub">—</span></div>
+      <button type="button" class="fp-mk-x" id="fpMkX">&times;</button>
+    </div>
+    <input type="text" id="fpMkQ" class="fp-in" placeholder="Buscar marca o producto en el catálogo…" autocomplete="off">
+    <div class="fp-mk-list" id="fpMkList"></div>
+  </div>
+</div>
+
+<div class="fp-panel" id="fpPanel" hidden>
         <div class="fp-head">
           <div>
             <div class="fp-tit">Faltante del presupuesto <span id="fpPP">—</span></div>
@@ -5511,7 +5539,7 @@ const wizard = {
 // ══ Compra desde presupuesto ═══════════════════════════════════
 // Modo aditivo, visible sólo con el permiso oc_desde_presupuesto.
 // No toca el flujo actual: si no hay permiso, nada de esto se ejecuta.
-var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{} };
+var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{}, prod:{} };
 
 function fpPuede(){
   try{
@@ -5542,6 +5570,7 @@ function fpInit(){
     sel.onkeydown = function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); fpCargarPP(); } };
   }
   if(btn) btn.onclick = fpCargarPP;
+  fpMkInit();
 }
 
 // Carga el presupuesto elegido en el propio panel. Deja el N° también en el
@@ -5634,6 +5663,88 @@ function fpRubros(){
 
 // El presupuesto ya sabe de qué obra y sector es: se completa el paso 2 solo.
 // Si el usuario ya cargó algo a mano, no se pisa.
+// Selector de marca sin salir del panel: muestra las marcas cargadas para ese
+// insumo y permite buscar cualquier otro producto del catálogo.
+var FPMK = { key:null, tmr:null };
+
+async function fpAbrirMarca(key, material, codigoInsumo, prodActual){
+  FPMK.key = key;
+  document.getElementById('fpMkTit').textContent = material;
+  document.getElementById('fpMkSub').textContent = (codigoInsumo||'sin código') + ' · elegí con qué producto vas a comprarlo';
+  document.getElementById('fpMkQ').value = '';
+  document.getElementById('fpMkOv').hidden = false;
+  const list = document.getElementById('fpMkList');
+  list.innerHTML = '<div class="fp-mk-empty">Buscando marcas…</div>';
+  try{
+    let ids = [];
+    if(codigoInsumo){
+      const mk = await sb.from('insumo_marcas').select('producto_id,es_default')
+        .eq('codigo_insumo', codigoInsumo).eq('activo', true);
+      ids = (mk.data||[]).map(function(x){ return Number(x.producto_id); });
+    }
+    if(prodActual && ids.indexOf(Number(prodActual))<0) ids.push(Number(prodActual));
+    if(!ids.length){
+      list.innerHTML = '<div class="fp-mk-empty">Este insumo no tiene marcas cargadas.<br>Buscá el producto arriba.</div>';
+      document.getElementById('fpMkQ').focus(); return;
+    }
+    const pr = await sb.from('productos_catalogo').select('id,nombre,precio_referencia,codigo,unidad_medida')
+      .in('id', ids).eq('activo', true).order('nombre');
+    fpMkPintar(pr.data||[], prodActual, 'Marcas cargadas para este insumo');
+  }catch(e){
+    list.innerHTML = '<div class="fp-mk-empty">No se pudieron cargar las marcas. Buscá el producto arriba.</div>';
+  }
+  document.getElementById('fpMkQ').focus();
+}
+
+function fpMkPintar(rows, prodActual, titulo){
+  const list = document.getElementById('fpMkList');
+  if(!rows.length){ list.innerHTML = '<div class="fp-mk-empty">Sin resultados en el catálogo</div>'; return; }
+  list.innerHTML = (titulo ? '<div style="padding:6px 13px 4px;font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#8893a5">'+escapeHtml(titulo)+'</div>' : '') +
+    rows.map(function(p){
+      const pr = Number(p.precio_referencia)||0;
+      const es = String(p.id) === String(prodActual);
+      return '<div class="fp-mk-it'+(es?' actual':'')+'" data-pid="'+p.id+'" data-nm="'+escapeHtml(p.nombre||'')+'" data-pr="'+pr+'">'+
+        '<div class="fp-mk-nm">'+escapeHtml(p.nombre||'')+
+          '<small>'+escapeHtml(p.codigo||'')+(p.unidad_medida?(' · '+escapeHtml(p.unidad_medida)):'')+(es?' · en uso':'')+'</small></div>'+
+        '<div class="fp-mk-pr">'+(pr?('₲ '+Math.round(pr).toLocaleString('es-PY')):'—')+'<small>catálogo hoy</small></div>'+
+      '</div>';
+    }).join('');
+  list.querySelectorAll('.fp-mk-it').forEach(function(it){
+    it.onclick = function(){
+      FP.prod[FPMK.key] = { id:Number(it.dataset.pid), nombre:it.dataset.nm, precio:Number(it.dataset.pr)||0 };
+      document.getElementById('fpMkOv').hidden = true;
+      fpRender();
+      showToast('Producto cambiado','success', it.dataset.nm);
+    };
+  });
+}
+
+function fpMkInit(){
+  const ov=document.getElementById('fpMkOv'); if(!ov) return;
+  document.getElementById('fpMkX').onclick = function(){ ov.hidden = true; };
+  ov.onclick = function(e){ if(e.target===ov) ov.hidden = true; };
+  const q=document.getElementById('fpMkQ');
+  q.oninput = function(){
+    clearTimeout(FPMK.tmr);
+    const t=(q.value||'').trim();
+    if(t.length < 2) return;
+    FPMK.tmr = setTimeout(async function(){
+      const list=document.getElementById('fpMkList');
+      list.innerHTML='<div class="fp-mk-empty">Buscando…</div>';
+      try{
+        const { data } = await sb.from('productos_catalogo')
+          .select('id,nombre,precio_referencia,codigo,unidad_medida')
+          .eq('activo', true).is('id_maestro', null)
+          .ilike('nombre', '%'+t.replace(/[%_]/g,' ')+'%').order('nombre').limit(25);
+        fpMkPintar(data||[], null, 'Resultados del catálogo');
+      }catch(e){ list.innerHTML='<div class="fp-mk-empty">Error al buscar</div>'; }
+    }, 280);
+  };
+  document.addEventListener('keydown', function(e){
+    if(e.key==='Escape' && !ov.hidden) ov.hidden = true;
+  });
+}
+
 function fpAutocompletar(pp){
   try{
     const obra = cartBudget.obra || '';
@@ -5709,9 +5820,10 @@ function fpRender(){
       const calc = (FP.mat[key] != null) ? FP.mat[key]
                  : (q !== '' ? Math.round(x.cu * Number(q) * 100)/100 : '');
       const exceso = calc !== '' && Number(calc) > x.saldo;
-      const pu  = Number(x.m.precio_cong)||0;
+      const pu  = (FP.prod[key] ? Number(FP.prod[key].precio) : Number(x.m.precio_cong)) || 0;
       const imp = (calc==='' ? 0 : Number(calc)*pu);
       const esMO = /^(MO|LG)-/i.test(String(x.m.codigo_insumo||''));
+      const ov  = FP.prod[key];
       const col = x.saldo <= 0 ? '#c0392b' : (x.saldo < x.limite*0.15 ? '#8a6d10' : '#1B5524');
       return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
         '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+
@@ -5725,7 +5837,7 @@ function fpRender(){
         '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
         '<div class="fp-mpre">'+(pu>0 ? '₲ '+pu.toLocaleString('es-PY') : '—')+'<small>unitario</small></div>'+
         '<div class="fp-msub">'+(imp>0 ? '₲ '+Math.round(imp).toLocaleString('es-PY') : '—')+
-          (esMO ? '' : '<button type="button" class="fp-link" data-buscar="'+escapeHtml(x.m.material)+'" title="Buscar otro producto del catálogo para este material">cambiar producto</button>')+'</div>'+
+          (esMO ? '' : '<button type="button" class="fp-link" data-buscar="'+escapeHtml(x.m.material)+'" data-mk="'+escapeHtml(key)+'" data-ci="'+escapeHtml(x.m.codigo_insumo||'')+'" data-pid="'+escapeHtml(String(ov ? ov.id : (x.m.prod_cong||'')))+'" title="Elegir otra marca o producto">'+(ov?'✓ '+escapeHtml(ov.nombre.slice(0,26)):'cambiar producto')+'</button>')+'</div>'+
         (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
       '</div>';
     }).join('');
@@ -5778,10 +5890,7 @@ function fpRender(){
   cont.querySelectorAll('button[data-buscar]').forEach(function(b){
     b.onclick = function(ev){
       ev.stopPropagation();
-      fpSetModo('catalogo');
-      const q = document.getElementById('catSearch');
-      if(q){ q.value = b.dataset.buscar; q.dispatchEvent(new Event('input',{bubbles:true})); q.focus(); }
-      showToast('Elegí el producto y acordate de imputarlo al rubro en el carrito','info');
+      fpAbrirMarca(b.dataset.mk, b.dataset.buscar, b.dataset.ci, b.dataset.pid);
     };
   });
   cont.querySelectorAll('input[data-mk]').forEach(function(inp){
@@ -5819,12 +5928,13 @@ async function fpAgregarAlCarrito(){
       const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? Math.round(x.cu*q*100)/100 : 0);
       if(!(v>0)) return;
       const esMO = /^(MO|LG)-/i.test(String(x.m.codigo_insumo||''));
-      if(!esMO && !x.m.prod_cong){ sinProducto.push(x.m.material); return; }
+      if(!esMO && !x.m.prod_cong && !FP.prod[key]){ sinProducto.push(x.m.material); return; }
       if(v > x.saldo) sobre++;
-      const pu = Number(x.m.precio_cong)||0;
+      const ov = FP.prod[key];
+      const pu = (ov ? Number(ov.precio) : Number(x.m.precio_cong)) || 0;
       wizard.cart.push({
-        producto_id: esMO ? null : Number(x.m.prod_cong),
-        producto_nombre: x.m.material,
+        producto_id: esMO ? null : Number(ov ? ov.id : x.m.prod_cong),
+        producto_nombre: ov ? ov.nombre : x.m.material,
         url_imagen: '',
         cantidad: v,
         precio_unit: pu,
