@@ -5593,11 +5593,13 @@ async function fpCargarPP(){
   const cont=document.getElementById('fpLista');
   if(cont) cont.innerHTML='<div class="fp-vacio">Cargando materiales de '+escapeHtml(pp)+'…</div>';
   try{
-    const fld=document.getElementById('fldPresupuesto');
-    if(fld && !(fld.value||'').trim()){ fld.value=pp; wizard.form.presupuesto=pp; }
     const chk=document.getElementById('chkSinPresupuesto');
-    if(chk && chk.checked) chk.checked=false;
+    if(chk && chk.checked){ chk.checked=false; chk.dispatchEvent(new Event('change',{bubbles:true})); }
     await setPresupuesto(pp);
+    // El paso 2 se repinta desde wizard.form, así que hay que dejarlo ahí también.
+    wizard.form.presupuesto = pp;
+    const fld=document.getElementById('fldPresupuesto');
+    if(fld) fld.value = pp;
     fpAutocompletar(pp);
     FP.qty={}; FP.mat={}; FP.abierto={};
     fpRender();
@@ -5784,8 +5786,9 @@ function fpAutocompletar(pp){
     const obra = cartBudget.obra || '';
     const fo = document.getElementById('fldObra');
     if(fo && obra && !(fo.value||'').trim()){
-      const opt = Array.prototype.slice.call(fo.options)
-        .filter(function(o){ return _obraMatch(o.value, obra); })[0];
+      const opt = Array.prototype.slice.call(fo.options).filter(function(o){
+        return _obraMatch(o.value, obra) || _obraMatch(o.textContent, obra);
+      })[0];
       if(opt){
         fo.value = opt.value; wizard.form.obra = opt.value;
         filterSectoresByObra(opt.value);
@@ -5807,14 +5810,22 @@ function fpAutocompletar(pp){
         .filter(function(o){ return String(o.value).trim().toLowerCase() === sector.toLowerCase(); })[0];
       if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
     }
-    // Residente: el usuario que está cargando la orden
+    // Residente: el del perfil. Si el perfil no tiene uno cargado (pasa con los
+    // admin), queda vacío y lo elige el usuario: no se inventa.
     const fr = document.getElementById('fldResidente');
     const yo = (state.profile && (state.profile.residente || state.profile.nombre)) || '';
-    if(fr && yo && !(fr.value||'').trim()){
-      const opt = Array.prototype.slice.call(fr.options)
-        .filter(function(o){ return String(o.value).trim().toLowerCase() === yo.trim().toLowerCase(); })[0];
+    if(fr && yo && !(wizard.form.residente||'').trim()){
+      const opt = Array.prototype.slice.call(fr.options).filter(function(o){
+        return String(o.value).trim().toLowerCase() === yo.trim().toLowerCase();
+      })[0];
       if(opt){ fr.value = opt.value; wizard.form.residente = opt.value; }
     }
+    // Qué quedó sin completar, para no dejar al usuario adivinando
+    const faltan = [];
+    if(!(wizard.form.obra||'').trim())      faltan.push('obra');
+    if(!(wizard.form.sector||'').trim())    faltan.push('sector');
+    if(!(wizard.form.residente||'').trim()) faltan.push('residente');
+    if(faltan.length) showToast('Completá en el paso 2: '+faltan.join(', '), 'info');
     if(typeof saveDraft === 'function') saveDraft();
   }catch(e){ console.warn('fpAutocompletar', e); }
 }
@@ -7535,7 +7546,7 @@ async function enterStep2(){
 
 /* ── Presupuesto: control en carrito + detalles (sincronizados) ── */
 function _presuNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
-const cartBudget = { pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false, insMap:{}, insLoaded:false, rubros:null, rmap:{}, rubroDesc:{} };
+const cartBudget = { collapsed:true, pp:'', mats:null, ocItems:[], map:{}, mapLoaded:false, insMap:{}, insLoaded:false, rubros:null, rmap:{}, rubroDesc:{} };
 
 function _cbEls(){ return {
   cno:document.getElementById('cbNo'), csi:document.getElementById('cbSi'),
