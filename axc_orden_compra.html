@@ -3895,7 +3895,9 @@ body{
 .fp-lista{max-height:400px;overflow:auto}
 .fp-rub{border-bottom:1px solid #eef1f6}
 .fp-rub.sin{background:#fdf6f6}
-.fp-rhead{display:grid;grid-template-columns:22px minmax(220px,1fr) 168px 150px;gap:12px;align-items:center;padding:12px 16px;cursor:pointer}
+.fp-rhead{display:grid;grid-template-columns:22px minmax(200px,1fr) 158px 130px 148px;gap:11px;align-items:center;padding:12px 16px;cursor:pointer}
+.fp-rimp{text-align:right;font-size:14px;font-weight:800;color:#1B5524;font-variant-numeric:tabular-nums}
+.fp-rimp small{display:block;font-size:10px;font-weight:600;color:#9aa4b2}
 .fp-rhead:hover{background:#f7fafd}
 .fp-rcar{color:#8893a5;font-size:12px}
 .fp-rnom{min-width:0}
@@ -3909,7 +3911,10 @@ body{
 .fp-qin:disabled{border-color:#e0e5ee;background:#f4f6f9}
 .fp-rq span{font-size:11.5px;color:#8893a5;font-weight:700;white-space:nowrap}
 .fp-mats{background:#fbfcfe;border-top:1px solid #eef1f6;padding:4px 16px 12px 50px}
-.fp-mrow{display:grid;grid-template-columns:minmax(200px,1fr) 118px 110px 52px 190px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
+.fp-mrow{display:grid;grid-template-columns:minmax(180px,1fr) 108px 96px 46px 100px 120px 170px;gap:9px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
+.fp-mpre{text-align:right;font-size:12px;color:#6b7585;font-variant-numeric:tabular-nums}
+.fp-mpre small{display:block;font-size:9.5px;color:#b0b8c4}
+.fp-msub{text-align:right;font-size:13px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
 .fp-mrow:last-child{border-bottom:0}
 .fp-mrow.exceso{background:#fdf2f2;border-radius:7px;padding-left:8px;padding-right:8px}
 .fp-mnom{min-width:0}
@@ -5552,6 +5557,7 @@ async function fpCargarPP(){
     const chk=document.getElementById('chkSinPresupuesto');
     if(chk && chk.checked) chk.checked=false;
     await setPresupuesto(pp);
+    fpAutocompletar(pp);
     FP.qty={}; FP.mat={}; FP.abierto={};
     fpRender();
     if(!cartBudget.mats || !cartBudget.mats.length){
@@ -5623,6 +5629,48 @@ function fpRubros(){
   }).sort(function(a,b){ return b.maxEjec - a.maxEjec; });
 }
 
+// El presupuesto ya sabe de qué obra y sector es: se completa el paso 2 solo.
+// Si el usuario ya cargó algo a mano, no se pisa.
+function fpAutocompletar(pp){
+  try{
+    const obra = cartBudget.obra || '';
+    const fo = document.getElementById('fldObra');
+    if(fo && obra && !(fo.value||'').trim()){
+      const opt = Array.prototype.slice.call(fo.options)
+        .filter(function(o){ return _obraMatch(o.value, obra); })[0];
+      if(opt){
+        fo.value = opt.value; wizard.form.obra = opt.value;
+        filterSectoresByObra(opt.value);
+      }
+    }
+    // Sector: el del presupuesto, o el único que tengan sus rubros
+    let sector = cartBudget.sectorCab || '';
+    if(!sector){
+      const secs = [];
+      Object.keys(cartBudget.rubroSector||{}).forEach(function(k){
+        const v = (cartBudget.rubroSector[k]||'').trim();
+        if(v && secs.indexOf(v)<0) secs.push(v);
+      });
+      if(secs.length === 1) sector = secs[0];
+    }
+    const fs = document.getElementById('fldSector');
+    if(fs && sector && !(fs.value||'').trim()){
+      const opt = Array.prototype.slice.call(fs.options)
+        .filter(function(o){ return String(o.value).trim().toLowerCase() === sector.toLowerCase(); })[0];
+      if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
+    }
+    // Residente: el usuario que está cargando la orden
+    const fr = document.getElementById('fldResidente');
+    const yo = (state.profile && (state.profile.residente || state.profile.nombre)) || '';
+    if(fr && yo && !(fr.value||'').trim()){
+      const opt = Array.prototype.slice.call(fr.options)
+        .filter(function(o){ return String(o.value).trim().toLowerCase() === yo.trim().toLowerCase(); })[0];
+      if(opt){ fr.value = opt.value; wizard.form.residente = opt.value; }
+    }
+    if(typeof saveDraft === 'function') saveDraft();
+  }catch(e){ console.warn('fpAutocompletar', e); }
+}
+
 function fpRender(){
   const cont = document.getElementById('fpLista');
   if(!cont) return;
@@ -5658,6 +5706,8 @@ function fpRender(){
       const calc = (FP.mat[key] != null) ? FP.mat[key]
                  : (q !== '' ? Math.round(x.cu * Number(q) * 100)/100 : '');
       const exceso = calc !== '' && Number(calc) > x.saldo;
+      const pu  = Number(x.m.precio_cong)||0;
+      const imp = (calc==='' ? 0 : Number(calc)*pu);
       const col = x.saldo <= 0 ? '#c0392b' : (x.saldo < x.limite*0.15 ? '#8a6d10' : '#1B5524');
       return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
         '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+'</b>'+
@@ -5668,10 +5718,18 @@ function fpRender(){
           '<small>disponible</small></div>'+
         '<input type="number" class="fp-mq" data-mk="'+escapeHtml(key)+'" min="0" step="any" value="'+calc+'" placeholder="0">'+
         '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
+        '<div class="fp-mpre">'+(pu>0 ? '₲ '+pu.toLocaleString('es-PY') : '—')+'<small>unitario</small></div>'+
+        '<div class="fp-msub">'+(imp>0 ? '₲ '+Math.round(imp).toLocaleString('es-PY') : '—')+'</div>'+
         (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
       '</div>';
     }).join('');
 
+    let impRubro = 0;
+    r.mats.forEach(function(x){
+      const k2 = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
+      const v2 = (FP.mat[k2]!=null) ? FP.mat[k2] : (q!=='' ? x.cu*Number(q) : 0);
+      impRubro += (Number(v2)||0) * (Number(x.m.precio_cong)||0);
+    });
     return '<div class="fp-rub'+(sinSaldo?' sin':'')+'">'+
       '<div class="fp-rhead" data-rk="'+escapeHtml(r.codigo)+'">'+
         '<span class="fp-rcar">'+(abierto?'▾':'▸')+'</span>'+
@@ -5680,6 +5738,8 @@ function fpRender(){
         '<div class="fp-rmax'+(sinSaldo?' sin':'')+'">'+
           (sinSaldo ? '⚠ sin saldo' : 'hasta '+Math.round(r.maxEjec).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||''))+
           '<small>'+(sinSaldo?'algún material se agotó':'podés ejecutar')+'</small></div>'+
+        '<div class="fp-rimp">'+(impRubro>0 ? '₲ '+Math.round(impRubro).toLocaleString('es-PY') : '')+
+          (impRubro>0?'<small>a comprar</small>':'')+'</div>'+
         '<div class="fp-rq" onclick="event.stopPropagation()">'+
           '<input type="number" class="fp-qin" data-rq="'+escapeHtml(r.codigo)+'" min="0" step="any" '+
             'value="'+q+'" placeholder="'+(sinSaldo?'0':Math.round(r.maxEjec))+'"'+(sinSaldo?' disabled':'')+'>'+
@@ -7621,7 +7681,7 @@ async function cartBudgetLoad(pp){
   cartBudget.pp = pp; cartBudget.mats = null; cartBudget.rubros = null; cartBudget.ocItems = []; cartBudgetRender();
   await loadProductoMap();
   try{
-    try{ const cab = await sb.from('presupuesto_cab').select('nombre,obra,sector').eq('codigo', pp).maybeSingle(); cartBudget.nombre = (cab.data && cab.data.nombre) ? cab.data.nombre : ''; cartBudget.obra = (cab.data && cab.data.obra) ? cab.data.obra : ''; }catch(_){ cartBudget.nombre=''; }
+    try{ const cab = await sb.from('presupuesto_cab').select('nombre,obra,sector').eq('codigo', pp).maybeSingle(); cartBudget.nombre = (cab.data && cab.data.nombre) ? cab.data.nombre : ''; cartBudget.obra = (cab.data && cab.data.obra) ? cab.data.obra : ''; cartBudget.sectorCab = (cab.data && cab.data.sector) ? cab.data.sector : ''; }catch(_){ cartBudget.nombre=''; }
     const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id,coef1,coef2,merma_pct').eq('presupuesto', pp).order('material');
     const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:Math.round(Number(m.cantidad)||0), cant_exacta:(Number(m.cantidad)||0), rubro_codigo:m.rubro_codigo||'', precio_cong:(m.precio_unitario!=null?Number(m.precio_unitario):null), prod_cong:(m.producto_id!=null?String(m.producto_id):''), coef1:(Number(m.coef1)||0), coef2:(Number(m.coef2)||0), merma:(Number(m.merma_pct)||0) }; });
     // Rubros de servicio (control por dinero): precio_total>0 y sin receta. Agrupados por clave de rubro.
