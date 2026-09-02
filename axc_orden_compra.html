@@ -3915,6 +3915,9 @@ body{
 .fp-mpre{text-align:right;font-size:12px;color:#6b7585;font-variant-numeric:tabular-nums}
 .fp-mpre small{display:block;font-size:9.5px;color:#b0b8c4}
 .fp-msub{text-align:right;font-size:13px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
+.fp-link{display:block;margin-top:3px;background:none;border:0;color:#0E7C86;font-size:10.5px;font-weight:700;text-decoration:underline;text-underline-offset:2px;cursor:pointer;font-family:inherit;padding:0;margin-left:auto}
+.fp-link:hover{color:#1F3864}
+.fp-tag{display:inline-block;margin-left:7px;font-size:9.5px;font-weight:700;color:#8a6d10;background:#FDF3D8;border:1px solid #E7D9A8;border-radius:999px;padding:1px 7px;vertical-align:middle}
 .fp-mrow:last-child{border-bottom:0}
 .fp-mrow.exceso{background:#fdf2f2;border-radius:7px;padding-left:8px;padding-right:8px}
 .fp-mnom{min-width:0}
@@ -5708,9 +5711,11 @@ function fpRender(){
       const exceso = calc !== '' && Number(calc) > x.saldo;
       const pu  = Number(x.m.precio_cong)||0;
       const imp = (calc==='' ? 0 : Number(calc)*pu);
+      const esMO = /^(MO|LG)-/i.test(String(x.m.codigo_insumo||''));
       const col = x.saldo <= 0 ? '#c0392b' : (x.saldo < x.limite*0.15 ? '#8a6d10' : '#1B5524');
       return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
-        '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+'</b>'+
+        '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+
+          (esMO ? '<span class="fp-tag">no entra en la OC de materiales</span>' : '')+'</b>'+
           '<span>'+escapeHtml(x.m.codigo_insumo||'sin código')+' · '+
           (x.cu>0 ? (Math.round(x.cu*10000)/10000)+' '+escapeHtml(x.m.unidad||'')+' por '+escapeHtml(r.unidad||'unidad') : 'sin coeficiente')+
           '</span></div>'+
@@ -5719,7 +5724,8 @@ function fpRender(){
         '<input type="number" class="fp-mq" data-mk="'+escapeHtml(key)+'" min="0" step="any" value="'+calc+'" placeholder="0">'+
         '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
         '<div class="fp-mpre">'+(pu>0 ? '₲ '+pu.toLocaleString('es-PY') : '—')+'<small>unitario</small></div>'+
-        '<div class="fp-msub">'+(imp>0 ? '₲ '+Math.round(imp).toLocaleString('es-PY') : '—')+'</div>'+
+        '<div class="fp-msub">'+(imp>0 ? '₲ '+Math.round(imp).toLocaleString('es-PY') : '—')+
+          (esMO ? '' : '<button type="button" class="fp-link" data-buscar="'+escapeHtml(x.m.material)+'" title="Buscar otro producto del catálogo para este material">cambiar producto</button>')+'</div>'+
         (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
       '</div>';
     }).join('');
@@ -5769,6 +5775,15 @@ function fpRender(){
       if(again){ again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
     };
   });
+  cont.querySelectorAll('button[data-buscar]').forEach(function(b){
+    b.onclick = function(ev){
+      ev.stopPropagation();
+      fpSetModo('catalogo');
+      const q = document.getElementById('catSearch');
+      if(q){ q.value = b.dataset.buscar; q.dispatchEvent(new Event('input',{bubbles:true})); q.focus(); }
+      showToast('Elegí el producto y acordate de imputarlo al rubro en el carrito','info');
+    };
+  });
   cont.querySelectorAll('input[data-mk]').forEach(function(inp){
     inp.onchange = function(){
       FP.mat[inp.dataset.mk] = inp.value === '' ? null : Number(inp.value);
@@ -5803,15 +5818,22 @@ async function fpAgregarAlCarrito(){
       const key = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
       const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? Math.round(x.cu*q*100)/100 : 0);
       if(!(v>0)) return;
-      if(!x.m.prod_cong){ sinProducto.push(x.m.material); return; }
+      const esMO = /^(MO|LG)-/i.test(String(x.m.codigo_insumo||''));
+      if(!esMO && !x.m.prod_cong){ sinProducto.push(x.m.material); return; }
       if(v > x.saldo) sobre++;
+      const pu = Number(x.m.precio_cong)||0;
       wizard.cart.push({
-        producto_id: Number(x.m.prod_cong),
+        producto_id: esMO ? null : Number(x.m.prod_cong),
         producto_nombre: x.m.material,
+        url_imagen: '',
         cantidad: v,
-        precio_unit: (x.m.precio_cong!=null ? x.m.precio_cong : 0),
+        precio_unit: pu,
+        subtotal: Math.round(v*pu*100)/100,
+        es_mano_obra: esMO,
         rubro_codigo: r.codigo,
+        _rubroManual: true,
         origen_rubro: 'presupuesto',
+        sector: (cartBudget.rubroSector && cartBudget.rubroSector[r.codigo]) || (wizard.form && wizard.form.sector) || '',
         unidad: x.m.unidad || ''
       });
       agregados++;
@@ -5820,6 +5842,7 @@ async function fpAgregarAlCarrito(){
   FP.qty={}; FP.mat={};
   fpRender();
   if(typeof renderCart === 'function') renderCart();
+  if(typeof saveDraft === 'function') saveDraft();
   if(agregados) showToast(agregados+' material'+(agregados===1?'':'es')+' agregado'+(agregados===1?'':'s')+' al carrito','success',
     sobre ? sobre+' supera'+(sobre===1?'':'n')+' el saldo del presupuesto' : undefined);
   if(sinProducto.length) showToast(sinProducto.length+' sin producto en el catálogo','error','Cargalos desde el buscador');
