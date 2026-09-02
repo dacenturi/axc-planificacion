@@ -3885,6 +3885,10 @@ body{
 .fp-tit{font-size:14.5px;font-weight:800;color:#1F3864}
 .fp-sub{font-size:12px;color:#7c8798;margin-top:2px}
 .fp-chk{font-size:12.5px;color:#5a6677;display:flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap}
+.fp-pp{display:flex;gap:10px;align-items:center;padding:13px 16px;background:#fbfcfe;border-bottom:1px solid #eef1f6;flex-wrap:wrap}
+.fp-pp-lbl{font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#8893a5;white-space:nowrap}
+.fp-pp-btn{background:#1F3864;color:#fff;border:0;font-weight:700;font-size:13px;padding:9px 16px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.fp-pp-btn:disabled{background:#c9cfda;cursor:not-allowed}
 .fp-tools{display:flex;gap:12px;align-items:center;padding:11px 16px;border-bottom:1px solid #eef1f6}
 .fp-in{flex:1;min-width:0;border:1px solid #d6dde9;border-radius:8px;padding:8px 11px;font-size:13px;font-family:inherit}
 .fp-count{font-size:12px;color:#8893a5;white-space:nowrap}
@@ -4191,6 +4195,12 @@ body{
             <div class="fp-sub" id="fpSub">Lo que falta comprar, ordenado por saldo.</div>
           </div>
           <label class="fp-chk"><input type="checkbox" id="fpVerTodo"> Ver también lo agotado</label>
+        </div>
+        <div class="fp-pp">
+          <label class="fp-pp-lbl">N° de presupuesto</label>
+          <input type="text" id="fpPPSel" class="fp-in" list="fpPresuList" placeholder="Ej. PP71 — escribí o elegí de la lista" autocomplete="off">
+          <datalist id="fpPresuList"></datalist>
+          <button type="button" class="fp-pp-btn" id="fpPPCargar">Cargar faltante</button>
         </div>
         <div class="fp-tools">
           <input type="text" id="fpBuscar" class="fp-in" placeholder="Filtrar por material, código o rubro…">
@@ -5488,6 +5498,41 @@ function fpInit(){
   if(v) v.onchange = fpRender;
   const a=document.getElementById('fpAgregar');
   if(a) a.onclick = fpAgregarAlCarrito;
+  const sel=document.getElementById('fpPPSel');
+  const btn=document.getElementById('fpPPCargar');
+  if(sel){
+    try{ cbLoadList('fpPresuList'); }catch(e){}
+    sel.value = cartBudget.pp || wizard.form.presupuesto || '';
+    sel.onchange = fpCargarPP;
+    sel.onkeydown = function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); fpCargarPP(); } };
+  }
+  if(btn) btn.onclick = fpCargarPP;
+}
+
+// Carga el presupuesto elegido en el propio panel. Deja el N° también en el
+// Paso 2, así la OC queda atada al mismo presupuesto del que se consume.
+async function fpCargarPP(){
+  const sel=document.getElementById('fpPPSel');
+  const btn=document.getElementById('fpPPCargar');
+  const pp=(sel.value||'').trim();
+  if(!pp){ showToast('Escribí o elegí un N° de presupuesto','error'); sel.focus(); return; }
+  btn.disabled=true; const old=btn.textContent; btn.textContent='Cargando…';
+  const cont=document.getElementById('fpLista');
+  if(cont) cont.innerHTML='<div class="fp-vacio">Cargando materiales de '+escapeHtml(pp)+'…</div>';
+  try{
+    const fld=document.getElementById('fldPresupuesto');
+    if(fld && !(fld.value||'').trim()){ fld.value=pp; wizard.form.presupuesto=pp; }
+    const chk=document.getElementById('chkSinPresupuesto');
+    if(chk && chk.checked) chk.checked=false;
+    await setPresupuesto(pp);
+    FP.sel={};
+    fpRender();
+    if(!cartBudget.mats || !cartBudget.mats.length){
+      showToast('El presupuesto '+pp+' no tiene materiales cargados','error');
+    }
+  }catch(e){
+    showToast('No se pudo cargar el presupuesto','error', e.message||String(e));
+  }finally{ btn.disabled=false; btn.textContent=old; }
 }
 
 function fpSetModo(m){
@@ -5504,7 +5549,12 @@ function fpSetModo(m){
   document.getElementById('fpOHint').textContent = esPre
     ? 'Trae lo que falta comprar del presupuesto, ya imputado a su rubro.'
     : 'Elegí productos del catálogo y el sistema los imputa al presupuesto.';
-  if(esPre) fpRender();
+  if(esPre){
+    const sel=document.getElementById('fpPPSel');
+    if(sel && !sel.value) sel.value = cartBudget.pp || wizard.form.presupuesto || '';
+    try{ cbLoadList('fpPresuList'); }catch(e){}
+    fpRender();
+  }
 }
 
 // Consolida el mismo insumo entre rubros: una línea por insumo, con el detalle por rubro.
@@ -5530,9 +5580,9 @@ function fpFaltantes(){
 function fpRender(){
   const cont = document.getElementById('fpLista');
   if(!cont) return;
-  document.getElementById('fpPP').textContent = cartBudget.pp || '(elegí uno en el paso 2)';
+  document.getElementById('fpPP').textContent = cartBudget.pp || '—';
   if(!cartBudget.pp){
-    cont.innerHTML = '<div class="fp-vacio">Primero elegí el presupuesto en el paso 2 · Detalles de la compra.</div>';
+    cont.innerHTML = '<div class="fp-vacio">Escribí el N° de presupuesto arriba y apretá «Cargar faltante».</div>';
     document.getElementById('fpCount').textContent = '—';
     return;
   }
