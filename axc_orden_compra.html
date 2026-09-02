@@ -3911,7 +3911,7 @@ body{
 .fp-qin:disabled{border-color:#e0e5ee;background:#f4f6f9}
 .fp-rq span{font-size:11.5px;color:#8893a5;font-weight:700;white-space:nowrap}
 .fp-mats{background:#fbfcfe;border-top:1px solid #eef1f6;padding:4px 16px 12px 50px}
-.fp-mrow{display:grid;grid-template-columns:minmax(180px,1fr) 108px 96px 46px 100px 120px 170px;gap:9px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
+.fp-mrow{display:grid;grid-template-columns:minmax(180px,1fr) 104px 92px 44px 98px 116px 40px 150px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
 .fp-mpre{text-align:right;font-size:12px;color:#6b7585;font-variant-numeric:tabular-nums}
 .fp-mpre small{display:block;font-size:9.5px;color:#b0b8c4}
 .fp-msub{text-align:right;font-size:13px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
@@ -3932,6 +3932,13 @@ body{
 .fp-mk-pr{text-align:right;font-size:13.5px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
 .fp-mk-pr small{display:block;font-size:10px;font-weight:600;color:#9aa4b2}
 .fp-mk-empty{padding:26px;text-align:center;color:#8893a5;font-size:13px}
+.fp-tagbtn{border:1px solid #C8A028;background:#fbf3da;border-radius:8px;padding:6px 8px;font-size:15px;line-height:1;cursor:pointer;font-family:inherit}
+.fp-tagbtn:hover{background:#f6e7bd}
+.fp-tagbtn.cambiado{border-color:#1B5524;background:#e6f4ea}
+.fp-tag.ok{color:#1B5524;background:#e6f4ea;border-color:#bfe0c7}
+.fp-mk-new{margin:0 18px 14px;padding:11px 14px;border:1.5px dashed #C8A028;background:#fdf8ec;border-radius:10px;color:#8a6d10;font-size:12.5px;font-weight:700;cursor:pointer;text-align:center}
+.fp-mk-new:hover{background:#f9f0d9}
+.fp-mk-warn{margin:0 18px 12px;padding:9px 12px;border-radius:8px;background:#FDF3D8;border:1px solid #E7D9A8;color:#8a6d10;font-size:11.5px;line-height:1.5}
 .fp-link{display:block;margin-top:3px;background:none;border:0;color:#0E7C86;font-size:10.5px;font-weight:700;text-decoration:underline;text-underline-offset:2px;cursor:pointer;font-family:inherit;padding:0;margin-left:auto}
 .fp-link:hover{color:#1F3864}
 .fp-tag{display:inline-block;margin-left:7px;font-size:9.5px;font-weight:700;color:#8a6d10;background:#FDF3D8;border:1px solid #E7D9A8;border-radius:999px;padding:1px 7px;vertical-align:middle}
@@ -4247,7 +4254,9 @@ body{
       <button type="button" class="fp-mk-x" id="fpMkX">&times;</button>
     </div>
     <input type="text" id="fpMkQ" class="fp-in" placeholder="Buscar marca o producto en el catálogo…" autocomplete="off">
+    <div class="fp-mk-warn">Al elegir una marca no vinculada se la vincula al insumo, para que el consumo descuente del saldo y quede la trazabilidad.</div>
     <div class="fp-mk-list" id="fpMkList"></div>
+    <button type="button" class="fp-mk-new" id="fpMkNew">＋ No está en el catálogo · crear producto nuevo</button>
   </div>
 </div>
 
@@ -5665,10 +5674,10 @@ function fpRubros(){
 // Si el usuario ya cargó algo a mano, no se pisa.
 // Selector de marca sin salir del panel: muestra las marcas cargadas para ese
 // insumo y permite buscar cualquier otro producto del catálogo.
-var FPMK = { key:null, tmr:null };
+var FPMK = { key:null, ci:'', material:'', tmr:null };
 
 async function fpAbrirMarca(key, material, codigoInsumo, prodActual){
-  FPMK.key = key;
+  FPMK.key = key; FPMK.ci = codigoInsumo || ''; FPMK.material = material;
   document.getElementById('fpMkTit').textContent = material;
   document.getElementById('fpMkSub').textContent = (codigoInsumo||'sin código') + ' · elegí con qué producto vas a comprarlo';
   document.getElementById('fpMkQ').value = '';
@@ -5710,11 +5719,26 @@ function fpMkPintar(rows, prodActual, titulo){
       '</div>';
     }).join('');
   list.querySelectorAll('.fp-mk-it').forEach(function(it){
-    it.onclick = function(){
-      FP.prod[FPMK.key] = { id:Number(it.dataset.pid), nombre:it.dataset.nm, precio:Number(it.dataset.pr)||0 };
+    it.onclick = async function(){
+      const pid = Number(it.dataset.pid);
+      FP.prod[FPMK.key] = { id:pid, nombre:it.dataset.nm, precio:Number(it.dataset.pr)||0 };
       document.getElementById('fpMkOv').hidden = true;
+      // Vincular la marca al insumo: sin esto el consumo no descuenta del saldo.
+      let vinculado = false;
+      if(FPMK.ci){
+        try{
+          const r = await sb.from('insumo_marcas').upsert(
+            { codigo_insumo: FPMK.ci, producto_id: pid, es_default: false, activo: true },
+            { onConflict: 'codigo_insumo,producto_id' });
+          if(!r.error){
+            vinculado = true;
+            if(cartBudget.insMap) cartBudget.insMap[String(pid)] = FPMK.ci;
+          }
+        }catch(e){ console.warn('vincular marca', e); }
+      }
       fpRender();
-      showToast('Producto cambiado','success', it.dataset.nm);
+      showToast('Producto cambiado','success',
+        it.dataset.nm + (vinculado ? ' · vinculado a '+FPMK.ci : ''));
     };
   });
 }
@@ -5722,6 +5746,16 @@ function fpMkPintar(rows, prodActual, titulo){
 function fpMkInit(){
   const ov=document.getElementById('fpMkOv'); if(!ov) return;
   document.getElementById('fpMkX').onclick = function(){ ov.hidden = true; };
+  const nw = document.getElementById('fpMkNew');
+  if(nw) nw.onclick = function(){
+    ov.hidden = true;
+    if(typeof openAddProductModal === 'function'){
+      openAddProductModal(FPMK.material || '');
+      showToast('Creá el producto y volvé a elegirlo con el 🏷️','info');
+    } else {
+      fpSetModo('catalogo');
+    }
+  };
   ov.onclick = function(e){ if(e.target===ov) ov.hidden = true; };
   const q=document.getElementById('fpMkQ');
   q.oninput = function(){
@@ -5827,7 +5861,8 @@ function fpRender(){
       const col = x.saldo <= 0 ? '#c0392b' : (x.saldo < x.limite*0.15 ? '#8a6d10' : '#1B5524');
       return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
         '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+
-          (esMO ? '<span class="fp-tag">no entra en la OC de materiales</span>' : '')+'</b>'+
+          (esMO ? '<span class="fp-tag">no entra en la OC de materiales</span>' : '')+
+          (ov ? '<span class="fp-tag ok">→ '+escapeHtml(ov.nombre)+'</span>' : '')+'</b>'+
           '<span>'+escapeHtml(x.m.codigo_insumo||'sin código')+' · '+
           (x.cu>0 ? (Math.round(x.cu*10000)/10000)+' '+escapeHtml(x.m.unidad||'')+' por '+escapeHtml(r.unidad||'unidad') : 'sin coeficiente')+
           '</span></div>'+
@@ -5837,7 +5872,9 @@ function fpRender(){
         '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
         '<div class="fp-mpre">'+(pu>0 ? '₲ '+pu.toLocaleString('es-PY') : '—')+'<small>unitario</small></div>'+
         '<div class="fp-msub">'+(imp>0 ? '₲ '+Math.round(imp).toLocaleString('es-PY') : '—')+
-          (esMO ? '' : '<button type="button" class="fp-link" data-buscar="'+escapeHtml(x.m.material)+'" data-mk="'+escapeHtml(key)+'" data-ci="'+escapeHtml(x.m.codigo_insumo||'')+'" data-pid="'+escapeHtml(String(ov ? ov.id : (x.m.prod_cong||'')))+'" title="Elegir otra marca o producto">'+(ov?'✓ '+escapeHtml(ov.nombre.slice(0,26)):'cambiar producto')+'</button>')+'</div>'+
+          '</div>'+
+        (esMO ? '<div></div>' :
+          '<button type="button" class="fp-tagbtn'+(ov?' cambiado':'')+'" data-buscar="'+escapeHtml(x.m.material)+'" data-mk="'+escapeHtml(key)+'" data-ci="'+escapeHtml(x.m.codigo_insumo||'')+'" data-pid="'+escapeHtml(String(ov ? ov.id : (x.m.prod_cong||'')))+'" title="'+(ov?('Comprando: '+escapeHtml(ov.nombre)):'Elegir marca o producto del catálogo')+'">🏷️</button>')+
         (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
       '</div>';
     }).join('');
