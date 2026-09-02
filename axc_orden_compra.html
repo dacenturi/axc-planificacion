@@ -5667,6 +5667,7 @@ function fpRubros(){
     const maxEjec = mats.reduce(function(a,x){ return Math.min(a, x.maxEjec); }, Infinity);
     return { codigo:rk, descripcion: ri.descripcion || cartBudget.rubroDesc?.[rk] || rk,
              unidad: ri.unidad||'', cantidad:cant, mats:mats,
+             sector: ri.sector || (cartBudget.rubroSector && cartBudget.rubroSector[rk]) || '',
              maxEjec: isFinite(maxEjec) ? Math.max(0,maxEjec) : 0,
              agotado: mats.some(function(x){ return x.saldo <= 0; }) };
   }).sort(function(a,b){ return b.maxEjec - a.maxEjec; });
@@ -5805,7 +5806,7 @@ function fpAutocompletar(pp){
       if(secs.length === 1) sector = secs[0];
     }
     const fs = document.getElementById('fldSector');
-    if(fs && sector && !(fs.value||'').trim()){
+    if(fs && sector && !(wizard.form.sector||'').trim()){
       const opt = Array.prototype.slice.call(fs.options)
         .filter(function(o){ return String(o.value).trim().toLowerCase() === sector.toLowerCase(); })[0];
       if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
@@ -5828,6 +5829,31 @@ function fpAutocompletar(pp){
     if(faltan.length) showToast('Completá en el paso 2: '+faltan.join(', '), 'info');
     if(typeof saveDraft === 'function') saveDraft();
   }catch(e){ console.warn('fpAutocompletar', e); }
+}
+
+// El sector de la orden lo definen los materiales que se están comprando,
+// no el presupuesto: cada ítem lleva el sector de su rubro. Si todos coinciden,
+// se pone en la cabecera; si hay mezcla, se deja vacío para que lo decida el usuario.
+function fpAjustarSector(){
+  try{
+    const secs = [];
+    (wizard.cart||[]).forEach(function(it){
+      const sc = (it.sector||'').trim();
+      if(sc && secs.indexOf(sc)<0) secs.push(sc);
+    });
+    const fs = document.getElementById('fldSector');
+    if(!fs) return;
+    if(secs.length === 1){
+      const opt = Array.prototype.slice.call(fs.options).filter(function(o){
+        return String(o.value).trim().toLowerCase() === secs[0].toLowerCase();
+      })[0];
+      if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
+    } else if(secs.length > 1){
+      fs.value = ''; wizard.form.sector = '';
+      showToast('La orden tiene materiales de '+secs.length+' sectores','info',
+        secs.join(' · ')+' — cada ítem guarda el suyo; elegí el de la cabecera');
+    }
+  }catch(e){ console.warn('fpAjustarSector', e); }
 }
 
 function fpRender(){
@@ -5900,7 +5926,8 @@ function fpRender(){
       '<div class="fp-rhead" data-rk="'+escapeHtml(r.codigo)+'">'+
         '<span class="fp-rcar">'+(abierto?'▾':'▸')+'</span>'+
         '<div class="fp-rnom"><b>'+escapeHtml(r.codigo)+' · '+escapeHtml(r.descripcion)+'</b>'+
-          '<span>'+r.mats.length+' materiales · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span></div>'+
+          '<span>'+(r.sector ? '📁 '+escapeHtml(r.sector)+' · ' : '')+
+          r.mats.length+' materiales · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span></div>'+
         '<div class="fp-rmax'+(sinSaldo?' sin':'')+'">'+
           (sinSaldo ? '⚠ sin saldo' : 'hasta '+Math.round(r.maxEjec).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||''))+
           '<small>'+(sinSaldo?'algún material se agotó':'podés ejecutar')+'</small></div>'+
@@ -5998,6 +6025,7 @@ async function fpAgregarAlCarrito(){
     });
   });
   FP.qty={}; FP.mat={};
+  fpAjustarSector();
   fpRender();
   if(typeof renderCart === 'function') renderCart();
   if(typeof saveDraft === 'function') saveDraft();
