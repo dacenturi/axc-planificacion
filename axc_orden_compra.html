@@ -3893,6 +3893,33 @@ body{
 .fp-in{flex:1;min-width:0;border:1px solid #d6dde9;border-radius:8px;padding:8px 11px;font-size:13px;font-family:inherit}
 .fp-count{font-size:12px;color:#8893a5;white-space:nowrap}
 .fp-lista{max-height:400px;overflow:auto}
+.fp-rub{border-bottom:1px solid #eef1f6}
+.fp-rub.sin{background:#fdf6f6}
+.fp-rhead{display:grid;grid-template-columns:22px minmax(220px,1fr) 168px 150px;gap:12px;align-items:center;padding:12px 16px;cursor:pointer}
+.fp-rhead:hover{background:#f7fafd}
+.fp-rcar{color:#8893a5;font-size:12px}
+.fp-rnom{min-width:0}
+.fp-rnom b{display:block;font-size:13.5px;font-weight:700;color:#1F3864;line-height:1.35}
+.fp-rnom span{display:block;font-size:11.5px;color:#8893a5;margin-top:2px}
+.fp-rmax{text-align:right;font-size:13px;font-weight:800;color:#1B5524}
+.fp-rmax.sin{color:#c0392b}
+.fp-rmax small{display:block;font-size:10.5px;font-weight:600;color:#9aa4b2;margin-top:1px}
+.fp-rq{display:flex;align-items:center;gap:7px}
+.fp-qin{width:100%;border:1.5px solid #C8A028;border-radius:8px;padding:8px 10px;font-size:14px;font-weight:700;text-align:right;font-family:inherit;background:#fffdf6}
+.fp-qin:disabled{border-color:#e0e5ee;background:#f4f6f9}
+.fp-rq span{font-size:11.5px;color:#8893a5;font-weight:700;white-space:nowrap}
+.fp-mats{background:#fbfcfe;border-top:1px solid #eef1f6;padding:4px 16px 12px 50px}
+.fp-mrow{display:grid;grid-template-columns:minmax(200px,1fr) 118px 110px 52px 190px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
+.fp-mrow:last-child{border-bottom:0}
+.fp-mrow.exceso{background:#fdf2f2;border-radius:7px;padding-left:8px;padding-right:8px}
+.fp-mnom{min-width:0}
+.fp-mnom b{display:block;font-size:12.5px;font-weight:600;color:#2c3547}
+.fp-mnom span{display:block;font-size:11px;color:#9aa4b2;margin-top:2px}
+.fp-msal{text-align:right;font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.fp-msal small{display:block;font-size:10px;font-weight:500;color:#9aa4b2}
+.fp-mq{width:100%;border:1px solid #d6dde9;border-radius:7px;padding:6px 8px;font-size:12.5px;text-align:right;font-family:inherit}
+.fp-mun{font-size:11.5px;color:#8893a5;font-weight:600}
+.fp-mwarn{font-size:11px;color:#c0392b;font-weight:700}
 .fp-row{display:grid;grid-template-columns:34px minmax(220px,1fr) 128px 108px 118px;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid #f2f4f8}
 .fp-row:hover{background:#fafcff}
 .fp-row.agot{background:#fdf4f4}
@@ -4192,7 +4219,7 @@ body{
         <div class="fp-head">
           <div>
             <div class="fp-tit">Faltante del presupuesto <span id="fpPP">—</span></div>
-            <div class="fp-sub" id="fpSub">Lo que falta comprar, ordenado por saldo.</div>
+            <div class="fp-sub" id="fpSub">Cargá la cantidad a ejecutar y se calculan los materiales.</div>
           </div>
           <label class="fp-chk"><input type="checkbox" id="fpVerTodo"> Ver también lo agotado</label>
         </div>
@@ -5476,7 +5503,7 @@ const wizard = {
 // ══ Compra desde presupuesto ═══════════════════════════════════
 // Modo aditivo, visible sólo con el permiso oc_desde_presupuesto.
 // No toca el flujo actual: si no hay permiso, nada de esto se ejecuta.
-var FP = { modo:'catalogo', sel:{}, filtro:'' };
+var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{} };
 
 function fpPuede(){
   try{
@@ -5525,7 +5552,7 @@ async function fpCargarPP(){
     const chk=document.getElementById('chkSinPresupuesto');
     if(chk && chk.checked) chk.checked=false;
     await setPresupuesto(pp);
-    FP.sel={};
+    FP.qty={}; FP.mat={}; FP.abierto={};
     fpRender();
     if(!cartBudget.mats || !cartBudget.mats.length){
       showToast('El presupuesto '+pp+' no tiene materiales cargados','error');
@@ -5557,24 +5584,43 @@ function fpSetModo(m){
   }
 }
 
-// Consolida el mismo insumo entre rubros: una línea por insumo, con el detalle por rubro.
-function fpFaltantes(){
-  if(!cartBudget.mats || !cartBudget.mats.length) return [];
-  const porIns = {};
+// Consumo de un insumo por cada unidad del rubro: coef1 ÷ coef2 × (1 + merma%).
+// Si la receta no trae coeficientes, se deduce de la cantidad presupuestada.
+function fpConsumoUnit(m, cantRubro){
+  const c1=Number(m.coef1)||0, c2=Number(m.coef2)||0, mer=Number(m.merma)||0;
+  if(c1>0 && c2>0) return c1/c2*(1+mer/100);
+  const q=Number(cantRubro)||0;
+  return q>0 ? (Number(m.cant_exacta)||0)/q : 0;
+}
+
+// Arma la vista por rubro: sus insumos, el saldo de cada uno y cuánto se
+// puede ejecutar todavía sin quedarse corto en ninguno.
+function fpRubros(){
+  if(!cartBudget.mats) return [];
+  const all = cartBudget.allRubros || [];
+  const info = {}; all.forEach(function(r){ info[r.rubro_codigo] = r; });
+  const porRubro = {};
   cartBudget.mats.forEach(function(m){
-    const k = m.codigo_insumo || ('N:'+(m.material||''));
-    const rk = m.rubro_codigo||'';
-    const a = _cbAgg(m.codigo_insumo, rk);
-    const saldo = (Number(m.limite)||0) - a.ejec - a.reserv - a.carr;
-    if(!porIns[k]) porIns[k] = { codigo:m.codigo_insumo||'', material:m.material||'', unidad:m.unidad||'',
-                                 saldo:0, limite:0, rubros:[] };
-    const g = porIns[k];
-    g.saldo  += saldo;
-    g.limite += (Number(m.limite)||0);
-    g.rubros.push({ rubro_codigo:rk, saldo:saldo, limite:(Number(m.limite)||0) });
+    const rk = m.rubro_codigo || '';
+    if(!porRubro[rk]) porRubro[rk] = [];
+    porRubro[rk].push(m);
   });
-  return Object.keys(porIns).map(function(k){ return porIns[k]; })
-    .sort(function(a,b){ return b.saldo - a.saldo; });
+  return Object.keys(porRubro).map(function(rk){
+    const ri   = info[rk] || {};
+    const cant = Number(ri.cantidad)||0;
+    const mats = porRubro[rk].map(function(m){
+      const a = _cbAgg(m.codigo_insumo, rk);
+      const saldo = (Number(m.limite)||0) - a.ejec - a.reserv - a.carr;
+      const cu = fpConsumoUnit(m, cant);
+      return { m:m, saldo:saldo, cu:cu, limite:Number(m.limite)||0,
+               maxEjec: cu>0 ? saldo/cu : Infinity };
+    });
+    const maxEjec = mats.reduce(function(a,x){ return Math.min(a, x.maxEjec); }, Infinity);
+    return { codigo:rk, descripcion: ri.descripcion || cartBudget.rubroDesc?.[rk] || rk,
+             unidad: ri.unidad||'', cantidad:cant, mats:mats,
+             maxEjec: isFinite(maxEjec) ? Math.max(0,maxEjec) : 0,
+             agotado: mats.some(function(x){ return x.saldo <= 0; }) };
+  }).sort(function(a,b){ return b.maxEjec - a.maxEjec; });
 }
 
 function fpRender(){
@@ -5583,109 +5629,140 @@ function fpRender(){
   document.getElementById('fpPP').textContent = cartBudget.pp || '—';
   if(!cartBudget.pp){
     cont.innerHTML = '<div class="fp-vacio">Escribí el N° de presupuesto arriba y apretá «Cargar faltante».</div>';
-    document.getElementById('fpCount').textContent = '—';
-    return;
+    document.getElementById('fpCount').textContent = '—'; return;
   }
-  if(cartBudget.mats === null){
-    cont.innerHTML = '<div class="fp-vacio">Cargando materiales del presupuesto…</div>'; return;
-  }
+  if(cartBudget.mats === null){ cont.innerHTML = '<div class="fp-vacio">Cargando materiales del presupuesto…</div>'; return; }
+
   const verTodo = document.getElementById('fpVerTodo').checked;
-  let filas = fpFaltantes();
-  const total = filas.length;
-  if(!verTodo) filas = filas.filter(function(f){ return f.saldo > 0; });
+  let rubros = fpRubros();
+  const total = rubros.length;
+  if(!verTodo) rubros = rubros.filter(function(r){ return r.maxEjec > 0; });
   if(FP.filtro){
-    filas = filas.filter(function(f){
-      return (f.material+' '+f.codigo+' '+f.rubros.map(function(r){return r.rubro_codigo;}).join(' '))
+    rubros = rubros.filter(function(r){
+      return (r.codigo+' '+r.descripcion+' '+r.mats.map(function(x){return x.m.material;}).join(' '))
         .toLowerCase().indexOf(FP.filtro) >= 0;
     });
   }
-  document.getElementById('fpCount').textContent = filas.length + ' de ' + total + ' insumos';
-  if(!filas.length){
-    cont.innerHTML = '<div class="fp-vacio">'+(verTodo?'No hay insumos que coincidan.':'No queda nada por comprar en este presupuesto.')+'</div>';
+  document.getElementById('fpCount').textContent = rubros.length + ' de ' + total + ' rubros';
+  if(!rubros.length){
+    cont.innerHTML = '<div class="fp-vacio">'+(verTodo?'Ningún rubro coincide con el filtro.':'No queda nada por ejecutar en este presupuesto.')+'</div>';
     fpActualizarPie(); return;
   }
-  cont.innerHTML = filas.map(function(f,i){
-    const agot = f.saldo <= 0;
-    const col  = agot ? '#c0392b' : (f.saldo < f.limite*0.15 ? '#8a6d10' : '#1B5524');
-    const rubs = f.rubros.map(function(r){
-      return (r.rubro_codigo||'General') + ' (' + Math.round(r.saldo).toLocaleString('es-PY') + ')';
-    }).join(' · ');
-    const key = f.codigo || f.material;
-    const sel = FP.sel[key];
-    return '<div class="fp-row'+(agot?' agot':'')+'">'+
-      '<input type="checkbox" data-k="'+escapeHtml(key)+'" '+(sel?'checked':'')+(agot?' disabled':'')+'>'+
-      '<div class="fp-nom"><b>'+escapeHtml(f.material)+'</b>'+
-        '<span>'+escapeHtml(f.codigo||'sin código')+' · '+escapeHtml(rubs)+'</span></div>'+
-      '<div class="fp-sal" style="color:'+col+'">'+Math.round(f.saldo).toLocaleString('es-PY')+
-        ' <small>'+escapeHtml(f.unidad||'')+' disponibles</small></div>'+
-      '<div>'+(agot ? '<button type="button" class="fp-otro" data-otro="'+escapeHtml(key)+'">Otro rubro</button>'
-             : '<input type="number" class="fp-qty" data-q="'+escapeHtml(key)+'" min="0" step="any" value="'+
-               (sel!=null && sel!==true ? sel : Math.round(f.saldo))+'">')+'</div>'+
-      '<div style="font-size:11.5px;color:#8893a5;text-align:right">de '+Math.round(f.limite).toLocaleString('es-PY')+'</div>'+
+
+  cont.innerHTML = rubros.map(function(r){
+    const q = (FP.qty[r.codigo] != null) ? FP.qty[r.codigo] : '';
+    const abierto = FP.abierto[r.codigo];
+    const sinSaldo = r.maxEjec <= 0;
+    const filas = r.mats.map(function(x){
+      const key = r.codigo + '|' + (x.m.codigo_insumo || x.m.material);
+      const calc = (FP.mat[key] != null) ? FP.mat[key]
+                 : (q !== '' ? Math.round(x.cu * Number(q) * 100)/100 : '');
+      const exceso = calc !== '' && Number(calc) > x.saldo;
+      const col = x.saldo <= 0 ? '#c0392b' : (x.saldo < x.limite*0.15 ? '#8a6d10' : '#1B5524');
+      return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
+        '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+'</b>'+
+          '<span>'+escapeHtml(x.m.codigo_insumo||'sin código')+' · '+
+          (x.cu>0 ? (Math.round(x.cu*10000)/10000)+' '+escapeHtml(x.m.unidad||'')+' por '+escapeHtml(r.unidad||'unidad') : 'sin coeficiente')+
+          '</span></div>'+
+        '<div class="fp-msal" style="color:'+col+'">'+Math.round(x.saldo).toLocaleString('es-PY')+
+          '<small>disponible</small></div>'+
+        '<input type="number" class="fp-mq" data-mk="'+escapeHtml(key)+'" min="0" step="any" value="'+calc+'" placeholder="0">'+
+        '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
+        (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
+      '</div>';
+    }).join('');
+
+    return '<div class="fp-rub'+(sinSaldo?' sin':'')+'">'+
+      '<div class="fp-rhead" data-rk="'+escapeHtml(r.codigo)+'">'+
+        '<span class="fp-rcar">'+(abierto?'▾':'▸')+'</span>'+
+        '<div class="fp-rnom"><b>'+escapeHtml(r.codigo)+' · '+escapeHtml(r.descripcion)+'</b>'+
+          '<span>'+r.mats.length+' materiales · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span></div>'+
+        '<div class="fp-rmax'+(sinSaldo?' sin':'')+'">'+
+          (sinSaldo ? '⚠ sin saldo' : 'hasta '+Math.round(r.maxEjec).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||''))+
+          '<small>'+(sinSaldo?'algún material se agotó':'podés ejecutar')+'</small></div>'+
+        '<div class="fp-rq" onclick="event.stopPropagation()">'+
+          '<input type="number" class="fp-qin" data-rq="'+escapeHtml(r.codigo)+'" min="0" step="any" '+
+            'value="'+q+'" placeholder="'+(sinSaldo?'0':Math.round(r.maxEjec))+'"'+(sinSaldo?' disabled':'')+'>'+
+          '<span>'+escapeHtml(r.unidad||'')+'</span></div>'+
+      '</div>'+
+      (abierto ? '<div class="fp-mats">'+filas+'</div>' : '')+
     '</div>';
   }).join('');
 
-  cont.querySelectorAll('input[data-k]').forEach(function(ch){
-    ch.onchange = function(){
-      const k = ch.dataset.k;
-      if(ch.checked){
-        const q = cont.querySelector('input[data-q="'+k.replace(/"/g,'\\"')+'"]');
-        FP.sel[k] = q ? (Number(q.value)||0) : 0;
-      } else delete FP.sel[k];
-      fpActualizarPie();
+  cont.querySelectorAll('.fp-rhead').forEach(function(h){
+    h.onclick = function(){
+      const rk=h.dataset.rk;
+      FP.abierto[rk] = !FP.abierto[rk];
+      fpRender();
     };
   });
-  cont.querySelectorAll('input[data-q]').forEach(function(q){
-    q.onchange = function(){
-      const k = q.dataset.q;
-      if(FP.sel[k] != null) FP.sel[k] = Number(q.value)||0;
-      fpActualizarPie();
+  cont.querySelectorAll('input[data-rq]').forEach(function(inp){
+    inp.onclick = function(ev){ ev.stopPropagation(); };
+    inp.oninput = function(){
+      const rk=inp.dataset.rq;
+      FP.qty[rk] = inp.value === '' ? null : Number(inp.value);
+      // al cambiar la cantidad del rubro se recalculan sus materiales
+      Object.keys(FP.mat).forEach(function(k){ if(k.indexOf(rk+'|')===0) delete FP.mat[k]; });
+      FP.abierto[rk] = true;
+      fpRender();
+      const again = document.querySelector('input[data-rq="'+rk+'"]');
+      if(again){ again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
     };
   });
-  cont.querySelectorAll('button[data-otro]').forEach(function(b){
-    b.onclick = function(){
-      showToast('Agregalo al carrito desde el catálogo y elegí otro rubro en el desplegable del ítem','info');
+  cont.querySelectorAll('input[data-mk]').forEach(function(inp){
+    inp.onchange = function(){
+      FP.mat[inp.dataset.mk] = inp.value === '' ? null : Number(inp.value);
+      fpRender();
     };
   });
   fpActualizarPie();
 }
 
 function fpActualizarPie(){
-  const n = Object.keys(FP.sel).length;
-  document.getElementById('fpSel').textContent = n ? (n + ' insumo' + (n===1?'':'s') + ' seleccionado' + (n===1?'':'s')) : 'Nada seleccionado';
+  let n=0, avisos=0;
+  fpRubros().forEach(function(r){
+    const q = FP.qty[r.codigo];
+    r.mats.forEach(function(x){
+      const key = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
+      const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? x.cu*q : 0);
+      if(v>0){ n++; if(v > x.saldo) avisos++; }
+    });
+  });
+  const el=document.getElementById('fpSel');
+  el.innerHTML = n
+    ? n+' material'+(n===1?'':'es')+' a comprar'+(avisos?' · <b style="color:#c0392b">'+avisos+' supera'+(avisos===1?'':'n')+' el saldo</b>':'')
+    : 'Cargá una cantidad en algún rubro';
   document.getElementById('fpAgregar').disabled = (n===0);
 }
 
 async function fpAgregarAlCarrito(){
-  const filas = fpFaltantes();
-  let agregados = 0, sinProducto = [];
-  for(const f of filas){
-    const key = f.codigo || f.material;
-    if(FP.sel[key] == null) continue;
-    const cant = Number(FP.sel[key]) || 0;
-    if(cant <= 0) continue;
-    // Rubro destino: el de mayor saldo de ese insumo
-    const mejor = f.rubros.slice().sort(function(a,b){ return b.saldo - a.saldo; })[0];
-    // Producto: el que ya trae el presupuesto congelado, si lo tiene
-    const orig = (cartBudget.mats||[]).filter(function(m){
-      return (m.codigo_insumo||m.material) === key; })[0] || {};
-    if(!orig.prod_cong){ sinProducto.push(f.material); continue; }
-    wizard.cart.push({
-      producto_id: Number(orig.prod_cong),
-      producto_nombre: f.material,
-      cantidad: cant,
-      precio_unit: (orig.precio_cong!=null ? orig.precio_cong : 0),
-      rubro_codigo: (mejor ? mejor.rubro_codigo : ''),
-      origen_rubro: 'presupuesto',
-      unidad: f.unidad || ''
+  let agregados=0, sinProducto=[], sobre=0;
+  fpRubros().forEach(function(r){
+    const q = FP.qty[r.codigo];
+    r.mats.forEach(function(x){
+      const key = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
+      const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? Math.round(x.cu*q*100)/100 : 0);
+      if(!(v>0)) return;
+      if(!x.m.prod_cong){ sinProducto.push(x.m.material); return; }
+      if(v > x.saldo) sobre++;
+      wizard.cart.push({
+        producto_id: Number(x.m.prod_cong),
+        producto_nombre: x.m.material,
+        cantidad: v,
+        precio_unit: (x.m.precio_cong!=null ? x.m.precio_cong : 0),
+        rubro_codigo: r.codigo,
+        origen_rubro: 'presupuesto',
+        unidad: x.m.unidad || ''
+      });
+      agregados++;
     });
-    agregados++;
-  }
-  FP.sel = {};
+  });
+  FP.qty={}; FP.mat={};
   fpRender();
   if(typeof renderCart === 'function') renderCart();
-  if(agregados) showToast(agregados+' insumo'+(agregados===1?'':'s')+' agregado'+(agregados===1?'':'s')+' al carrito','success');
-  if(sinProducto.length) showToast(sinProducto.length+' sin producto en el catálogo: cargalos desde el buscador','error');
+  if(agregados) showToast(agregados+' material'+(agregados===1?'':'es')+' agregado'+(agregados===1?'':'s')+' al carrito','success',
+    sobre ? sobre+' supera'+(sobre===1?'':'n')+' el saldo del presupuesto' : undefined);
+  if(sinProducto.length) showToast(sinProducto.length+' sin producto en el catálogo','error','Cargalos desde el buscador');
 }
 
 function openWizard(){
