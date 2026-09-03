@@ -4022,6 +4022,10 @@ body{
 }
 
 /* ══ Material no presupuestado ══════════════════════════════════ */
+.fp-extra-row{display:block;width:100%;text-align:left;margin-top:10px;padding:12px 14px;border:1.5px dashed #C8A028;border-radius:10px;background:#fdf8ec;cursor:pointer;font-family:inherit}
+.fp-extra-row:hover{background:#fbf1d9}
+.fp-extra-row span{display:block;font-size:12.5px;font-weight:800;color:#8a6d10}
+.fp-extra-row small{display:block;font-size:11px;color:#8a7a55;margin-top:2px}
 .fpx-ov{position:fixed;inset:0;background:rgba(20,30,55,.5);z-index:10078;display:flex;align-items:center;justify-content:center;padding:20px}
 .fpx-ov[hidden]{display:none}
 .fpx-box{background:#fff;border-radius:14px;width:min(640px,96vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.32);overflow:hidden}
@@ -4037,6 +4041,7 @@ body{
 .fpx-it small{display:block;color:#8893a5;font-size:11px}
 .fpx-sel{margin-top:9px;padding:9px 12px;background:#EDF3FB;border:1px solid #b9cded;border-radius:9px;font-size:12.5px;color:#1F3864;font-weight:700}
 .fpx-row{display:grid;grid-template-columns:1.4fr .8fr 1fr;gap:10px}
+.fpx-aviso{margin-top:10px;font-size:11.5px;font-weight:700;color:#c0392b}
 .fpx-nota{margin-top:11px;font-size:11.5px;color:#8a7a55;background:#fdf8ec;border:1px dashed #C8A028;border-radius:9px;padding:9px 11px;line-height:1.5}
 .fpx-foot{display:flex;gap:9px;justify-content:flex-end;padding:14px 18px;border-top:1px solid #eef1f6;background:#fafbfd}
 .fpx-foot button{border:1.5px solid #d3d9e3;background:#fff;color:#5a6677;border-radius:9px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
@@ -4203,7 +4208,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v6.9 · Consolidado por material con cantidades por rubro · Materiales no presupuestados (desvíos) · Obras compartidas con presupuestos
+      Conexdata · AXC Planificación v7.0 · El borrador ya no revive tras crear la OC · Material no presupuestado al pie del listado, con rubro obligatorio · Consolidado por material
     </p>
   </div>
 </div>
@@ -4448,6 +4453,7 @@ body{
       </div>
       <label class="fpx-lbl">Motivo del desvío</label>
       <input type="text" id="fpxMotivo" class="fp-in" maxlength="160" placeholder="Ej. rotura en obra, faltó en el cómputo, cambio de especificación…">
+      <div class="fpx-aviso" id="fpxAviso" style="display:none"></div>
       <div class="fpx-nota">Queda registrado como <b>no presupuestado</b>: no descuenta saldo de ningún insumo y se puede filtrar después para analizar desvíos.</div>
     </div>
     <div class="fpx-foot">
@@ -4531,8 +4537,7 @@ body{
           <label class="fp-pp-lbl">N° de presupuesto</label>
           <input type="text" id="fpPPSel" class="fp-in" placeholder="Tocá acá y elegí el presupuesto" readonly style="cursor:pointer;background:#fff" autocomplete="off">
           <datalist id="fpPresuList"></datalist>
-          <button type="button" class="fp-pp-btn alt" id="fpExtraBtn" title="Material que no está en el presupuesto">➕ Material no presupuestado</button>
-        <button type="button" class="fp-pp-btn alt" id="fpPPBuscar">🔎 Buscar presupuesto</button>
+          <button type="button" class="fp-pp-btn alt" id="fpPPBuscar">🔎 Buscar presupuesto</button>
           <button type="button" class="fp-pp-btn" id="fpPPCargar">Cargar faltante</button>
         </div>
         <div class="fp-pp-info" id="fpPPInfo"></div>
@@ -6729,7 +6734,13 @@ function fpRender(){
       '</div>'+
       (abierto ? '<div class="fp-mats">'+filas+'</div>' : '')+
     '</div>';
-  }).join('');
+  }).join('') +
+  // Al final de la lista, para que se lea como "lo que falta del presupuesto…
+  // y además esto otro que no estaba previsto".
+  '<button type="button" class="fp-extra-row" id="fpExtraRow">'+
+    '<span>➕ Agregar un material que no está en el presupuesto</span>'+
+    '<small>Se marca como desvío y se imputa a uno de los rubros de esta orden</small>'+
+  '</button>';
 
   cont.querySelectorAll('.fp-rhead').forEach(function(h){
     h.onclick = function(){
@@ -6782,6 +6793,8 @@ function fpRender(){
       fpRender();
     };
   });
+  const _ex = document.getElementById('fpExtraRow');
+  if(_ex) _ex.onclick = function(ev){ ev.stopPropagation(); fpxAbrir(); };
   cont.querySelectorAll('button[data-rquit]').forEach(function(b){
     b.onclick = function(ev){ ev.stopPropagation(); fpQuitarRubro(b.getAttribute('data-rquit')); };
   });
@@ -6933,6 +6946,7 @@ function openWizard(){
   loadCatalogTotalCount();
   loadCatalogPage(true);
   loadRecents();
+  wizard.guardada = false;
   if(wizard.autosaveTimer) clearInterval(wizard.autosaveTimer);
   wizard.autosaveTimer = setInterval(saveDraft, 30000);
   setTimeout(()=>document.getElementById('catSearch').focus(), 200);
@@ -7620,6 +7634,10 @@ document.getElementById('btnNextStep').addEventListener('click', ()=>{
 // ═══════════════════════════════════════════════════════════════════
 
 function saveDraft(){
+  // Una vez creada la OC no se vuelve a escribir el borrador: el auto-guardado
+  // seguía corriendo con el modal de éxito abierto y lo recreaba a los 30 seg,
+  // por eso el carrito reaparecía en la orden siguiente.
+  if(wizard.guardada) return;
   try{
     const key = LS_DRAFT_KEY + '_' + (state.user?.id || 'anon');
     if(wizard.cart.length === 0){
@@ -8450,8 +8468,16 @@ function fpxRender(){
     if(FPX.prod) sel.innerHTML = '✓ ' + escapeHtml(FPX.prod.nombre);
   }
   const cant = Number((document.getElementById('fpxCant')||{}).value)||0;
+  const rub = (document.getElementById('fpxRubro')||{}).value || '';
   const btn = document.getElementById('fpxAdd');
-  if(btn) btn.disabled = !(FPX.prod && cant > 0);
+  if(btn) btn.disabled = !(FPX.prod && cant > 0 && rub);
+  const av = document.getElementById('fpxAviso');
+  if(av){
+    av.textContent = !FPX.prod ? 'Elegí el producto del catálogo.'
+      : !rub ? 'Todo material tiene que ir a un rubro: elegí a cuál se aplica.'
+      : !(cant>0) ? 'Cargá la cantidad.' : '';
+    av.style.display = av.textContent ? '' : 'none';
+  }
 }
 function fpxAbrir(){
   const ov = document.getElementById('fpxOv'); if(!ov) return;
@@ -8463,8 +8489,11 @@ function fpxAbrir(){
   const rsel = document.getElementById('fpxRubro');
   if(rsel){
     const rub = fpxRubrosDisponibles();
-    rsel.innerHTML = '<option value="">Sin rubro (lo elegís después en el carrito)</option>' +
+    rsel.innerHTML = '<option value="">Elegí el rubro…</option>' +
       rub.map(function(r){ return '<option value="'+escapeHtml(r)+'">'+escapeHtml(r)+'</option>'; }).join('');
+    // Si hay un solo rubro en la orden, se elige solo
+    if(rub.length === 1) rsel.value = rub[0];
+    rsel.onchange = fpxRender;
   }
   ov.hidden = false;
   fpxRender();
@@ -8474,9 +8503,9 @@ function fpxCerrar(){ const ov = document.getElementById('fpxOv'); if(ov) ov.hid
 
 function fpxAgregar(){
   const cant = Number((document.getElementById('fpxCant')||{}).value)||0;
-  if(!FPX.prod || !(cant>0)) return;
-  const precio = Number((document.getElementById('fpxPrecio')||{}).value)||0;
   const rubro = (document.getElementById('fpxRubro')||{}).value || '';
+  if(!FPX.prod || !(cant>0) || !rubro) return;
+  const precio = Number((document.getElementById('fpxPrecio')||{}).value)||0;
   const motivo = ((document.getElementById('fpxMotivo')||{}).value || '').trim();
   const rk = (rubro.match(/^([0-9.]+)/) || [])[1] || '';
   wizard.cart.push({
@@ -8493,7 +8522,7 @@ function fpxAgregar(){
     rubro_codigo: rk,
     _rubroManual: true,
     origen_rubro: 'fuera_presupuesto',
-    rubros_ap: rubro ? [rubro] : [],
+    rubros_ap: [rubro],
     unidad: FPX.prod.unidad || '',
     sector: (rk && cartBudget.rubroSector && cartBudget.rubroSector[rk]) || (wizard.form && wizard.form.sector) || ''
   });
@@ -8515,7 +8544,6 @@ function fpxAgregar(){
 }
 
 function fpxInit(){
-  const b = document.getElementById('fpExtraBtn'); if(b) b.onclick = fpxAbrir;
   const x = document.getElementById('fpxX'); if(x) x.onclick = fpxCerrar;
   const c = document.getElementById('fpxCancel'); if(c) c.onclick = fpxCerrar;
   const ov = document.getElementById('fpxOv'); if(ov) ov.onclick = function(ev){ if(ev.target===ov) fpxCerrar(); };
@@ -10199,7 +10227,9 @@ async function submitOC(){
       }
     }
 
-    // 5) Limpiar borrador
+    // 5) Limpiar borrador y frenar el auto-guardado
+    wizard.guardada = true;
+    if(wizard.autosaveTimer){ clearInterval(wizard.autosaveTimer); wizard.autosaveTimer = null; }
     try{
       localStorage.removeItem(LS_DRAFT_KEY + '_' + (state.user?.id || 'anon'));
     }catch{}
@@ -10247,6 +10277,10 @@ document.getElementById('btnSuccessClose').addEventListener('click', ()=>{
 });
 document.getElementById('btnSuccessNew').addEventListener('click', ()=>{
   document.getElementById('successModal').classList.remove('open');
+  // Nueva OC dentro del mismo wizard: vuelve a habilitarse el auto-guardado
+  wizard.guardada = false;
+  if(wizard.autosaveTimer) clearInterval(wizard.autosaveTimer);
+  wizard.autosaveTimer = setInterval(saveDraft, 30000);
   // Reset form pero mantener wizard abierto
   wizard.cart = [];
   wizard.form = {
