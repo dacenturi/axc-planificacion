@@ -453,7 +453,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.7 · código INS sin colisión con catálogo</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.8 · origen de la composición visible y marca de insumos agregados a mano</p>
   </div>
 </div>
 
@@ -1110,6 +1110,11 @@ body{
   .ins-grp-head{background:#eef3fb;padding:7px 12px;font-size:12.5px;font-weight:700;color:#1F3864;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
   .ins-grp-head .sub{font-weight:600;color:#8893a5;font-size:11.5px}
   .ins-grp.general .ins-grp-head{background:#f3f1ea;color:#8a6d10}
+  /* Insumo que no viene de la composición: matiz discreto, sin gritar */
+  .ins-tbl tr.ins-extra > td{background:#fbf9f3}
+  .ins-tbl tr.ins-extra > td:first-child{box-shadow:inset 3px 0 0 #d9c48a}
+  .ins-extra-badge{display:inline-block;margin-left:6px;font-size:9px;font-weight:700;letter-spacing:.3px;color:#8a7a55;background:#f6efdd;border:1px solid #e6d9b4;border-radius:999px;padding:1px 6px;white-space:nowrap;vertical-align:middle}
+  .ins-org{font-weight:600;color:#8893a5;font-size:11px;margin-left:8px}
   .ins-total{border:2px solid #1F3864;border-radius:10px;margin-top:6px;overflow:hidden}
   .ins-total-head{cursor:pointer;user-select:none}
 .ins-total-head::before{content:'▾';display:inline-block;margin-right:8px;font-size:11px;opacity:.75;transition:transform .18s}
@@ -1358,9 +1363,22 @@ async function loadArbol(){
       // rubros cuya composición no tiene mano de obra con importe
       const conMO={};
       const ids=Object.keys(rid).map(function(k){return rid[k];});
+      // Insumos que pertenecen a cada composición: sirve para distinguir después
+      // lo que salió de la receta de lo que se agregó a mano en el presupuesto.
+      ed.recetaIns = {};
+      const recPorId = {}; Object.keys(rid).forEach(function(rc){ recPorId[rid[rc]] = rc; });
       if(ids.length){
-        const { data:its } = await sb.from('receta_items').select('receta_id,tipo_componente,precio_unit').eq('activo', true).in('receta_id', ids);
-        (its||[]).forEach(function(x){ if(x.tipo_componente==='mano_obra' && Number(x.precio_unit)>0) conMO[x.receta_id]=true; });
+        const { data:its } = await sb.from('receta_items').select('receta_id,tipo_componente,precio_unit,codigo_catalogo,material').eq('activo', true).in('receta_id', ids);
+        (its||[]).forEach(function(x){
+          if(x.tipo_componente==='mano_obra' && Number(x.precio_unit)>0) conMO[x.receta_id]=true;
+          const rc = recPorId[x.receta_id];
+          if(!rc) return;
+          const set = (ed.recetaIns[rc] = ed.recetaIns[rc] || {});
+          const cod = String(x.codigo_catalogo||'').trim();
+          if(cod) set['C:'+cod.toLowerCase()] = 1;
+          const mat = String(x.material||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+          if(mat) set['M:'+mat] = 1;
+        });
       }
       ed.arbol.forEach(function(r){
         r.origen = om[r.codigo] || '';
@@ -1617,8 +1635,9 @@ function renderRubros(){
   const tb = document.getElementById('pmRubTbody');
   if(!ed.rubros.length){ tb.innerHTML = '<tr><td colspan="7" class="pm-emptyr">Sin rubros todavía. Agregá abajo.</td></tr>'; return; }
   tb.innerHTML = ed.rubros.map(function(r,i){
+    const _cat = (ed.arbolByCod && ed.arbolByCod[String(r.rubro_codigo||'')]) || null;
     const tag = r.tiene_receta
-      ? '<span class="pm-tag pm-tag-rec">🧱 RECETA</span>'
+      ? '<span class="pm-tag pm-tag-rec">🧱 RECETA</span>' + (_cat ? _origenBadge(_cat.origen) : '')
       : '<span class="pm-tag pm-tag-serv">💰 SERVICIO</span>';
     return '<tr>' +
       '<td><input data-i="'+i+'" data-f="sector" value="'+escapeHtml(r.sector)+'"></td>' +
@@ -1846,7 +1865,15 @@ function renderInsumos(){
     idxs.forEach(function(idx){ const r=ed.insumos[idx]; const calc=(Number(r.coef1)||0)>0&&(Number(r.coef2)||0)>0&&conReceta; const q=calc?_recipeQtyRaw(r,cantRubro):(Number(r.cantidad)||0); subGs += q*_prl(r); });
     subGs = Math.round(subGs); totalGsPresu += subGs;
     const headExtra = conReceta ? (' · cantidad rubro: '+_qty(cantRubro)+' '+escapeHtml(rub.unidad||'')) : '';
-    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+
+    // Origen de la composición del rubro (de dónde salieron estos insumos)
+    const _catG = (!isGen && ed.arbolByCod) ? ed.arbolByCod[String(k)] : null;
+    const _orgG = (conReceta && _catG)
+      ? ('<span class="ins-org" title="Origen de la composición: de acá salieron los insumos y sus coeficientes">composición: '+_origenBadge(_catG.origen)+'</span>')
+      : '';
+    const _nExtra = (!isGen && conReceta)
+      ? idxs.filter(function(ix){ return _deLaReceta(k, ed.insumos[ix]) === false; }).length : 0;
+    html += '<div class="ins-grp'+(isGen?' general':'')+'"><div class="ins-grp-head"><span>'+(isGen?'📦 ':'🧱 ')+escapeHtml(_insRubroLabel(k))+_orgG+
+      (_nExtra ? '<span class="ins-extra-badge" title="Insumos que no vienen de la composición del rubro">＋ '+_nExtra+' agregado'+(_nExtra===1?'':'s')+'</span>' : '')+
       (isGen?'':' <button type="button" class="mo-edit" data-moadd="'+escapeHtml(k)+'" data-mokind="mano_obra" title="Agregar mano de obra a este rubro">👷 ＋ mano de obra</button>'+
                 ' <button type="button" class="lg-edit" data-moadd="'+escapeHtml(k)+'" data-mokind="logistica" title="Agregar logística a este rubro">🚛 ＋ logística</button>')+
       '</span><span class="sub">'+idxs.length+' insumo'+(idxs.length===1?'':'s')+headExtra+' · <b style="color:#1F3864">Subtotal ₲ '+fmtGs(subGs)+'</b></span></div>';
@@ -1859,9 +1886,10 @@ function renderInsumos(){
         const pr = _prl(r); const sub = Math.round((Number(r.cantidad)||0)*pr);
         const mo = _isNoCompra(r); const lg = _isLG(r);
         const kcfg = lg ? _EXTRA_CFG.logistica : _EXTRA_CFG.mano_obra;
-        html += '<tr'+(mo?(' class="'+kcfg.row+'"'):'')+'>'+
+        const _ext = (_deLaReceta(k, r) === false);
+        html += '<tr class="'+(mo?kcfg.row:'')+(_ext?' ins-extra':'')+'">'+
           '<td'+(mo?(' title="'+kcfg.label+' — no entra en la orden de compra"'):'')+'>'+(mo?('<span class="'+kcfg.badge+'">'+kcfg.icon+' '+escapeHtml(r.codigo_insumo)+'</span>'):escapeHtml(r.codigo_insumo))+'</td>'+
-          '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'"></td>'+
+          '<td><input data-idx="'+idx+'" data-f="material" value="'+escapeHtml(r.material)+'">'+_extraBadge(k, r)+'</td>'+
           '<td><input data-idx="'+idx+'" data-f="unidad" value="'+escapeHtml(r.unidad)+'" style="max-width:58px"></td>'+
           '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="coef1" data-rubrok="'+escapeHtml(k)+'" value="'+(r.coef1===''?'':r.coef1)+'" style="max-width:68px"></td>'+
           '<td class="n"><input type="number" step="any" data-idx="'+idx+'" data-f="coef2" data-rubrok="'+escapeHtml(k)+'" value="'+(r.coef2===''?'':r.coef2)+'" style="max-width:68px"></td>'+
@@ -3602,6 +3630,22 @@ function _origenTexto(o){
   const op=ORIGEN_OPCIONES.filter(function(x){return x.v===v;})[0];
   return op ? op.l : 'AXC';
 }
+/* ¿Este insumo del presupuesto salió de la composición del rubro? */
+function _deLaReceta(rubroCod, it){
+  const set = ed.recetaIns && ed.recetaIns[rubroCod];
+  if(!set) return null;                       // sin datos de la composición: no se opina
+  const cod = String((it && it.codigo_insumo)||'').trim().toLowerCase();
+  if(cod && set['C:'+cod]) return true;
+  const mat = String((it && it.material)||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if(mat && set['M:'+mat]) return true;
+  return false;
+}
+function _extraBadge(rubroCod, it){
+  return (_deLaReceta(rubroCod, it) === false)
+    ? '<span class="ins-extra-badge" title="No está en la composición del rubro: se agregó a mano en este presupuesto">＋ agregado</span>'
+    : '';
+}
+
 function _sinMOBadge(r){
   return (r && r.sin_mo) ? '<span class="nomo-badge" title="Esta composición no tiene mano de obra: el costo que muestra es solo material">⚠ sin M.O.</span>' : '';
 }
