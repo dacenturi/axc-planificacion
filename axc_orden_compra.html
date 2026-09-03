@@ -4105,6 +4105,22 @@ body{
 .pr-foot button.danger{background:#c0392b;border-color:#c0392b;color:#fff}
 .pr-foot button.danger:disabled{opacity:.45;cursor:not-allowed}
 
+/* ══ Avance del rubro ═══════════════════════════════════════════ */
+.fp-av{margin-top:6px}
+.fp-avbar{display:flex;height:7px;border-radius:99px;overflow:hidden;background:#eef1f6;max-width:420px;cursor:help}
+.fp-avbar i{display:block;height:100%}
+.fp-avbar i.ej{background:#1B5524}
+.fp-avbar i.re{background:#C8A028}
+.fp-avbar i.ca{background:#3a7bd5}
+.fp-avbar i.lib{background:#e3e8f0}
+.fp-avtx{display:flex!important;flex-wrap:wrap;gap:4px 12px;margin-top:4px;font-size:10.5px}
+.fp-avtx b{font-weight:700;cursor:help;white-space:nowrap}
+.fp-avtx b.ej{color:#1B5524}
+.fp-avtx b.re{color:#8a6d10}
+.fp-avtx b.ca{color:#2c5fa8}
+.fp-avtx b.lib{color:#6b7688}
+.fp-prod{display:block!important;font-size:10.5px!important;font-weight:600!important;color:#2c5fa8!important;margin-top:2px}
+
 /* ══ Sincronización con el carrito ══════════════════════════════ */
 .fp-rub.encarr{background:#f4faf6}
 .fp-encarr{display:inline-flex;align-items:center;gap:7px;margin-top:4px;font-size:10.5px;font-weight:700;color:#1B5524;background:#e6f4ea;border:1px solid #bfe0c7;border-radius:999px;padding:2px 9px}
@@ -4209,7 +4225,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v7.2 · Consolidado con unidad de medida, también en el PDF · Avance por rubro con barra y tooltips
+      Conexdata · AXC Planificación v7.6 · El consolidado y el PDF identifican el producto exacto del catálogo · Avance por rubro · Unidad de medida
     </p>
   </div>
 </div>
@@ -5987,6 +6003,15 @@ var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{}, prod:{}, prec
    Así el mismo rubro se puede corregir las veces que haga falta sin
    duplicar el pedido.
    ═══════════════════════════════════════════════════════════════════ */
+/* Nombre con el que se le pide al proveedor: el del producto del catálogo.
+   Si el insumo no tiene producto asociado, se cae al nombre del insumo. */
+function fpNombreProducto(m, ov){
+  if(ov && ov.nombre) return ov.nombre;
+  const pid = String((m && m.prod_cong) || '').trim();
+  const n = (pid && cartBudget.prodNombre) ? cartBudget.prodNombre[pid] : '';
+  return n || (m && m.material) || '';
+}
+
 function fpKey(rk, ci){ return (cartBudget.pp||'') + '|' + (rk||'') + '|' + (ci||''); }
 
 /* Líneas del carrito que salieron de este rubro de este presupuesto */
@@ -6327,19 +6352,33 @@ function fpRubros(){
   return Object.keys(porRubro).map(function(rk){
     const ri   = info[rk] || {};
     const cant = Number(ri.cantidad)||0;
+    // Avance del rubro EN SU PROPIA UNIDAD (ML, M2...): cada insumo consumido
+    // equivale a una cantidad de rubro (consumo / coeficiente). Se toma el mayor
+    // de esos equivalentes, que es lo realmente ejecutado aunque una compra haya
+    // traído solo parte de los materiales.
+    let ejecR = 0, reservR = 0, carrR = 0;
     const mats = porRubro[rk].map(function(m){
       const a = _cbAgg(m.codigo_insumo, rk);
       const propio = Math.min(a.carr, fpPropioEnCarrito(rk, m.codigo_insumo || m.material));
-      const saldo = (Number(m.limite)||0) - a.ejec - a.reserv - Math.max(0, a.carr - propio);
+      const otrosCarr = Math.max(0, a.carr - propio);
+      const saldo = (Number(m.limite)||0) - a.ejec - a.reserv - otrosCarr;
       const cu = fpConsumoUnit(m, cant);
+      if(cu > 0){
+        ejecR   = Math.max(ejecR,   a.ejec / cu);
+        reservR = Math.max(reservR, a.reserv / cu);
+        carrR   = Math.max(carrR,   otrosCarr / cu);
+      }
       return { m:m, saldo:saldo, cu:cu, limite:Number(m.limite)||0,
+               ejec:a.ejec, reserv:a.reserv, otrosCarr:otrosCarr,
                maxEjec: cu>0 ? saldo/cu : Infinity };
     });
     const maxEjec = mats.reduce(function(a,x){ return Math.min(a, x.maxEjec); }, Infinity);
+    const _r2 = function(v){ return Math.max(0, Math.round((Number(v)||0)*100)/100); };
     return { codigo:rk, descripcion: ri.descripcion || cartBudget.rubroDesc?.[rk] || rk,
              unidad: ri.unidad||'', cantidad:cant, mats:mats,
              sector: ri.sector || (cartBudget.rubroSector && cartBudget.rubroSector[rk]) || '',
              maxEjec: isFinite(maxEjec) ? Math.max(0, Math.round(maxEjec*100)/100) : 0,
+             ejecR:_r2(ejecR), reservR:_r2(reservR), carrR:_r2(carrR),
              agotado: mats.some(function(x){ return x.saldo <= 0; }) };
   }).sort(function(a,b){ return b.maxEjec - a.maxEjec; });
 }
@@ -6678,6 +6717,11 @@ function fpRender(){
           (esMO ? '<span class="fp-tag">no entra en la OC de materiales</span>' : '')+
           ((calc!=='' && FP.mat[key]==null) ? '<span class="fp-calc">calculado</span>' : '')+
           (ov ? '<span class="fp-tag ok">→ '+escapeHtml(ov.nombre)+'</span>' : '')+'</b>'+
+          (function(){
+            const nm = fpNombreProducto(x.m, ov);
+            return (!ov && nm && nm.toLowerCase() !== String(x.m.material||'').toLowerCase())
+              ? '<span class="fp-prod" title="Producto del catalogo con el que se va a comprar y que figura en la orden. Cambialo con el 🏷️">🛒 '+escapeHtml(nm)+'</span>' : '';
+          })()+
           '<span>'+escapeHtml(x.m.codigo_insumo||'sin código')+' · '+
           (x.cu>0 ? (Math.round(x.cu*10000)/10000)+' '+escapeHtml(x.m.unidad||'')+' por '+escapeHtml(r.unidad||'unidad') : 'sin coeficiente')+
           '</span></div>'+
@@ -6719,6 +6763,7 @@ function fpRender(){
         '<div class="fp-rnom"><b>'+escapeHtml(r.codigo)+' · '+escapeHtml(r.descripcion)+'</b>'+
           '<span>'+(r.sector ? '📁 '+escapeHtml(r.sector)+' · ' : '')+
           r.mats.length+' materiales · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span>'+
+          fpAvanceHTML(r)+
           (enCarr ? '<span class="fp-encarr">✓ ya en el carrito · '+
             (enCarrCant>0 ? (_cbQty(enCarrCant)+' '+escapeHtml(r.unidad||'')) : (enCarrN+' material'+(enCarrN===1?'':'es')))+
             '<button type="button" data-rquit="'+escapeHtml(r.codigo)+'" title="Sacar del carrito los materiales de este rubro">quitar</button></span>' : '')+
@@ -6807,6 +6852,42 @@ function fpRender(){
   fpActualizarPie();
 }
 
+/* Barra de avance del rubro: aprobado (consumido), reservado (OC sin aprobar)
+   y lo que estás por agregar en este carrito. */
+function fpAvanceHTML(r){
+  const tot = Number(r.cantidad)||0;
+  if(tot <= 0) return '';
+  const u = escapeHtml(r.unidad||'');
+  const ej = Number(r.ejecR)||0, re = Number(r.reservR)||0, ca = Number(r.carrR)||0;
+  const usado = ej + re + ca;
+  const pct = function(v){ return Math.max(0, Math.min(100, (v/tot)*100)); };
+  const libre = Math.max(0, tot - usado);
+  if(usado <= 0){
+    return '<div class="fp-av"><div class="fp-avbar" title="Todavia no se compro nada de este rubro">'+
+      '<i class="lib" style="width:100%"></i></div>'+
+      '<span class="fp-avtx"><b class="lib">Sin consumo aun · '+_cbQty(tot)+' '+u+' disponibles</b></span></div>';
+  }
+  const tip = 'Presupuestado '+_cbQty(tot)+' '+(r.unidad||'')+
+    '\nAprobado (ya consumido): '+_cbQty(ej)+
+    '\nReservado (OC sin aprobar): '+_cbQty(re)+
+    '\nEn este carrito: '+_cbQty(ca)+
+    '\nDisponible: '+_cbQty(libre);
+  return '<div class="fp-av">'+
+    '<div class="fp-avbar" title="'+escapeHtml(tip)+'">'+
+      (ej>0 ? '<i class="ej" style="width:'+pct(ej)+'%"></i>' : '')+
+      (re>0 ? '<i class="re" style="width:'+pct(re)+'%"></i>' : '')+
+      (ca>0 ? '<i class="ca" style="width:'+pct(ca)+'%"></i>' : '')+
+      '<i class="lib" style="width:'+pct(libre)+'%"></i>'+
+    '</div>'+
+    '<span class="fp-avtx">'+
+      (ej>0 ? '<b class="ej" title="Ordenes aprobadas: el material ya se consumio del presupuesto">● '+_cbQty(ej)+' '+u+' aprobado</b>' : '')+
+      (re>0 ? '<b class="re" title="Ordenes solicitadas u observadas, todavia sin aprobar: el saldo queda reservado">● '+_cbQty(re)+' '+u+' reservado</b>' : '')+
+      (ca>0 ? '<b class="ca" title="Lo que estas por agregar en esta orden, todavia sin guardar">● '+_cbQty(ca)+' '+u+' en el carrito</b>' : '')+
+      '<b class="lib" title="Lo que todavia se puede ejecutar de este rubro">● '+_cbQty(libre)+' '+u+' libre</b>'+
+    '</span>'+
+  '</div>';
+}
+
 function fpActualizarPie(){
   let n=0, avisos=0, yaCargados=0;
   fpRubros().forEach(function(r){
@@ -6886,7 +6967,7 @@ async function fpAgregarAlCarrito(){
     const datos = {
       _fpKey: k, _fpPP: pp, _fpRubro: r.codigo, _fpInsumo: ci,
       producto_id: p.esMO ? null : Number(p.ov ? p.ov.id : x.m.prod_cong),
-      producto_nombre: p.ov ? p.ov.nombre : x.m.material,
+      producto_nombre: fpNombreProducto(x.m, p.ov),
       cantidad: cant,
       precio_unit: p.pu,
       subtotal: Math.round(cant*p.pu*100)/100,
@@ -6895,7 +6976,7 @@ async function fpAgregarAlCarrito(){
       _rubroManual: true,
       origen_rubro: 'presupuesto',
       sector: (cartBudget.rubroSector && cartBudget.rubroSector[r.codigo]) || (wizard.form && wizard.form.sector) || '',
-      unidad: x.m.unidad || ''
+      unidad: x.m.unidad || (cartBudget.prodUnidad && cartBudget.prodUnidad[String(x.m.prod_cong||'').trim()]) || ''
     };
     // El presupuesto ya dice qué insumo es: se registra el producto→insumo
     // para que la imputación del carrito no dependa de `insumos.producto_id`.
@@ -8382,10 +8463,14 @@ function renderRubroApChips(it, idx){
    y cuánto. Es lo que necesita el proveedor para preparar el pedido.
    Sirve tanto para el carrito (antes de crear) como para el PDF.
    ═══════════════════════════════════════════════════════════════════ */
-/* La clave es el NOMBRE del material, no el producto: en el presupuesto un mismo
-   material puede estar cargado con dos productos distintos del catálogo (dos
-   "Cemento" con precios distintos según el rubro) y para el proveedor es uno solo. */
+/* Se agrupa por PRODUCTO del catálogo: el proveedor tiene que recibir
+   exactamente lo que se pidió. Dos productos distintos no se mezclan aunque
+   compartan el nombre genérico del insumo. Sin producto (mano de obra, cargas
+   libres) se agrupa por nombre. */
 function _consKey(it){
+  if(!it.es_mano_obra && it.producto_id != null && String(it.producto_id).trim() !== ''){
+    return 'P:' + String(it.producto_id).trim();
+  }
   const n = String(it.producto_nombre||'').trim().toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
   return (it.es_mano_obra ? 'MO:' : 'MAT:') + n;
@@ -9257,7 +9342,23 @@ async function cartBudgetLoad(pp){
       const it = await sb.from('ordenes_compra_items').select('producto_id,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
       ocItems = (it.data||[]).map(function(x){ const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0; return { producto_id:x.producto_id, cantidad:c, subtotal:c*p, estado: estadoById[x.oc_id]||'', rubro_codigo:x.rubro_codigo||'' }; });
     }
-    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; cartBudget.allRubros = allRubros; }
+    // Nombre comercial del producto con el que se presupuestó cada insumo.
+    // El insumo se llama "Cemento", pero al proveedor hay que pedirle
+    // "CEMENTO YGUAZU": ese es el nombre que tiene que viajar a la OC.
+    const prodNombre = {}, prodUnidad = {};
+    try{
+      const pids = Array.from(new Set(mats.map(function(m){ return m.prod_cong; })
+        .filter(function(v){ return v!=null && String(v).trim()!==''; })));
+      if(pids.length){
+        const { data: pcs } = await sb.from('productos_catalogo')
+          .select('id,nombre,unidad_medida').in('id', pids);
+        (pcs||[]).forEach(function(p){
+          prodNombre[String(p.id)] = String(p.nombre||'').trim();
+          prodUnidad[String(p.id)] = String(p.unidad_medida||'').trim();
+        });
+      }
+    }catch(ePN){ console.warn('nombres de productos del presupuesto', ePN); }
+    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; cartBudget.allRubros = allRubros; cartBudget.prodNombre = prodNombre; cartBudget.prodUnidad = prodUnidad; }
   }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.rubros = []; cartBudget.ocItems = []; cartBudget.allRubros = []; } }
   if(wizard.open && typeof renderCart === 'function') renderCart(); else cartBudgetRender();
 }
@@ -11940,21 +12041,62 @@ async function generatePDF(oc, incluirAdjuntos){
       items = data || [];
     }
 
-    // La unidad no viaja en la OC: se resuelve desde el catálogo de productos
-    // para poder imprimirla junto a la cantidad (kg, m3, var, unid...).
+    // La unidad no viaja en la OC: se resuelve en cascada.
+    //   1) el presupuesto de la orden (es la fuente más fiel: m3, kg, var, BALDE 20 LT)
+    //   2) la unidad base del insumo
+    //   3) la unidad del catálogo de productos
+    // El catálogo casi no la tiene cargada, por eso no se depende de él.
     try{
       const pids = Array.from(new Set((items||[])
         .map(function(i){ return i.producto_id; })
         .filter(function(v){ return v!=null && String(v)!==''; })));
-      if(pids.length){
-        const { data: prods } = await sb.from('productos_catalogo')
-          .select('id,unidad_medida').in('id', pids);
-        const um = {};
-        (prods||[]).forEach(function(p){ um[String(p.id)] = String(p.unidad_medida||'').trim(); });
-        items = items.map(function(i){
-          return Object.assign({}, i, { unidad: i.unidad || um[String(i.producto_id)] || '' });
-        });
+      const porProd = {}, porNombre = {}, nombreProd = {};
+      const _nm = function(v){ return String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '); };
+      const _set = function(mapa, k, u){ if(k && u && !mapa[k]) mapa[k] = u; };
+      // 1) presupuesto de esta orden
+      if(oc.presupuesto){
+        try{
+          const { data: pi } = await sb.from('presupuesto_insumos')
+            .select('producto_id,material,unidad').eq('presupuesto', oc.presupuesto);
+          (pi||[]).forEach(function(r){
+            const u = String(r.unidad||'').trim();
+            _set(porProd, String(r.producto_id||'').trim(), u);
+            _set(porNombre, _nm(r.material), u);
+          });
+        }catch(e1){ console.warn('unidades del presupuesto', e1); }
       }
+      // 2) unidad base del insumo
+      try{
+        const { data: ins } = await sb.from('insumos')
+          .select('nombre,unidad_base,producto_id').limit(5000);
+        (ins||[]).forEach(function(r){
+          const u = String(r.unidad_base||'').trim();
+          _set(porProd, String(r.producto_id||'').trim(), u);
+          _set(porNombre, _nm(r.nombre), u);
+        });
+      }catch(e2){ console.warn('unidades de insumos', e2); }
+      // 3) catálogo
+      if(pids.length){
+        try{
+          const { data: prods } = await sb.from('productos_catalogo')
+            .select('id,nombre,unidad_medida').in('id', pids);
+          (prods||[]).forEach(function(p){
+            const u = String(p.unidad_medida||'').trim();
+            _set(porProd, String(p.id), u);
+            _set(porNombre, _nm(p.nombre), u);
+            const nb = String(p.nombre||'').trim();
+            if(nb) nombreProd[String(p.id)] = nb;
+          });
+        }catch(e3){ console.warn('unidades del catalogo', e3); }
+      }
+      items = items.map(function(i){
+        const u = i.unidad || porProd[String(i.producto_id||'').trim()] || porNombre[_nm(i.producto_nombre)] || '';
+        // El proveedor tiene que leer el producto exacto del catálogo. Si el ítem
+        // trae un "producto real" cargado a mano, ese manda.
+        const nb = i.producto_real ? i.producto_real
+                 : (nombreProd[String(i.producto_id||'').trim()] || i.producto_nombre);
+        return Object.assign({}, i, { unidad: u, producto_nombre: nb });
+      });
     }catch(eUM){ console.warn('unidades para el PDF', eUM); }
 
     const {jsPDF} = window.jspdf;
