@@ -4102,7 +4102,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v6.1 · Buscador de presupuestos (del más nuevo al más viejo) · Detalle del presupuesto minimizado · Rubro de aplicación tomado del presupuesto
+      Conexdata · AXC Planificación v6.2 · Buscador de presupuestos con un click · Sector traído del presupuesto (cabecera o rubros) · Rubro de aplicación tomado del presupuesto
     </p>
   </div>
 </div>
@@ -4338,7 +4338,7 @@ body{
         </div>
         <div class="fp-pp">
           <label class="fp-pp-lbl">N° de presupuesto</label>
-          <input type="text" id="fpPPSel" class="fp-in" list="fpPresuList" placeholder="Ej. PP71 — escribí el N° o usá el buscador" autocomplete="off">
+          <input type="text" id="fpPPSel" class="fp-in" placeholder="Tocá acá y elegí el presupuesto" readonly style="cursor:pointer;background:#fff" autocomplete="off">
           <datalist id="fpPresuList"></datalist>
           <button type="button" class="fp-pp-btn alt" id="fpPPBuscar">🔎 Buscar presupuesto</button>
           <button type="button" class="fp-pp-btn" id="fpPPCargar">Cargar faltante</button>
@@ -5708,6 +5708,9 @@ function fppRender(){
 
 async function fppAbrir(){
   const ov = document.getElementById('fppOv'); if(!ov) return;
+  // Evita que se reabra solo cuando el foco vuelve al campo al cerrarlo
+  if(!ov.hidden) return;
+  if(FPP.bloqueoHasta && Date.now() < FPP.bloqueoHasta) return;
   ov.hidden = false;
   FPP.filtro = '';
   const q = document.getElementById('fppQ');
@@ -5717,7 +5720,11 @@ async function fppAbrir(){
   try{ await fppCargar(); fppRender(); }
   catch(e){ if(list) list.innerHTML = '<div class="fp-mk-empty">No se pudieron cargar los presupuestos.</div>'; }
 }
-function fppCerrar(){ const ov = document.getElementById('fppOv'); if(ov) ov.hidden = true; }
+function fppCerrar(){
+  const ov = document.getElementById('fppOv'); if(ov) ov.hidden = true;
+  FPP.bloqueoHasta = Date.now() + 400;
+  const inp = document.getElementById('fpPPSel'); if(inp) inp.blur();
+}
 
 /* Ficha del presupuesto elegido, arriba de la lista de rubros */
 function fppInfoRender(){
@@ -5733,8 +5740,12 @@ function fppInfoRender(){
   const partes = [
     ['N°', pp],
     ['Obra', cartBudget.obra || r.obra || '—'],
-    ['Presupuesto', cartBudget.nombre || r.nombre || '—'],
-    ['Sector', cartBudget.sectorCab || r.sector || '—'],
+    ['Nombre', cartBudget.nombre || r.nombre || '—'],
+    ['Sector', (function(){
+        const ss = fpSectoresPresu();
+        if(ss.length) return ss.length>2 ? (ss.slice(0,2).join(' · ')+' +'+(ss.length-2)) : ss.join(' · ');
+        return r.sector || '—';
+      })()],
     ['Fecha', fTxt || '—'],
     ['Rubros', nRub ? String(nRub) : '—'],
     ['Insumos', nIns ? String(nIns) : '—'],
@@ -5754,7 +5765,17 @@ function fppInit(){
   const ov = document.getElementById('fppOv');
   if(ov) ov.onclick = function(ev){ if(ev.target===ov) fppCerrar(); };
   const q = document.getElementById('fppQ');
-  if(q) q.oninput = function(){ FPP.filtro = _presuNorm(q.value.trim()); fppRender(); };
+  if(q){
+    q.oninput = function(){ FPP.filtro = _presuNorm(q.value.trim()); fppRender(); };
+    // Enter elige el primero de la lista filtrada (escribir "71" y Enter alcanza)
+    q.onkeydown = function(ev){
+      if(ev.key === 'Escape'){ fppCerrar(); return; }
+      if(ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const first = document.querySelector('#fppList .fpp-it');
+      if(first) first.click();
+    };
+  }
   // Se precarga en segundo plano para que la ficha tenga datos apenas se elige
   fppCargar().catch(function(e){ console.warn('fppCargar', e); });
 }
@@ -5779,6 +5800,9 @@ function fpInit(){
     sel.value = cartBudget.pp || wizard.form.presupuesto || '';
     sel.onchange = fpCargarPP;
     sel.onkeydown = function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); fpCargarPP(); } };
+    // Un click (o el foco) en el campo abre directamente el buscador
+    sel.onmousedown = function(ev){ ev.preventDefault(); fppAbrir(); };
+    sel.onfocus = function(){ fppAbrir(); };
   }
   if(btn) btn.onclick = fpCargarPP;
   fpMkInit();
@@ -5986,6 +6010,51 @@ function fpMkInit(){
   });
 }
 
+/* ── Sector del presupuesto ──────────────────────────────────────
+   El sector puede venir en la cabecera del presupuesto (presupuesto_cab.sector)
+   o en cada rubro (presupuesto_rubros.sector). Se toma el de la cabecera y, si
+   no hay, el de los rubros cuando todos coinciden. */
+function _secNorm(v){
+  return String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
+}
+function fpSectoresPresu(){
+  const out = [];
+  const cab = (cartBudget.sectorCab||'').trim();
+  if(cab) out.push(cab);
+  Object.keys(cartBudget.rubroSector||{}).forEach(function(k){
+    const v = (cartBudget.rubroSector[k]||'').trim();
+    if(v && !out.some(function(x){ return _secNorm(x)===_secNorm(v); })) out.push(v);
+  });
+  return out;
+}
+function fpSectorPresu(){
+  const cab = (cartBudget.sectorCab||'').trim();
+  if(cab) return cab;
+  const s = fpSectoresPresu();
+  return s.length === 1 ? s[0] : '';
+}
+/* El sector del presupuesto puede no estar en la lista de sectores de la obra.
+   En ese caso se agrega como opción para que igual llegue a la orden de compra. */
+function fpInyectarSectorPresu(){
+  const fs = document.getElementById('fldSector');
+  if(!fs || !cartBudget.pp) return;
+  fpSectoresPresu().forEach(function(sec){
+    const ya = Array.prototype.slice.call(fs.options).some(function(o){ return _secNorm(o.value)===_secNorm(sec); });
+    if(ya) return;
+    const op = document.createElement('option');
+    op.value = sec; op.textContent = sec + ' · del presupuesto';
+    op.setAttribute('data-sec-presu','1');
+    fs.appendChild(op);
+  });
+  fs.disabled = false;
+}
+/* Busca la opción del sector sin importar mayúsculas, tildes ni espacios */
+function fpOpcionSector(sec){
+  const fs = document.getElementById('fldSector');
+  if(!fs || !sec) return null;
+  return Array.prototype.slice.call(fs.options).filter(function(o){ return _secNorm(o.value)===_secNorm(sec); })[0] || null;
+}
+
 function fpAutocompletar(pp){
   try{
     const obra = cartBudget.obra || '';
@@ -5999,20 +6068,13 @@ function fpAutocompletar(pp){
         filterSectoresByObra(opt.value);
       }
     }
-    // Sector: el del presupuesto, o el único que tengan sus rubros
-    let sector = cartBudget.sectorCab || '';
-    if(!sector){
-      const secs = [];
-      Object.keys(cartBudget.rubroSector||{}).forEach(function(k){
-        const v = (cartBudget.rubroSector[k]||'').trim();
-        if(v && secs.indexOf(v)<0) secs.push(v);
-      });
-      if(secs.length === 1) sector = secs[0];
-    }
+    // Sector: el del presupuesto (cabecera o rubros). Si la obra no lo tiene en
+    // su lista, se agrega igual como opción para que llegue a la OC.
+    const sector = fpSectorPresu();
+    fpInyectarSectorPresu();
     const fs = document.getElementById('fldSector');
     if(fs && sector && !(wizard.form.sector||'').trim()){
-      const opt = Array.prototype.slice.call(fs.options)
-        .filter(function(o){ return String(o.value).trim().toLowerCase() === sector.toLowerCase(); })[0];
+      const opt = fpOpcionSector(sector);
       if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
     }
     // Residente: el del perfil. Si el perfil no tiene uno cargado (pasa con los
@@ -6047,10 +6109,9 @@ function fpAjustarSector(){
     });
     const fs = document.getElementById('fldSector');
     if(!fs) return;
+    fpInyectarSectorPresu();
     if(secs.length === 1){
-      const opt = Array.prototype.slice.call(fs.options).filter(function(o){
-        return String(o.value).trim().toLowerCase() === secs[0].toLowerCase();
-      })[0];
+      const opt = fpOpcionSector(secs[0]);
       if(opt){ fs.value = opt.value; wizard.form.sector = opt.value; }
     } else if(secs.length > 1){
       fs.value = ''; wizard.form.sector = '';
@@ -7508,12 +7569,15 @@ function filterSectoresByObra(obra){
     sel.innerHTML = '<option value="">No hay sectores definidos para esta obra</option>';
     sel.disabled = false;
     document.getElementById('fldSectorHelp').textContent = 'Esta obra no tiene sectores aún. Podés dejarlo vacío.';
+    try{ fpInyectarSectorPresu(); }catch(e){}
     return;
   }
   sel.innerHTML = '<option value="">Sin sector específico</option>' +
     sectores.map(s => `<option value="${escapeHtml(s.valor)}">${escapeHtml(s.valor)}</option>`).join('');
   sel.disabled = false;
   document.getElementById('fldSectorHelp').textContent = `${sectores.length} sector(es) disponible(s) para esta obra`;
+  // El sector del presupuesto vuelve a la lista aunque la obra no lo tenga cargado
+  try{ fpInyectarSectorPresu(); }catch(e){}
 }
 
 
