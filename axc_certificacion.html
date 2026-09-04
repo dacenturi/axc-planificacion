@@ -159,6 +159,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:9px;background:#fff;overflow:hidden}
 .lin.cargada{border-color:#7ECC8F;box-shadow:0 0 0 2px rgba(126,204,143,.14)}
 .lin.sinref{border-style:dashed;border-color:#e6d29a}
+.lin.excedida{border-color:#C8A028;box-shadow:0 0 0 2px rgba(200,160,40,.18)}
+.lin-tag.ex{background:#fdf3d6;color:#8a6d10;border:1px solid #C8A028}
 .lin-h{display:grid;grid-template-columns:1fr 165px 175px 150px 150px;gap:14px;align-items:center;padding:14px 18px;background:var(--surface-2)}
 .lin-nom b{font-size:14.5px;color:var(--navy);display:block;line-height:1.35}
 .lin-nom small{display:block;font-size:12px;color:var(--text-muted);margin-top:3px}
@@ -394,7 +396,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.7 · continuar desde el certificado anterior · carga por porcentaje · buscador de trabajos · pensado para el celular</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.8 · autorización de pago en el formato de AXC · aviso de excedente al cargar · las fotos ya no se pierden al editar</p>
   </div>
 </div>
 
@@ -864,6 +866,26 @@ async function abrirEditor(id){
         ed.med[k] = { cant:Number(it.cantidad)||0, precio:Number(it.precio_unit)||0,
                       ubicacion:it.ubicacion||'', obs:it.observacion||'' };
       });
+      // Las fotos ya subidas vuelven al editor: si no, al volver a guardar se
+      // perdían (el guardado rehace las líneas y las fotos cuelgan de ellas).
+      try{
+        const ids = (its||[]).map(x=>x.id);
+        if(ids.length){
+          const { data:fs } = await sb.from('certificado_fotos').select('*').in('item_id', ids);
+          const porItem = {}; (its||[]).forEach(x=>{ porItem[x.id] = x; });
+          for(const f of (fs||[])){
+            const it = porItem[f.item_id]; if(!it) continue;
+            const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+            let url = '';
+            try{
+              const { data:sg } = await sb.storage.from('oc-adjuntos').createSignedUrl(f.url_storage, 3600);
+              url = (sg && sg.signedUrl) || '';
+            }catch(e){}
+            if(!url){ const { data:pu } = sb.storage.from('oc-adjuntos').getPublicUrl(f.url_storage); url = (pu&&pu.publicUrl)||''; }
+            (ed.fotos[k] = ed.fotos[k] || []).push({ url:url, path:f.url_storage, nombre:f.nombre||'foto.jpg', guardada:true });
+          }
+        }
+      }catch(eF){ console.warn('fotos previas', eF); }
       renderLineas();
     }
   }
@@ -1316,11 +1338,13 @@ function lineaHTML(l, contratista){
     }
   }
 
-  return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+'" data-k="'+escapeHtml(k)+'">'+
+  const excedida = !l.libre && l.cant_presup > 0 && (Number(cant)||0) > Math.max(0, l.cant_presup - usado);
+  return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
       '<div class="lin-nom"><b>'+escapeHtml(l.descripcion)+
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':'mo'))+'">'+(l.libre?'fuera de presupuesto':(esLG?'logística':'mano de obra'))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr">sin precio presupuestado</span>' : '')+
+        (excedida ? '<span class="lin-tag ex">fuera de lo presupuestado</span>' : '')+
       '</b>'+
         '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+' · '+escapeHtml(l.rubro_desc) : 'trabajo libre')+
         (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : '')+'</small></div>'+
@@ -1354,16 +1378,21 @@ function fotosHTML(k){
 function enganchesLineas(){
   const cont = document.getElementById('edLineas');
   cont.querySelectorAll('input[data-c]').forEach(inp=>{
-    inp.onchange = function(){
+    inp.onchange = async function(){
       const k = inp.getAttribute('data-c');
       const v = inp.value === '' ? '' : Number(inp.value);
+      const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion)===k)[0];
       ed.med[k] = ed.med[k] || {};
       ed.med[k].cant = v;
       if(ed.med[k].precio == null || ed.med[k].precio === ''){
-        const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion)===k)[0];
         if(l) ed.med[k].precio = l.precio_presup || '';
       }
       renderLineas();
+      // Si se pasa de lo presupuestado, se avisa en el momento y se pide el
+      // motivo: después, con veinte líneas cargadas, ya nadie se acuerda.
+      if(l && !l.libre && l.cant_presup > 0 && Number(v) > 0){
+        await avisarExcedente(k, l);
+      }
     };
   });
   // % de avance acumulado → cantidad de esta medición
@@ -1468,6 +1497,46 @@ function comprimir(file){
   });
 }
 
+/* Excedente: se avisa apenas se carga, con los números a la vista, y el
+   motivo queda pegado a esa línea, no perdido en la observación general. */
+async function avisarExcedente(k, l){
+  const h = ed.hist[k] || { aprob:0, tramite:0 };
+  const ant = h.aprob + h.tramite;
+  const disp = Math.max(0, l.cant_presup - ant);
+  const cant = Number(ed.med[k] && ed.med[k].cant) || 0;
+  if(cant <= disp) return;
+  if(ed.med[k] && ed.med[k].excAvisado === cant) return;   // ya lo confirmó con este número
+  const exceso = Math.round((cant - disp) * 100) / 100;
+  const r = await axcDialog({
+    tono:'warn', icono:'⚠', titulo:'Este trabajo se pasa de lo presupuestado',
+    subtitulo: l.descripcion + (l.rubro_codigo ? (' · '+l.rubro_codigo) : ''),
+    mensaje:'Estás cargando <b>'+qty(cant)+' '+escapeHtml(l.unidad||'')+'</b> y solo quedaban <b>'+qty(disp)+
+            '</b>. El excedente de <b>'+qty(exceso)+' '+escapeHtml(l.unidad||'')+
+            '</b> se va a registrar como <b>fuera de lo presupuestado</b>, para poder analizarlo después.',
+    lista:[
+      'Presupuestado: <b>'+qty(l.cant_presup)+' '+escapeHtml(l.unidad||'')+'</b>',
+      'Ya certificado: <b>'+qty(ant)+'</b> ('+qty(h.aprob)+' aprobado · '+qty(h.tramite)+' en trámite)',
+      'Disponible: <b>'+qty(disp)+'</b>',
+      'Esta medición: <b>'+qty(cant)+'</b> → excedente <b>'+qty(exceso)+'</b>'
+    ],
+    campo:{ label:'Motivo del excedente', placeholder:'Ej. rediseño del sector, error de cómputo, trabajo adicional pedido por el cliente', requerido:true,
+            valor:(ed.med[k] && ed.med[k].excMotivo) || '' },
+    ok:'Registrar el excedente', cancelar:'Ajustar al saldo ('+qty(disp)+')'
+  });
+  if(!r.ok){
+    ed.med[k].cant = disp;
+    delete ed.med[k].excMotivo; delete ed.med[k].excAvisado;
+    renderLineas();
+    showToast('Medición ajustada al saldo disponible','info', qty(disp)+' '+(l.unidad||''));
+    return;
+  }
+  ed.med[k].excMotivo = r.valor;
+  ed.med[k].excAvisado = cant;
+  const base = String(ed.med[k].obs||'').replace(/\s*·?\s*Excedente:[^·]*/i,'').trim();
+  ed.med[k].obs = (base ? base+' · ' : '') + 'Excedente: ' + r.valor;
+  renderLineas();
+}
+
 function medidas(){
   const out = [];
   ed.lineas.forEach((l,i)=>{
@@ -1524,7 +1593,7 @@ async function guardar(estado){
       });
       return;
     }
-    const exc = M.filter(x=>x.excedente);
+    const exc = M.filter(x=>x.excedente && !(ed.med[x.key] && ed.med[x.key].excMotivo));
     if(exc.length){
       const r = await axcDialog({
         tono:'warn', icono:'⚠', titulo:'Estás certificando más de lo presupuestado',
@@ -1632,7 +1701,16 @@ async function guardar(estado){
       const itemId = idPorOrden[x.orden];
       if(!itemId) continue;
       for(const f of x.fotos){
-        if(f.guardada) continue;             // ya está en el storage
+        // Las que ya estaban en el storage solo se vuelven a vincular a la
+        // línea nueva: no hace falta subirlas otra vez.
+        if(f.guardada){
+          try{
+            const ins = await sb.from('certificado_fotos').insert({ item_id:itemId, url_storage:f.path, nombre:f.nombre||'foto.jpg', subido_por:quien });
+            if(ins.error) throw ins.error;
+            fotosOK++;
+          }catch(er){ console.error('revincular foto', er); fotosErr.push(er.message||String(er)); }
+          continue;
+        }
         try{
           const blob = await (await fetch(f.url)).blob();
           const path = 'cert/'+certId+'/'+itemId+'_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)+'.jpg';
@@ -1703,7 +1781,10 @@ async function abrirDetalle(id){
                     '<button type="button" class="btn-ok" id="dtAprobar">Aprobar certificado</button>';
   }
   if(c.estado !== 'Anulado'){
-    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-ok" id="dtPdf">📄 Descargar PDF</button>';
+    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
+  }
+  if(c.estado === 'Aprobado'){
+    acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAut">💰 Autorización de pago</button>';
   }
 
   try{
@@ -1797,6 +1878,7 @@ async function abrirDetalle(id){
     const bN=document.getElementById('dtAnular');
     if(bN) bN.onclick = ()=> cambiarEstado(id,'Anulado');
     const bP=document.getElementById('dtPdf'); if(bP) bP.onclick = ()=> pedirPDF(c, its||[]);
+    const bAut=document.getElementById('dtAut'); if(bAut) bAut.onclick = ()=> pedirAutorizacion(c, its||[]);
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
@@ -1846,6 +1928,146 @@ async function cambiarEstado(id, estado){
 }
 
 /* ── PDF ─────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   AUTORIZACIÓN DE PAGO
+   ───────────────────────────────────────────────────────────────────
+   Réplica del formulario que AXC ya usa en papel: una línea por obra y
+   sector con su importe, el descuento del anticipo y del préstamo, el
+   saldo a cobrar, y los dos bloques de firma.
+   ═══════════════════════════════════════════════════════════════════ */
+async function pedirAutorizacion(c, its){
+  const r = await axcDialog({
+    tono:'', icono:'💰', titulo:'Autorización de pago',
+    subtitulo:c.numero+' · '+(c.contratista||''),
+    mensaje:'Total certificado: <b>'+gs(c.total)+'</b>. Cargá los descuentos que correspondan para calcular el saldo a cobrar.',
+    campo:{ label:'Anticipo retirado a descontar (₲)', placeholder:'0' },
+    campo2:{ label:'Pago de préstamo (₲)', placeholder:'0' },
+    ok:'Generar la autorización'
+  });
+  if(!r.ok) return;
+  generarAutorizacion(c, its, Number(String(r.valor||'').replace(/[^0-9]/g,''))||0,
+                              Number(String(r.valor2||'').replace(/[^0-9]/g,''))||0);
+}
+
+function generarAutorizacion(c, its, anticipo, prestamo){
+  if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const W = doc.internal.pageSize.getWidth(), M = 18;
+  let y = 16;
+
+  try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M, y, 34, 11); }catch(e){}
+  doc.setFont('helvetica','bold').setFontSize(10).setTextColor(26,34,54);
+  doc.text('NUMERO :', W-M-52, y+7);
+  doc.setFont('helvetica','normal').setFontSize(11);
+  doc.text(pdfSafe(c.numero||''), W-M-24, y+7);
+  doc.setLineWidth(.5).setDrawColor(26,34,54);
+  doc.line(W-M-52, y+9, W-M, y+9);
+  y += 20;
+
+  doc.setLineWidth(1.1); doc.line(M, y, W-M, y);
+  y += 7;
+  doc.setFont('helvetica','bold').setFontSize(13.5);
+  doc.text('AUTORIZACION DE PAGO POR CERTIFICADO DE OBRA', W/2, y, {align:'center'});
+  y += 3; doc.setLineWidth(1.1); doc.line(M, y, W-M, y);
+  y += 10;
+
+  const fila = (et, val) => {
+    doc.setFont('helvetica','bold').setFontSize(10.5);
+    doc.text(pdfSafe(et), M, y);
+    doc.text(':', M+30, y);
+    doc.setFont('helvetica','bold');
+    doc.text(pdfSafe(String(val||'-')), M+36, y);
+    y += 6.5;
+  };
+  fila('FECHA', fmtFecha(c.fecha));
+  fila('DE', c.medido_por || c.creado_por || '');
+  fila('A', 'ADMINISTRACION');
+  fila('OBRA', c.obra || '');
+  y += 2; doc.setLineWidth(1.1); doc.line(M, y, W-M, y); y += 8;
+  fila('CONTRATISTA', c.contratista || '');
+  y += 2; doc.setLineWidth(1.1); doc.line(M, y, W-M, y); y += 9;
+
+  // Una línea por obra y sector, como el formulario en papel
+  const grupos = {}, orden = [];
+  (its||[]).forEach(x=>{
+    const o = x.obra || c.obra || '-';
+    const sec = x.sector || c.sector || '-';
+    const key = o+'||'+sec;
+    if(!grupos[key]){ grupos[key] = { obra:o, sector:sec, total:0 }; orden.push(key); }
+    grupos[key].total += Number(x.subtotal)||0;
+  });
+  const rows = orden.map((k,i)=>{
+    const g = grupos[k];
+    return [String(i+1), pdfSafe(g.sector), pdfSafe(c.numero||''), pdfSafe(g.obra),
+            Math.round(g.total).toLocaleString('es-PY')];
+  });
+
+  doc.autoTable({
+    startY: y,
+    head: [['Item','Nivel / Sector','Num. de Certificado','OBRA','Importes']],
+    body: rows,
+    foot: [[{ content:'TOTAL', colSpan:4, styles:{halign:'right',fontStyle:'bold'} },
+            { content:Math.round(Number(c.total)||0).toLocaleString('es-PY')+' Gs', styles:{halign:'right',fontStyle:'bold'} }]],
+    theme:'grid',
+    styles:{ font:'helvetica', fontSize:10, cellPadding:2.6, textColor:[0,0,0], lineColor:[0,0,0], lineWidth:.35, halign:'center' },
+    headStyles:{ fillColor:[255,255,255], textColor:[0,0,0], fontStyle:'bold', lineWidth:.5 },
+    footStyles:{ fillColor:[255,255,255], textColor:[0,0,0], lineWidth:.5 },
+    columnStyles:{ 0:{cellWidth:22}, 1:{cellWidth:34}, 2:{cellWidth:46}, 3:{cellWidth:'auto'}, 4:{halign:'right',cellWidth:34} },
+    margin:{ left:M, right:M }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  doc.setFont('helvetica','bold').setFontSize(11).setTextColor(31,78,120);
+  doc.text('Observaciones', M, y); y += 3;
+  doc.setTextColor(0,0,0);
+  const saldo = (Number(c.total)||0) - anticipo - prestamo;
+  doc.autoTable({
+    startY: y,
+    body: [
+      ['Total certificado', Math.round(Number(c.total)||0).toLocaleString('es-PY')+' Gs'],
+      ['Anticipo retirado a descontar', { content: anticipo ? Math.round(anticipo).toLocaleString('es-PY') : '', styles:{ textColor:[190,30,30], fontStyle:'bold' } }],
+      ['Pago de prestamo', prestamo ? Math.round(prestamo).toLocaleString('es-PY') : ''],
+      [{ content:'Saldo a cobrar', styles:{fontStyle:'bold'} }, { content: Math.round(saldo).toLocaleString('es-PY'), styles:{fontStyle:'bold'} }]
+    ],
+    theme:'grid',
+    styles:{ font:'helvetica', fontSize:10, cellPadding:2.6, textColor:[0,0,0], lineColor:[0,0,0], lineWidth:.35 },
+    columnStyles:{ 0:{cellWidth:'auto'}, 1:{halign:'right',cellWidth:60} },
+    margin:{ left:M, right:M }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  doc.setFont('helvetica','bold').setFontSize(11).setTextColor(31,78,120);
+  doc.text('Confirmacion del Residente de Obra', M, y); y += 7;
+  doc.setFont('helvetica','normal').setFontSize(10).setTextColor(0,0,0);
+  const txt = 'Yo, '+pdfSafe(c.medido_por||'')+', en calidad de residente responsable de la obra mencionada, verifico que los '+
+    'trabajos ejecutados correspondientes al certificado N.o '+pdfSafe(c.numero||'')+' han sido realizados segun las '+
+    'especificaciones del contrato, planos y calidad exigida, por lo cual AUTORIZO el tramite para el pago correspondiente.';
+  const lines = doc.splitTextToSize(txt, W-M*2);
+  doc.text(lines, M, y); y += lines.length*5 + 16;
+
+  doc.setLineWidth(.4).setDrawColor(0,0,0);
+  doc.line(M+42, y, M+95, y);
+  doc.setFontSize(10);
+  doc.text('Firma del Residente:', M, y);
+  doc.text('C.I.:', M+100, y);
+  doc.line(M+110, y, M+145, y);
+  doc.text('FECHA', W-M-42, y);
+  doc.text(fmtFecha(c.aprobado_en ? String(c.aprobado_en).slice(0,10) : c.fecha), W-M, y, {align:'right'});
+  y += 14;
+
+  doc.setFont('helvetica','bold').setFontSize(11).setTextColor(31,78,120);
+  doc.text('Aprobacion (uso interno)', M, y); y += 7;
+  doc.setFont('helvetica','normal').setFontSize(10).setTextColor(0,0,0);
+  doc.text('Aprobado por (Jefe de Obra / Director de Proyecto):', M, y); y += 6;
+  doc.text('Nombre: '+pdfSafe(c.aprobado_por||''), M, y); y += 16;
+  doc.line(M+16, y, M+80, y);
+  doc.text('Firma:', M, y);
+  doc.text('Fecha:  ____ / ____ / ______', W-M-62, y);
+
+  doc.save('autorizacion_'+(c.numero||c.id)+'.pdf');
+}
+
 /* Descarga la foto y la convierte a dataURL para poder meterla en el PDF */
 function urlADataURL(url){
   return new Promise(function(resolve,reject){
