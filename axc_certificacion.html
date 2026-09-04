@@ -396,7 +396,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.8 · autorización de pago en el formato de AXC · aviso de excedente al cargar · las fotos ya no se pierden al editar</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.9 · el sector se resuelve desde el presupuesto si falta · autorización de pago · aviso de excedente al cargar</p>
   </div>
 </div>
 
@@ -1788,7 +1788,8 @@ async function abrirDetalle(id){
   }
 
   try{
-    const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
+    let { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
+    its = await completarSector(its, c);
     const ids = (its||[]).map(x=>x.id);
     let fotos = [];
     if(ids.length){
@@ -1858,7 +1859,10 @@ async function abrirDetalle(id){
       '<div class="ficha">'+
         campo('Estado','<span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span>')+
         campo('Obra', escapeHtml(c.obra||'—'))+
-        campo('Sector', escapeHtml(c.sector||'—'))+
+        campo('Sector', escapeHtml(c.sector || (function(){
+          const v = []; (its||[]).forEach(x=>{ if(x.sector && v.indexOf(x.sector)<0) v.push(x.sector); });
+          return v.length ? v.join(' · ') : '—';
+        })()))+
         campo('Contratista', escapeHtml(c.contratista||'—'))+
         campo('Presupuesto', escapeHtml(c.presupuesto||'—'))+
         campo('Fecha', fmtFecha(c.fecha))+
@@ -1883,6 +1887,35 @@ async function abrirDetalle(id){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
 }
+/* El sector se guarda en la línea, pero los certificados viejos —o los
+   guardados antes de crear la columna— no lo tienen. En ese caso se resuelve
+   contra el rubro del presupuesto, así el documento sale completo igual. */
+async function completarSector(its, c){
+  if(!its || !its.length) return its;
+  const faltan = its.filter(x=>!x.sector && x.rubro_codigo);
+  if(!faltan.length) return its;
+  const pps = [];
+  its.forEach(x=>{ const p = x.presupuesto || ''; if(p && pps.indexOf(p)<0) pps.push(p); });
+  String((c&&c.presupuesto)||'').split(',').map(x=>x.trim()).forEach(p=>{ if(p && p!=='Varios' && pps.indexOf(p)<0) pps.push(p); });
+  if(!pps.length) return its;
+  try{
+    const { data:rub } = await sb.from('presupuesto_rubros')
+      .select('presupuesto,rubro_codigo,sector').in('presupuesto', pps);
+    const porPP = {}, porRK = {};
+    (rub||[]).forEach(r=>{
+      const sec = String(r.sector||'').trim();
+      if(!sec) return;
+      porPP[String(r.presupuesto)+'|'+String(r.rubro_codigo)] = sec;
+      if(!porRK[String(r.rubro_codigo)]) porRK[String(r.rubro_codigo)] = sec;
+    });
+    its.forEach(x=>{
+      if(x.sector || !x.rubro_codigo) return;
+      x.sector = porPP[String(x.presupuesto||'')+'|'+String(x.rubro_codigo)] || porRK[String(x.rubro_codigo)] || null;
+    });
+  }catch(e){ console.warn('completarSector', e); }
+  return its;
+}
+
 function campo(l,v){ return '<div class="fld"><label>'+l+'</label><div style="font-size:13.5px;font-weight:600;color:var(--text)">'+v+'</div></div>'; }
 
 async function cambiarEstado(id, estado){
@@ -1992,7 +2025,7 @@ function generarAutorizacion(c, its, anticipo, prestamo){
   const grupos = {}, orden = [];
   (its||[]).forEach(x=>{
     const o = x.obra || c.obra || '-';
-    const sec = x.sector || c.sector || '-';
+    const sec = x.sector || c.sector || (x.rubro_desc ? '' : '') || '-';
     const key = o+'||'+sec;
     if(!grupos[key]){ grupos[key] = { obra:o, sector:sec, total:0 }; orden.push(key); }
     grupos[key].total += Number(x.subtotal)||0;
