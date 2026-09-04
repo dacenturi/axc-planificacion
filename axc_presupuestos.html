@@ -401,6 +401,17 @@ body{
 .pm-save{background:linear-gradient(135deg,var(--gold) 0%,var(--gold-soft) 100%);border:none;color:var(--navy-dark);font-weight:700;font-size:14px;padding:10px 24px;border-radius:9px;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(200,160,40,.35)}
 .pm-save:hover{transform:translateY(-1px)}
 .pm-save:disabled{opacity:.5;cursor:not-allowed;transform:none}
+/* Presupuesto aprobado: solo lectura */
+.pm-lock{display:flex;gap:14px;align-items:flex-start;background:#FEF3CD;border:1.5px solid #FCD46B;border-radius:12px;padding:14px 18px;margin-bottom:18px}
+.pm-lock .ico{font-size:22px;line-height:1}
+.pm-lock b{display:block;font-size:14.5px;color:#7A5600;margin-bottom:3px}
+.pm-lock p{font-size:12.5px;color:#7A5600;line-height:1.55;margin:0}
+.pm-lock .acc{margin-left:auto;display:flex;gap:8px;align-items:center;white-space:nowrap}
+.pm-lock button{background:#fff;border:1.5px solid #C8A028;color:#7A5600;border-radius:9px;padding:9px 16px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit}
+.pm-lock button:hover{background:#FDF8EC}
+.pm-lockpie{margin-right:auto;font-size:12.5px;font-weight:700;color:#7A5600;background:#FEF3CD;border:1px solid #FCD46B;border-radius:999px;padding:7px 14px}
+.pm-ro input,.pm-ro select,.pm-ro textarea{background:#f6f7fa!important;color:#5A6377!important;cursor:not-allowed}
+.pm-ro .pm-marca,.pm-ro .mo-edit,.pm-ro .pm-del,.pm-ro .pm-addbtn{display:none!important}
 @media(max-width:560px){.pp-ficha{grid-template-columns:1fr}.pp-ficha-wide{grid-template-columns:1fr}}
 </style>
 </head>
@@ -453,7 +464,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.9 · el capítulo se deduce del prefijo cuando el rubro no está en el árbol · origen de la composición visible</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.1 · el presupuesto aprobado queda en solo lectura · capítulo por rubro o por prefijo</p>
   </div>
 </div>
 
@@ -540,6 +551,7 @@ body{
       <button class="pm-close" id="pmCloseBtn" type="button" title="Cancelar">×</button>
     </div>
     <div class="pm-body">
+      <div id="pmLockBar" class="pm-lock" style="display:none"></div>
       <!-- FICHA -->
       <div class="pm-grid">
         <div class="pm-field">
@@ -627,6 +639,7 @@ body{
       <div class="pm-hint" style="margin-bottom:6px">Se cargan al final, cuando ya están todos los rubros. Quedan guardadas con este presupuesto.</div>
     </div>
     <div class="pm-foot">
+      <span id="pmLockPie" class="pm-lockpie" style="display:none">🔒 Presupuesto aprobado · solo lectura</span>
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
       <button class="pm-toggle" id="pmCotBtn" type="button" style="background:#8a6d10;color:#fff;border-color:#8a6d10" title="Costo real de la obra. Uso interno.">📋 Planilla de costos</button>
       <button class="pm-toggle" id="pmPropBtn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864" title="Propuesta económica con margen, para el cliente">💼 Propuesta económica</button>
@@ -1583,13 +1596,14 @@ async function openEdit(codigo){
   const h = state.list.find(function(x){ return x.codigo === codigo; });
   if(!h) return;
   ed.open = true; ed.isNew = false; ed.origCodigo = codigo;
-  ed.rubros = []; ed.insumos = [];
+  ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = '';
   document.getElementById('pmTitle').textContent = 'Editar ' + codigo;
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
   document.getElementById('pmDescripcion').value = h.descripcion || '';
   document.getElementById('pmObs').value = h.observaciones || '';
   ed.activo = h.activo !== false; renderEstadoUI();
+  aplicarBloqueo(h);
   document.getElementById('ppOverlay').style.display = 'flex'; _aplicarPermisoMargen();
   renderRubros(); renderInsumos(); loadInsList();
   await loadArbol();
@@ -1609,7 +1623,73 @@ async function openEdit(codigo){
   }catch(e){ console.warn('openEdit', e); showToast('Error cargando el presupuesto', 'error'); }
 }
 
-function closeModal(){ document.getElementById('ppOverlay').style.display = 'none'; ed.open = false; }
+function closeModal(){ document.getElementById('ppOverlay').style.display = 'none'; ed.open = false; ed.bloqueado = false; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRESUPUESTO APROBADO = SOLO LECTURA
+   ───────────────────────────────────────────────────────────────────
+   Una vez publicado, el presupuesto es el documento contra el que se
+   compran materiales y se certifica mano de obra. Editarlo mueve saldos
+   de órdenes ya emitidas y de certificados ya aprobados, sin dejar
+   rastro. Por eso queda cerrado; el admin puede reabrirlo, pero tiene
+   que decir por qué y queda registrado en las observaciones.
+   ═══════════════════════════════════════════════════════════════════ */
+function _esAdmin(){ return !!state.isAdmin; }
+
+function aplicarBloqueo(h){
+  const pub = !!(h && h.publicado_en);
+  ed.bloqueado = pub && !ed.desbloqueado;
+  const body = document.querySelector('.pm-body');
+  const bar  = document.getElementById('pmLockBar');
+  const save = document.getElementById('pmSaveBtn');
+  const pie  = document.getElementById('pmLockPie');
+
+  if(body) body.classList.toggle('pm-ro', !!ed.bloqueado);
+  if(save) save.style.display = ed.bloqueado ? 'none' : '';
+  if(pie)  pie.style.display  = ed.bloqueado ? '' : 'none';
+
+  if(!bar) return;
+  if(!pub){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
+
+  bar.style.display = 'flex';
+  if(ed.bloqueado){
+    bar.innerHTML =
+      '<div class="ico">🔒</div>'+
+      '<div><b>Presupuesto aprobado · no se puede editar</b>'+
+      '<p>Publicado el '+_fmtF(h.publicado_en,false)+(h.publicado_por?(' por '+escapeHtml(h.publicado_por)):'')+'. '+
+      'Contra este presupuesto se emiten órdenes de compra y certificados: cambiarlo ahora movería saldos ya usados. '+
+      'Podés consultarlo, imprimirlo y ver sus reportes.</p></div>'+
+      (_esAdmin() ? '<div class="acc"><button type="button" id="pmDesbloq">🔓 Reabrir para editar</button></div>'
+                  : '<div class="acc"><span style="font-size:12px;color:#7A5600">Solo el administrador puede reabrirlo</span></div>');
+    const b = document.getElementById('pmDesbloq');
+    if(b) b.onclick = pedirDesbloqueo;
+  }else{
+    bar.innerHTML =
+      '<div class="ico">🔓</div>'+
+      '<div><b>Reabierto para edición</b>'+
+      '<p>Este presupuesto estaba aprobado. Los cambios que guardes afectan los saldos de las órdenes de compra '+
+      'y de los certificados ya emitidos contra él. El motivo queda registrado en las observaciones.</p></div>';
+  }
+}
+
+async function pedirDesbloqueo(){
+  const motivo = prompt(
+    'REABRIR UN PRESUPUESTO APROBADO\n\n'+
+    'Este presupuesto ya está publicado. Si lo editás:\n'+
+    '  · cambian los saldos de las órdenes de compra emitidas contra él\n'+
+    '  · cambian los saldos de los certificados de obra ya aprobados\n'+
+    '  · el estado anterior no queda guardado\n\n'+
+    'Escribí el motivo del cambio para continuar:');
+  if(!motivo || !motivo.trim()){ showToast('Sin motivo no se reabre el presupuesto','error'); return; }
+  ed.desbloqueado = true;
+  ed.motivoDesbloqueo = motivo.trim();
+  const obs = document.getElementById('pmObs');
+  const linea = '['+new Date().toLocaleDateString('es-PY')+'] Reabierto por '+_userTag()+': '+motivo.trim();
+  if(obs && obs.value.indexOf(linea) < 0) obs.value = (obs.value ? obs.value+'\n' : '') + linea;
+  const h = (state.list||[]).find(function(x){ return x.codigo === ed.origCodigo; }) || {};
+  aplicarBloqueo(h);
+  showToast('Presupuesto reabierto para edición','info','El motivo quedó en las observaciones');
+}
 
 function renderEstadoUI(){
   const pub = !!ed.activo;
@@ -2188,6 +2268,10 @@ async function saveBudget(){
   if(!ed.rubros.length){ showToast('Agregá al menos un rubro al presupuesto', 'error'); return; }
   const sinSector = ed.rubros.filter(function(r){ return !r.sector; });
   if(sinSector.length){ showToast('Hay '+sinSector.length+' rubro(s) sin sector. Revisalos.', 'error'); return; }
+  if(ed.bloqueado){
+    showToast('Este presupuesto está aprobado y no se puede editar','error','Pedí al administrador que lo reabra');
+    return;
+  }
   const btn = document.getElementById('pmSaveBtn'); const old = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando…';
   try{
@@ -2201,6 +2285,9 @@ async function saveBudget(){
       const _meta={ actualizado_por:_u, actualizado_en:_now, observaciones:observaciones };
       if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
       if(activo && !_prev.publicado_en){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
+      if(ed.desbloqueado && ed.motivoDesbloqueo){
+        _audit('presupuesto', codigo, 'reabrir', { motivo: ed.motivoDesbloqueo, publicado_en: _prev.publicado_en||null });
+      }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
     // Rubros: reemplazo completo
@@ -3152,14 +3239,21 @@ async function _roLoadAux(){
   }catch(e){ console.warn('roAux', e); }
 }
 
-/* Capítulo de un rubro: primero el del árbol, después el de su prefijo. */
-function roCapitulo(rk){
-  if(!rk) return '(Sin capítulo)';
+/* Capítulo de un rubro, en orden de confianza:
+     1) el que tenga cargado el propio rubro del presupuesto
+     2) el del árbol de composiciones, por código
+     3) el del prefijo del código (04.012 hereda el de 04.005)
+     4) "Otros trabajos" para las cargas libres sin código, que nunca van a
+        tener capítulo por código y no deberían quedar sueltas en el reporte */
+function roCapitulo(rk, rubro){
+  const propio = rubro && rubro.capitulo && String(rubro.capitulo).trim();
+  if(propio) return propio;
+  if(!rk) return 'OTROS TRABAJOS';
   const c = RO.capByRub && RO.capByRub[String(rk)];
   if(c && c !== '(Sin capítulo)') return c;
   const pref = String(rk).split('.')[0];
   const cp = RO.capByPref && RO.capByPref[pref];
-  return cp || '(Sin capítulo)';
+  return cp || 'OTROS TRABAJOS';
 }
 
 async function openReporteObra(){
@@ -3222,7 +3316,7 @@ function _roCompute(){
       const pres = esReceta ? Math.round(insMoneyByRub[rk]||0) : Math.round(Number(r.precio_total)||0);
       const cons = Math.round(consByRub[rk]||0);
       const disp = pres-cons;
-      const cap = roCapitulo(rk);
+      const cap = roCapitulo(rk, r);
       (caps[cap]=caps[cap]||{pres:0,cons:0,rows:[]});
       caps[cap].pres+=pres; caps[cap].cons+=cons;
       caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, cons:cons, disp:disp, insumos:(insListByRub[rk]||[]) });
