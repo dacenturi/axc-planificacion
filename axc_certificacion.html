@@ -191,6 +191,29 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .tot-bar .n{font-size:14px;color:var(--text-soft)}
 .tot-bar .v{font-family:'Syne',sans-serif;font-size:27px;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums}
 
+/* Antecedentes del contratista */
+.antes{border:1px solid #b9cded;background:#EDF3FB;border-radius:var(--radius-lg);padding:14px 18px;margin-top:18px}
+.antes-t{font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--navy2);margin-bottom:9px}
+.antes-row{display:flex;gap:10px;flex-wrap:wrap}
+.antes-c{background:#fff;border:1px solid #cddcf0;border-radius:10px;padding:9px 14px;font-size:12.5px;color:var(--text-soft);min-width:150px}
+.antes-c b{display:block;font-size:14px;color:var(--navy);font-family:'Syne',sans-serif;margin-top:2px}
+.antes-c small{display:block;font-size:11px;color:var(--text-muted);margin-top:2px}
+
+/* Acumulado por línea, como la planilla de certificación */
+.lin-acum{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border-soft);border-top:1px solid var(--border-soft)}
+.lin-acum div{background:#fff;padding:8px 12px;text-align:center}
+.lin-acum span{display:block;font-size:9.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted)}
+.lin-acum b{display:block;font-size:14px;font-weight:700;color:var(--navy);margin-top:3px;font-variant-numeric:tabular-nums}
+.lin-acum .ant b{color:#8a6d10}
+.lin-acum .act b{color:#2c5fa8}
+.lin-acum .nue b{color:#1B5524}
+.lin-acum .sal b{color:#42506a}
+.lin-acum .sal.neg b{color:#B03A3A}
+.lin-acum .pct b{color:var(--navy)}
+.lin-ult{padding:7px 14px;font-size:11.5px;color:var(--text-muted);background:#fafbfd;border-top:1px solid var(--border-soft)}
+.lin-ult b{color:var(--navy)}
+@media(max-width:900px){ .lin-acum{grid-template-columns:repeat(3,1fr)} }
+
 /* Presupuestos del certificado */
 .obra-calc{border:1.5px dashed var(--border);border-radius:var(--radius);padding:10px 12px;font-size:13.5px;font-weight:600;color:var(--text-soft);background:var(--surface-2)}
 .presu-box{border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;background:var(--surface-2);margin-bottom:16px}
@@ -314,7 +337,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.5 · ventanas ampliadas · presupuesto y sector por línea · subtotal por obra · anexo fotográfico</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v1.6 · acumulado anterior y antecedentes del contratista en la carga · subtotal por obra · anexo fotográfico</p>
   </div>
 </div>
 
@@ -371,6 +394,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <div class="fld" style="margin-bottom:6px"><label>Observación general del certificado</label><textarea id="edObs" rows="2" placeholder="Notas, condiciones, pendientes…"></textarea></div>
 
+      <div id="edAntes"></div>
       <div class="sec-tit">Trabajos a certificar</div>
       <div id="edLineas"><div class="vacio">Elegí obra, presupuesto y contratista para ver los trabajos certificables.</div></div>
 
@@ -749,6 +773,7 @@ async function abrirEditor(id){
       document.getElementById('edFecha').value = String(c.fecha||hoyISO()).slice(0,10);
       document.getElementById('edContra').value = c.contratista||'';
       document.getElementById('edObs').value = c.observacion||'';
+      cargarAntecedentes();
       ed.presus = String(c.presupuesto||'').split(',').map(x=>x.trim()).filter(x=>x && x!=='Varios');
       if(!ed.presus.length) ed.libre = true;
       renderChips();
@@ -773,6 +798,38 @@ async function abrirEditor(id){
 }
 
 function keyLinea(rk, ci, desc){ return (rk||'') + '|' + (ci || norm(desc)); }
+
+/* Antecedentes: qué certificó antes este contratista. Le ahorra al residente
+   tener que buscar el certificado anterior en papel para saber por dónde iba. */
+async function cargarAntecedentes(){
+  const box = document.getElementById('edAntes');
+  if(!box) return;
+  const contratista = document.getElementById('edContra').value;
+  if(!contratista){ box.innerHTML=''; return; }
+  try{
+    let q = sb.from('certificados').select('numero,fecha,total,estado,obra,presupuesto')
+      .eq('contratista', contratista).neq('estado','Anulado').order('fecha',{ascending:false}).limit(60);
+    const { data } = await q;
+    const prev = (data||[]).filter(c => !ed.id || String(c.numero||'') !== String((state.list.filter(x=>x.id===ed.id)[0]||{}).numero||''));
+    if(!prev.length){
+      box.innerHTML = '<div class="antes"><div class="antes-t">Antecedentes de '+escapeHtml(contratista)+'</div>'+
+        '<div class="antes-row"><div class="antes-c">Primer certificado<b>Sin historial</b>'+
+        '<small>No hay certificados anteriores de este contratista</small></div></div></div>';
+      return;
+    }
+    const ult = prev[0];
+    const tot = prev.reduce((a,c)=>a+(Number(c.total)||0),0);
+    const apr = prev.filter(c=>c.estado==='Aprobado');
+    const pend = prev.filter(c=>c.estado!=='Aprobado');
+    box.innerHTML = '<div class="antes"><div class="antes-t">Antecedentes de '+escapeHtml(contratista)+'</div><div class="antes-row">'+
+      '<div class="antes-c">Último certificado<b>'+escapeHtml(ult.numero||'—')+'</b><small>'+fmtFecha(ult.fecha)+' · '+gs(ult.total)+'</small></div>'+
+      '<div class="antes-c">Certificados emitidos<b>'+prev.length+'</b><small>'+apr.length+' aprobado(s) · '+pend.length+' en trámite</small></div>'+
+      '<div class="antes-c">Total certificado<b>'+gs(tot)+'</b><small>acumulado histórico</small></div>'+
+      '<div class="antes-c">Aprobado<b>'+gs(apr.reduce((a,c)=>a+(Number(c.total)||0),0))+'</b><small>ya consumido del presupuesto</small></div>'+
+      (pend.length ? '<div class="antes-c">Pendiente de aprobar<b>'+gs(pend.reduce((a,c)=>a+(Number(c.total)||0),0))+'</b><small>reservado, sin aprobar</small></div>' : '')+
+    '</div></div>';
+  }catch(e){ console.warn('antecedentes', e); box.innerHTML=''; }
+}
 
 /* Los presupuestos se agrupan por obra en el desplegable: un mismo
    contratista puede estar trabajando en varias obras a la vez y el
@@ -875,7 +932,7 @@ document.getElementById('edPresuLibre').onclick = function(){
   ed.libre = true; renderChips(); renderLineas();
   showToast('Ahora podés agregar trabajos sin presupuesto','success','Se cargan con precio manual y quedan marcados como desvío');
 };
-document.getElementById('edContra').onchange = ()=> renderLineas();
+document.getElementById('edContra').onchange = function(){ renderLineas(); cargarAntecedentes(); };
 document.getElementById('edSector').onchange = ()=> renderLineas();
 
 /* Trae las líneas de mano de obra del presupuesto y su consumo previo */
@@ -938,7 +995,8 @@ async function cargarLineas(){
       const c = Number(it.cantidad)||0;
       if(est === 'Aprobado') ed.hist[k].aprob += c; else ed.hist[k].tramite += c;
       const q = (it.certificados && it.certificados.contratista) || '';
-      if(q) ed.hist[k].quien.push({ contratista:q, numero:(it.certificados&&it.certificados.numero)||'', cant:c, estado:est });
+      if(q) ed.hist[k].quien.push({ contratista:q, numero:(it.certificados&&it.certificados.numero)||'',
+                                    cant:c, estado:est, fecha:(it.certificados&&it.certificados.fecha)||'' });
     });
 
     // Sectores de todos los presupuestos juntos
@@ -1048,6 +1106,33 @@ function lineaHTML(l, contratista){
       '. Verificá que no sea el mismo sector físico antes de aprobar.</div>';
   }
 
+  // Acumulado, como en la planilla: anterior + esta medición = acumulado,
+  // con su % de avance y el saldo. Se recalcula al escribir.
+  let acum = '', ultLinea = '';
+  if(!l.libre && l.cant_presup > 0){
+    const ant = usado;
+    const nue = Number(cant) || 0;
+    const act = ant + nue;
+    const pctA = l.cant_presup > 0 ? Math.round((act / l.cant_presup) * 1000) / 10 : 0;
+    const saldo = l.cant_presup - act;
+    acum = '<div class="lin-acum">'+
+      '<div><span>Presupuestado</span><b>'+qty(l.cant_presup)+'</b></div>'+
+      '<div class="ant"><span>Acum. anterior</span><b>'+qty(ant)+'</b></div>'+
+      '<div class="nue"><span>Medición actual</span><b>'+(nue?qty(nue):'—')+'</b></div>'+
+      '<div class="act"><span>Acum. actual</span><b>'+qty(act)+'</b></div>'+
+      '<div class="pct"><span>% avance</span><b>'+pctA+'%</b></div>'+
+      '<div class="sal'+(saldo<0?' neg':'')+'"><span>Saldo</span><b>'+qty(saldo)+'</b></div>'+
+    '</div>';
+    // Último certificado que tocó esta línea
+    if(h.quien.length){
+      const ord = h.quien.slice().sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
+      const u = ord[0];
+      ultLinea = '<div class="lin-ult">Último avance: <b>'+escapeHtml(u.numero||'certificado')+'</b> del <b>'+fmtFecha(u.fecha)+
+        '</b> · '+escapeHtml(u.contratista)+' · '+qty(u.cant)+' '+escapeHtml(l.unidad||'')+
+        ' · '+escapeHtml(u.estado||'')+(ord.length>1?(' · y '+(ord.length-1)+' anterior(es)'):'')+'</div>';
+    }
+  }
+
   return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
       '<div class="lin-nom"><b>'+escapeHtml(l.descripcion)+
@@ -1061,11 +1146,11 @@ function lineaHTML(l, contratista){
         : '<div class="lin-num"><b>'+qty(l.cant_presup)+' '+escapeHtml(l.unidad)+'</b><small>presupuestado</small></div>')+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>disponible</small></div>'
-        : '<div class="lin-num disp'+(disp<=0?' sin':'')+'"><b>'+qty(disp)+'</b><small>disponible'+
-          (h.aprob?(' · '+qty(h.aprob)+' aprob.'):'')+(h.tramite?(' · '+qty(h.tramite)+' en trámite'):'')+'</small></div>')+
+        : '<div class="lin-num disp'+(disp<=0?' sin':'')+'"><b>'+qty(disp)+'</b><small>disponible</small></div>')+
       '<div class="lin-in"><input type="number" min="0" step="any" data-c="'+escapeHtml(k)+'" value="'+cant+'" placeholder="0" class="'+(cargada?'ok':'')+'"><span>'+escapeHtml(l.unidad)+'</span></div>'+
       '<div class="lin-in"><input type="number" min="0" step="any" data-p="'+escapeHtml(k)+'" value="'+precio+'" placeholder="0"><span>₲/'+escapeHtml(l.unidad||'u')+'</span></div>'+
     '</div>'+
+    acum + ultLinea +
     (cargada ? '<div class="lin-body">'+
       '<div class="fld"><label>Ubicación exacta *</label><input type="text" data-u="'+escapeHtml(k)+'" value="'+escapeHtml(m.ubicacion||'')+'" placeholder="Ej. Depto 302, pared sur"><div class="hint">Sin ubicación no se puede distinguir un trabajo de otro</div></div>'+
       '<div class="fld"><label>Observación</label><input type="text" data-o="'+escapeHtml(k)+'" value="'+escapeHtml(m.obs||'')+'" placeholder="Detalles, pendientes, calidad…"></div>'+
