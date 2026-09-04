@@ -453,7 +453,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.8 · origen de la composición visible y marca de insumos agregados a mano</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v3.9 · el capítulo se deduce del prefijo cuando el rubro no está en el árbol · origen de la composición visible</p>
   </div>
 </div>
 
@@ -3134,8 +3134,32 @@ async function _roLoadAux(){
       (pr.data||[]).forEach(function(p){ precios[String(p.id)]=Number(p.precio_referencia)||0; });
     }
     RO.prices={}; (ins.data||[]).forEach(function(i){ RO.prices[i.codigo] = i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0; });
-    RO.capByRub={}; (rubcat.data||[]).forEach(function(r){ RO.capByRub[String(r.codigo)] = (r.capitulo && String(r.capitulo).trim()) || '(Sin capítulo)'; });
+    // Capítulo por rubro y, además, por prefijo del código: si un rubro del
+    // presupuesto ya no está en el árbol, igual se lo ubica en su capítulo
+    // (04.012 hereda el capítulo de 04.005) en vez de caer en "(Sin capítulo)".
+    RO.capByRub={}; RO.capByPref={};
+    (rubcat.data||[]).forEach(function(r){
+      const cap = (r.capitulo && String(r.capitulo).trim()) || '';
+      const cod = String(r.codigo||'');
+      if(cap){
+        RO.capByRub[cod] = cap;
+        const pref = cod.split('.')[0];
+        if(pref && !RO.capByPref[pref]) RO.capByPref[pref] = cap;
+      }else{
+        RO.capByRub[cod] = '(Sin capítulo)';
+      }
+    });
   }catch(e){ console.warn('roAux', e); }
+}
+
+/* Capítulo de un rubro: primero el del árbol, después el de su prefijo. */
+function roCapitulo(rk){
+  if(!rk) return '(Sin capítulo)';
+  const c = RO.capByRub && RO.capByRub[String(rk)];
+  if(c && c !== '(Sin capítulo)') return c;
+  const pref = String(rk).split('.')[0];
+  const cp = RO.capByPref && RO.capByPref[pref];
+  return cp || '(Sin capítulo)';
 }
 
 async function openReporteObra(){
@@ -3198,7 +3222,7 @@ function _roCompute(){
       const pres = esReceta ? Math.round(insMoneyByRub[rk]||0) : Math.round(Number(r.precio_total)||0);
       const cons = Math.round(consByRub[rk]||0);
       const disp = pres-cons;
-      const cap = (rk && RO.capByRub[rk]) ? RO.capByRub[rk] : '(Sin capítulo)';
+      const cap = roCapitulo(rk);
       (caps[cap]=caps[cap]||{pres:0,cons:0,rows:[]});
       caps[cap].pres+=pres; caps[cap].cons+=cons;
       caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, cons:cons, disp:disp, insumos:(insListByRub[rk]||[]) });
