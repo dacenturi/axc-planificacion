@@ -402,6 +402,18 @@ body{
 .pm-save:hover{transform:translateY(-1px)}
 .pm-save:disabled{opacity:.5;cursor:not-allowed;transform:none}
 /* Presupuesto aprobado: solo lectura */
+.pm-tot{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-top:14px}
+.pm-tot > div{flex:1;min-width:190px;border:1px solid #e2e6ee;border-radius:12px;padding:12px 16px;background:#fafbfd}
+.pm-tot span{display:block;font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#8893a5}
+.pm-tot b{display:block;font-family:'Syne',sans-serif;font-size:20px;font-weight:700;color:#1F3864;margin-top:4px;font-variant-numeric:tabular-nums}
+.pm-tot-iva{background:#fdf8ec!important;border-color:#e6d29a!important;display:flex;flex-direction:column}
+.pm-tot-iva b{color:#8a6d10;font-size:17px}
+.pm-tot-ivain{display:flex;align-items:center;gap:5px;margin-top:5px}
+.pm-tot-ivain input{width:78px;border:1.5px solid #C8A028;border-radius:8px;padding:7px 9px;font-size:15px;font-weight:700;text-align:right;font-family:inherit;color:#8a6d10;background:#fff}
+.pm-tot-ivain em{font-style:normal;font-weight:700;color:#8a6d10;font-size:14px}
+.pm-tot-g{background:#1F3864!important;border-color:#1F3864!important}
+.pm-tot-g span{color:#c9d4e8}
+.pm-tot-g b{color:#E5C658;font-size:23px}
 .pm-lock{display:flex;gap:14px;align-items:flex-start;background:#FEF3CD;border:1.5px solid #FCD46B;border-radius:12px;padding:14px 18px;margin-bottom:18px}
 .pm-lock .ico{font-size:22px;line-height:1}
 .pm-lock b{display:block;font-size:14.5px;color:#7A5600;margin-bottom:3px}
@@ -464,7 +476,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.2 · IVA configurable por presupuesto (0, 5, 10 o el que haga falta) · presupuesto aprobado en solo lectura</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.3 · parcial, IVA editable y total general a la vista mientras se carga el presupuesto</p>
   </div>
 </div>
 
@@ -598,6 +610,24 @@ body{
           <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Precio total (Gs)</th><th></th></tr></thead>
           <tbody id="pmRubTbody"></tbody>
         </table>
+      </div>
+      <div class="pm-tot" id="pmTotBox">
+        <div class="pm-tot-l">
+          <span>Parcial · suma de los rubros</span>
+          <b id="pmTotNeto">₲ 0</b>
+        </div>
+        <div class="pm-tot-iva">
+          <span>IVA</span>
+          <div class="pm-tot-ivain">
+            <input type="number" id="pmIvaPct" min="0" max="100" step="0.01" value="0">
+            <em>%</em>
+          </div>
+          <b id="pmTotIva">₲ 0</b>
+        </div>
+        <div class="pm-tot-g">
+          <span>Total general</span>
+          <b id="pmTotGral">₲ 0</b>
+        </div>
       </div>
       <div class="pm-addbar">
         <div class="pm-f">
@@ -1664,6 +1694,27 @@ function ivaFilas(neto, pct, colspan, size){
       '<td class="n" style="font-size:'+size+'">'+fmtGs(n + iva)+'</td></tr>';
 }
 
+/* Totales del presupuesto, visibles mientras se carga:
+   parcial de los rubros, IVA con su porcentaje editable, y total general. */
+function pmTotales(){
+  const box = document.getElementById('pmTotBox');
+  if(!box) return;
+  let neto = 0;
+  try{
+    const D = _reporteCompute();
+    neto = Number(D.total) || 0;
+  }catch(e){
+    neto = (ed.rubros||[]).reduce(function(a,r){ return a + (Number(r.precio_total)||0); }, 0);
+  }
+  const pct = ivaGet();
+  const iva = Math.round(neto * pct / 100);
+  document.getElementById('pmTotNeto').textContent = '₲ ' + fmtGs(Math.round(neto));
+  document.getElementById('pmTotIva').textContent  = '₲ ' + fmtGs(iva);
+  document.getElementById('pmTotGral').textContent = '₲ ' + fmtGs(Math.round(neto) + iva);
+  const inp = document.getElementById('pmIvaPct');
+  if(inp && document.activeElement !== inp) inp.value = pct;
+}
+
 function ivaSet(pct){
   const sel = document.getElementById('pmIva');
   const otro = document.getElementById('pmIvaOtro');
@@ -1671,13 +1722,24 @@ function ivaSet(pct){
   const v = Number(pct)||0;
   if(v===0 || v===5 || v===10){ sel.value = String(v); otro.style.display='none'; otro.value=''; }
   else { sel.value = '__otro'; otro.style.display=''; otro.value = v; }
-  ivaHint();
+  const inp = document.getElementById('pmIvaPct');
+  if(inp) inp.value = v;
+  ivaHint(); pmTotales();
 }
 function ivaGet(){
   const sel = document.getElementById('pmIva');
   if(!sel) return 0;
   if(sel.value === '__otro') return Number(document.getElementById('pmIvaOtro').value)||0;
   return Number(sel.value)||0;
+}
+/* Cambiar el % desde el panel de totales actualiza también la ficha */
+function ivaDesdePanel(v){
+  const pct = Math.max(0, Math.min(100, Number(v)||0));
+  const sel = document.getElementById('pmIva');
+  const otro = document.getElementById('pmIvaOtro');
+  if(pct===0 || pct===5 || pct===10){ sel.value = String(pct); otro.style.display='none'; otro.value=''; }
+  else { sel.value = '__otro'; otro.style.display=''; otro.value = pct; }
+  ivaHint(); pmTotales();
 }
 function ivaHint(){
   const h = document.getElementById('pmIvaHint');
@@ -1707,6 +1769,8 @@ function aplicarBloqueo(h){
 
   if(body) body.classList.toggle('pm-ro', !!ed.bloqueado);
   if(save) save.style.display = ed.bloqueado ? 'none' : '';
+  const ivap = document.getElementById('pmIvaPct');
+  if(ivap) ivap.disabled = !!ed.bloqueado;
   if(pie)  pie.style.display  = ed.bloqueado ? '' : 'none';
 
   if(!bar) return;
@@ -1773,6 +1837,7 @@ async function toggleEstado(){
 // ── Rubros (memoria) ────────────────────────────────────
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
+  setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
   const tb = document.getElementById('pmRubTbody');
   if(!ed.rubros.length){ tb.innerHTML = '<tr><td colspan="7" class="pm-emptyr">Sin rubros todavía. Agregá abajo.</td></tr>'; return; }
   tb.innerHTML = ed.rubros.map(function(r,i){
@@ -1980,6 +2045,7 @@ function _pintarDesfasaje(){
 }
 
 function renderInsumos(){
+  setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
   _populateInsRubroSelect();
   const box = document.getElementById('pmInsView');
   if(!ed.insumos.length){ box.innerHTML = '<div class="pm-emptyr" style="padding:14px;color:#8893a5">Sin insumos. Agregá rubros con receta y usá «Calcular desde recetas», o cargalos a mano.</div>' + _moBlockHtml('mano_obra', [], 0) + _moBlockHtml('logistica', [], 0); _bindMOBlock(); return; }
@@ -3016,7 +3082,9 @@ document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
     if(sel.value==='__otro') otro.focus();
     ivaHint();
   };
-  if(otro) otro.oninput = ivaHint;
+  if(otro) otro.oninput = function(){ ivaHint(); pmTotales(); };
+  const pan = document.getElementById('pmIvaPct');
+  if(pan) pan.oninput = function(){ ivaDesdePanel(pan.value); };
 })();
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
