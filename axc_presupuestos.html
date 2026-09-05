@@ -464,7 +464,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.1 · el presupuesto aprobado queda en solo lectura · capítulo por rubro o por prefijo</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.2 · IVA configurable por presupuesto (0, 5, 10 o el que haga falta) · presupuesto aprobado en solo lectura</p>
   </div>
 </div>
 
@@ -569,6 +569,20 @@ body{
         <div class="pm-field" style="grid-column:1/-1">
           <label class="pm-label">Descripción</label>
           <input id="pmDescripcion" class="pm-input" placeholder="Ej. Albañilería NP5" maxlength="160">
+        </div>
+        <div class="pm-field">
+          <label class="pm-label">IVA</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="pmIva" class="pm-input" style="max-width:120px">
+              <option value="0">Sin IVA</option>
+              <option value="5">5 %</option>
+              <option value="10">10 %</option>
+              <option value="__otro">Otro…</option>
+            </select>
+            <input id="pmIvaOtro" class="pm-input" type="number" min="0" max="100" step="0.01"
+                   style="max-width:90px;display:none" placeholder="%">
+            <span class="pm-hint" id="pmIvaHint" style="margin:0"></span>
+          </div>
         </div>
         <div class="pm-field">
           <label class="pm-label">Estado</label>
@@ -1602,6 +1616,7 @@ async function openEdit(codigo){
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
   document.getElementById('pmDescripcion').value = h.descripcion || '';
   document.getElementById('pmObs').value = h.observaciones || '';
+  ivaSet(h.iva_pct);
   ed.activo = h.activo !== false; renderEstadoUI();
   aplicarBloqueo(h);
   document.getElementById('ppOverlay').style.display = 'flex'; _aplicarPermisoMargen();
@@ -1624,6 +1639,52 @@ async function openEdit(codigo){
 }
 
 function closeModal(){ document.getElementById('ppOverlay').style.display = 'none'; ed.open = false; ed.bloqueado = false; }
+
+/* IVA del presupuesto: 5 % o 10 % según el caso, o el que haga falta.
+   Se guarda en la cabecera y se aplica en la propuesta y en la planilla. */
+/* Filas de cierre: neto, IVA y total. Si no hay IVA, una sola fila. */
+function ivaFilas(neto, pct, colspan, size){
+  const p = Number(pct)||0;
+  const n = Number(neto)||0;
+  const vacia = '<td colspan="'+colspan+'" style="border:none;background:#fff"></td>';
+  if(p <= 0){
+    return '<tr class="tot">'+vacia+
+      '<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">SIN IVA</span></td>'+
+      '<td class="n" style="font-size:'+size+'">'+fmtGs(n)+'</td></tr>';
+  }
+  const iva = Math.round(n * p / 100);
+  return '<tr class="tot">'+vacia+
+      '<td class="lbl" style="font-size:12px">SUBTOTAL SIN IVA</td>'+
+      '<td class="n" style="font-size:14px">'+fmtGs(n)+'</td></tr>'+
+    '<tr class="tot">'+vacia+
+      '<td class="lbl" style="font-size:12px">IVA '+p+' %</td>'+
+      '<td class="n" style="font-size:14px">'+fmtGs(iva)+'</td></tr>'+
+    '<tr class="tot">'+vacia+
+      '<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">IVA INCLUIDO</span></td>'+
+      '<td class="n" style="font-size:'+size+'">'+fmtGs(n + iva)+'</td></tr>';
+}
+
+function ivaSet(pct){
+  const sel = document.getElementById('pmIva');
+  const otro = document.getElementById('pmIvaOtro');
+  if(!sel) return;
+  const v = Number(pct)||0;
+  if(v===0 || v===5 || v===10){ sel.value = String(v); otro.style.display='none'; otro.value=''; }
+  else { sel.value = '__otro'; otro.style.display=''; otro.value = v; }
+  ivaHint();
+}
+function ivaGet(){
+  const sel = document.getElementById('pmIva');
+  if(!sel) return 0;
+  if(sel.value === '__otro') return Number(document.getElementById('pmIvaOtro').value)||0;
+  return Number(sel.value)||0;
+}
+function ivaHint(){
+  const h = document.getElementById('pmIvaHint');
+  if(!h) return;
+  const p = ivaGet();
+  h.textContent = p > 0 ? ('Se suma al total: '+p+' % sobre el neto') : 'Los totales se muestran sin IVA';
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    PRESUPUESTO APROBADO = SOLO LECTURA
@@ -2285,6 +2346,7 @@ async function saveBudget(){
       const _meta={ actualizado_por:_u, actualizado_en:_now, observaciones:observaciones };
       if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
       if(activo && !_prev.publicado_en){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
+      _meta.iva_pct = ivaGet();
       if(ed.desbloqueado && ed.motivoDesbloqueo){
         _audit('presupuesto', codigo, 'reabrir', { motivo: ed.motivoDesbloqueo, publicado_en: _prev.publicado_en||null });
       }
@@ -2501,7 +2563,8 @@ async function emitirPropuesta(){
     document.getElementById('mgOverlay').style.display='none';
     showToast('Propuesta emitida','success', codigo+' v'+version+' · Gs '+fmtGs(ventaT)+' · utilidad '+((ventaT-costoT)/ventaT*100).toFixed(1)+'%');
     imprimirPropuesta({ codigo:codigo, version:version, obra:obra, cliente:cliente, descripcion:desc,
-      validez:validez, condiciones:cond, observaciones:obs, items:items, venta:ventaT });
+      validez:validez, condiciones:cond, observaciones:obs, items:items, venta:ventaT,
+      iva_pct: ivaGet() });
   }catch(e){
     showToast('No se pudo emitir','error', e.message||String(e));
   }finally{ btn.disabled=false; btn.textContent=old; }
@@ -2576,16 +2639,14 @@ function imprimirPropuesta(P){
 '<table><thead><tr><th style="width:70px">Ítem</th><th>Descripción</th><th style="width:66px">Unid.</th>'+
 '<th style="width:86px">Cant.</th><th style="width:130px">Precio Unit.</th><th style="width:150px">Precio Total</th></tr></thead>'+
 '<tbody>'+cuerpo+
-'<tr class="tot"><td colspan="4" style="border:none;background:#fff"></td>'+
-'<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">IVA INCLUIDO</span></td>'+
-'<td class="n" style="font-size:17px">'+fmtGs(P.venta)+'</td></tr></tbody></table>'+
+ivaFilas(P.venta, P.iva_pct, 4, '17px')+'</tbody></table>'+
 '<div class="cond">'+
 '<div><h4>CONDICIONES</h4>'+(P.condiciones?li(P.condiciones):'<div>A convenir</div>')+
 '<div style="margin-top:8px">Oferta válida por '+(Number(P.validez)||15)+' días.</div></div>'+
 '<div><h4>OBSERVACIONES</h4>'+(P.observaciones?li(P.observaciones):'<div>—</div>')+'</div></div>'+
 '<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(P.codigo)+' v'+P.version+'</span>'+
-'<span>Precios en guaraníes, IVA incluido · Emitido '+hoy.toLocaleString('es-PY')+'</span></div>'+
+'<span>Precios en guaraníes'+((Number(P.iva_pct)||0)>0?', IVA '+P.iva_pct+' % incluido en el total':', sin IVA')+' · Emitido '+hoy.toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
 }
@@ -2713,13 +2774,11 @@ function buildCotizacion(){
 '<thead><tr><th style="width:70px">Referencia</th><th>Descripción</th><th style="width:66px">Unid.</th>'+
 '<th style="width:86px">Cant.</th><th style="width:120px">Prec. Unit</th><th style="width:140px">Prec. Total</th></tr></thead>'+
 '<tbody>'+cuerpo+
-'<tr class="tot"><td colspan="4" style="border:none;background:#fff"></td>'+
-'<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">IVA INCLUIDO</span></td>'+
-'<td class="n" style="font-size:16px">'+fmtGs(total)+'</td></tr>'+
+ivaFilas(total, (ed.iva_pct!=null?ed.iva_pct:ivaGet()), 4, '16px')+
 '</tbody></table>'+ obsHtml +
 '<div class="firmas"><div>APROBADO POR</div><div>ARQUITECTO</div></div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(codigo)+'</span>'+
-'<span>Precios en guaraníes, IVA incluido · Cantidades de material redondeadas a entero · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
+'<span>Precios en guaraníes'+(((ed.iva_pct!=null?ed.iva_pct:ivaGet())||0)>0?', IVA incluido en el total':', sin IVA')+' · Cantidades de material redondeadas a entero · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
   showToast('Presupuesto generado','success', codigo+' · '+D.rows.length+' rubro'+(D.rows.length===1?'':'s')+' · Gs '+fmtGs(total));
@@ -2950,6 +3009,15 @@ document.getElementById('roPP').addEventListener('change', renderReporteObra);
 document.getElementById('roVerComp').addEventListener('change', renderReporteObra);
 document.getElementById('pmCloseBtn').addEventListener('click', closeModal);
 document.getElementById('pmCancelBtn').addEventListener('click', closeModal);
+(function(){
+  const sel = document.getElementById('pmIva'), otro = document.getElementById('pmIvaOtro');
+  if(sel) sel.onchange = function(){
+    otro.style.display = (sel.value==='__otro') ? '' : 'none';
+    if(sel.value==='__otro') otro.focus();
+    ivaHint();
+  };
+  if(otro) otro.oninput = ivaHint;
+})();
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
 document.getElementById('pmCotBtn').addEventListener('click', buildCotizacion);
