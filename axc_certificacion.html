@@ -168,6 +168,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.mo{background:#e6f4ea;color:#1B5524;border:1px solid #bfe0c7}
 .lin-tag.lg{background:#EDF3FB;color:#1F3864;border:1px solid #b9cded}
 .lin-tag.sr{background:#fdf3d6;color:#8a6d10;border:1px solid #e6d29a}
+.lin-tag.rb{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-num{text-align:right;font-size:13px;font-variant-numeric:tabular-nums}
 .lin-num b{display:block;font-size:15px;color:var(--navy)}
 .lin-num small{display:block;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-top:2px}
@@ -409,7 +410,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v2.1 · el residente elige qué rubros certifica · importes en los acumulados · subtotal por sector y presupuesto</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v2.2 · certifica también los presupuestos sin composición, contra el rubro completo · el residente elige qué rubros certifica</p>
   </div>
 </div>
 
@@ -1169,6 +1170,11 @@ async function cargarLineas(){
       ]);
       const rub = {}; (rubR.data||[]).forEach(r=>{ rub[String(r.rubro_codigo)] = r; });
       const cab = state.presupuestos.filter(x=>x.codigo===pp)[0] || {};
+      // Rubros que ya tienen su línea de mano de obra o logística
+      const conMO = {};
+      (insR.data||[]).forEach(x=>{
+        if(/^(MO|LG)-/i.test(String(x.codigo_insumo||''))) conMO[String(x.rubro_codigo||'')] = true;
+      });
       // Solo mano de obra y logística: los materiales van por orden de compra
       (insR.data||[]).filter(x => /^(MO|LG)-/i.test(String(x.codigo_insumo||''))).forEach(x=>{
         const r = rub[String(x.rubro_codigo)] || {};
@@ -1183,6 +1189,33 @@ async function cargarLineas(){
           unidad: x.unidad || r.unidad || '',
           cant_presup: Number(x.cantidad)||0,
           precio_presup: Number(x.precio_unitario)||0,
+          libre: false
+        });
+      });
+
+      // Presupuestos planos: el rubro no tiene línea de mano de obra porque
+      // el trabajo entero ES la mano de obra (prolijados, acarreos, picoteados).
+      // En ese caso se certifica contra el rubro, con su cantidad y su precio
+      // unitario. Los rubros con receta quedan afuera: ahí el precio incluye
+      // materiales y certificarlo sería pagar de más al contratista.
+      (rubR.data||[]).forEach(r=>{
+        const rk = String(r.rubro_codigo||'');
+        if(!rk || conMO[rk] || r.tiene_receta) return;
+        const cant = Number(r.cantidad)||0;
+        const tot  = Number(r.precio_total)||0;
+        if(cant <= 0) return;
+        ed.lineas.push({
+          presupuesto: pp,
+          obra: cab.obra || '',
+          rubro_codigo: rk,
+          rubro_desc: r.descripcion || rk,
+          sector: (r.sector||'').trim() || '(sin sector)',
+          codigo_insumo: 'RUBRO',
+          descripcion: r.descripcion || rk,
+          unidad: r.unidad || '',
+          cant_presup: cant,
+          precio_presup: tot > 0 ? Math.round((tot/cant)*100)/100 : 0,
+          esRubro: true,
           libre: false
         });
       });
@@ -1300,7 +1333,7 @@ function renderLineas(){
     return;
   }
   if(!L.length){
-    cont.innerHTML = '<div class="vacio"><b>'+(ed.presus.length?'Ningún presupuesto agregado tiene mano de obra cargada.':'Todavía no hay trabajos.')+'</b>'+
+    cont.innerHTML = '<div class="vacio"><b>'+(ed.presus.length?'Ningún presupuesto agregado tiene trabajos certificables.':'Todavía no hay trabajos.')+'</b>'+
       '<br><small>Podés certificar igual agregando trabajos libres, con precio manual.</small>'+
       '<div style="margin-top:14px"><button type="button" class="btn-nav" id="btnLibre">➕ Agregar un trabajo libre</button></div></div>';
     const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
@@ -1416,12 +1449,13 @@ function lineaHTML(l, contratista){
   return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
       '<div class="lin-nom"><b>'+escapeHtml(l.descripcion)+
-        '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':'mo'))+'">'+(l.libre?'fuera de presupuesto':(esLG?'logística':'mano de obra'))+'</span>'+
+        '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
+          (l.libre?'fuera de presupuesto':(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr">sin precio presupuestado</span>' : '')+
         (excedida ? '<span class="lin-tag ex">fuera de lo presupuestado</span>' : '')+
       '</b>'+
-        '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+' · '+escapeHtml(l.rubro_desc) : 'trabajo libre')+
-        (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : '')+'</small></div>'+
+        '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc)) : 'trabajo libre')+
+        (l.esRubro ? ' · se certifica el rubro completo' : (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : ''))+'</small></div>'+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>presupuestado</small></div>'
         : '<div class="lin-num"><b>'+qty(l.cant_presup)+' '+escapeHtml(l.unidad)+'</b><small>presupuestado</small></div>')+
