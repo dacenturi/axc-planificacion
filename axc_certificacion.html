@@ -479,7 +479,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
                  style="flex:1;min-width:220px;border:1.5px solid var(--border);border-radius:var(--radius);padding:11px 13px;font-size:13.5px;font-family:inherit">
         </div>
         <div class="presu-add" style="margin-top:9px">
-          <select id="edPresu"><option value="">Elegí un presupuesto…</option></select>
+          <input type="text" id="edPresu" list="edPresuList" autocomplete="off" placeholder="Escribí el N° (ej. PP56) o elegí de la lista…"><datalist id="edPresuList"></datalist>
           <button type="button" class="btn-nav" id="edPresuAdd">＋ Agregar</button>
           <button type="button" class="btn-g" id="edPresuLibre">Sin presupuesto</button>
         </div>
@@ -493,7 +493,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       <div class="sel-box" id="edSelBox" style="display:none">
         <label class="sel-lbl">Agregá los trabajos que vas a certificar</label>
         <div class="sel-row">
-          <select id="edAddTrabajo"><option value="">Elegí un trabajo del presupuesto…</option></select>
+          <input type="text" id="edAddTrabajo" list="edAddTrabajoList" autocomplete="off" placeholder="Escribí el rubro o el nombre del trabajo…"><datalist id="edAddTrabajoList"></datalist>
           <button type="button" class="btn-nav" id="edAddBtn">＋ Agregar</button>
           <button type="button" class="btn-g" id="edAddTodos">Agregar todos los rubros</button>
         </div>
@@ -1056,10 +1056,12 @@ function presuOpciones(){
     porObra[o].push(p);
   });
   orden.sort((a,b)=>a.localeCompare(b,'es'));
-  sp.innerHTML = '<option value="">'+(nVis?'Elegí un presupuesto…':'Ningún presupuesto coincide')+'</option>' +
-    orden.map(o=>'<optgroup label="'+escapeHtml(o)+'">'+
-      porObra[o].map(p=>'<option value="'+escapeHtml(p.codigo)+'">'+presuEtiqueta(p)+'</option>').join('')+
-    '</optgroup>').join('');
+  // Se escribe el código o se elige de la lista: el datalist hace las dos cosas
+  const dl = document.getElementById('edPresuList');
+  if(dl) dl.innerHTML = orden.map(o=>
+      porObra[o].map(p=>'<option value="'+escapeHtml(p.codigo)+'">'+
+        escapeHtml(o)+' — '+presuEtiqueta(p)+'</option>').join('')).join('');
+  sp.placeholder = nVis ? 'Escribí el N° (ej. PP56) o elegí de la lista…' : 'Ningún presupuesto coincide';
 
   // Contador, que además sirve para ver si la lista se cargó completa
   const h = document.getElementById('edPresuHint');
@@ -1174,6 +1176,9 @@ const _pb = document.getElementById('edPresuBuscar');
 if(_pb) _pb.oninput = function(){ presuOpciones(); };
 document.getElementById('edPresuAdd').onclick = agregarPresu;
 document.getElementById('edPresu').onchange = function(){ if(this.value) agregarPresu(); };
+  document.getElementById('edPresu').onkeydown = function(ev){
+    if(ev.key === 'Enter'){ ev.preventDefault(); if(this.value) agregarPresu(); }
+  };
 document.getElementById('edPresuLibre').onclick = function(){
   ed.libre = true; renderChips(); renderLineas();
   showToast('Ahora podés agregar trabajos sin presupuesto','success','Se cargan con precio manual y quedan marcados como desvío');
@@ -1446,7 +1451,8 @@ function lineaHTML(l, contratista){
 
   // Acumulado, como en la planilla: anterior + esta medición = acumulado,
   // con su % de avance y el saldo. Se recalcula al escribir.
-  let acum = '', ultLinea = '', pctBox = '';
+  let acum = '', ultLinea = '';
+  const pctBox = '';   // la carga por % se quitó: confundía al residente
   if(!l.libre && l.cant_presup > 0){
     const ant = usado;
     const nue = Number(cant) || 0;
@@ -1468,16 +1474,6 @@ function lineaHTML(l, contratista){
     // El residente piensa en porcentaje de avance, no en metros: se le deja
     // cargar así y el sistema hace la cuenta contra lo ya certificado.
     const saldoDisp = Math.max(0, l.cant_presup - ant);
-    pctBox = '<div class="lin-pct">'+
-      '<label>o cargá el % de avance acumulado</label>'+
-      '<input type="number" min="0" max="100" step="any" data-pct="'+escapeHtml(k)+'" placeholder="'+pctA+'">'+
-      '<span class="ayuda">% total ejecutado</span>'+
-      '<button type="button" class="rap" data-rap="'+escapeHtml(k)+'" data-v="25">25%</button>'+
-      '<button type="button" class="rap" data-rap="'+escapeHtml(k)+'" data-v="50">50%</button>'+
-      '<button type="button" class="rap" data-rap="'+escapeHtml(k)+'" data-v="75">75%</button>'+
-      '<button type="button" class="rap" data-rap="'+escapeHtml(k)+'" data-v="100">100%</button>'+
-      '<button type="button" class="rap saldo" data-saldo="'+escapeHtml(k)+'">todo el saldo ('+qty(saldoDisp)+' '+escapeHtml(l.unidad||'')+')</button>'+
-    '</div>';
 
     // Último certificado que tocó esta línea
     if(h.quien.length){
@@ -1700,15 +1696,16 @@ function selectorTrabajos(disp, nSel){
     grupo[g].push(l);
   });
   orden.sort((a,b)=>a.localeCompare(b,'es'));
-  sl.innerHTML = '<option value="">Elegí un trabajo del presupuesto…</option>' +
-    orden.map(g=>'<optgroup label="'+escapeHtml(g)+'">'+
+  const dlT = document.getElementById('edAddTrabajoList');
+  if(dlT) dlT.innerHTML = orden.map(g=>
       grupo[g].map(l=>{
         const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
         const h = ed.hist[k] || {aprob:0,tramite:0};
         const d = l.libre ? null : Math.max(0, l.cant_presup - h.aprob - h.tramite);
         return '<option value="'+escapeHtml(k)+'">'+escapeHtml(l.rubro_codigo||'libre')+' · '+
-               escapeHtml(l.descripcion)+(d!=null?(' — disponible '+qty(d)+' '+escapeHtml(l.unidad||'')):'')+'</option>';
-      }).join('')+'</optgroup>').join('');
+               escapeHtml(l.descripcion)+' · '+escapeHtml(g)+
+               (d!=null?(' — disponible '+qty(d)+' '+escapeHtml(l.unidad||'')):'')+'</option>';
+      }).join('')).join('');
   sl.disabled = !disp.length;
   const bt = document.getElementById('edAddTodos');
   if(bt) bt.disabled = !disp.length;
