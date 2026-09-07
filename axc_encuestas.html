@@ -504,9 +504,24 @@ svg{display:block;max-width:100%;height:auto;}
           <label>Etapa</label>
           <input id="f-etapa" placeholder="Ej: Estructura · Nivel 6">
         </div>
-        <div class="campo ancho">
+        <div class="campo">
+          <label>Encabezado</label>
+          <select id="f-saludo">
+            <option value="Estimado Sr.">Estimado Sr.</option>
+            <option value="Estimada Sra.">Estimada Sra.</option>
+            <option value="Estimado Arq.">Estimado Arq.</option>
+            <option value="Estimada Arq.">Estimada Arq.</option>
+            <option value="Estimado Ing.">Estimado Ing.</option>
+            <option value="Estimada Ing.">Estimada Ing.</option>
+            <option value="Estimado">Estimado (sin tratamiento)</option>
+            <option value="Estimada">Estimada (sin tratamiento)</option>
+          </select>
+          <span class="pista">Cómo se lo saluda en el mensaje.</span>
+        </div>
+        <div class="campo">
           <label>Destinatario (cliente)</label>
           <input id="f-destinatario" placeholder="Nombre de quien responde">
+          <span class="pista">Va después del encabezado: &laquo;Estimado Sr. Cantero&raquo;.</span>
         </div>
         <div class="campo">
           <label>WhatsApp</label>
@@ -1069,9 +1084,11 @@ async function generar(){
     /* No depender de que la recarga ya traiga la fila: se arma con lo enviado. */
     var validez = parseInt($('f-validez').value, 10) || 15;
     var vence = new Date(); vence.setDate(vence.getDate() + validez);
+    var saludo = $('f-saludo').value || 'Estimado';
+    guardarSaludo(token, saludo);
     ULTIMO = {token: token, obra: obra, residente: res, destinatario: dest,
               contacto: $('f-contacto').value.trim() || null,
-              etapa: $('f-etapa').value.trim() || null,
+              etapa: $('f-etapa').value.trim() || null, saludo: saludo,
               vence_en: vence.toISOString().slice(0,10), estado: 'generada'};
 
     await cargarInvitaciones();
@@ -1089,16 +1106,39 @@ async function generar(){
   }
 }
 
+/* El encabezado (Estimado Sr. / Estimada Sra. / Arq. / Ing.) no viaja al
+   servidor: se elige al generar y queda guardado en este navegador contra el
+   token, para que el boton de WhatsApp de la tabla de seguimiento arme el
+   mismo texto una semana despues. Si no hay nada guardado, usa 'Estimado'. */
+var SALUDO_PREF = 'axc_enc_saludo:';
+
+function guardarSaludo(token, saludo){
+  try{ window.localStorage.setItem(SALUDO_PREF + token, saludo); }catch(e){}
+}
+function saludoDe(inv){
+  if(inv && inv.saludo) return inv.saludo;
+  try{
+    var g = window.localStorage.getItem(SALUDO_PREF + (inv ? inv.token : ''));
+    if(g) return g;
+  }catch(e){}
+  return 'Estimado';
+}
+
+/* ★ 07/09/2026 ★ Texto institucional aprobado por la direccion.
+   Enfoque: la evaluacion es un proceso periodico de la empresa sobre la
+   calidad de la atencion, no un pedido de favor. Se nombra la obra, se
+   declara que hay lectura y derivacion, y se aclara confidencialidad. */
 function mensaje(inv){
   if(!inv) return '';
-  return 'Buenos días, ' + inv.destinatario + '.\n\n' +
-    'En AXC estamos revisando cómo venimos trabajando en ' + inv.obra +
-    ', y su opinión es la que más nos sirve para mejorar la atención y el servicio.\n\n' +
-    'Le dejamos una encuesta breve: 11 preguntas, menos de dos minutos, desde el celular.\n\n' +
+  return saludoDe(inv) + ' ' + inv.destinatario + ':\n\n' +
+    'AXC Constructora evalúa periódicamente la calidad de la atención que recibe ' +
+    'cada propietario durante su obra. Su opinión sobre ' + inv.obra +
+    ' forma parte de esa evaluación.\n\n' +
+    'Encuesta: 11 preguntas, menos de dos minutos.\n\n' +
     urlEncuesta(inv.token) + '\n\n' +
-    'La dirección lee todas las respuestas. Si hay algo que no viene funcionando como corresponde, ' +
-    'este es el canal para decírnoslo.\n\n' +
-    'Disponible hasta el ' + fecha(inv.vence_en) + '. Gracias por el tiempo.\n\n' +
+    'La dirección revisa todas las respuestas y deriva cada observación al ' +
+    'responsable de la obra. La encuesta es confidencial y el enlace es de un solo uso.\n\n' +
+    'Vigente hasta el ' + fecha(inv.vence_en) + '.\n\n' +
     'Administración — AXC Constructora';
 }
 
@@ -1157,6 +1197,7 @@ function limpiarForm(){
     $(id).value = '';
   });
   $('f-validez').value = '15';
+  $('f-saludo').selectedIndex = 0;
   $('generado').classList.add('oculto');
   ULTIMO = null;
 }
