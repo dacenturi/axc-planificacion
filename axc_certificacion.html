@@ -363,7 +363,24 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
   .cert-card{grid-template-columns:1fr;gap:7px}
   .dlg-foot button{padding:16px;font-size:15.5px}
 }
-</style>
+
+/* Referencias de precio por contratista */
+.cp-ref{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:6px 0 0;padding:7px 11px;
+  background:#f6f8fc;border:1px solid #e4e9f2;border-radius:8px;font-size:11.5px}
+.cp-ref .cp-p,.cp-ref .cp-b{display:flex;flex-direction:column;line-height:1.25}
+.cp-ref .cp-p b{color:#1B5524;font-size:13px}
+.cp-ref .cp-b b{color:#42506a;font-size:13px}
+.cp-ref i{font-style:normal;font-size:10px;color:#8893a5;letter-spacing:.2px}
+.cp-ref .cp-h{color:#8893a5;font-size:10.5px;line-height:1.5;flex:1;min-width:180px}
+.cp-ref .cp-h i{font-style:normal;color:#aab3c0}
+.cp-save{margin-left:auto;background:#fdf8ec;border:1px solid #C8A028;color:#8a6d10;
+  font-size:10.5px;font-weight:700;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.cp-save:hover{background:#f8f0da}
+.cp-alc{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.cp-alc button{background:#fff;border:1px solid #d6dde9;border-radius:7px;padding:5px 10px;
+  font-size:10.5px;font-weight:700;color:#42506a;cursor:pointer;font-family:inherit}
+.cp-alc button:hover{border-color:#1F3864;color:#1F3864}
+</style></style>
 </head>
 <body>
 
@@ -1325,6 +1342,10 @@ function renderLineas(){
   const cont = document.getElementById('edLineas');
   const sec = document.getElementById('edSector').value;
   const contratista = document.getElementById('edContra').value;
+  // Los precios pactados dependen del contratista: se recargan al cambiarlo
+  if(CP.cargado !== String(contratista||'').trim()){
+    cpCargar(contratista).then(function(){ renderLineas(); });
+  }
   // Solo se muestran los trabajos que el residente agregó
   let L = ed.lineas.filter(l => ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
   const disponibles = ed.lineas.filter(l => !ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
@@ -1403,7 +1424,9 @@ function lineaHTML(l, contratista){
   const usado = h.aprob + h.tramite;
   const disp = l.libre ? null : Math.max(0, l.cant_presup - usado);
   const cant = (m.cant != null && m.cant !== '') ? m.cant : '';
-  const precio = (m.precio != null && m.precio !== '') ? m.precio : (l.precio_presup || '');
+  const pact = cpPrecio(l.rubro_codigo, l.obra || (ed.obras && ed.obras[0]) || '', l.sector);
+  const precio = (m.precio != null && m.precio !== '') ? m.precio
+               : (pact ? pact.precio : (l.precio_presup || ''));
   const esLG = /^LG-/i.test(l.codigo_insumo||'');
   const cargada = Number(cant) > 0;
   const sinRef = l.libre || !(l.precio_presup > 0);
@@ -1487,7 +1510,7 @@ function lineaHTML(l, contratista){
       '<div class="lin-in"><small class="mlbl">Precio unitario</small><input type="number" min="0" step="any" data-p="'+escapeHtml(k)+'" value="'+precio+'" placeholder="0"><span>₲/'+escapeHtml(l.unidad||'u')+'</span>'+
         '<button type="button" class="lin-quitar" data-quit="'+escapeHtml(k)+'" title="Sacar este trabajo del certificado">✕</button></div>'+
     '</div>'+
-    acum + pctBox + ultLinea +
+    cpRefHTML(l, k, precio, pact) + acum + pctBox + ultLinea +
     (cargada ? '<div class="lin-body">'+
       '<div class="fld"><label>Ubicación exacta *</label><input type="text" list="edUbicaciones" data-u="'+escapeHtml(k)+'" value="'+escapeHtml(m.ubicacion||'')+'" placeholder="Ej. Depto 302, pared sur" autocomplete="off"><div class="hint">Elegí una ya usada o escribí una nueva. Sin ubicación no se puede distinguir un trabajo de otro.</div></div>'+
       '<div class="fld"><label>Observación</label><input type="text" data-o="'+escapeHtml(k)+'" value="'+escapeHtml(m.obs||'')+'" placeholder="Detalles, pendientes, calidad…"></div>'+
@@ -1498,6 +1521,167 @@ function lineaHTML(l, contratista){
       aviso +
     '</div>' : (aviso ? '<div class="lin-body" style="grid-template-columns:1fr">'+aviso+'</div>' : ''))+
   '</div>';
+}
+
+/* Al fijar un precio se pregunta el alcance: sector, obra o general */
+function cpPreguntarAlcance(k){
+  const l = (ed.lineas||[]).filter(function(x){
+    return keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion) === k; })[0];
+  if(!l) return;
+  const m = ed.med[k] || {};
+  const precio = Number(m.precio)||0;
+  if(!(precio>0)){ toast('Cargá primero el precio', false); return; }
+  const c = document.getElementById('edContra').value;
+  const obra = l.obra || (ed.obras && ed.obras[0]) || '';
+  const sector = l.sector || '';
+  const cont = document.querySelector('.lin[data-k="'+k.replace(/"/g,'&quot;')+'"] .cp-ref');
+  if(!cont) return;
+  const ya = cont.querySelector('.cp-alc');
+  if(ya){ ya.remove(); return; }
+  const box = document.createElement('div');
+  box.className = 'cp-alc';
+  box.innerHTML =
+    '<span style="font-size:10.5px;color:#8893a5;align-self:center">₲ '+gs(precio)+' para '+escapeHtml(c)+' en:</span>'+
+    (sector ? '<button type="button" data-a="sector">'+escapeHtml(obra)+' · '+escapeHtml(sector)+'</button>' : '')+
+    (obra   ? '<button type="button" data-a="obra">toda la obra '+escapeHtml(obra)+'</button>' : '')+
+    '<button type="button" data-a="general">todas las obras</button>';
+  cont.appendChild(box);
+  box.querySelectorAll('button').forEach(function(b){
+    b.onclick = async function(){
+      b.disabled = true; b.textContent = 'Guardando…';
+      const ok = await cpGuardar(l.rubro_codigo, l.rubro_desc || l.descripcion, l.unidad,
+                                 obra, sector, precio, b.dataset.a);
+      if(ok){ toast('Precio fijado para '+c, true); renderLineas(); }
+      else { b.disabled = false; }
+    };
+  });
+}
+
+/* Franja discreta con las tres referencias de precio de la línea */
+function cpRefHTML(l, k, precio, pact){
+  if(l.esRubro === undefined && !l.rubro_codigo) return '';
+  const partes = [];
+  if(pact){
+    partes.push('<span class="cp-p"><b>₲ '+gs(pact.precio)+'</b>'+
+      '<i>pactado · '+escapeHtml(pact.alcance)+'</i></span>');
+  }
+  if(l.precio_presup > 0){
+    partes.push('<span class="cp-b"><b>₲ '+gs(l.precio_presup)+'</b><i>presupuesto</i></span>');
+  }
+  // Ayuda memoria: los últimos precios pagados a este contratista por el rubro
+  const h = (CP.hist && l.rubro_codigo) ? (CP.hist[l.rubro_codigo] || []) : [];
+  let histHTML = '';
+  if(h.length){
+    const vistos = {}; const ult = [];
+    h.forEach(function(x){
+      const kk = x.precio+'|'+x.obra+'|'+x.sector;
+      if(vistos[kk] || ult.length >= 3) return;
+      vistos[kk] = 1; ult.push(x);
+    });
+    histHTML = '<span class="cp-h" title="Últimos pagos a este contratista por este rubro">'+
+      ult.map(function(x){
+        return '₲ '+gs(x.precio)+' <i>'+escapeHtml(x.obra||'—')+(x.sector?' · '+escapeHtml(x.sector):'')+
+               (x.fecha?' · '+fmtFecha(x.fecha):'')+'</i>';
+      }).join(' &nbsp;·&nbsp; ')+'</span>';
+  }
+  // Ofrecer guardar cuando el precio escrito difiere del pactado
+  let guardar = '';
+  const pnum = Number(precio)||0;
+  const dif  = pnum > 0 && (!pact || Math.abs(pnum - pact.precio) > 0.5);
+  if(dif && l.rubro_codigo){
+    guardar = '<button type="button" class="cp-save" data-cps="'+escapeHtml(k)+'" '+
+      'title="Guardar este precio como acuerdo con el contratista">＋ fijar como precio del contratista</button>';
+  }
+  if(!partes.length && !histHTML && !guardar) return '';
+  return '<div class="cp-ref">'+partes.join('')+histHTML+guardar+'</div>';
+}
+
+/* ── Precios pactados por contratista ─────────────────────────
+   El mismo rubro se paga distinto según el contratista, la obra y el sector.
+   Esta tabla guarda sólo las excepciones: lo que no está usa el del presupuesto.
+   Resolución de más específico a más general.                              */
+var CP = { lista: [], hist: {}, cargado: '' };
+
+function cpNorm(x){ return String(x||'').trim().toLowerCase(); }
+
+async function cpCargar(contratista){
+  const c = String(contratista||'').trim();
+  if(!c){ CP.lista = []; CP.hist = {}; CP.cargado = ''; return; }
+  if(CP.cargado === c) return;
+  CP.cargado = c;
+  try{
+    const { data } = await sb.from('contratista_precios')
+      .select('rubro_codigo,obra,sector,precio_unit,vigente_desde,observacion')
+      .eq('contratista', c).eq('activo', true);
+    CP.lista = data || [];
+  }catch(e){ CP.lista = []; console.warn('precios contratista', e); }
+  // Historial de lo que ya se le pagó, para ayuda memoria
+  try{
+    const { data } = await sb.from('certificado_items')
+      .select('rubro_codigo,obra,sector,precio_unit,cantidad,certificados!inner(contratista,fecha,numero,estado)')
+      .eq('certificados.contratista', c).gt('precio_unit', 0).limit(400);
+    const h = {};
+    (data||[]).forEach(function(r){
+      const k = r.rubro_codigo || '';
+      if(!k) return;
+      (h[k] = h[k] || []).push({
+        precio: Number(r.precio_unit)||0, obra: r.obra||'', sector: r.sector||'',
+        fecha: r.certificados ? r.certificados.fecha : '',
+        numero: r.certificados ? r.certificados.numero : '',
+        estado: r.certificados ? r.certificados.estado : ''
+      });
+    });
+    Object.keys(h).forEach(function(k){
+      h[k].sort(function(a,b){ return String(b.fecha||'').localeCompare(String(a.fecha||'')); });
+    });
+    CP.hist = h;
+  }catch(e){ CP.hist = {}; console.warn('historial contratista', e); }
+}
+
+/* Devuelve {precio, alcance} del acuerdo más específico que aplique, o null */
+function cpPrecio(rubro, obra, sector){
+  if(!rubro || !CP.lista.length) return null;
+  const cand = CP.lista.filter(function(x){
+    return x.rubro_codigo === rubro
+      && (!x.obra   || cpNorm(x.obra)   === cpNorm(obra))
+      && (!x.sector || cpNorm(x.sector) === cpNorm(sector));
+  });
+  if(!cand.length) return null;
+  cand.sort(function(a,b){
+    const pa = (a.sector?2:0) + (a.obra?1:0), pb = (b.sector?2:0) + (b.obra?1:0);
+    if(pb !== pa) return pb - pa;
+    return String(b.vigente_desde||'').localeCompare(String(a.vigente_desde||''));
+  });
+  const c = cand[0];
+  return { precio: Number(c.precio_unit)||0,
+           alcance: c.sector ? (c.obra+' · '+c.sector) : (c.obra ? c.obra : 'todas las obras'),
+           observacion: c.observacion || '' };
+}
+
+/* Guarda o actualiza el precio pactado */
+async function cpGuardar(rubro, desc, unidad, obra, sector, precio, alcance){
+  const c = (document.getElementById('edContra')||{}).value || '';
+  if(!c || !rubro || !(precio>0)) return false;
+  const fila = {
+    contratista: c, rubro_codigo: rubro, descripcion: desc || null, unidad: unidad || null,
+    precio_unit: precio, activo: true, creado_por: (state.profile && (state.profile.residente||state.profile.nombre)) || null,
+    obra:   (alcance === 'general') ? null : (obra || null),
+    sector: (alcance === 'sector')  ? (sector || null) : null,
+    updated_at: new Date().toISOString()
+  };
+  try{
+    // Baja el anterior del mismo alcance y guarda el nuevo
+    let q = sb.from('contratista_precios').update({ activo:false })
+      .eq('contratista', c).eq('rubro_codigo', rubro).eq('activo', true);
+    q = fila.obra   ? q.eq('obra', fila.obra)     : q.is('obra', null);
+    q = fila.sector ? q.eq('sector', fila.sector) : q.is('sector', null);
+    await q;
+    const { error } = await sb.from('contratista_precios').insert(fila);
+    if(error) throw error;
+    CP.cargado = '';           // forzar recarga
+    await cpCargar(c);
+    return true;
+  }catch(e){ console.warn('guardar precio', e); toast('No se pudo guardar el precio: '+(e.message||e), false); return false; }
 }
 
 /* Lista de trabajos disponibles para agregar, agrupada por presupuesto y sector */
@@ -1567,10 +1751,16 @@ function enganchesLineas(){
     const medicion = Math.round(Math.max(0, objetivo - ant) * 100) / 100;
     ed.med[k] = ed.med[k] || {};
     ed.med[k].cant = medicion;
-    if(ed.med[k].precio == null || ed.med[k].precio === '') ed.med[k].precio = l.precio_presup || '';
+    if(ed.med[k].precio == null || ed.med[k].precio === ''){
+      const pk = cpPrecio(l.rubro_codigo, l.obra || (ed.obras && ed.obras[0]) || '', l.sector);
+      ed.med[k].precio = pk ? pk.precio : (l.precio_presup || '');
+    }
     renderLineas();
     if(!(medicion > 0)) showToast('Ese porcentaje ya está certificado','info','El acumulado anterior ya cubre el '+pct+'%');
   };
+  cont.querySelectorAll('button[data-cps]').forEach(b=>{
+    b.onclick = function(ev){ ev.stopPropagation(); cpPreguntarAlcance(b.getAttribute('data-cps')); };
+  });
   cont.querySelectorAll('button[data-quit]').forEach(b=>{
     b.onclick = async function(ev){
       ev.stopPropagation();
@@ -1604,7 +1794,10 @@ function enganchesLineas(){
       const h = ed.hist[k] || {aprob:0,tramite:0};
       ed.med[k] = ed.med[k] || {};
       ed.med[k].cant = Math.max(0, Math.round((l.cant_presup - h.aprob - h.tramite)*100)/100);
-      if(ed.med[k].precio == null || ed.med[k].precio === '') ed.med[k].precio = l.precio_presup || '';
+      if(ed.med[k].precio == null || ed.med[k].precio === ''){
+      const pk = cpPrecio(l.rubro_codigo, l.obra || (ed.obras && ed.obras[0]) || '', l.sector);
+      ed.med[k].precio = pk ? pk.precio : (l.precio_presup || '');
+    }
       renderLineas();
     };
   });
