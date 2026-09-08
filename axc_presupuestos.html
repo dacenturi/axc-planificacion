@@ -476,7 +476,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v4.6 · obra unificada con orden de compra y planificación · material y mano de obra por rubro, como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v4.7 · obra unificada con orden de compra y planificación · costo por rubro (material + mano de obra) como la planilla · el margen se aplica en la propuesta</p>
   </div>
 </div>
 
@@ -607,7 +607,7 @@ body{
       <div class="pm-sectitle">Rubros (Obra → Sector → Rubro)</div>
       <div class="pm-tablewrap">
         <table class="pm-table">
-          <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">P. unitario (Gs)</th><th class="pm-num">Precio total (Gs)</th><th></th></tr></thead>
+          <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">CC. unitario</th><th class="pm-num">C. parcial (Gs)</th><th></th></tr></thead>
           <tbody id="pmRubTbody"></tbody>
         </table>
       </div>
@@ -659,8 +659,8 @@ body{
           <input id="pmRubMO" class="pm-input" type="number" step="any" placeholder="0">
         </div>
         <div class="pm-f">
-          <label>Precio total Gs</label>
-          <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Precio total Gs">
+          <label>C. parcial Gs</label>
+          <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Costo parcial Gs">
         </div>
         <div class="pm-f">
           <label>&nbsp;</label>
@@ -669,7 +669,7 @@ body{
         <input id="pmRubCod" type="hidden">
       </div>
       <div id="pmRubHintLive" class="pm-hint"></div>
-      <div class="pm-hint">Elegí el capítulo, después la composición. Si tiene receta, al agregarla se cargan sus insumos automáticamente. Si es de precio directo, cargá el costo de <b>material</b> y de <b>mano de obra</b> por unidad: el precio total se calcula solo (costo ÷ coeficiente 0,69, es decir 31% de margen). Separar la mano de obra es lo que después permite certificar al contratista contra su costo real y no contra el precio con materiales.</div>
+      <div class="pm-hint">Elegí el capítulo, después la composición. Si tiene receta, al agregarla se cargan sus insumos automáticamente. Si es de precio directo, cargá el costo de <b>material</b> y de <b>mano de obra</b> por unidad: el <b>CC. unitario</b> y el <b>C. parcial</b> se calculan solos. Este presupuesto es interno y guarda <b>costo</b>; el precio de venta con margen sale en la propuesta económica. Separar la mano de obra es lo que permite certificar al contratista contra su costo real.</div>
 
       <!-- INSUMOS -->
       <div class="pm-sectitle">Insumos por rubro (control por cantidad)</div>
@@ -1870,19 +1870,20 @@ async function toggleEstado(){
 }
 
 // ── Rubros (memoria) ────────────────────────────────────
-/* Costo, costo parcial y precio de venta a partir de material y mano de obra.
-   Misma cuenta que la planilla: venta = costo / coeficiente. Con 0,69 el
-   margen es 31% sobre venta. */
+/* El presupuesto es interno: guarda COSTO, no venta. La venta se calcula
+   despues, en la propuesta economica, dividiendo por el coeficiente.
+   Equivalencia con la planilla:
+     material_unit  = MATERIAL       mano_obra_unit = M. OBRA
+     costo_unit     = CC. UNITARIO   precio_total   = C. PARCIAL  */
 const COEF_VENTA = 0.69;
 function recalcCostoRubro(r){
   const mat = Number(r.material_unit)||0, mo = Number(r.mano_obra_unit)||0;
   const q = Number(r.cantidad)||0;
   if(!mat && !mo) return;                       // sin costos cargados no se toca el precio
-  r.costo_unit    = mat + mo;
-  r.costo_parcial = Math.round(r.costo_unit * q);
+  r.costo_unit      = mat + mo;
+  r.costo_parcial   = Math.round(r.costo_unit * q);
   r.mano_obra_total = Math.round(mo * q);
-  r.coeficiente   = COEF_VENTA;
-  r.precio_total  = Math.round(r.costo_unit / COEF_VENTA * q);
+  r.precio_total    = r.costo_parcial;          // C. PARCIAL, el costo de la linea
 }
 
 function renderRubros(){
@@ -1912,7 +1913,8 @@ function renderRubros(){
             fmtGs(Number(r.material_unit)||0)+'" style="text-align:right"></td>'+
           '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="mano_obra_unit" value="'+
             fmtGs(Number(r.mano_obra_unit)||0)+'" style="text-align:right"></td>') +
-      // P. unitario: se escribe el unitario y el total se recalcula solo.
+      // CC. unitario: material + mano de obra. Se puede escribir directo y el
+      // parcial se recalcula, para los rubros donde no se desglosa el costo.
       (r.tiene_receta
         ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">de la receta</span></td>'
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_unit" value="'+
@@ -1933,7 +1935,9 @@ function renderRubros(){
       else if(f==='precio_total'){ ed.rubros[i].precio_total = parseGs(inp.value); inp.value = fmtGs(ed.rubros[i].precio_total); renderRubros(); }
       else if(f==='precio_unit'){
         const pu = parseGs(inp.value), q = Number(ed.rubros[i].cantidad)||0;
-        ed.rubros[i].precio_total = Math.round(pu * q);
+        ed.rubros[i].costo_unit    = pu;
+        ed.rubros[i].precio_total  = Math.round(pu * q);   // C. parcial
+        ed.rubros[i].costo_parcial = ed.rubros[i].precio_total;
         renderRubros();
       }
       else if(f==='material_unit' || f==='mano_obra_unit'){
@@ -2523,7 +2527,7 @@ async function saveBudget(){
                  material_unit: mat, mano_obra_unit: mo,
                  costo_unit: cu, costo_parcial: (cu!=null ? Math.round(cu*q) : null),
                  mano_obra_total: (mo!=null ? Math.round(mo*q) : null),
-                 coeficiente: (cu!=null ? COEF_VENTA : null) };
+                 coeficiente: null };   // el margen se aplica en la propuesta, no en el rubro
       });
       const ri = await sb.from('presupuesto_rubros').insert(payload);
       if(ri.error) throw ri.error;
