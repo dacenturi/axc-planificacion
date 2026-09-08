@@ -495,7 +495,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v3.2 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v3.3 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -565,8 +565,10 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       <div class="sel-box" id="edSelBox" style="display:none">
         <label class="sel-lbl">Agregá los trabajos que vas a certificar</label>
         <div class="sel-row">
-          <input type="text" id="edAddTrabajo" list="edAddTrabajoList" autocomplete="off" placeholder="Escribí el rubro o el nombre del trabajo…"><datalist id="edAddTrabajoList"></datalist>
-          <button type="button" class="btn-nav" id="edAddBtn">＋ Agregar</button>
+          <div class="ac-wrap">
+            <input type="text" id="edAddTrabajo" autocomplete="off" spellcheck="false" placeholder="Escribí el rubro o el nombre del trabajo…">
+            <div class="ac-pop" id="edAddPop" hidden></div>
+          </div>
           <button type="button" class="btn-g" id="edAddTodos">Agregar todos los rubros</button>
         </div>
         <div class="sel-hint" id="edSelHint"></div>
@@ -696,7 +698,7 @@ const state = { user:null, profile:null, isAdmin:false, list:[], listas:{obras:[
    `med` guarda lo que el residente carga en esta sesión. */
 const ed = { open:false, id:null, cert:null, presus:[], libre:false, lineas:[], med:{}, hist:{}, fotos:{},
              cargando:false, buscar:'', filtro:'', ubicaciones:[], sel:{},
-             acItems:[], acIdx:-1 };   // lista de coincidencias del buscador de presupuestos
+             acItems:[], acIdx:-1, acTrab:[], acTrabIdx:-1 };   // listas de coincidencias de los buscadores
 
 function escapeHtml(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function gs(n){ return '₲ ' + Math.round(Number(n)||0).toLocaleString('es-PY'); }
@@ -704,6 +706,13 @@ function qty(n){ return (Number(n)||0).toLocaleString('es-PY',{maximumFractionDi
 function norm(s){ return String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '); }
 function hoyISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function fmtFecha(iso){ if(!iso) return ''; const p=String(iso).slice(0,10).split('-'); return p.length===3 ? (p[2]+'/'+p[1]+'/'+p[0]) : iso; }
+/* Guaraníes: sin decimales y con punto de miles, como se escribe en obra */
+function fmtGsIn(n){ const v = Math.round(Number(n)||0); return v ? v.toLocaleString('es-PY') : ''; }
+function parseGsIn(s){
+  const t = String(s==null?'':s).replace(/[^\d,-]/g,'').replace(/,/g,'.');
+  const v = Number(t);
+  return isFinite(v) ? Math.round(v) : 0;
+}
 function initialsFrom(name){ if(!name) return '?'; const p=String(name).trim().split(/\s+/); return p.length===1 ? p[0].slice(0,2).toUpperCase() : (p[0][0]+p[p.length-1][0]).toUpperCase(); }
 
 function showToast(msg, type='info', detalle){
@@ -1346,13 +1355,30 @@ async function quitarPresu(cod){
   await cargarLineas();
 }
 
-document.getElementById('edAddBtn').onclick = function(){
-  const sl = document.getElementById('edAddTrabajo');
-  if(!sl.value){ showToast('Elegí un trabajo de la lista','error'); return; }
-  ed.sel[sl.value] = true;
-  renderLineas();
-};
-document.getElementById('edAddTrabajo').onchange = function(){ if(this.value){ ed.sel[this.value] = true; renderLineas(); } };
+const _at = document.getElementById('edAddTrabajo');
+if(_at){
+  _at.oninput = function(){ trabajoPop(true); };
+  _at.onfocus = function(){ trabajoPop(true); };
+  _at.onclick  = function(){ trabajoPop(true); };
+  _at.onblur   = function(){ setTimeout(function(){ trabajoPop(false); }, 150); };
+  _at.onkeydown = function(ev){
+    const pop = document.getElementById('edAddPop');
+    const abierta = pop && !pop.hidden && ed.acTrab && ed.acTrab.length;
+    if(ev.key === 'ArrowDown'){
+      ev.preventDefault();
+      if(!abierta){ trabajoPop(true); return; }
+      ed.acTrabIdx = Math.min(ed.acTrabIdx + 1, ed.acTrab.length - 1); marcarAcTrab();
+    }else if(ev.key === 'ArrowUp'){
+      ev.preventDefault();
+      if(!abierta) return;
+      ed.acTrabIdx = Math.max(ed.acTrabIdx - 1, 0); marcarAcTrab();
+    }else if(ev.key === 'Enter'){
+      ev.preventDefault();
+      if(abierta && ed.acTrabIdx >= 0) agregarTrabajo(ed.acTrab[ed.acTrabIdx]);
+      else showToast('Elegí un trabajo de la lista','error');
+    }else if(ev.key === 'Escape'){ trabajoPop(false); }
+  };
+}
 document.getElementById('edAddTodos').onclick = async function(){
   const sec = document.getElementById('edSector').value;
   const disp = disponiblesFiltrados();
@@ -1538,7 +1564,8 @@ async function cargarLineas(){
           descripcion: r.descripcion || rk,
           unidad: r.unidad || '',
           cant_presup: cant,
-          precio_presup: tot > 0 ? Math.round((tot/cant)*100)/100 : 0,
+          precio_presup: tot > 0 ? Math.round(tot/cant) : 0,
+          precio_total_presup: tot,          // el total del rubro, para poder auditarlo
           esRubro: true,
           conReceta: !!r.tiene_receta,
           libre: false
@@ -1831,9 +1858,10 @@ function lineaHTML(l, contratista){
       '<div class="lin-in med"><small class="mlbl">Medición actual</small>'+
         '<div class="lin-in-row"><input type="number" min="0" step="any" data-c="'+escapeHtml(k)+'" value="'+cant+'" placeholder="0" class="'+(cargada?'ok':'')+'"><span>'+escapeHtml(l.unidad)+'</span></div></div>'+
       '<div class="lin-in px '+origen+'"><small class="mlbl">Precio unitario ₲/'+escapeHtml(l.unidad||'u')+'</small>'+
-        '<div class="lin-in-row"><input type="number" min="0" step="any" data-p="'+escapeHtml(k)+'" value="'+precio+'" placeholder="0">'+
+        '<div class="lin-in-row"><input type="text" inputmode="numeric" data-p="'+escapeHtml(k)+'" value="'+escapeHtml(fmtGsIn(precio))+'" placeholder="0">'+
         '<button type="button" class="lin-quitar" data-quit="'+escapeHtml(k)+'" title="Sacar este trabajo del certificado">✕</button></div>'+
-        '<div class="px-orig '+origen+'">'+(pnum?gs(pnum):'—')+'<i>'+origenTxt+'</i></div></div>'+
+        '<div class="px-orig '+origen+'" title="'+escapeHtml(origenTxt+(P.alcance?(' · '+P.alcance):''))+'">'+(pnum?gs(pnum):'—')+
+          '<i>'+(origen==='pact' ? ('pactado'+(P.alcance?(' · '+escapeHtml(P.alcance)):'')) : origenTxt)+'</i></div></div>'+
     '</div>'+
     cpRefHTML(l, k, precio, pact, Number(cant)||0) + acum + pctBox + ultLinea +
     (cargada ? '<div class="lin-body">'+
@@ -1877,8 +1905,7 @@ async function cpPreguntarAlcance(k){
     detalle:'El precio se aplica únicamente a este sector. Es lo más común cuando el trabajo en un nivel cuesta distinto que en otro.' });
   if(obra) ops.push({ id:'obra', titulo:'En toda la obra '+escapeHtml(obra),
     detalle:'Se aplica a todos los sectores de esta obra, salvo donde ya haya un precio pactado para un sector puntual.' });
-  ops.push({ id:'general', titulo:'En todas las obras',
-    detalle:'El precio queda como el acuerdo general con este contratista para este rubro, en cualquier obra.' });
+  if(!ops.length){ showToast('No se puede fijar el precio sin obra ni sector','error','Cargá el sector del trabajo primero'); return; }
 
   const r = await axcDialog({
     tono:'', icono:'₲', titulo:'Fijar el precio del contratista',
@@ -1915,7 +1942,10 @@ function cpRefHTML(l, k, precio, pact, cant){
       (pact.desde ? ' · desde el '+fmtFecha(pact.desde) : '')+'</i></span>');
   }
   if(l.precio_presup > 0){
-    partes.push('<span class="cp-b"><b>'+gs(l.precio_presup)+'</b><i>presupuesto · referencia interna</i></span>');
+    partes.push('<span class="cp-b" title="'+
+      (l.precio_total_presup ? ('Precio total del rubro en el presupuesto '+gs(l.precio_total_presup)+' ÷ '+qty(l.cant_presup)+' '+escapeHtml(l.unidad||'')) : 'Precio unitario del presupuesto')+
+      '"><b>'+gs(l.precio_presup)+'</b><i>presupuesto · referencia interna'+
+      (l.precio_total_presup ? ' · '+gs(l.precio_total_presup)+' ÷ '+qty(l.cant_presup)+' '+escapeHtml(l.unidad||'') : '')+'</i></span>');
   }
   const pnum = Number(precio)||0, cnum = Number(cant)||0;
   if(pnum > 0 && cnum > 0){
@@ -2064,22 +2094,83 @@ function selectorTrabajos(disp, nSel){
     grupo[g].push(l);
   });
   orden.sort((a,b)=>a.localeCompare(b,'es'));
-  const dlT = document.getElementById('edAddTrabajoList');
-  if(dlT) dlT.innerHTML = orden.map(g=>
-      grupo[g].map(l=>{
-        const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
-        const h = ed.hist[k] || {aprob:0,tramite:0};
-        const d = l.libre ? null : Math.max(0, l.cant_presup - h.aprob - h.tramite);
-        return '<option value="'+escapeHtml(k)+'">'+escapeHtml(l.rubro_codigo||'libre')+' · '+
-               escapeHtml(l.descripcion)+' · '+escapeHtml(g)+
-               (d!=null?(' — disponible '+qty(d)+' '+escapeHtml(l.unidad||'')):'')+'</option>';
-      }).join('')).join('');
-  sl.disabled = !disp.length;
+  ed.dispGrupos = { orden:orden, grupo:grupo };
+  ed.dispTrabajos = disp;
+  const sl2 = document.getElementById('edAddTrabajo');
+  if(sl2) sl2.disabled = !disp.length;
   const bt = document.getElementById('edAddTodos');
   if(bt) bt.disabled = !disp.length;
+  const pop = document.getElementById('edAddPop');
+  if(pop && !pop.hidden) trabajoPop(true);   // se estaba mirando la lista: refrescar
   if(hint) hint.innerHTML = '<b>'+nSel+'</b> trabajo(s) agregado(s) · <b>'+disp.length+'</b> disponible(s) sin agregar'+
     (ed.secFiltro ? ' <b>en '+escapeHtml(ed.secFiltro)+'</b>' : '')+
     (disp.length ? '' : ' · ya están todos');
+}
+
+/* Lista de trabajos con el texto completo: el desplegable del navegador
+   cortaba la descripción justo donde estaba el sector y el disponible. */
+function trabajoPop(abrir){
+  const inp = document.getElementById('edAddTrabajo');
+  const pop = document.getElementById('edAddPop');
+  if(!inp || !pop) return;
+  if(abrir === false){ pop.hidden = true; pop.innerHTML=''; ed.acTrab=[]; ed.acTrabIdx=-1; return; }
+
+  const q = norm(inp.value);
+  const G = ed.dispGrupos || { orden:[], grupo:{} };
+  ed.acTrab = [];
+  let html = '';
+  G.orden.forEach(g=>{
+    const filas = G.grupo[g].filter(l => !q ||
+      norm([l.rubro_codigo,l.descripcion,l.rubro_desc,l.codigo_insumo,l.sector].join(' ')).indexOf(q) >= 0);
+    if(!filas.length) return;
+    html += '<div class="ac-grp">📋 '+escapeHtml(g)+'</div>';
+    filas.forEach(l=>{
+      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
+      const h = ed.hist[k] || {aprob:0,tramite:0};
+      const d = l.libre ? null : Math.max(0, l.cant_presup - h.aprob - h.tramite);
+      const P = precioDeLinea(l, {});
+      const i = ed.acTrab.length;
+      ed.acTrab.push(k);
+      html += '<div class="ac-it" data-i="'+i+'" data-k="'+escapeHtml(k)+'">'+
+        '<b>'+resaltar(l.rubro_codigo||'libre', q)+'</b>'+
+        '<span>'+resaltar(l.descripcion, q)+'</span>'+
+        '<small>'+(d!=null ? ('disponible <b>'+qty(d)+' '+escapeHtml(l.unidad||'')+'</b>') : 'sin saldo de referencia')+
+          (P.pnum ? (' · '+gs(P.pnum)+'/'+escapeHtml(l.unidad||'u')+
+                     (P.origen==='pact' ? ' pactado' : (P.origen==='presu' ? ' presupuesto' : ''))) : ' · sin precio')+
+          (l.conReceta ? ' · incluye materiales' : '')+'</small>'+
+      '</div>';
+    });
+  });
+  if(!ed.acTrab.length){
+    html = '<div class="ac-vacio">'+(q ? 'Ningún trabajo coincide con «'+escapeHtml(inp.value.trim())+'»'
+                                       : 'No queda ningún trabajo por agregar')+'</div>';
+  }
+  pop.innerHTML = html;
+  pop.hidden = false;
+  ed.acTrabIdx = ed.acTrab.length ? 0 : -1;
+  marcarAcTrab();
+  pop.querySelectorAll('.ac-it').forEach(d=>{
+    d.onmousedown = function(ev){ ev.preventDefault(); agregarTrabajo(d.getAttribute('data-k')); };
+  });
+}
+
+function marcarAcTrab(){
+  const pop = document.getElementById('edAddPop');
+  if(!pop) return;
+  pop.querySelectorAll('.ac-it').forEach(d=>{
+    const on = Number(d.getAttribute('data-i')) === ed.acTrabIdx;
+    d.classList.toggle('on', on);
+    if(on && d.scrollIntoView) d.scrollIntoView({block:'nearest'});
+  });
+}
+
+function agregarTrabajo(k){
+  if(!k) return;
+  ed.sel[k] = true;
+  const inp = document.getElementById('edAddTrabajo');
+  if(inp){ inp.value = ''; inp.focus(); }
+  trabajoPop(false);
+  renderLineas();
 }
 
 /* Los trabajos disponibles respetan el filtro de sector de la cabecera:
@@ -2183,11 +2274,14 @@ function enganchesLineas(){
   cont.querySelectorAll('input[data-p]').forEach(inp=>{
     inp.onchange = function(){
       const k = inp.getAttribute('data-p');
+      const v = inp.value.trim();
       ed.med[k] = ed.med[k] || {};
-      ed.med[k].precio = inp.value === '' ? '' : Number(inp.value);
-      ed.med[k].precioManual = inp.value !== '';   // no se pisa al cambiar de contratista
+      ed.med[k].precio = v === '' ? '' : parseGsIn(v);
+      ed.med[k].precioManual = v !== '';   // no se pisa al cambiar de contratista
       renderLineas();
     };
+    // Se reformatea al salir del campo: 65000 → 65.000
+    inp.onblur = function(){ if(inp.value.trim() !== '') inp.value = fmtGsIn(parseGsIn(inp.value)); };
   });
   cont.querySelectorAll('input[data-s]').forEach(inp=>{
     // Al cargar el sector puede aparecer un precio pactado para ese nivel
