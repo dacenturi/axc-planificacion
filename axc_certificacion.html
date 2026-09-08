@@ -506,7 +506,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v5.0 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v5.1 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -619,7 +619,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 <div class="ov" id="avOv" hidden>
   <div class="mbox" style="width:min(1280px,99vw)">
     <div class="mhead">
-      <div><h2>Presupuestado contra certificado</h2><p id="avSub">Mano de obra por obra, sector y rubro · sólo certificados aprobados</p></div>
+      <div><h2>Presupuestado contra certificado</h2><p id="avSub">Precio unitario y avance por obra, sector y rubro · sólo certificados aprobados</p></div>
       <button type="button" class="mx" id="avX">&times;</button>
     </div>
     <div class="mbody">
@@ -629,7 +629,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
         <select id="avFiltro">
           <option value="">Todo</option>
           <option value="cert">Sólo lo que tiene avance</option>
-          <option value="exc">Sólo lo que supera el presupuesto</option>
+          <option value="exc">Sólo lo que hay que mirar</option>
         </select>
       </div>
       <div id="avLista"><div class="vacio">Cargando…</div></div>
@@ -2816,15 +2816,28 @@ async function abrirAvance(){
 
 function renderAvance(){
   const cont = document.getElementById('avLista');
+  // Precio unitario de cada lado y desvío sobre lo efectivamente certificado.
+  // Comparar montos totales confunde: un rubro al 30% de avance no es un ahorro.
+  const calc = f => {
+    const puP = f.cantP > 0 ? f.montoP / f.cantP : 0;
+    const puC = f.cantC > 0 ? f.montoC / f.cantC : 0;
+    return { puP:puP, puC:puC,
+             avance: f.cantP > 0 ? (f.cantC / f.cantP) : null,
+             excedeCant: f.cantP > 0 && f.cantC > f.cantP + 0.001,
+             desvioUnit: (puP > 0 && puC > 0) ? Math.round((puC - puP) * f.cantC) : 0,
+             sinPresup: !(f.montoP > 0) };
+  };
   let F = AV.filas.slice();
   if(AV.obra)   F = F.filter(f=>f.obra === AV.obra);
   if(AV.buscar) F = F.filter(f=>norm([f.rubro,f.desc,f.sector,f.presupuesto].join(' ')).indexOf(AV.buscar) >= 0);
   if(AV.filtro === 'cert') F = F.filter(f=>f.montoC > 0);
-  if(AV.filtro === 'exc')  F = F.filter(f=>f.montoC > f.montoP && f.montoP > 0);
+  if(AV.filtro === 'exc')  F = F.filter(f=>{ const c = calc(f); return c.excedeCant || c.desvioUnit > 0 || c.sinPresup; });
 
   const tP = F.reduce((a,f)=>a+f.montoP,0), tC = F.reduce((a,f)=>a+f.montoC,0);
+  const tD = F.reduce((a,f)=>a+calc(f).desvioUnit,0);
   document.getElementById('avSub').innerHTML = 'Presupuestado <b>'+gs(tP)+'</b> · certificado <b>'+gs(tC)+'</b> · '+
-    (tP>0 ? Math.round(tC/tP*1000)/10 : 0)+'% de avance en '+F.length+' rubro(s)';
+    F.length+' rubro(s) · sobreprecio sobre lo certificado <b style="color:'+(tD>0?'#B03A3A':'#1B5524')+'">'+
+    (tD>0?'+':'')+gs(tD)+'</b>';
 
   if(!F.length){ cont.innerHTML = '<div class="vacio">No hay datos con ese filtro.</div>'; return; }
 
@@ -2838,22 +2851,26 @@ function renderAvance(){
       String(a.rubro||'').localeCompare(String(b.rubro||''),'es',{numeric:true}));
     const sP = filas.reduce((a,f)=>a+f.montoP,0), sC = filas.reduce((a,f)=>a+f.montoC,0);
     return '<div class="px-grp">🏗 '+escapeHtml(o)+' · presupuestado '+gs(sP)+' · certificado '+gs(sC)+'</div>'+
-      '<table class="det-tab"><thead><tr><th>Rubro</th><th>Sector</th><th class="r">Cant. presup.</th>'+
-      '<th class="r">Cant. cert.</th><th class="r">Presupuestado</th><th class="r">Certificado</th>'+
-      '<th class="r">Avance</th><th class="r">Desvío</th></tr></thead><tbody>'+
+      '<table class="det-tab"><thead><tr><th>Rubro</th><th>Sector</th><th class="r">Avance</th>'+
+      '<th class="r">₲/u presupuesto</th><th class="r">₲/u certificado</th>'+
+      '<th class="r">Certificado</th><th class="r">Sobreprecio</th></tr></thead><tbody>'+
       filas.map(f=>{
-        const pct = f.montoP > 0 ? Math.round(f.montoC/f.montoP*1000)/10 : null;
-        const dif = f.montoC - f.montoP;
-        const col = (f.montoP > 0 && f.montoC > f.montoP) ? '#B03A3A' : 'var(--text-muted)';
-        return '<tr><td><b>'+escapeHtml(f.rubro)+'</b><div class="det-obs">'+escapeHtml(f.desc||'')+
-                 (f.moDecl?' · <span style="color:#3B6D11">mano de obra declarada</span>':'')+'</div></td>'+
-          '<td>'+escapeHtml(f.sector||'—')+'</td>'+
-          '<td class="r">'+qty(f.cantP)+' '+escapeHtml(f.unidad||'')+'</td>'+
-          '<td class="r">'+qty(f.cantC)+'</td>'+
-          '<td class="r">'+gs(f.montoP)+'</td>'+
-          '<td class="r"><b>'+gs(f.montoC)+'</b></td>'+
-          '<td class="r">'+(pct==null?'—':(pct+'%'))+'</td>'+
-          '<td class="r" style="color:'+col+'">'+(f.montoP>0?((dif>0?'+':'')+gs(dif)):'sin presupuesto')+'</td></tr>';
+        const c = calc(f);
+        const avTxt = c.avance == null ? 'sin presupuesto'
+          : (qty(Math.round(c.avance*1000)/10)+'% · '+qty(f.cantC)+' de '+qty(f.cantP)+' '+escapeHtml(f.unidad||''));
+        const col = c.desvioUnit > 0 ? '#B03A3A' : (c.desvioUnit < 0 ? '#1B5524' : 'var(--text-muted)');
+        return '<tr'+((c.excedeCant||c.sinPresup)?' style="background:#FCEBEB"':'')+'>'+
+          '<td><b>'+escapeHtml(f.rubro)+'</b><div class="det-obs">'+escapeHtml(f.desc||'')+
+            (f.moDecl?' · <span style="color:#3B6D11">mano de obra declarada</span>'
+                    :' · <span style="color:#8a6d10">precio con materiales</span>')+'</div></td>'+
+          '<td>'+escapeHtml(f.sector||'—')+
+            (c.excedeCant?'<div class="det-obs" style="color:#B03A3A">supera la cantidad presupuestada</div>':'')+
+            (c.sinPresup?'<div class="det-obs" style="color:#B03A3A">certificado sin presupuesto</div>':'')+'</td>'+
+          '<td class="r">'+avTxt+'</td>'+
+          '<td class="r">'+(c.puP?gs(c.puP):'—')+'</td>'+
+          '<td class="r"><b>'+(c.puC?gs(c.puC):'—')+'</b></td>'+
+          '<td class="r">'+gs(f.montoC)+'</td>'+
+          '<td class="r" style="color:'+col+'">'+(c.desvioUnit?((c.desvioUnit>0?'+':'')+gs(c.desvioUnit)):'—')+'</td></tr>';
       }).join('')+'</tbody></table>';
   }).join('');
 }
@@ -3100,8 +3117,9 @@ async function abrirDetalle(id){
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
   }
-  if(c.estado === 'Aprobado' && state.isAdmin){
-    acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">💰 Descuentos</button> ' + acc.innerHTML;
+  if(c.estado === 'Aprobado'){
+    acc.innerHTML += ' <button type="button" class="btn-ok" id="dtOrden">💰 Orden de pago</button>';
+    if(state.isAdmin) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
   }
 
   try{
@@ -3206,6 +3224,7 @@ async function abrirDetalle(id){
     if(bN) bN.onclick = ()=> cambiarEstado(id,'Anulado');
     const bP=document.getElementById('dtPdf'); if(bP) bP.onclick = ()=> pedirPDF(c, its||[]);
     const bD=document.getElementById('dtDesc'); if(bD) bD.onclick = ()=> pedirDescuentos(c);
+    const bO=document.getElementById('dtOrden'); if(bO) bO.onclick = ()=> generarOrdenPago(c, its||[]);
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
@@ -3258,9 +3277,8 @@ function liquidacionHTML(c){
     '<div class="liq-r"><span>Total certificado</span><b>'+gs(L.total)+'</b></div>'+
     '<div class="liq-r'+(L.anticipo?' neg':'')+'"><span>Anticipo retirado a descontar</span><b>'+(L.anticipo?'− '+gs(L.anticipo):gs(0))+'</b></div>'+
     '<div class="liq-r'+(L.prestamo?' neg':'')+'"><span>Pago de préstamo</span><b>'+(L.prestamo?'− '+gs(L.prestamo):gs(0))+'</b></div>'+
-    '<div class="liq-r'+(L.reparo?' neg':'')+'"><span>Fondo de reparo'+(L.reparoPct?(' ('+qty(L.reparoPct)+'%)'):'')+'</span><b>'+(L.reparo?'− '+gs(L.reparo):gs(0))+'</b></div>'+
     '<div class="liq-r tot"><span>Saldo a cobrar</span><b>'+gs(L.saldo)+'</b></div>'+
-    (state.isAdmin ? '<div class="liq-h">Se cargan con el botón «Descuentos». El anticipo y el préstamo se descuentan de la cuenta corriente del contratista; el fondo de reparo se retiene y se devuelve al final de obra.</div>' : '')+
+    (state.isAdmin ? '<div class="liq-h">Se cargan con el botón «Descuentos». Se descuentan de lo que el contratista tiene pendiente de devolver. Las entregas se registran en «Cuenta de contratistas», en la barra principal.</div>' : '')+
   '</div>';
 }
 
@@ -3280,32 +3298,30 @@ async function pedirDescuentos(c, pref){
               ' · <b>pendiente '+gs(sa.saldo)+'</b>');
   cuenta.push('Préstamo entregado: <b>'+gs(sp.otorgado)+'</b> · ya descontado '+gs(sp.descontado)+
               ' · <b>pendiente '+gs(sp.saldo)+'</b>');
+  if(!sa.otorgado && !sp.otorgado)
+    cuenta.push('<b>Todavía no registraste ninguna entrega a este contratista.</b> Se cargan desde «🧾 Cuenta de contratistas», en la barra principal, con «＋ Registrar entrega». Sin eso no hay nada para descontar.');
 
   const r = await axcDialog({
     tono:'', icono:'₲', titulo:'Descuentos del certificado',
     subtitulo:(c.numero||'')+' · '+(c.contratista||''),
     mensaje:'Total certificado: <b>'+gs(L.total)+'</b>.<br><br>'+
-            'El anticipo y el préstamo se descuentan de lo que el contratista tiene pendiente de devolver. '+
-            'El fondo de reparo se retiene sobre el total y se le devuelve al final de obra.',
+            'El anticipo y el préstamo se descuentan de lo que el contratista tiene pendiente de devolver.',
     lista: cuenta,
     campo:{ label:'Anticipo a descontar (₲) · pendiente '+gs(sa.saldo), placeholder:'0', valor: vAnt ? fmtGsIn(vAnt) : '' },
     campo2:{ label:'Préstamo a descontar (₲) · pendiente '+gs(sp.saldo), placeholder:'0', valor: vPre ? fmtGsIn(vPre) : '' },
-    campo3:{ label:'Fondo de reparo (% del total certificado)', placeholder:'Ej. 5', valor: vRep ? String(vRep) : '' },
     ok:'Guardar los descuentos'
   });
   if(!r.ok) return;
 
   const ant = parseGsIn(r.valor), pre = parseGsIn(r.valor2);
-  const pct = Math.max(0, Number(String(r.valor3||'').replace(',','.'))||0);
-  const rep = Math.round(L.total * pct / 100);
+  const pct = 0, rep = 0;
 
   const errores = [];
-  if(ant < 0 || pre < 0 || pct < 0) errores.push('Los montos no pueden ser negativos.');
+  if(ant < 0 || pre < 0) errores.push('Los montos no pueden ser negativos.');
   if(ant > sa.saldo) errores.push('El anticipo a descontar (<b>'+gs(ant)+'</b>) supera lo que el contratista tiene pendiente de devolver (<b>'+gs(sa.saldo)+'</b>).');
   if(pre > sp.saldo) errores.push('El préstamo a descontar (<b>'+gs(pre)+'</b>) supera lo pendiente (<b>'+gs(sp.saldo)+'</b>).');
-  if(pct > 100) errores.push('El fondo de reparo no puede pasar del 100%.');
-  if(!errores.length && ant + pre + rep > L.total)
-    errores.push('Entre los tres descuentos suman <b>'+gs(ant+pre+rep)+'</b> sobre un certificado de <b>'+gs(L.total)+'</b>. El saldo a cobrar no puede ser negativo.');
+  if(!errores.length && ant + pre > L.total)
+    errores.push('Entre los dos descuentos suman <b>'+gs(ant+pre)+'</b> sobre un certificado de <b>'+gs(L.total)+'</b>. El saldo a cobrar no puede ser negativo.');
 
   if(errores.length){
     await axcDialog({
@@ -3422,6 +3438,167 @@ async function cambiarEstado(id, estado){
     await loadList();
   }catch(e){ showToast('No se pudo actualizar: '+(e.message||e),'error'); }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   ORDEN DE PAGO
+   Mismo formulario que AXC usa en papel: una línea por obra y sector,
+   el descuento del anticipo y del préstamo tomados del certificado, el
+   saldo a cobrar y los dos bloques de firma.
+   ═══════════════════════════════════════════════════════════════════ */
+function generarOrdenPago(c, its){
+  const LQ = saldoCert(c);
+  const anticipo = LQ.anticipo, prestamo = LQ.prestamo;
+  if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
+  const NAVY=[31,56,100], GOLD=[200,160,40], GRIS=[139,147,167], TXT=[26,34,54];
+
+  // ── Cabecera: banda azul con el logo y el número ─────────────────
+  doc.setFillColor.apply(doc, NAVY); doc.rect(0, 0, W, 34, 'F');
+  doc.setFillColor(255,255,255); doc.roundedRect(M, 8, 40, 18, 2, 2, 'F');
+  try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 11, 34, 12); }catch(e){}
+  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(15);
+  doc.text('ORDEN DE PAGO', M+48, 17);
+  doc.setFont('helvetica','normal').setFontSize(10);
+  doc.text('Por certificado de obra  ·  AXC Constructora', M+48, 24);
+  doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
+  doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
+  doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
+  doc.setFontSize(13);
+  doc.text(pdfSafe(c.numero||''), W-M-26, 22, {align:'center'});
+
+  // ── Datos del trámite ────────────────────────────────────────────
+  let y = 44;
+  doc.setDrawColor(226,230,238).setLineWidth(.4);
+  doc.setFillColor(247,248,251); doc.roundedRect(M, y-6, W-M*2, 30, 2, 2, 'FD');
+  const dato = (et, val, cx, cy) => {
+    doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor.apply(doc, GRIS);
+    doc.text(pdfSafe(et), cx, cy);
+    doc.setFont('helvetica','bold').setFontSize(10.5).setTextColor.apply(doc, TXT);
+    doc.text(doc.splitTextToSize(pdfSafe(String(val||'-')), 58)[0], cx, cy+5.5);
+  };
+  const cw = (W-M*2-8)/3;
+  dato('FECHA', fmtFecha(c.fecha), M+5, y);
+  dato('DE (RESIDENTE)', c.medido_por||c.creado_por||'', M+5+cw, y);
+  dato('A', 'ADMINISTRACION', M+5+cw*2, y);
+  dato('OBRA', c.obra||'', M+5, y+13);
+  dato('CONTRATISTA', c.contratista||'', M+5+cw, y+13);
+  dato('PRESUPUESTO', c.presupuesto||'', M+5+cw*2, y+13);
+  y += 34;
+
+  // ── Detalle por obra y sector ────────────────────────────────────
+  const grupos = {}, orden = [];
+  (its||[]).forEach(x=>{
+    const o = x.obra || c.obra || '-';
+    const sec = x.sector || c.sector || '-';
+    const k = o+'||'+sec;
+    if(!grupos[k]){ grupos[k] = { obra:o, sector:sec, total:0 }; orden.push(k); }
+    grupos[k].total += Number(x.subtotal)||0;
+  });
+  orden.sort((a,b)=> grupos[a].obra.localeCompare(grupos[b].obra,'es') || grupos[a].sector.localeCompare(grupos[b].sector,'es'));
+  const rows = orden.map((k,i)=>{
+    const g = grupos[k];
+    return [String(i+1), pdfSafe(g.sector), pdfSafe(c.numero||''), pdfSafe(g.obra),
+            'Gs. '+Math.round(g.total).toLocaleString('es-PY')];
+  });
+
+  doc.autoTable({
+    startY: y,
+    head: [['Item','Nivel / Sector','N° de Certificado','Obra','Importe']],
+    body: rows,
+    foot: [[{ content:'TOTAL CERTIFICADO', colSpan:4, styles:{halign:'right'} },
+            { content:'Gs. '+Math.round(Number(c.total)||0).toLocaleString('es-PY'), styles:{halign:'right'} }]],
+    theme:'grid',
+    styles:{ font:'helvetica', fontSize:9.5, cellPadding:3, textColor:TXT, lineColor:[226,230,238], lineWidth:.3, halign:'center' },
+    headStyles:{ fillColor:NAVY, textColor:[255,255,255], fontStyle:'bold', fontSize:8.5, halign:'center' },
+    footStyles:{ fillColor:GOLD, textColor:[21,40,68], fontStyle:'bold', fontSize:11 },
+    alternateRowStyles:{ fillColor:[249,250,253] },
+    columnStyles:{ 0:{cellWidth:16}, 1:{cellWidth:34}, 2:{cellWidth:38}, 3:{cellWidth:'auto',halign:'left'},
+                   4:{halign:'right',cellWidth:38,fontStyle:'bold'} },
+    margin:{ left:M, right:M }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // ── Liquidación, con el saldo resaltado ──────────────────────────
+  doc.setFont('helvetica','bold').setFontSize(11).setTextColor.apply(doc, NAVY);
+  doc.text('LIQUIDACION', M, y);
+  doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(.8); doc.line(M, y+1.6, M+30, y+1.6);
+  y += 6;
+  const saldo = LQ.saldo;
+  doc.autoTable({
+    startY: y,
+    body: [
+      ['Total certificado', 'Gs. '+Math.round(Number(c.total)||0).toLocaleString('es-PY')],
+      ['Anticipo retirado a descontar',
+        { content: anticipo ? '- Gs. '+Math.round(anticipo).toLocaleString('es-PY') : 'Gs. 0',
+          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
+      ['Pago de prestamo',
+        { content: prestamo ? '- Gs. '+Math.round(prestamo).toLocaleString('es-PY') : 'Gs. 0',
+          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
+      [{ content:'SALDO A COBRAR', styles:{ fillColor:NAVY, textColor:[255,255,255], fontStyle:'bold', fontSize:12 } },
+       { content:'Gs. '+Math.round(saldo).toLocaleString('es-PY'),
+         styles:{ fillColor:NAVY, textColor:[229,198,88], fontStyle:'bold', fontSize:13, halign:'right' } }]
+    ],
+    theme:'grid',
+    styles:{ font:'helvetica', fontSize:10.5, cellPadding:3.4, textColor:TXT, lineColor:[226,230,238], lineWidth:.3 },
+    columnStyles:{ 0:{cellWidth:'auto'}, 1:{halign:'right',cellWidth:62,fontStyle:'bold'} },
+    margin:{ left:M, right:M }
+  });
+  y = doc.lastAutoTable.finalY + 11;
+
+  // ── Declaración del residente ────────────────────────────────────
+  if(y > H-95){ doc.addPage(); y = 24; }
+  doc.setFillColor(247,248,251); doc.setDrawColor(226,230,238); doc.setLineWidth(.4);
+  const txt = 'Yo, '+pdfSafe(c.medido_por||'')+', en calidad de residente responsable de la obra mencionada, verifico que los '+
+    'trabajos ejecutados correspondientes al certificado N.o '+pdfSafe(c.numero||'')+' han sido realizados segun las '+
+    'especificaciones del contrato, planos y calidad exigida, por lo cual AUTORIZO el tramite para el pago correspondiente.';
+  doc.setFont('helvetica','normal').setFontSize(9.5);
+  const lines = doc.splitTextToSize(txt, W-M*2-10);
+  doc.roundedRect(M, y, W-M*2, lines.length*4.6 + 12, 2, 2, 'FD');
+  doc.setFont('helvetica','bold').setFontSize(9).setTextColor.apply(doc, NAVY);
+  doc.text('CONFIRMACION DEL RESIDENTE DE OBRA', M+5, y+6);
+  doc.setFont('helvetica','normal').setFontSize(9.5).setTextColor.apply(doc, TXT);
+  doc.text(lines, M+5, y+12);
+  y += lines.length*4.6 + 20;
+
+  // ── Firmas ───────────────────────────────────────────────────────
+  if(y > H-58){ doc.addPage(); y = 24; }
+  const bw = (W-M*2-8)/2;
+  const firma = (cx, titulo, nombre, rol, conCI) => {
+    doc.setDrawColor(226,230,238).setLineWidth(.4).setFillColor(255,255,255);
+    doc.roundedRect(cx, y, bw, 46, 2, 2, 'FD');
+    doc.setFillColor.apply(doc, NAVY); doc.rect(cx, y, bw, 1.6, 'F');
+    doc.setFont('helvetica','bold').setFontSize(8).setTextColor.apply(doc, GRIS);
+    doc.text(pdfSafe(titulo), cx+5, y+8);
+    doc.setDrawColor(160,168,184).setLineWidth(.4);
+    doc.line(cx+6, y+27, cx+bw-6, y+27);
+    doc.setFont('helvetica','bold').setFontSize(10.5).setTextColor.apply(doc, TXT);
+    doc.text(pdfSafe(nombre||'—'), cx+bw/2, y+32.5, {align:'center'});
+    doc.setFont('helvetica','normal').setFontSize(8).setTextColor.apply(doc, GRIS);
+    doc.text(pdfSafe(rol), cx+bw/2, y+37, {align:'center'});
+    if(conCI){
+      doc.setFontSize(8);
+      doc.text('C.I.: ______________________', cx+bw/2, y+42, {align:'center'});
+    }else{
+      doc.text('Fecha: ____ / ____ / ________', cx+bw/2, y+42, {align:'center'});
+    }
+  };
+  firma(M, 'FIRMA DEL RESIDENTE', c.medido_por||'', 'Residente de obra', true);
+  firma(M+bw+8, 'APROBACION (USO INTERNO)', c.aprobado_por||'', 'Jefe de Obra / Director de Proyecto', false);
+  y += 52;
+
+  // ── Pie ──────────────────────────────────────────────────────────
+  doc.setDrawColor(226,230,238).setLineWidth(.3);
+  doc.line(M, H-16, W-M, H-16);
+  doc.setFont('helvetica','normal').setFontSize(7.5).setTextColor.apply(doc, GRIS);
+  doc.text('Certificado '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+
+           fmtFecha(hoyISO()), M, H-11);
+  doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
+
+  doc.save('orden_de_pago_'+(c.numero||c.id)+'.pdf');
+}
+
 
 /* ── PDF ─────────────────────────────────────────────────────────── */
 /* ── PDF ─────────────────────────────────────────────────────────── */
@@ -3563,9 +3740,6 @@ async function generarPDF(c, its, conFotos){
           styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
       ['Pago de prestamo',
         { content: LQ.prestamo ? '- Gs. '+Math.round(LQ.prestamo).toLocaleString('es-PY') : 'Gs. 0',
-          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
-      ['Fondo de reparo'+(LQ.reparoPct?(' ('+LQ.reparoPct+'%)'):''),
-        { content: LQ.reparo ? '- Gs. '+Math.round(LQ.reparo).toLocaleString('es-PY') : 'Gs. 0',
           styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
       [{ content:'SALDO A COBRAR', styles:{ fillColor:[31,56,100], textColor:[255,255,255], fontStyle:'bold', fontSize:11 } },
        { content:'Gs. '+Math.round(LQ.saldo).toLocaleString('es-PY'),
