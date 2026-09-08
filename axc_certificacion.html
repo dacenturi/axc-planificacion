@@ -505,7 +505,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v4.0 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v4.1 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1739,6 +1739,13 @@ function renderLineas(){
     const orden = [], grupo = {};
     grupoP[pp].forEach(l=>{ if(!grupo[l.sector]){ grupo[l.sector]=[]; orden.push(l.sector); } grupo[l.sector].push(l); });
     orden.sort((a,b)=>a.localeCompare(b,'es'));
+    // Mismo criterio que el buscador: por código de rubro dentro del sector
+    orden.forEach(sc=>{
+      grupo[sc].sort((a,b)=>
+        (String(a.rubro_codigo||'').trim()||'zzzz').localeCompare(
+        (String(b.rubro_codigo||'').trim()||'zzzz'),'es',{numeric:true}) ||
+        String(a.descripcion||'').localeCompare(String(b.descripcion||''),'es'));
+    });
     const subPP = grupoP[pp].reduce((a,l)=>a+montoLinea(l), 0);
     return head + orden.map(sc =>{
       const subSec = grupo[sc].reduce((a,l)=>a+montoLinea(l), 0);
@@ -2104,6 +2111,14 @@ function selectorTrabajos(disp, nSel){
     grupo[g].push(l);
   });
   orden.sort((a,b)=>a.localeCompare(b,'es'));
+  // Dentro de cada grupo, por código de rubro: es el orden del presupuesto
+  // y el que el residente tiene en la cabeza. Los libres, al final.
+  const claveRubro = l => String(l.rubro_codigo||'').trim() || 'zzzz';
+  orden.forEach(g=>{
+    grupo[g].sort((a,b)=>
+      claveRubro(a).localeCompare(claveRubro(b),'es',{numeric:true}) ||
+      String(a.descripcion||'').localeCompare(String(b.descripcion||''),'es'));
+  });
   ed.dispGrupos = { orden:orden, grupo:grupo };
   ed.dispTrabajos = disp;
   const sl2 = document.getElementById('edAddTrabajo');
@@ -2930,28 +2945,36 @@ function liquidacionHTML(c){
 }
 
 /* Descuentos sobre un certificado ya aprobado */
-async function pedirDescuentos(c){
+async function pedirDescuentos(c, prefAnt, prefPre){
   const L = saldoCert(c);
+  const vAnt = (prefAnt != null) ? prefAnt : L.anticipo;
+  const vPre = (prefPre != null) ? prefPre : L.prestamo;
   const r = await axcDialog({
     tono:'', icono:'₲', titulo:'Anticipo y préstamo a descontar',
     subtitulo:(c.numero||'')+' · '+(c.contratista||''),
     mensaje:'Total certificado: <b>'+gs(L.total)+'</b>.<br><br>'+
             'Cargá lo que haya que descontarle al contratista en este pago. El certificado no se modifica: '+
-            'sólo cambia el <b>saldo a cobrar</b> que sale en el documento.',
-    campo:{ label:'Anticipo retirado a descontar (₲)', placeholder:'0', valor: L.anticipo ? fmtGsIn(L.anticipo) : '' },
-    campo2:{ label:'Pago de préstamo (₲)', placeholder:'0', valor: L.prestamo ? fmtGsIn(L.prestamo) : '' },
+            'sólo cambia el <b>saldo a cobrar</b> que sale en el documento.<br>'+
+            'Entre los dos no pueden superar el total certificado.',
+    campo:{ label:'Anticipo retirado a descontar (₲)', placeholder:'0', valor: vAnt ? fmtGsIn(vAnt) : '' },
+    campo2:{ label:'Pago de préstamo (₲)', placeholder:'0', valor: vPre ? fmtGsIn(vPre) : '' },
     ok:'Guardar los descuentos'
   });
   if(!r.ok) return;
   const ant = parseGsIn(r.valor), pre = parseGsIn(r.valor2);
+  if(ant < 0 || pre < 0){ showToast('Los descuentos no pueden ser negativos','error'); return; }
   if(ant + pre > L.total){
-    const c2 = await axcDialog({
-      tono:'warn', icono:'⚠', titulo:'Los descuentos superan el certificado',
+    await axcDialog({
+      tono:'danger', icono:'✕', titulo:'Los descuentos superan el certificado',
+      subtitulo:'No se puede guardar',
       mensaje:'Estás descontando <b>'+gs(ant+pre)+'</b> sobre un certificado de <b>'+gs(L.total)+'</b>. '+
-              'El saldo a cobrar quedaría en <b>'+gs(L.total-ant-pre)+'</b>.',
-      ok:'Guardar igual', cancelar:'Corregir'
+              'El saldo a cobrar no puede ser negativo: el contratista no puede quedar debiendo plata en este certificado.<br><br>'+
+              'Descontá como máximo <b>'+gs(L.total)+'</b> entre anticipo y préstamo, y el resto dejalo para el próximo certificado.',
+      lista:['Anticipo: <b>'+gs(ant)+'</b>','Préstamo: <b>'+gs(pre)+'</b>',
+             'Máximo a descontar: <b>'+gs(L.total)+'</b>'],
+      soloOk:true, ok:'Corregir'
     });
-    if(!c2.ok) return;
+    return pedirDescuentos(c, ant, pre);
   }
   try{
     const { error } = await sb.from('certificados')
@@ -3049,6 +3072,16 @@ async function cambiarEstado(id, estado){
 }
 
 /* ── PDF ─────────────────────────────────────────────────────────── */
+/* ── PDF ─────────────────────────────────────────────────────────── */
+/* jsPDF usa fuentes sin acentos: se limpian antes de escribir */
+function pdfSafe(s){
+  return String(s==null?'':s)
+    .replace(/[áàäâã]/gi,m=>m===m.toUpperCase()?'A':'a').replace(/[éèëê]/gi,m=>m===m.toUpperCase()?'E':'e')
+    .replace(/[íìïî]/gi,m=>m===m.toUpperCase()?'I':'i').replace(/[óòöôõ]/gi,m=>m===m.toUpperCase()?'O':'o')
+    .replace(/[úùüû]/gi,m=>m===m.toUpperCase()?'U':'u').replace(/ñ/g,'n').replace(/Ñ/g,'N')
+    .replace(/[—–]/g,'-').replace(/[^\x20-\x7E]/g,'');
+}
+
 async function pedirPDF(c, its){
   const nFotos = dtFotos.length;
   if(!nFotos){ generarPDF(c, its, false); return; }
