@@ -425,6 +425,16 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 /* Sector faltante en una línea */
 .fld.falta input{border-color:#C8A028;background:#fdfaf1}
 .fld.falta label{color:#8a6d10}
+/* Liquidación del certificado aprobado */
+.liq{margin-top:18px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:#fff;max-width:520px;margin-left:auto}
+.liq-t{background:var(--surface-2);border-bottom:1px solid var(--border);padding:10px 16px;font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--navy)}
+.liq-r{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:11px 16px;border-bottom:1px solid var(--border-soft);font-size:13.5px;color:var(--text-soft)}
+.liq-r b{font-variant-numeric:tabular-nums;font-weight:700;color:var(--text)}
+.liq-r.neg b{color:#B03A3A}
+.liq-r.tot{background:var(--navy);border-bottom:0;padding:14px 16px}
+.liq-r.tot span{color:#fff;font-weight:700;font-size:13px;letter-spacing:.4px;text-transform:uppercase}
+.liq-r.tot b{color:var(--gold);font-family:'Syne',sans-serif;font-size:20px}
+.liq-h{padding:9px 16px;font-size:11.5px;color:var(--text-muted);background:var(--surface-2);border-top:1px solid var(--border-soft)}
 .cp-ref{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:6px 0 0;padding:9px 13px;
   background:#f6f8fc;border:1px solid #e4e9f2;border-radius:8px;font-size:12px}
 .cp-ref .cp-p,.cp-ref .cp-b,.cp-ref .cp-pay{display:flex;flex-direction:column;line-height:1.3}
@@ -495,7 +505,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v3.3 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v4.0 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -518,7 +528,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     <select id="fEstado">
       <option value="">Todos los estados</option>
       <option value="Borrador">Borrador</option>
-      <option value="Medido">Medido</option>
+      <option value="Medido">Medido (anteriores)</option>
       <option value="Aprobado">Aprobado</option>
       <option value="Anulado">Anulado</option>
     </select>
@@ -594,9 +604,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     </div>
     <div class="mfoot">
       <button type="button" class="btn-g" id="edCancel">Cancelar</button>
-      <div style="display:flex;gap:9px">
-        <button type="button" class="btn-nav" id="edGuardar">Guardar borrador</button>
-        <button type="button" class="btn-ok" id="edMedir">Cerrar medición</button>
+      <div style="display:flex;gap:9px;align-items:center">
+        <span style="font-size:12px;color:var(--text-muted)">Se guarda como borrador · la aprobación es el paso siguiente</span>
+        <button type="button" class="btn-ok" id="edGuardar">Guardar borrador</button>
       </div>
     </div>
   </div>
@@ -934,8 +944,8 @@ function renderKpis(){
   const sum = a => a.reduce((s,c)=>s+(Number(c.total)||0),0);
   document.getElementById('kpis').innerHTML =
     kpi('Certificado aprobado', gs(sum(apr)), apr.length+' certificado(s)') +
-    kpi('Pendiente de aprobar', gs(sum(med)), med.length+' medido(s)') +
-    kpi('En borrador', gs(sum(bor)), bor.length+' sin cerrar') +
+    kpi('Pendiente de aprobar', gs(sum(bor)+sum(med)), (bor.length+med.length)+' borrador(es)') +
+    kpi('Saldo a cobrar aprobado', gs(apr.reduce((s,c)=>s+saldoCert(c).saldo,0)), 'neto de anticipos y préstamos') +
     kpi('Total del período', gs(sum(L)), L.length+' certificado(s)');
 }
 function kpi(l,v,s){ return '<div class="kpi"><div class="kpi-label">'+l+'</div><div class="kpi-value">'+v+'</div><div class="kpi-sub">'+s+'</div></div>'; }
@@ -2430,7 +2440,7 @@ function actualizarTotales(){
       (desv > 0 ? ' · <b style="color:#8a6d10">'+gs(desv)+' por encima del presupuesto</b>'
                 : (desv < 0 ? ' · <b style="color:#1B5524">'+gs(Math.abs(desv))+' por debajo del presupuesto</b>' : ''))
     : 'Nada cargado';
-  document.getElementById('edMedir').disabled = !M.length;
+  document.getElementById('edGuardar').disabled = !M.length;
 }
 
 /* ── Pantalla de precios por contratista ─────────────────────────
@@ -2578,8 +2588,10 @@ async function pxBaja(id){
 
 /* ── Guardado ────────────────────────────────────────────────────── */
 document.getElementById('edGuardar').onclick = ()=> guardar('Borrador');
-document.getElementById('edMedir').onclick   = ()=> guardar('Medido');
 
+/* El certificado se guarda siempre como borrador. La aprobación es un acto
+   aparte, del administrador, desde el detalle: ahí se revisa y recién ahí
+   consume el presupuesto. */
 async function guardar(estado){
   if(ed.cargando) return;
   const obras = obrasDePresus();
@@ -2589,76 +2601,9 @@ async function guardar(estado){
   const M = medidas();
   if(!M.length){ showToast('Cargá al menos una medición','error'); return; }
 
-  if(estado === 'Medido'){
-    const sinUbi = M.filter(x=>!x.ubicacion);
-
-    // Sin sector no se puede diferenciar el precio por nivel ni cruzar después
-    const sinSec = M.filter(x=>!x.sector);
-    if(sinSec.length){
-      await axcDialog({
-        tono:'danger', icono:'📁', titulo:'Falta el sector de algunos trabajos',
-        subtitulo:'Sin sector no se puede diferenciar el precio por nivel ni comparar contra el presupuesto',
-        mensaje:'Hay <b>'+sinSec.length+' trabajo(s)</b> sin sector. Abrí cada uno y completá <b>Sector / nivel</b> — es el dato que después permite pagar distinto el Nivel 1 y el Nivel 5.',
-        lista: sinSec.map(x=>'<b>'+escapeHtml(x.linea.descripcion)+'</b>'+(x.linea.rubro_codigo?(' · '+escapeHtml(x.linea.rubro_codigo)):'')),
-        soloOk:true, ok:'Entendido'
-      });
-      return;
-    }
-    const exc = M.filter(x=>x.excedente && !(ed.med[x.key] && ed.med[x.key].excMotivo));
-    if(exc.length){
-      const r = await axcDialog({
-        tono:'warn', icono:'⚠', titulo:'Estás certificando más de lo presupuestado',
-        subtitulo:'Se puede certificar igual, pero el excedente queda registrado como desvío',
-        mensaje:'Los siguientes trabajos superan la cantidad prevista en el presupuesto. Escribí el motivo para dejar constancia de por qué se ejecutó de más.',
-        lista: exc.map(x=>{
-          const h = ed.hist[x.key] || {aprob:0,tramite:0};
-          const disp = Math.max(0, x.linea.cant_presup - h.aprob - h.tramite);
-          return '<b>'+escapeHtml(x.linea.descripcion)+'</b> · pedís '+qty(x.cantidad)+' '+escapeHtml(x.linea.unidad||'')+
-                 ' y quedaban '+qty(disp)+' → excedente <b>'+qty(x.cantidad-disp)+'</b>';
-        }),
-        campo:{ label:'Motivo del excedente', placeholder:'Ej. rediseño del sector, error de cómputo, trabajo adicional pedido por el cliente', requerido:true },
-        ok:'Continuar y registrar el desvío'
-      });
-      if(!r.ok) return;
-      const obs = document.getElementById('edObs');
-      obs.value = (obs.value ? obs.value+'\n' : '') + 'Excedente sobre el presupuesto: ' + r.valor;
-    }
-
-    // Desvío de precio: lo pactado contra la referencia interna del presupuesto
-    const desvTot = M.reduce((a,x)=>a+(x.desvio||0), 0);
-    let desvHTML = '';
-    if(desvTot !== 0){
-      const porObra = {};
-      M.forEach(x=>{ if(!x.desvio) return; const o = x.linea.obra || obra; porObra[o] = (porObra[o]||0) + x.desvio; });
-      const det = Object.keys(porObra).map(o=>escapeHtml(o)+': '+(porObra[o]>0?'+':'')+gs(porObra[o])).join(' · ');
-      desvHTML = '<br><br><span style="color:'+(desvTot>0?'#8a6d10':'#1B5524')+'">₲ El precio certificado está '+
-        (desvTot>0?'<b>'+gs(desvTot)+' por encima</b>':'<b>'+gs(Math.abs(desvTot))+' por debajo</b>')+
-        ' de lo presupuestado sobre esta medición'+(Object.keys(porObra).length>1?(' — '+det):'')+
-        '. Se puede cerrar igual: queda registrado como desvío.</span>';
-    }
-
-    // Confirmación final: el residente ve exactamente lo que está por firmar
-    const conf = await axcDialog({
-      tono:'ok', icono:'✓', titulo:'Confirmar la medición',
-      subtitulo:'Revisá antes de cerrar: después pasa a aprobación',
-      mensaje:'Vas a certificar <b>'+M.length+' trabajo(s)</b> ejecutado(s) por <b>'+escapeHtml(contratista)+
-              '</b> en <b>'+escapeHtml(obras.join(', ')||obra)+'</b>'+
-              (ed.presus.length>1 ? ' sobre los presupuestos <b>'+escapeHtml(ed.presus.join(', ')) +'</b>' : '')+
-              ', por un total de <b>'+gs(M.reduce((a,x)=>a+x.subtotal,0))+'</b>.'+
-              desvHTML +
-              (sinUbi.length ? '<br><br><span style="color:#8a6d10">📍 '+sinUbi.length+' trabajo(s) sin ubicación cargada. Se puede cerrar igual, pero sin ubicación es más difícil verificar después que no se pagó dos veces lo mismo.</span>' : ''),
-      lista: M.map(x=>'<b>'+escapeHtml(x.linea.descripcion)+'</b> · '+qty(x.cantidad)+' '+escapeHtml(x.linea.unidad||'')+
-             ' × '+gs(x.precio_unit)+(x.precio_origen==='pactado'?' <i style="font-style:normal;color:#1B5524">(pactado)</i>':'')+
-             ' = <b>'+gs(x.subtotal)+'</b>'+
-             '<br><span style="font-size:12.5px;color:#8B93A7">📁 '+escapeHtml(x.sector||'—')+(x.ubicacion?(' · 📍 '+escapeHtml(x.ubicacion)):'')+'</span>'),
-      ok:'Cerrar la medición'
-    });
-    if(!conf.ok) return;
-  }
-
   ed.cargando = true;
-  const btnG=document.getElementById('edGuardar'), btnM=document.getElementById('edMedir');
-  btnG.disabled=true; btnM.disabled=true; btnM.textContent='Guardando…';
+  const btnG=document.getElementById('edGuardar');
+  btnG.disabled=true; btnG.textContent='Guardando…';
 
   try{
     const quien = state.profile.residente || state.profile.nombre || state.user.email;
@@ -2674,7 +2619,7 @@ async function guardar(estado){
       total: total,
       updated_at: new Date().toISOString()
     };
-    if(estado === 'Medido'){ cab.medido_por = quien; cab.medido_en = new Date().toISOString(); }
+    cab.medido_por = quien; cab.medido_en = new Date().toISOString();
 
     let certId = ed.id;
     if(certId){
@@ -2767,8 +2712,8 @@ async function guardar(estado){
     if(fotosErr.length){
       showToast('No se pudieron subir '+fotosErr.length+' foto(s)','error', fotosErr[0]);
     }else{
-      showToast(estado==='Medido' ? 'Medición cerrada' : 'Borrador guardado','success',
-        M.length+' trabajo(s) · '+gs(total)+(fotosOK?(' · '+fotosOK+' foto(s)'):''));
+      showToast('Borrador guardado','success',
+        M.length+' trabajo(s) · '+gs(total)+(fotosOK?(' · '+fotosOK+' foto(s)'):'')+' · falta aprobarlo');
     }
     document.getElementById('edOv').hidden = true;
     ed.open=false; ed.med={}; ed.fotos={};
@@ -2778,7 +2723,7 @@ async function guardar(estado){
     showToast('No se pudo guardar: '+(e.message||e),'error');
   }finally{
     ed.cargando=false;
-    btnG.disabled=false; btnM.disabled=false; btnM.textContent='Cerrar medición';
+    btnG.disabled=false; btnG.textContent='Guardar borrador';
   }
 }
 
@@ -2812,17 +2757,19 @@ async function abrirDetalle(id){
 
   const acc = document.getElementById('dtAcciones');
   acc.innerHTML = '';
-  if(c.estado === 'Borrador'){
+  const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido');   // «Medido» es de certificados anteriores
+  if(enCurso){
     acc.innerHTML = '<button type="button" class="btn-nav" id="dtEditar">Editar</button>';
-  }else if(c.estado === 'Medido' && state.isAdmin){
-    acc.innerHTML = '<button type="button" class="btn-g" id="dtAnular">Anular</button>'+
-                    '<button type="button" class="btn-ok" id="dtAprobar">Aprobar certificado</button>';
+    if(state.isAdmin){
+      acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>'+
+                       ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
+    }
   }
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
   }
-  if(c.estado === 'Aprobado'){
-    acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAut">💰 Autorización de pago</button>';
+  if(c.estado === 'Aprobado' && state.isAdmin){
+    acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">💰 Anticipo y préstamo</button> ' + acc.innerHTML;
   }
 
   try{
@@ -2916,7 +2863,8 @@ async function abrirDetalle(id){
       '<table class="det-tbl"><thead><tr><th>#</th><th>Trabajo</th><th>Presup.</th><th>Sector</th>'+
       '<th class="r">Cant. presup.</th><th class="r">Medición</th><th class="r">Avance</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
       '<tbody>'+filas+'</tbody>'+
-      '<tfoot><tr><td colspan="8" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>';
+      '<tfoot><tr><td colspan="8" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>'+
+      liquidacionHTML(c);
 
     const bE=document.getElementById('dtEditar');
     if(bE) bE.onclick = ()=>{ document.getElementById('dtOv').hidden=true; abrirEditor(id); };
@@ -2925,7 +2873,7 @@ async function abrirDetalle(id){
     const bN=document.getElementById('dtAnular');
     if(bN) bN.onclick = ()=> cambiarEstado(id,'Anulado');
     const bP=document.getElementById('dtPdf'); if(bP) bP.onclick = ()=> pedirPDF(c, its||[]);
-    const bAut=document.getElementById('dtAut'); if(bAut) bAut.onclick = ()=> pedirAutorizacion(c, its||[]);
+    const bD=document.getElementById('dtDesc'); if(bD) bD.onclick = ()=> pedirDescuentos(c);
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
@@ -2959,6 +2907,67 @@ async function completarSector(its, c){
   return its;
 }
 
+/* Liquidación: total certificado menos anticipo y préstamo. Reemplaza a la
+   antigua «autorización de pago», que era un documento aparte. */
+function saldoCert(c){
+  const tot = Number(c.total)||0;
+  const ant = Number(c.anticipo)||0;
+  const pre = Number(c.prestamo)||0;
+  return { total:tot, anticipo:ant, prestamo:pre, saldo: tot - ant - pre };
+}
+
+function liquidacionHTML(c){
+  if(c.estado !== 'Aprobado') return '';
+  const L = saldoCert(c);
+  return '<div class="liq">'+
+    '<div class="liq-t">Liquidación</div>'+
+    '<div class="liq-r"><span>Total certificado</span><b>'+gs(L.total)+'</b></div>'+
+    '<div class="liq-r'+(L.anticipo?' neg':'')+'"><span>Anticipo retirado a descontar</span><b>'+(L.anticipo?'− '+gs(L.anticipo):gs(0))+'</b></div>'+
+    '<div class="liq-r'+(L.prestamo?' neg':'')+'"><span>Pago de préstamo</span><b>'+(L.prestamo?'− '+gs(L.prestamo):gs(0))+'</b></div>'+
+    '<div class="liq-r tot"><span>Saldo a cobrar</span><b>'+gs(L.saldo)+'</b></div>'+
+    (state.isAdmin ? '<div class="liq-h">Se cargan con el botón «Anticipo y préstamo». Si no hay descuentos, el saldo es el total certificado.</div>' : '')+
+  '</div>';
+}
+
+/* Descuentos sobre un certificado ya aprobado */
+async function pedirDescuentos(c){
+  const L = saldoCert(c);
+  const r = await axcDialog({
+    tono:'', icono:'₲', titulo:'Anticipo y préstamo a descontar',
+    subtitulo:(c.numero||'')+' · '+(c.contratista||''),
+    mensaje:'Total certificado: <b>'+gs(L.total)+'</b>.<br><br>'+
+            'Cargá lo que haya que descontarle al contratista en este pago. El certificado no se modifica: '+
+            'sólo cambia el <b>saldo a cobrar</b> que sale en el documento.',
+    campo:{ label:'Anticipo retirado a descontar (₲)', placeholder:'0', valor: L.anticipo ? fmtGsIn(L.anticipo) : '' },
+    campo2:{ label:'Pago de préstamo (₲)', placeholder:'0', valor: L.prestamo ? fmtGsIn(L.prestamo) : '' },
+    ok:'Guardar los descuentos'
+  });
+  if(!r.ok) return;
+  const ant = parseGsIn(r.valor), pre = parseGsIn(r.valor2);
+  if(ant + pre > L.total){
+    const c2 = await axcDialog({
+      tono:'warn', icono:'⚠', titulo:'Los descuentos superan el certificado',
+      mensaje:'Estás descontando <b>'+gs(ant+pre)+'</b> sobre un certificado de <b>'+gs(L.total)+'</b>. '+
+              'El saldo a cobrar quedaría en <b>'+gs(L.total-ant-pre)+'</b>.',
+      ok:'Guardar igual', cancelar:'Corregir'
+    });
+    if(!c2.ok) return;
+  }
+  try{
+    const { error } = await sb.from('certificados')
+      .update({ anticipo:ant, prestamo:pre, updated_at:new Date().toISOString() }).eq('id', c.id);
+    if(error) throw error;
+    c.anticipo = ant; c.prestamo = pre;
+    showToast('Descuentos guardados','success','Saldo a cobrar '+gs(L.total-ant-pre));
+    await loadList();
+    abrirDetalle(c.id);
+  }catch(e){
+    const falta = /anticipo|prestamo/i.test(e.message||'');
+    showToast('No se pudieron guardar los descuentos','error',
+      falta ? 'Falta correr el ALTER de anticipo y prestamo en certificados.' : (e.message||String(e)));
+  }
+}
+
 function campo(l,v){ return '<div class="fld"><label>'+l+'</label><div style="font-size:13.5px;font-weight:600;color:var(--text)">'+v+'</div></div>'; }
 
 async function cambiarEstado(id, estado){
@@ -2977,16 +2986,52 @@ async function cambiarEstado(id, estado){
     if(!r.ok) return;
   }
   if(estado==='Aprobado'){
+    // Sin sector no se puede diferenciar el precio por nivel ni cruzar después
+    const sinSec = (its||[]).filter(x=>!x.sector);
+    if(sinSec.length){
+      await axcDialog({
+        tono:'danger', icono:'📁', titulo:'Falta el sector de algunos trabajos',
+        subtitulo:'No se puede aprobar hasta completarlo',
+        mensaje:'Hay <b>'+sinSec.length+' trabajo(s)</b> sin sector. Abrí el certificado con <b>Editar</b> y completá el campo <b>Sector / nivel</b> en cada uno: es lo que después permite pagar distinto un nivel que otro y comparar contra el presupuesto.',
+        lista: sinSec.map(x=>'<b>'+escapeHtml(x.descripcion)+'</b>'+(x.rubro_codigo?(' · '+escapeHtml(x.rubro_codigo)):'')),
+        soloOk:true, ok:'Entendido'
+      });
+      return;
+    }
+
+    // Resumen por sector, con el desvío contra el presupuesto
+    const porSec = {}, ordSec = [];
+    let desvio = 0, excedentes = 0, pactados = 0;
+    (its||[]).forEach(x=>{
+      const s = x.sector || '(sin sector)';
+      if(!porSec[s]){ porSec[s] = { n:0, total:0 }; ordSec.push(s); }
+      porSec[s].n++; porSec[s].total += Number(x.subtotal)||0;
+      if(Number(x.precio_presup) > 0) desvio += (Number(x.precio_unit) - Number(x.precio_presup)) * (Number(x.cantidad)||0);
+      if(x.excedente) excedentes++;
+      if(x.precio_origen === 'pactado') pactados++;
+    });
+    ordSec.sort((a,b)=>a.localeCompare(b,'es'));
+    const total = Number(c.total)||0;
+
+    const avisos = [];
+    if(excedentes) avisos.push('<b>'+excedentes+' trabajo(s)</b> superan la cantidad presupuestada');
+    if(Math.round(desvio) > 0) avisos.push('el precio certificado está <b>'+gs(desvio)+' por encima</b> del presupuesto');
+    if(Math.round(desvio) < 0) avisos.push('el precio certificado está <b>'+gs(Math.abs(desvio))+' por debajo</b> del presupuesto');
+    if(pactados) avisos.push('<b>'+pactados+'</b> línea(s) con precio pactado con el contratista');
+
     const r = await axcDialog({
-      tono:'ok', icono:'✓', titulo:'Aprobar el avance de obra',
-      subtitulo:'Al aprobar, el avance consume el presupuesto de forma definitiva y habilita el pago',
-      mensaje:'Estás por aprobar el certificado <b>'+escapeHtml(c.numero||('#'+id))+'</b> de <b>'+escapeHtml(c.contratista||'—')+
-              '</b> en <b>'+escapeHtml(c.obra||'—')+(c.sector?(' · '+escapeHtml(c.sector)):'')+
-              '</b>, medido por <b>'+escapeHtml(c.medido_por||'—')+'</b>, por un total de <b>'+gs(c.total)+'</b>.',
-      lista: its.map(x=>'<b>'+escapeHtml(x.descripcion)+'</b> · '+qty(x.cantidad)+' '+escapeHtml(x.unidad||'')+
-             ' × '+gs(x.precio_unit)+' = <b>'+gs(x.subtotal)+'</b>'+
-             (x.ubicacion?('<br><span style="font-size:12.5px;color:#8B93A7">📍 '+escapeHtml(x.ubicacion)+'</span>'):'')+
-             (x.excedente?' <span style="color:#8a6d10;font-weight:700">· excede lo presupuestado</span>':'')),
+      tono:'ok', icono:'✓', titulo:'Aprobar el certificado',
+      subtitulo:'Al aprobar consume el presupuesto de forma definitiva y habilita el pago',
+      mensaje:'<b>'+escapeHtml(c.numero||('#'+id))+'</b> · '+escapeHtml(c.contratista||'—')+'<br>'+
+              escapeHtml(c.obra||'—')+' · presupuesto '+escapeHtml(c.presupuesto||'—')+' · medido por '+escapeHtml(c.medido_por||'—')+
+              ' el '+fmtFecha(c.fecha)+'.<br><br>'+
+              '<b>'+(its||[]).length+' trabajo(s)</b> en <b>'+ordSec.length+' sector(es)</b>, por un total de '+
+              '<b style="font-size:17px">'+gs(total)+'</b>.'+
+              (avisos.length ? '<br><br><span style="color:#8a6d10">⚠ '+avisos.join(' · ')+'.</span>' : '')+
+              '<br><br>Después de aprobar vas a poder cargarle el <b>anticipo</b> y el <b>préstamo</b> a descontar '+
+              'para obtener el saldo a cobrar, y descargar el certificado para la firma.',
+      lista: ordSec.map(s=>'📁 <b>'+escapeHtml(s)+'</b> · '+porSec[s].n+' trabajo(s) · <b>'+gs(porSec[s].total)+'</b>')
+             .concat(['&nbsp;', '<b>TOTAL A CERTIFICAR: '+gs(total)+'</b>']),
       ok:'Aprobar el certificado', cancelar:'Revisar de nuevo'
     });
     if(!r.ok) return;
@@ -3004,200 +3049,6 @@ async function cambiarEstado(id, estado){
 }
 
 /* ── PDF ─────────────────────────────────────────────────────────── */
-/* ═══════════════════════════════════════════════════════════════════
-   AUTORIZACIÓN DE PAGO
-   ───────────────────────────────────────────────────────────────────
-   Réplica del formulario que AXC ya usa en papel: una línea por obra y
-   sector con su importe, el descuento del anticipo y del préstamo, el
-   saldo a cobrar, y los dos bloques de firma.
-   ═══════════════════════════════════════════════════════════════════ */
-async function pedirAutorizacion(c, its){
-  const r = await axcDialog({
-    tono:'', icono:'💰', titulo:'Autorización de pago',
-    subtitulo:c.numero+' · '+(c.contratista||''),
-    mensaje:'Total certificado: <b>'+gs(c.total)+'</b>. Cargá los descuentos que correspondan para calcular el saldo a cobrar.',
-    campo:{ label:'Anticipo retirado a descontar (₲)', placeholder:'0' },
-    campo2:{ label:'Pago de préstamo (₲)', placeholder:'0' },
-    ok:'Generar la autorización'
-  });
-  if(!r.ok) return;
-  generarAutorizacion(c, its, Number(String(r.valor||'').replace(/[^0-9]/g,''))||0,
-                              Number(String(r.valor2||'').replace(/[^0-9]/g,''))||0);
-}
-
-function generarAutorizacion(c, its, anticipo, prestamo){
-  if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:'mm', format:'a4' });
-  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
-  const NAVY=[31,56,100], GOLD=[200,160,40], GRIS=[139,147,167], TXT=[26,34,54];
-
-  // ── Cabecera: banda azul con el logo y el número ─────────────────
-  doc.setFillColor.apply(doc, NAVY); doc.rect(0, 0, W, 34, 'F');
-  doc.setFillColor(255,255,255); doc.roundedRect(M, 8, 40, 18, 2, 2, 'F');
-  try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 11, 34, 12); }catch(e){}
-  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(15);
-  doc.text('AUTORIZACION DE PAGO', M+48, 17);
-  doc.setFont('helvetica','normal').setFontSize(10);
-  doc.text('Por certificado de obra  ·  AXC Constructora', M+48, 24);
-  doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
-  doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
-  doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
-  doc.setFontSize(13);
-  doc.text(pdfSafe(c.numero||''), W-M-26, 22, {align:'center'});
-
-  // ── Datos del trámite ────────────────────────────────────────────
-  let y = 44;
-  doc.setDrawColor(226,230,238).setLineWidth(.4);
-  doc.setFillColor(247,248,251); doc.roundedRect(M, y-6, W-M*2, 30, 2, 2, 'FD');
-  const dato = (et, val, cx, cy) => {
-    doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor.apply(doc, GRIS);
-    doc.text(pdfSafe(et), cx, cy);
-    doc.setFont('helvetica','bold').setFontSize(10.5).setTextColor.apply(doc, TXT);
-    doc.text(doc.splitTextToSize(pdfSafe(String(val||'-')), 58)[0], cx, cy+5.5);
-  };
-  const cw = (W-M*2-8)/3;
-  dato('FECHA', fmtFecha(c.fecha), M+5, y);
-  dato('DE (RESIDENTE)', c.medido_por||c.creado_por||'', M+5+cw, y);
-  dato('A', 'ADMINISTRACION', M+5+cw*2, y);
-  dato('OBRA', c.obra||'', M+5, y+13);
-  dato('CONTRATISTA', c.contratista||'', M+5+cw, y+13);
-  dato('PRESUPUESTO', c.presupuesto||'', M+5+cw*2, y+13);
-  y += 34;
-
-  // ── Detalle por obra y sector ────────────────────────────────────
-  const grupos = {}, orden = [];
-  (its||[]).forEach(x=>{
-    const o = x.obra || c.obra || '-';
-    const sec = x.sector || c.sector || '-';
-    const k = o+'||'+sec;
-    if(!grupos[k]){ grupos[k] = { obra:o, sector:sec, total:0 }; orden.push(k); }
-    grupos[k].total += Number(x.subtotal)||0;
-  });
-  orden.sort((a,b)=> grupos[a].obra.localeCompare(grupos[b].obra,'es') || grupos[a].sector.localeCompare(grupos[b].sector,'es'));
-  const rows = orden.map((k,i)=>{
-    const g = grupos[k];
-    return [String(i+1), pdfSafe(g.sector), pdfSafe(c.numero||''), pdfSafe(g.obra),
-            'Gs. '+Math.round(g.total).toLocaleString('es-PY')];
-  });
-
-  doc.autoTable({
-    startY: y,
-    head: [['Item','Nivel / Sector','N° de Certificado','Obra','Importe']],
-    body: rows,
-    foot: [[{ content:'TOTAL CERTIFICADO', colSpan:4, styles:{halign:'right'} },
-            { content:'Gs. '+Math.round(Number(c.total)||0).toLocaleString('es-PY'), styles:{halign:'right'} }]],
-    theme:'grid',
-    styles:{ font:'helvetica', fontSize:9.5, cellPadding:3, textColor:TXT, lineColor:[226,230,238], lineWidth:.3, halign:'center' },
-    headStyles:{ fillColor:NAVY, textColor:[255,255,255], fontStyle:'bold', fontSize:8.5, halign:'center' },
-    footStyles:{ fillColor:GOLD, textColor:[21,40,68], fontStyle:'bold', fontSize:11 },
-    alternateRowStyles:{ fillColor:[249,250,253] },
-    columnStyles:{ 0:{cellWidth:16}, 1:{cellWidth:34}, 2:{cellWidth:38}, 3:{cellWidth:'auto',halign:'left'},
-                   4:{halign:'right',cellWidth:38,fontStyle:'bold'} },
-    margin:{ left:M, right:M }
-  });
-  y = doc.lastAutoTable.finalY + 10;
-
-  // ── Liquidación, con el saldo resaltado ──────────────────────────
-  doc.setFont('helvetica','bold').setFontSize(11).setTextColor.apply(doc, NAVY);
-  doc.text('LIQUIDACION', M, y);
-  doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(.8); doc.line(M, y+1.6, M+30, y+1.6);
-  y += 6;
-  const saldo = (Number(c.total)||0) - anticipo - prestamo;
-  doc.autoTable({
-    startY: y,
-    body: [
-      ['Total certificado', 'Gs. '+Math.round(Number(c.total)||0).toLocaleString('es-PY')],
-      ['Anticipo retirado a descontar',
-        { content: anticipo ? '- Gs. '+Math.round(anticipo).toLocaleString('es-PY') : 'Gs. 0',
-          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
-      ['Pago de prestamo',
-        { content: prestamo ? '- Gs. '+Math.round(prestamo).toLocaleString('es-PY') : 'Gs. 0',
-          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
-      [{ content:'SALDO A COBRAR', styles:{ fillColor:NAVY, textColor:[255,255,255], fontStyle:'bold', fontSize:12 } },
-       { content:'Gs. '+Math.round(saldo).toLocaleString('es-PY'),
-         styles:{ fillColor:NAVY, textColor:[229,198,88], fontStyle:'bold', fontSize:13, halign:'right' } }]
-    ],
-    theme:'grid',
-    styles:{ font:'helvetica', fontSize:10.5, cellPadding:3.4, textColor:TXT, lineColor:[226,230,238], lineWidth:.3 },
-    columnStyles:{ 0:{cellWidth:'auto'}, 1:{halign:'right',cellWidth:62,fontStyle:'bold'} },
-    margin:{ left:M, right:M }
-  });
-  y = doc.lastAutoTable.finalY + 11;
-
-  // ── Declaración del residente ────────────────────────────────────
-  if(y > H-95){ doc.addPage(); y = 24; }
-  doc.setFillColor(247,248,251); doc.setDrawColor(226,230,238); doc.setLineWidth(.4);
-  const txt = 'Yo, '+pdfSafe(c.medido_por||'')+', en calidad de residente responsable de la obra mencionada, verifico que los '+
-    'trabajos ejecutados correspondientes al certificado N.o '+pdfSafe(c.numero||'')+' han sido realizados segun las '+
-    'especificaciones del contrato, planos y calidad exigida, por lo cual AUTORIZO el tramite para el pago correspondiente.';
-  doc.setFont('helvetica','normal').setFontSize(9.5);
-  const lines = doc.splitTextToSize(txt, W-M*2-10);
-  doc.roundedRect(M, y, W-M*2, lines.length*4.6 + 12, 2, 2, 'FD');
-  doc.setFont('helvetica','bold').setFontSize(9).setTextColor.apply(doc, NAVY);
-  doc.text('CONFIRMACION DEL RESIDENTE DE OBRA', M+5, y+6);
-  doc.setFont('helvetica','normal').setFontSize(9.5).setTextColor.apply(doc, TXT);
-  doc.text(lines, M+5, y+12);
-  y += lines.length*4.6 + 20;
-
-  // ── Firmas ───────────────────────────────────────────────────────
-  if(y > H-58){ doc.addPage(); y = 24; }
-  const bw = (W-M*2-8)/2;
-  const firma = (cx, titulo, nombre, rol, conCI) => {
-    doc.setDrawColor(226,230,238).setLineWidth(.4).setFillColor(255,255,255);
-    doc.roundedRect(cx, y, bw, 46, 2, 2, 'FD');
-    doc.setFillColor.apply(doc, NAVY); doc.rect(cx, y, bw, 1.6, 'F');
-    doc.setFont('helvetica','bold').setFontSize(8).setTextColor.apply(doc, GRIS);
-    doc.text(pdfSafe(titulo), cx+5, y+8);
-    doc.setDrawColor(160,168,184).setLineWidth(.4);
-    doc.line(cx+6, y+27, cx+bw-6, y+27);
-    doc.setFont('helvetica','bold').setFontSize(10.5).setTextColor.apply(doc, TXT);
-    doc.text(pdfSafe(nombre||'—'), cx+bw/2, y+32.5, {align:'center'});
-    doc.setFont('helvetica','normal').setFontSize(8).setTextColor.apply(doc, GRIS);
-    doc.text(pdfSafe(rol), cx+bw/2, y+37, {align:'center'});
-    if(conCI){
-      doc.setFontSize(8);
-      doc.text('C.I.: ______________________', cx+bw/2, y+42, {align:'center'});
-    }else{
-      doc.text('Fecha: ____ / ____ / ________', cx+bw/2, y+42, {align:'center'});
-    }
-  };
-  firma(M, 'FIRMA DEL RESIDENTE', c.medido_por||'', 'Residente de obra', true);
-  firma(M+bw+8, 'APROBACION (USO INTERNO)', c.aprobado_por||'', 'Jefe de Obra / Director de Proyecto', false);
-  y += 52;
-
-  // ── Pie ──────────────────────────────────────────────────────────
-  doc.setDrawColor(226,230,238).setLineWidth(.3);
-  doc.line(M, H-16, W-M, H-16);
-  doc.setFont('helvetica','normal').setFontSize(7.5).setTextColor.apply(doc, GRIS);
-  doc.text('Certificado '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+
-           fmtFecha(hoyISO()), M, H-11);
-  doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
-
-  doc.save('autorizacion_'+(c.numero||c.id)+'.pdf');
-}
-
-/* Descarga la foto y la convierte a dataURL para poder meterla en el PDF */
-function urlADataURL(url){
-  return new Promise(function(resolve,reject){
-    fetch(url).then(r=>r.blob()).then(b=>{
-      const fr = new FileReader();
-      fr.onload = ()=>resolve(fr.result);
-      fr.onerror = reject;
-      fr.readAsDataURL(b);
-    }).catch(reject);
-  });
-}
-
-function pdfSafe(s){
-  return String(s==null?'':s)
-    .replace(/[áàäâã]/gi,m=>m===m.toUpperCase()?'A':'a').replace(/[éèëê]/gi,m=>m===m.toUpperCase()?'E':'e')
-    .replace(/[íìïî]/gi,m=>m===m.toUpperCase()?'I':'i').replace(/[óòöôõ]/gi,m=>m===m.toUpperCase()?'O':'o')
-    .replace(/[úùüû]/gi,m=>m===m.toUpperCase()?'U':'u').replace(/ñ/g,'n').replace(/Ñ/g,'N')
-    .replace(/[—–]/g,'-').replace(/[^\x20-\x7E]/g,'');
-}
-/* Con o sin anexo fotográfico: en obra a veces se quiere el certificado
-   liviano para firmar y otras el respaldo completo. */
 async function pedirPDF(c, its){
   const nFotos = dtFotos.length;
   if(!nFotos){ generarPDF(c, its, false); return; }
@@ -3314,6 +3165,31 @@ async function generarPDF(c, its, conFotos){
   }
   y += 5;
   const H = doc.internal.pageSize.getHeight();
+
+  // ── Liquidación: reemplaza a la antigua autorización de pago ──────
+  const LQ = saldoCert(c);
+  if(y > H-52){ doc.addPage(); y = 22; }
+  doc.autoTable({
+    startY: y,
+    body: [
+      ['Total certificado', 'Gs. '+Math.round(LQ.total).toLocaleString('es-PY')],
+      ['Anticipo retirado a descontar',
+        { content: LQ.anticipo ? '- Gs. '+Math.round(LQ.anticipo).toLocaleString('es-PY') : 'Gs. 0',
+          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
+      ['Pago de prestamo',
+        { content: LQ.prestamo ? '- Gs. '+Math.round(LQ.prestamo).toLocaleString('es-PY') : 'Gs. 0',
+          styles:{ textColor:[176,58,58], fontStyle:'bold' } }],
+      [{ content:'SALDO A COBRAR', styles:{ fillColor:[31,56,100], textColor:[255,255,255], fontStyle:'bold', fontSize:11 } },
+       { content:'Gs. '+Math.round(LQ.saldo).toLocaleString('es-PY'),
+         styles:{ fillColor:[31,56,100], textColor:[229,198,88], fontStyle:'bold', fontSize:12, halign:'right' } }]
+    ],
+    theme:'grid',
+    styles:{ font:'helvetica', fontSize:9.5, cellPadding:2.8, textColor:[26,34,54], lineColor:[226,230,238], lineWidth:.3 },
+    columnStyles:{ 0:{cellWidth:'auto'}, 1:{halign:'right',cellWidth:56,fontStyle:'bold'} },
+    margin:{ left:W/2, right:M }
+  });
+  y = doc.lastAutoTable.finalY + 9;
+
   if(c.observacion){
     if(y > H-40){ doc.addPage(); y = 22; }
     doc.setFontSize(8).setTextColor(90,99,119);
@@ -3321,16 +3197,27 @@ async function generarPDF(c, its, conFotos){
     doc.text(t, M, y);
     y += t.length*4 + 8;
   }
-  if(y > H-34){ doc.addPage(); y = 24; }
-  doc.setDrawColor(200,160,40); doc.setLineWidth(.4);
-  doc.line(M, y+16, M+70, y+16);
-  doc.line(W-M-70, y+16, W-M, y+16);
-  doc.setFontSize(8).setTextColor(90,99,119);
-  doc.text('Residente de obra', M, y+21);
-  doc.text('Contratista', W-M-70, y+21);
-  doc.setFontSize(7).setTextColor(139,147,167);
-  doc.text(pdfSafe(c.medido_por||''), M, y+26);
-  doc.text(pdfSafe(c.contratista||''), W-M-70, y+26);
+
+  // ── Firmas: tres bloques, como el circuito real de AXC ─────────────
+  if(y > H-46){ doc.addPage(); y = 24; }
+  const bw3 = (W-M*2-16)/3;
+  const firma3 = (cx, titulo, nombre, rol) => {
+    doc.setDrawColor(226,230,238).setLineWidth(.4).setFillColor(255,255,255);
+    doc.roundedRect(cx, y, bw3, 38, 2, 2, 'FD');
+    doc.setFillColor(31,56,100); doc.rect(cx, y, bw3, 1.4, 'F');
+    doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor(139,147,167);
+    doc.text(pdfSafe(titulo), cx+4, y+7);
+    doc.setDrawColor(160,168,184).setLineWidth(.4);
+    doc.line(cx+5, y+23, cx+bw3-5, y+23);
+    doc.setFont('helvetica','bold').setFontSize(9.5).setTextColor(26,34,54);
+    doc.text(pdfSafe(nombre||'—'), cx+bw3/2, y+28, {align:'center'});
+    doc.setFont('helvetica','normal').setFontSize(7.5).setTextColor(139,147,167);
+    doc.text(pdfSafe(rol), cx+bw3/2, y+32.5, {align:'center'});
+  };
+  firma3(M,             'MEDIDO POR',  c.medido_por||'',   'Residente de obra');
+  firma3(M+bw3+8,       'APROBADO POR', c.aprobado_por||'', 'Jefe de Obra / Director');
+  firma3(M+(bw3+8)*2,   'CONFORME',    c.contratista||'',  'Contratista · C.I.');
+  y += 44;
 
   // Anexo fotográfico
   if(conFotos && dtFotos.length){
