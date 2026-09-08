@@ -129,7 +129,7 @@ tr:hover td{background:var(--bg3)}
   <img id="logo" alt="AXC">
   <div>
     <div class="hdr-title">Perfiles y Permisos</div>
-    <div class="hdr-sub">Panel de administración · Caja Chica</div>
+    <div class="hdr-sub">Panel de administración · Accesos por perfil</div>
   </div>
   <div class="hdr-spacer"></div>
   <div class="hdr-user"><b id="u-name">—</b><span id="u-role">—</span></div>
@@ -153,7 +153,7 @@ tr:hover td{background:var(--bg3)}
     <!-- ===== PERMISOS ===== -->
     <div class="panel" id="panel-permisos">
       <div class="intro">
-        Activá permisos puntuales de <b>Caja Chica</b> por usuario. Los <b>administradores</b> y <b>supervisores de caja</b> tienen acceso total por su rol; las casillas sirven para darle accesos extra a un <b>residente</b> (por ejemplo, aprobar rendiciones o configurar) sin convertirlo en supervisor.
+        Habilitá accesos por usuario. Los <b>administradores</b> entran a todo por su rol; las casillas sirven para darle a un <b>residente</b> un acceso puntual —aprobar rendiciones, entrar al Libro de Obra o a Control de Asistencia— sin cambiarle el rol. Los cambios se aplican la próxima vez que la persona entra al portal.
       </div>
       <div class="searchbar"><input id="buscar" placeholder="Buscar por nombre, email o residente..." oninput="renderPermisos()"></div>
       <div id="lista-usuarios"><div class="loading">Cargando usuarios...</div></div>
@@ -183,7 +183,7 @@ tr:hover td{background:var(--bg3)}
   </div>
 </div>
 
-<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.1</div>
+<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.2</div>
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -209,7 +209,14 @@ const PERMISOS_CC = [
 
   // Presupuestos · el coeficiente de ganancia es información sensible
   {key:'pres_margen',         label:'Coeficiente y márgenes',     desc:'Ver el costo, aplicar el coeficiente de ganancia y emitir la propuesta económica al cliente', grupo:'Presupuestos'},
+
+  // Módulos habilitados por perfil · controlan la tarjeta del portal
+  {key:'lo_ver',              label:'Entrar al Libro de Obra',    desc:'Ver y cargar el asiento diario del proyecto', grupo:'Libro de Obra'},
+  {key:'asis_ver',            label:'Entrar a Asistencia',        desc:'Ver fichadas, empleados y reporte de horas', grupo:'Control de Asistencia'},
 ];
+
+// Grupos que un admin o supervisor de caja NO necesita tildar: ya entra por su rol.
+const GRUPOS_CC = ['Caja Chica'];
 
 function gs(id){ return document.getElementById(id); }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -269,6 +276,32 @@ function rolBadge(rol){
   return '<span class="badge">'+escapeHtml(rol||'—')+'</span>';
 }
 
+// Arma la grilla de casillas de un usuario. Con incluir/excluir se elige qué
+// grupos entran, para no mostrarle a un admin las casillas que ya cubre su rol.
+function permGrid(u, opts){
+  opts = opts || {};
+  const perm = u.permisos || {};
+  const lista = PERMISOS_CC.filter(p=>{
+    const g = p.grupo || 'General';
+    if(opts.excluirGrupos && opts.excluirGrupos.includes(g)) return false;
+    return true;
+  });
+  const grupos = [];
+  lista.forEach(p=>{ const g=p.grupo||'General'; if(!grupos.includes(g)) grupos.push(g); });
+  return grupos.map(g=>{
+    const items = lista.filter(p=>(p.grupo||'General')===g).map(p=>{
+      const id='chk_'+u.id+'_'+p.key;
+      const ck = perm[p.key]===true ? 'checked' : '';
+      const sens = p.key==='pres_margen' ? ' sensible' : '';
+      return `<label class="perm-item${sens}" for="${id}">
+        <input type="checkbox" id="${id}" ${ck}>
+        <span><span class="pl">${escapeHtml(p.label)}</span><span class="pd">${escapeHtml(p.desc)}</span></span>
+      </label>`;
+    }).join('');
+    return `<div class="perm-grupo">${escapeHtml(g)}</div><div class="perm-grid">${items}</div>`;
+  }).join('');
+}
+
 function renderPermisos(){
   const q=(gs('buscar').value||'').trim().toLowerCase();
   const cont=gs('lista-usuarios');
@@ -280,41 +313,21 @@ function renderPermisos(){
 
   cont.innerHTML = lista.map(u=>{
     const esSuper = (u.rol==='admin' || u.rol==='supervisor_caja');
-    const perm = u.permisos || {};
     const titulo = escapeHtml(u.nombre || u.residente || '(sin nombre)');
     const meta = [u.residente?('Residente: '+u.residente):'', u.id?('ID '+String(u.id).slice(0,8)+'…'):''].filter(Boolean).join(' · ');
 
     if(esSuper){
       return `<div class="user-card">
         <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
-        <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. No necesita permisos individuales.</div>
-        <div class="perm-grupo">Presupuestos</div>
-        <div class="perm-grid">
-          <label class="perm-item sensible" for="chk_${u.id}_pres_margen">
-            <input type="checkbox" id="chk_${u.id}_pres_margen" ${perm.pres_margen===true?'checked':''}>
-            <span><span class="pl">Coeficiente y márgenes</span><span class="pd">Ver el costo, aplicar el coeficiente de ganancia y emitir la propuesta económica al cliente</span></span>
-          </label>
-        </div>
+        <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. ${u.rol==='admin'?'Como administrador también entra a todos los módulos del portal sin tildar nada.':'Los módulos de abajo sí se habilitan con estas casillas.'}</div>
+        ${permGrid(u, {excluirGrupos:GRUPOS_CC})}
         <div class="user-actions">
           <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
         </div>
       </div>`;
     }
 
-    const grupos = [];
-    PERMISOS_CC.forEach(p=>{ const g=p.grupo||'General'; if(!grupos.includes(g)) grupos.push(g); });
-    const grid = grupos.map(g=>{
-      const items = PERMISOS_CC.filter(p=>(p.grupo||'General')===g).map(p=>{
-        const id='chk_'+u.id+'_'+p.key;
-        const ck = perm[p.key]===true ? 'checked' : '';
-        const sens = p.key==='pres_margen' ? ' sensible' : '';
-        return `<label class="perm-item${sens}" for="${id}">
-          <input type="checkbox" id="${id}" ${ck}>
-          <span><span class="pl">${escapeHtml(p.label)}</span><span class="pd">${escapeHtml(p.desc)}</span></span>
-        </label>`;
-      }).join('');
-      return `<div class="perm-grupo">${escapeHtml(g)}</div><div class="perm-grid">${items}</div>`;
-    }).join('');
+    const grid = permGrid(u);
 
     return `<div class="user-card">
       <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
