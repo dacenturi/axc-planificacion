@@ -495,7 +495,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v3.1 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v3.2 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -541,7 +541,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       <div class="ficha">
         <div class="fld"><label>Contratista *</label><select id="edContra"><option value="">Seleccionar contratista…</option></select><div class="hint">Elegilo primero: sus precios pactados se cargan solos en cada trabajo.</div></div>
         <div class="fld"><label>Fecha</label><input type="date" id="edFecha"></div>
-        <div class="fld"><label>Obra</label><div class="obra-calc" id="edObraCalc">Se toma de los presupuestos</div></div>
+        <div class="fld"><label>Filtrar por obra</label><select id="edObraFiltro"><option value="">Todas las obras</option></select><div class="obra-calc" id="edObraCalc" style="margin-top:6px">Se toma de los presupuestos</div></div>
         <div class="fld"><label>Filtrar por sector</label><select id="edSector"><option value="">Todos los sectores</option></select><div class="hint">Sólo filtra la lista de abajo.</div></div>
       </div>
       <div class="paso"><span class="paso-n">2</span> Presupuestos a certificar</div>
@@ -854,8 +854,9 @@ async function loadListas(){
   try{
     const { data } = await sb.from('listas').select('tipo,valor,obra_ref,activo');
     const act = (data||[]).filter(x => x.activo !== false);
-    state.listas.obras        = act.filter(x=>x.tipo==='obras').map(x=>x.valor);
-    state.listas.contratistas = act.filter(x=>x.tipo==='contratistas').map(x=>x.valor);
+    state.listas.obras        = act.filter(x=>x.tipo==='obras').map(x=>x.valor).sort((a,b)=>a.localeCompare(b,'es'));
+    state.listas.contratistas = act.filter(x=>x.tipo==='contratistas').map(x=>x.valor)
+                                   .sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
     // Los sectores conviven con dos tipos: «sectores» y el «sectores_presu»
     // que carga el módulo de presupuestos. Se toman los dos.
     state.listas.sectores     = act.filter(x=>x.tipo==='sectores' || x.tipo==='sectores_presu')
@@ -1003,6 +1004,8 @@ async function abrirEditor(id){
   const sc = document.getElementById('edContra');
   sc.innerHTML = '<option value="">Seleccionar contratista…</option>' + state.listas.contratistas.map(o=>'<option>'+escapeHtml(o)+'</option>').join('');
   sc.value = '';
+  const of0 = document.getElementById('edObraFiltro'); if(of0) of0.value = '';
+  llenarObraFiltro();
   actualizarPaso2();
   presuOpciones();
   renderChips();
@@ -1182,12 +1185,14 @@ function presuPop(abrir){
   const pop = document.getElementById('edPresuPop');
   if(!inp || !pop) return;
   const q = norm(inp.value);
+  const obraF = norm((document.getElementById('edObraFiltro')||{}).value || '');
 
   const disp = [];
   let nTotal = 0;
   state.presupuestos.forEach(p=>{
     nTotal++;
     if(ed.presus.indexOf(p.codigo) >= 0) return;   // ya agregado
+    if(obraF && norm(p.obra) !== obraF) return;    // filtro de obra
     if(q && norm([p.codigo,p.obra,p.descripcion].join(' ')).indexOf(q) < 0) return;
     disp.push(p);
   });
@@ -1196,6 +1201,7 @@ function presuPop(abrir){
   const h = document.getElementById('edPresuHint');
   if(h) h.innerHTML = 'Podés sumar varios presupuestos, incluso de obras distintas, en un mismo certificado del contratista. · '+
     '<b>'+disp.length+'</b> disponible(s) de <b>'+nTotal+'</b> cargado(s)' +
+    (obraF ? ' · sólo de <b>'+escapeHtml(document.getElementById('edObraFiltro').value)+'</b>' : '') +
     (q ? ' · buscando «'+escapeHtml(inp.value.trim())+'»' : '');
 
   if(abrir === false){ pop.hidden = true; pop.innerHTML = ''; ed.acItems = []; ed.acIdx = -1; return; }
@@ -1348,12 +1354,14 @@ document.getElementById('edAddBtn').onclick = function(){
 };
 document.getElementById('edAddTrabajo').onchange = function(){ if(this.value){ ed.sel[this.value] = true; renderLineas(); } };
 document.getElementById('edAddTodos').onclick = async function(){
-  const disp = ed.lineas.filter(l=>!ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
-  if(!disp.length){ showToast('Ya están todos agregados','info'); return; }
+  const sec = document.getElementById('edSector').value;
+  const disp = disponiblesFiltrados();
+  if(!disp.length){ showToast('Ya están todos agregados','info', sec?('en '+sec):''); return; }
   const r = await axcDialog({
     tono:'', icono:'＋', titulo:'Agregar todos los rubros',
-    subtitulo:'Se suman los '+disp.length+' trabajos que faltan',
-    mensaje:'Vas a agregar <b>'+disp.length+' trabajo(s)</b> al certificado. Después podés sacar los que no vayas a certificar con la ✕ de cada uno.',
+    subtitulo:'Se suman los '+disp.length+' trabajos que faltan'+(sec?(' de '+sec):''),
+    mensaje:'Vas a agregar <b>'+disp.length+' trabajo(s)</b>'+(sec?(' del sector <b>'+escapeHtml(sec)+'</b>'):' de todos los sectores')+
+            ' al certificado. Después podés sacar los que no vayas a certificar con la ✕ de cada uno.',
     ok:'Agregar todos'
   });
   if(!r.ok) return;
@@ -1368,6 +1376,24 @@ document.querySelectorAll('.tr-chip').forEach(c=>{
     renderLineas();
   };
 });
+/* Las obras del filtro salen de los presupuestos cargados */
+function llenarObraFiltro(){
+  const sel = document.getElementById('edObraFiltro');
+  if(!sel) return;
+  const obras = [];
+  state.presupuestos.forEach(p=>{
+    const o = String(p.obra||'').trim();
+    if(o && !obras.some(x=>norm(x)===norm(o))) obras.push(o);
+  });
+  obras.sort((a,b)=>a.localeCompare(b,'es'));
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Todas las obras</option>' + obras.map(o=>'<option>'+escapeHtml(o)+'</option>').join('');
+  if(obras.indexOf(prev) >= 0) sel.value = prev;
+}
+
+const _of = document.getElementById('edObraFiltro');
+if(_of) _of.onchange = function(){ presuPop(true); };
+
 const _pb = document.getElementById('edPresuBuscar');
 if(_pb){
   _pb.oninput = function(){ presuPop(true); };
@@ -1459,7 +1485,7 @@ async function cargarLineas(){
     for(const pp of ed.presus){
       const [insR, rubR] = await Promise.all([
         sb.from('presupuesto_insumos').select('rubro_codigo,codigo_insumo,material,unidad,cantidad,precio_unitario').eq('presupuesto', pp),
-        sb.from('presupuesto_rubros').select('rubro_codigo,descripcion,unidad,cantidad,sector').eq('presupuesto', pp)
+        sb.from('presupuesto_rubros').select('rubro_codigo,descripcion,unidad,cantidad,sector,precio_total,tiene_receta').eq('presupuesto', pp)
       ]);
       const rub = {}; (rubR.data||[]).forEach(r=>{ rub[String(r.rubro_codigo)] = r; });
       const cab = state.presupuestos.filter(x=>x.codigo===pp)[0] || {};
@@ -1491,9 +1517,14 @@ async function cargarLineas(){
       // En ese caso se certifica contra el rubro, con su cantidad y su precio
       // unitario. Los rubros con receta quedan afuera: ahí el precio incluye
       // materiales y certificarlo sería pagar de más al contratista.
+      // Presupuestos planos: el rubro no tiene línea de mano de obra porque
+      // el trabajo entero ES la mano de obra (prolijados, acarreos, picoteados).
+      // En ese caso se certifica contra el rubro, con su cantidad y su precio
+      // unitario de referencia (precio_total ÷ cantidad). Los que tienen receta
+      // se muestran igual, pero avisados: ahí el precio incluye materiales.
       (rubR.data||[]).forEach(r=>{
         const rk = String(r.rubro_codigo||'');
-        if(!rk || conMO[rk] || r.tiene_receta) return;
+        if(!rk || conMO[rk]) return;
         const cant = Number(r.cantidad)||0;
         const tot  = Number(r.precio_total)||0;
         if(cant <= 0) return;
@@ -1509,6 +1540,7 @@ async function cargarLineas(){
           cant_presup: cant,
           precio_presup: tot > 0 ? Math.round((tot/cant)*100)/100 : 0,
           esRubro: true,
+          conReceta: !!r.tiene_receta,
           libre: false
         });
       });
@@ -1617,7 +1649,8 @@ function renderLineas(){
   }
   // Solo se muestran los trabajos que el residente agregó
   let L = ed.lineas.filter(l => ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
-  const disponibles = ed.lineas.filter(l => !ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
+  ed.secFiltro = sec;
+  const disponibles = disponiblesFiltrados();
   selectorTrabajos(disponibles, L.length);
   if(sec) L = L.filter(l=>l.sector===sec);
   if(ed.buscar) L = L.filter(l => norm([l.descripcion,l.rubro_codigo,l.rubro_desc,l.codigo_insumo,l.sector].join(' ')).indexOf(ed.buscar)>=0);
@@ -1784,6 +1817,7 @@ function lineaHTML(l, contratista){
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
           (l.libre?'fuera de presupuesto':(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr">sin precio presupuestado</span>' : '')+
+        (l.conReceta ? '<span class="lin-tag sr" title="El rubro tiene composición: su precio incluye materiales. Certificá sólo la mano de obra pactada.">incluye materiales</span>' : '')+
         (excedida ? '<span class="lin-tag ex">fuera de lo presupuestado</span>' : '')+
       '</b>'+
         '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc)) : 'trabajo libre')+
@@ -2044,7 +2078,17 @@ function selectorTrabajos(disp, nSel){
   const bt = document.getElementById('edAddTodos');
   if(bt) bt.disabled = !disp.length;
   if(hint) hint.innerHTML = '<b>'+nSel+'</b> trabajo(s) agregado(s) · <b>'+disp.length+'</b> disponible(s) sin agregar'+
+    (ed.secFiltro ? ' <b>en '+escapeHtml(ed.secFiltro)+'</b>' : '')+
     (disp.length ? '' : ' · ya están todos');
+}
+
+/* Los trabajos disponibles respetan el filtro de sector de la cabecera:
+   si el residente está midiendo el Nivel 5, no tiene por qué ver los otros. */
+function disponiblesFiltrados(){
+  const sec = document.getElementById('edSector').value;
+  let D = ed.lineas.filter(l => !ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
+  if(sec) D = D.filter(l => l.sector === sec);
+  return D;
 }
 
 function fotosHTML(k){
