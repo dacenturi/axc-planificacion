@@ -476,7 +476,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v4.4 · obra unificada con orden de compra y planificación · IVA editable y total general a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v4.6 · obra unificada con orden de compra y planificación · material y mano de obra por rubro, como la planilla</p>
   </div>
 </div>
 
@@ -607,7 +607,7 @@ body{
       <div class="pm-sectitle">Rubros (Obra → Sector → Rubro)</div>
       <div class="pm-tablewrap">
         <table class="pm-table">
-          <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Precio total (Gs)</th><th></th></tr></thead>
+          <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">P. unitario (Gs)</th><th class="pm-num">Precio total (Gs)</th><th></th></tr></thead>
           <tbody id="pmRubTbody"></tbody>
         </table>
       </div>
@@ -651,6 +651,14 @@ body{
           <input id="pmRubCant" class="pm-input" type="number" step="any" placeholder="0">
         </div>
         <div class="pm-f">
+          <label>Material Gs/u</label>
+          <input id="pmRubMat" class="pm-input" type="number" step="any" placeholder="0">
+        </div>
+        <div class="pm-f">
+          <label>M. obra Gs/u</label>
+          <input id="pmRubMO" class="pm-input" type="number" step="any" placeholder="0">
+        </div>
+        <div class="pm-f">
           <label>Precio total Gs</label>
           <input id="pmRubPT" class="pm-input" type="number" step="any" placeholder="Precio total Gs">
         </div>
@@ -661,7 +669,7 @@ body{
         <input id="pmRubCod" type="hidden">
       </div>
       <div id="pmRubHintLive" class="pm-hint"></div>
-      <div class="pm-hint">Elegí el capítulo, después la composición. Si tiene receta, al agregarla se cargan sus insumos automáticamente; si es servicio, cargá su precio total.</div>
+      <div class="pm-hint">Elegí el capítulo, después la composición. Si tiene receta, al agregarla se cargan sus insumos automáticamente. Si es de precio directo, cargá el costo de <b>material</b> y de <b>mano de obra</b> por unidad: el precio total se calcula solo (costo ÷ coeficiente 0,69, es decir 31% de margen). Separar la mano de obra es lo que después permite certificar al contratista contra su costo real y no contra el precio con materiales.</div>
 
       <!-- INSUMOS -->
       <div class="pm-sectitle">Insumos por rubro (control por cantidad)</div>
@@ -1682,7 +1690,11 @@ async function openEdit(codigo){
     ed.rubros = (rub||[]).map(function(r){
       const cat = ed.arbolByCod[String(r.rubro_codigo||'')];
       const cap = cat && cat.capitulo ? String(cat.capitulo).trim() : '';
-      return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta, capitulo:cap };
+      return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'',
+               cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta,
+               material_unit: (r.material_unit==null?null:Number(r.material_unit)),
+               mano_obra_unit:(r.mano_obra_unit==null?null:Number(r.mano_obra_unit)),
+               capitulo:cap };
     });
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
     ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
@@ -1858,6 +1870,21 @@ async function toggleEstado(){
 }
 
 // ── Rubros (memoria) ────────────────────────────────────
+/* Costo, costo parcial y precio de venta a partir de material y mano de obra.
+   Misma cuenta que la planilla: venta = costo / coeficiente. Con 0,69 el
+   margen es 31% sobre venta. */
+const COEF_VENTA = 0.69;
+function recalcCostoRubro(r){
+  const mat = Number(r.material_unit)||0, mo = Number(r.mano_obra_unit)||0;
+  const q = Number(r.cantidad)||0;
+  if(!mat && !mo) return;                       // sin costos cargados no se toca el precio
+  r.costo_unit    = mat + mo;
+  r.costo_parcial = Math.round(r.costo_unit * q);
+  r.mano_obra_total = Math.round(mo * q);
+  r.coeficiente   = COEF_VENTA;
+  r.precio_total  = Math.round(r.costo_unit / COEF_VENTA * q);
+}
+
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
   setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
@@ -1877,6 +1904,20 @@ function renderRubros(){
         '<span class="pm-rubname">'+escapeHtml(r.descripcion||'')+'</span></div></td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
       '<td class="pm-num"><input type="number" step="0.01" data-i="'+i+'" data-f="cantidad" value="'+r.cantidad+'"></td>' +
+      // Material y mano de obra por unidad, como en la planilla. Si estan
+      // cargados, el unitario y el total salen de ellos.
+      (r.tiene_receta
+        ? '<td class="pm-num" style="color:#9aa3b2">—</td><td class="pm-num" style="color:#9aa3b2">—</td>'
+        : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="material_unit" value="'+
+            fmtGs(Number(r.material_unit)||0)+'" style="text-align:right"></td>'+
+          '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="mano_obra_unit" value="'+
+            fmtGs(Number(r.mano_obra_unit)||0)+'" style="text-align:right"></td>') +
+      // P. unitario: se escribe el unitario y el total se recalcula solo.
+      (r.tiene_receta
+        ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">de la receta</span></td>'
+        : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_unit" value="'+
+            fmtGs(Number(r.cantidad)>0 ? Math.round((Number(r.precio_total)||0)/Number(r.cantidad)) : 0)+
+            '" style="text-align:right"></td>') +
       (r.tiene_receta
         ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>'
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
@@ -1889,8 +1930,22 @@ function renderRubros(){
     inp.addEventListener('change', function(){
       const i = Number(inp.dataset.i), f = inp.dataset.f;
       if(f==='sector'){ ed.rubros[i].sector = inp.value; }
-      else if(f==='precio_total'){ ed.rubros[i].precio_total = parseGs(inp.value); inp.value = fmtGs(ed.rubros[i].precio_total); }
-      else if(f==='cantidad'){ ed.rubros[i].cantidad = round2(inp.value); inp.value = ed.rubros[i].cantidad; }
+      else if(f==='precio_total'){ ed.rubros[i].precio_total = parseGs(inp.value); inp.value = fmtGs(ed.rubros[i].precio_total); renderRubros(); }
+      else if(f==='precio_unit'){
+        const pu = parseGs(inp.value), q = Number(ed.rubros[i].cantidad)||0;
+        ed.rubros[i].precio_total = Math.round(pu * q);
+        renderRubros();
+      }
+      else if(f==='material_unit' || f==='mano_obra_unit'){
+        ed.rubros[i][f] = parseGs(inp.value);
+        recalcCostoRubro(ed.rubros[i]);
+        renderRubros();
+      }
+      else if(f==='cantidad'){
+        ed.rubros[i].cantidad = round2(inp.value); inp.value = ed.rubros[i].cantidad;
+        recalcCostoRubro(ed.rubros[i]);   // el costo parcial depende de la cantidad
+        renderRubros();
+      }
     });
   });
   tb.querySelectorAll('[data-del]').forEach(function(b){ b.addEventListener('click', function(){ ed.rubros.splice(Number(b.dataset.del),1); renderRubros(); }); });
@@ -1903,7 +1958,9 @@ function addRubro(){
   const sector = (document.getElementById('pmRubSector').value||'').trim();
   const code = (document.getElementById('pmRubCod').value||'').trim();
   const cant = round2(document.getElementById('pmRubCant').value);
-  const pt = Number(document.getElementById('pmRubPT').value)||0;
+  const pt  = Number(document.getElementById('pmRubPT').value)||0;
+  const mat = Number((document.getElementById('pmRubMat')||{}).value)||0;
+  const mo  = Number((document.getElementById('pmRubMO') ||{}).value)||0;
   // Validaciones de carga (punto 4)
   if(!obra){ showToast('Primero elegí la obra', 'error'); document.getElementById('pmObra').focus(); return; }
   if(!sector){ showToast('Falta seleccionar el sector', 'error'); document.getElementById('pmRubSector').focus(); return; }
@@ -1911,17 +1968,27 @@ function addRubro(){
   const a = ed.arbolByCod[code];
   if(!a){ showToast('Ese código no está en el catálogo de rubros', 'error'); return; }
   if(!(cant>0)){ showToast('La cantidad debe ser mayor a 0', 'error'); document.getElementById('pmRubCant').focus(); return; }
-  if(!a.tiene_receta && !(pt>0)){ showToast('Este rubro es servicio: cargá su precio total', 'error'); document.getElementById('pmRubPT').focus(); return; }
+  if(!a.tiene_receta && !(pt>0) && !(mat>0) && !(mo>0)){
+    showToast('Cargá el costo de material y mano de obra, o el precio total', 'error');
+    document.getElementById('pmRubMO').focus(); return;
+  }
   // evitar duplicado exacto (mismo sector + mismo código)
   if(ed.rubros.some(function(r){ return r.sector===sector && r.rubro_codigo===a.codigo; })){
     showToast('Ese rubro ya está cargado en ese sector', 'error'); return;
   }
-  ed.rubros.push({ sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'', cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta, capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' });
+  const nuevo = { sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'',
+                  cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta,
+                  material_unit: (a.tiene_receta?null:mat), mano_obra_unit: (a.tiene_receta?null:mo),
+                  capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' };
+  if(!a.tiene_receta && (mat>0 || mo>0)) recalcCostoRubro(nuevo);   // el precio sale del costo
+  ed.rubros.push(nuevo);
   const teniaReceta = !!a.tiene_receta;
   // limpiar cascada
   document.getElementById('pmRubCap').value=''; 
   const cs=document.getElementById('pmRubComp'); cs.innerHTML='<option value="">Composición…</option>'; cs.disabled=true;
   document.getElementById('pmRubCod').value=''; document.getElementById('pmRubCant').value=''; document.getElementById('pmRubPT').value='';
+  if(document.getElementById('pmRubMat')) document.getElementById('pmRubMat').value='';
+  if(document.getElementById('pmRubMO'))  document.getElementById('pmRubMO').value='';
   const cnt2=document.getElementById('pmRubCompCnt'); if(cnt2) cnt2.textContent='';
   const uni2=document.getElementById('pmRubUni'); if(uni2) uni2.textContent='';
   _rubLiveUpdate();
@@ -2445,7 +2512,19 @@ async function saveBudget(){
     const rd = await sb.from('presupuesto_rubros').delete().eq('presupuesto', codigo);
     if(rd.error) throw rd.error;
     if(ed.rubros.length){
-      const payload = ed.rubros.map(function(r,idx){ return { presupuesto:codigo, sector:r.sector||'', orden:idx+1, rubro_codigo:r.rubro_codigo||null, descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta }; });
+      const payload = ed.rubros.map(function(r,idx){
+        const mat = (r.material_unit==null||r.material_unit==='') ? null : Number(r.material_unit);
+        const mo  = (r.mano_obra_unit==null||r.mano_obra_unit==='') ? null : Number(r.mano_obra_unit);
+        const q   = Number(r.cantidad)||0;
+        const cu  = (mat!=null||mo!=null) ? ((mat||0)+(mo||0)) : null;
+        return { presupuesto:codigo, sector:r.sector||'', orden:idx+1, rubro_codigo:r.rubro_codigo||null,
+                 descripcion:r.descripcion||'', unidad:r.unidad||'', cantidad:q,
+                 precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta,
+                 material_unit: mat, mano_obra_unit: mo,
+                 costo_unit: cu, costo_parcial: (cu!=null ? Math.round(cu*q) : null),
+                 mano_obra_total: (mo!=null ? Math.round(mo*q) : null),
+                 coeficiente: (cu!=null ? COEF_VENTA : null) };
+      });
       const ri = await sb.from('presupuesto_rubros').insert(payload);
       if(ri.error) throw ri.error;
     }
