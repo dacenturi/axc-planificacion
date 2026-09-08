@@ -476,7 +476,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Planificación v4.3 · parcial, IVA editable y total general a la vista mientras se carga el presupuesto</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v4.4 · obra unificada con orden de compra y planificación · IVA editable y total general a la vista</p>
   </div>
 </div>
 
@@ -1525,7 +1525,7 @@ const _SECT_GENERIC = ['NP1','NP2','NP3','NP4','NP5','NP6','NP7','NP8','TERRAZA'
 
 async function loadListas(){
   try{
-    const obras = {}; ed.sectByObra = {}; ed.sectByObraCat = {};
+    const obras = {}; ed.sectByObra = {}; ed.sectByObraCat = {}; ed.obrasGenerales = {};
     const { data:l } = await sb.from('listas').select('tipo,valor,obra_ref,activo');
     (l||[]).forEach(function(x){
       const t=(x.tipo||'').toLowerCase(); if(!x.valor) return;
@@ -1536,10 +1536,13 @@ async function loadListas(){
         const k=_normObra(x.obra_ref);
         (ed.sectByObraCat[k] = ed.sectByObraCat[k] || {})[x.valor] = 1;
       }
-      // (Quitado 13/06/2026) Antes se mezclaban las obras de Planificación
-      // (tipo 'obras'), lo que metía ruido en el dropdown (Polka, SHANGAI, etc.).
-      // Ahora el dropdown muestra SOLO el catálogo de presupuesto (obras_presu)
-      // + obras que ya tienen un presupuesto real (líneas de abajo). No toca Planificación.
+      // (13/06/2026) Se habia sacado el tipo 'obras' porque metia ruido en el
+      // dropdown: la lista general tiene ferreterias, oficinas y terrenos que
+      // nunca se presupuestan.
+      // (08/09/2026) Vuelve, pero en un grupo aparte al final: la obra tiene
+      // que ser la misma en presupuesto, orden de compra y planificacion, asi
+      // que hay que poder elegir cualquiera sin escribirla a mano.
+      if(t==='obras'){ ed.obrasGenerales[x.valor] = 1; }
     });
     (state.list||[]).forEach(function(p){ if(p.obra) obras[p.obra]=obras[p.obra]||1; });
     // sectores reales por obra (de los presupuestos cargados) — como respaldo
@@ -1559,12 +1562,32 @@ async function loadListas(){
   }catch(e){ console.warn('loadListas', e); }
 }
 
+/* Dos grupos: arriba las obras que se presupuestan, abajo el resto del
+   listado general que comparten orden de compra y planificacion. Asi la obra
+   es siempre la misma en los tres modulos, sin perder la lista corta. */
 function _fillObraSelect(arr){
   const sel = document.getElementById('pmObra'); if(!sel) return;
   const cur = sel.value;
-  sel.innerHTML = '<option value="">Elegí la obra…</option>' +
-    arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('');
-  if(cur && arr.indexOf(cur)>=0) sel.value = cur;
+  const norm = function(v){ return _normObra(v); };
+  const enPresu = {}; arr.forEach(function(v){ enPresu[norm(v)] = 1; });
+  const otras = Object.keys(ed.obrasGenerales||{})
+    .filter(function(v){ return !enPresu[norm(v)]; })
+    .sort(function(a,b){ return a.localeCompare(b,'es'); });
+
+  let html = '<option value="">Elegí la obra…</option>';
+  if(arr.length){
+    html += '<optgroup label="Obras con presupuesto">' +
+      arr.map(function(v){ return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('') +
+      '</optgroup>';
+  }
+  if(otras.length){
+    html += '<optgroup label="Todas las obras (orden de compra y planificación)">' +
+      otras.map(function(v){ return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('') +
+      '</optgroup>';
+  }
+  sel.innerHTML = html;
+  const todas = arr.concat(otras);
+  if(cur && todas.indexOf(cur)>=0) sel.value = cur;
 }
 
 // Sectores según la obra elegida: prioriza catálogo sectores_presu; cae a los reales del presupuesto
@@ -3152,6 +3175,15 @@ async function saveMini(){
   btn.disabled = true; btn.textContent = 'Guardando…';
   try{
     if(_miniMode==='obra'){
+      // ¿ya existe en la lista general? Si esta, se avisa: la obra es la misma
+      // para presupuesto, orden de compra y planificacion, y escribirla de
+      // nuevo con otra grafia crea un duplicado.
+      var gen = await sb.from('listas').select('id,valor').eq('tipo','obras').ilike('valor', nombre);
+      if(gen.data && gen.data.length){
+        showToast('Esa obra ya existe: «'+gen.data[0].valor+'»', 'info', 'Elegila del grupo «Todas las obras» en vez de crearla de nuevo.');
+        closeMini();
+        return;
+      }
       // ¿ya existe? (en obras_presu)
       var res = await sb.from('listas').select('id,valor,activo').eq('tipo','obras_presu').ilike('valor', nombre);
       var dup = (res.data||[]).find(function(x){ return (x.valor||'').trim().toLowerCase()===nombre.toLowerCase(); });
@@ -3160,7 +3192,12 @@ async function saveMini(){
         if(dup.activo===false){ await sb.from('listas').update({activo:true}).eq('id', dup.id); }
         await loadListas(); _setObraValue(dup.valor); showToast('Esa obra ya existía, la seleccioné', 'success'); closeMini(); return;
       }
-      var ins = await sb.from('listas').insert({ tipo:'obras_presu', valor:nombre, activo:true });
+      // Se crea en las dos listas: la general es la que comparten los otros
+      // modulos, y obras_presu la deja arriba en el desplegable.
+      var ins = await sb.from('listas').insert([
+        { tipo:'obras_presu', valor:nombre, activo:true },
+        { tipo:'obras',       valor:nombre, activo:true }
+      ]);
       if(ins.error) throw ins.error;
       await loadListas(); _setObraValue(nombre);
       showToast('Obra «'+nombre+'» agregada', 'success'); closeMini();
