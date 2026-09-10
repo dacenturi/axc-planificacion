@@ -4214,7 +4214,19 @@ body{
 /* ══ Rubro que viene del presupuesto ════════════════════════════ */
 .cia-chip.presu{background:#EDF3FB;border-color:#b9cded;color:#1F3864;font-weight:700}
 .cia-nota{font-size:10.5px;color:#5a6677;margin-top:3px;line-height:1.45}
-</style></style>
+</style>.acat-row{display:grid;grid-template-columns:22px 1fr 108px 18px 108px 62px;gap:9px;align-items:center;
+  padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;cursor:pointer;background:#fff}
+.acat-row:hover{border-color:var(--navy)}
+.acat-nom{font-size:13px;font-weight:600;color:var(--navy);line-height:1.3}
+.acat-nom small{display:block;font-size:10.5px;font-weight:500;color:var(--text-muted);margin-top:1px}
+.acat-cat,.acat-new{font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+.acat-cat{color:var(--text-muted)} .acat-new{font-weight:800;color:var(--navy)}
+.acat-cat small,.acat-new small{display:block;font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:#9aa4b2}
+.acat-arr{color:#c3cad6;text-align:center}
+.acat-dif{font-size:11.5px;font-weight:800;text-align:right}
+.acat-dif.sube{color:#B03A3A} .acat-dif.baja{color:#1B5524}
+@media(max-width:620px){ .acat-row{grid-template-columns:22px 1fr 90px} .acat-arr,.acat-dif{display:none} }
+</style>
 </head>
 <body>
 
@@ -4292,7 +4304,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Planificación v7.8 · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v7.9 · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -5283,6 +5295,27 @@ body{
 <!-- ═══════════════════════════════════════════════════════════════
      MODAL: OC creada exitosamente
 ═══════════════════════════════════════════════════════════════ -->
+<!-- El precio pagado vuelve al catálogo -->
+<div class="modal-backdrop" id="acatModal">
+  <div class="success-modal" style="max-width:640px;text-align:left">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+      <div class="success-icon" style="width:38px;height:38px;font-size:19px;margin:0;background:#fdf8ec;color:#8a6d10">₲</div>
+      <div>
+        <div class="success-title" style="text-align:left;margin:0">Precios distintos a los del catálogo</div>
+        <div class="success-subtitle" style="text-align:left;margin:2px 0 0">Pagaste estos materiales a otro precio. ¿Actualizamos el catálogo?</div>
+      </div>
+    </div>
+    <div id="acatBody" style="margin:16px 0;max-height:46vh;overflow:auto"></div>
+    <div style="font-size:11.5px;color:var(--text-muted);line-height:1.5;margin-bottom:14px">
+      El catálogo alimenta los presupuestos nuevos. Los presupuestos ya emitidos no se tocan: conservan el precio con el que se congelaron.
+    </div>
+    <div class="success-actions" style="flex-direction:row;gap:9px">
+      <button class="btn-back-step" id="acatNo" style="flex:1;justify-content:center">Ahora no</button>
+      <button class="btn-primary" id="acatOk" style="flex:1;background:var(--navy)">Actualizar precios</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="successModal">
   <div class="success-modal">
     <div class="success-icon">✓</div>
@@ -10847,6 +10880,12 @@ async function submitOC(){
     // 6) Modal de éxito
     showSuccess(realNumero, total, estado, ocPayload);
 
+    // 7) Precio pagado contra catálogo. Sólo en las OC ya aprobadas: mientras
+    //    está en Solicitado el precio todavía puede cambiar.
+    if(estado === 'Aprobado'){
+      setTimeout(function(){ ofrecerActualizarCatalogo(wizard.cart, ocPayload); }, 900);
+    }
+
     // 7) Refrescar bandeja principal
     loadOCs();
 
@@ -10856,6 +10895,110 @@ async function submitOC(){
     btn.disabled = false;
     lbl.textContent = originalLabel;
   }
+}
+
+
+/* ── El precio pagado vuelve al catálogo ─────────────────────────────
+   Al aprobar una OC ya se sabe el precio real, el proveedor y la fecha.
+   Ese dato se ofrece como actualización; la decisión es de quien compra. */
+async function ofrecerActualizarCatalogo(cart, oc){
+  try{
+    const items = (cart||[]).filter(function(it){
+      return !it.es_mano_obra && it.producto_id && Number(it.precio_unit) > 0;
+    });
+    if(!items.length) return;
+
+    const ids = Array.from(new Set(items.map(function(it){ return it.producto_id; })));
+    const { data:prods, error } = await sb.from('productos_catalogo')
+      .select('id,nombre,precio_referencia,proveedor,precio_actualizado_en').in('id', ids);
+    if(error || !prods) return;
+    const byId = {}; prods.forEach(function(p){ byId[String(p.id)] = p; });
+
+    // Un producto puede venir repetido en el carrito: se toma el precio más alto
+    const cand = {};
+    items.forEach(function(it){
+      const p = byId[String(it.producto_id)]; if(!p) return;
+      const pagado = Math.round(Number(it.precio_unit));
+      const cat = Math.round(Number(p.precio_referencia)||0);
+      // Sólo interesa si cambió más de un 2% (o si el catálogo no tenía precio)
+      if(cat > 0 && Math.abs(pagado - cat) <= cat * 0.02) return;
+      const prev = cand[String(it.producto_id)];
+      if(prev && prev.pagado >= pagado) return;
+      cand[String(it.producto_id)] = {
+        id: it.producto_id, nombre: p.nombre || it.producto_nombre || '',
+        cat: cat, pagado: pagado,
+        dif: cat > 0 ? Math.round((pagado - cat) / cat * 1000) / 10 : null,
+        desde: p.precio_actualizado_en || ''
+      };
+    });
+    const lista = Object.keys(cand).map(function(k){ return cand[k]; });
+    if(!lista.length) return;
+
+    lista.sort(function(a,b){ return Math.abs(b.dif||999) - Math.abs(a.dif||999); });
+    ACAT.lista = lista;
+    ACAT.oc = oc;
+    ACAT.sel = {}; lista.forEach(function(x){ ACAT.sel[x.id] = true; });
+    renderActCatalogo();
+    document.getElementById('acatModal').classList.add('open');
+  }catch(e){ console.warn('actualizar catalogo', e); }
+}
+
+var ACAT = { lista:[], sel:{}, oc:null };
+
+function renderActCatalogo(){
+  const cont = document.getElementById('acatBody');
+  if(!cont) return;
+  const f = function(n){ return 'Gs ' + Math.round(Number(n)||0).toLocaleString('es-PY'); };
+  cont.innerHTML = ACAT.lista.map(function(x){
+    const sube = x.dif == null ? true : x.dif > 0;
+    return '<label class="acat-row">'+
+      '<input type="checkbox" data-acat="'+escapeHtml(String(x.id))+'"'+(ACAT.sel[x.id]?' checked':'')+'>'+
+      '<span class="acat-nom">'+escapeHtml(x.nombre)+
+        (x.desde ? '<small>catálogo actualizado el '+String(x.desde).slice(0,10).split('-').reverse().join('/')+'</small>'
+                 : '<small>el catálogo no tenía fecha</small>')+
+      '</span>'+
+      '<span class="acat-cat">'+(x.cat>0?f(x.cat):'sin precio')+'<small>catálogo</small></span>'+
+      '<span class="acat-arr">→</span>'+
+      '<span class="acat-new">'+f(x.pagado)+'<small>pagado</small></span>'+
+      '<span class="acat-dif '+(sube?'sube':'baja')+'">'+
+        (x.dif==null ? 'nuevo' : ((x.dif>0?'+':'')+x.dif+'%'))+'</span>'+
+    '</label>';
+  }).join('');
+  cont.querySelectorAll('input[data-acat]').forEach(function(ch){
+    ch.addEventListener('change', function(){ ACAT.sel[ch.getAttribute('data-acat')] = ch.checked; });
+  });
+  const n = ACAT.lista.filter(function(x){ return ACAT.sel[x.id]; }).length;
+  const b = document.getElementById('acatOk');
+  if(b) b.textContent = 'Actualizar ' + n + ' precio' + (n===1?'':'s');
+}
+
+async function confirmarActCatalogo(){
+  const elegidos = ACAT.lista.filter(function(x){ return ACAT.sel[x.id]; });
+  if(!elegidos.length){ document.getElementById('acatModal').classList.remove('open'); return; }
+  const btn = document.getElementById('acatOk');
+  btn.disabled = true; btn.textContent = 'Actualizando…';
+  let ok = 0, fallo = 0;
+  for(const x of elegidos){
+    try{
+      const campos = {
+        precio_referencia: x.pagado,
+        proveedor: (ACAT.oc && ACAT.oc.proveedor) || null,
+        precio_actualizado_en: new Date().toISOString(),
+        precio_actualizado_por: (state.profile?.nombre || state.user?.email || null),
+        precio_fuente: 'orden_compra'
+      };
+      let r = await sb.from('productos_catalogo').update(campos).eq('id', x.id);
+      if(r.error && /proveedor|precio_actualizado|precio_fuente/i.test(r.error.message||'')){
+        r = await sb.from('productos_catalogo').update({ precio_referencia: x.pagado }).eq('id', x.id);
+      }
+      if(r.error) throw r.error;
+      ok++;
+    }catch(e){ console.warn('precio', x.id, e); fallo++; }
+  }
+  document.getElementById('acatModal').classList.remove('open');
+  btn.disabled = false;
+  showToast(ok + ' precio(s) actualizado(s) en el catálogo' + (fallo ? (' · '+fallo+' con error') : ''),
+            fallo ? 'error' : 'success');
 }
 
 function showSuccess(numero, total, estado, payload){
@@ -10881,6 +11024,8 @@ function showSuccess(numero, total, estado, payload){
   try{ const _b=document.getElementById('btnSubmitOC'); if(_b) _b.disabled=false; const _l=document.getElementById('btnSubmitOCLabel'); if(_l) _l.textContent='Crear orden de compra'; }catch(e){}
 }
 
+document.getElementById('acatNo').addEventListener('click', function(){ document.getElementById('acatModal').classList.remove('open'); });
+document.getElementById('acatOk').addEventListener('click', confirmarActCatalogo);
 document.getElementById('btnSuccessClose').addEventListener('click', ()=>{
   document.getElementById('successModal').classList.remove('open');
   closeWizard(true); // force = sin preguntar
