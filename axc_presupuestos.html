@@ -482,7 +482,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.0 · obra unificada con orden de compra y planificación · uso interno · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.1 · obra unificada con orden de compra y planificación · uso interno · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -651,7 +651,10 @@ body{
         </div>
         <div class="pm-f">
           <label>Composición <span id="pmRubCompCnt" style="color:#b0b8c4;font-weight:600"></span></label>
-          <select id="pmRubComp" class="pm-input" disabled><option value="">Composición…</option></select>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select id="pmRubComp" class="pm-input" disabled style="flex:1"><option value="">Composición…</option></select>
+            <button type="button" id="pmRubCompNew" class="pm-mini" title="Crear o editar una composición sin salir de acá">🧩</button>
+          </div>
         </div>
         <div class="pm-f">
           <label>Cantidad <span id="pmRubUni" style="color:#1F3864;font-weight:800"></span></label>
@@ -1103,6 +1106,9 @@ body{
   .comp-tbl{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid #e6eaf1;border-radius:10px;overflow:hidden;table-layout:fixed}
   .comp-tbl td,.comp-tbl th{white-space:nowrap}
   .comp-tbl td:nth-child(2){white-space:normal}
+  .pm-mini{border:1.5px solid var(--border,#d6dde9);background:#fff;border-radius:9px;width:40px;height:40px;
+  font-size:17px;cursor:pointer;line-height:1;flex:0 0 auto}
+.pm-mini:hover{border-color:#1F3864;background:#EDF3FB}
   .ci-name{white-space:normal;word-break:break-word}
   .comp-tbl tbody tr:hover{background:#fafcff}
   .comp-tbl th{background:#eef3fb;color:#42506a;text-align:left;padding:7px 8px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
@@ -1110,7 +1116,7 @@ body{
   .comp-tbl td{padding:7px 9px;border-top:1px solid #eef1f5;vertical-align:middle}
   .comp-tbl input,.comp-tbl select{width:100%;border:1px solid #d3d9e3;border-radius:6px;padding:5px 7px;font-size:13px;box-sizing:border-box;background:#fff}
   .comp-tbl input.ro{background:#f4f6f9;color:#5a6677}
-  .ci-name{font-size:10.5px;color:#8893a5;display:block;margin-top:2px;line-height:1.2}
+  .ci-name{font-size:10.5px;color:#8893a5;display:block;margin-top:2px;line-height:1.2;font-family:ui-monospace,monospace;letter-spacing:.3px}
   .ci-del{background:#fde9e9;color:#c0392b;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;font-weight:700}
   .ci-del:hover{background:#c0392b;color:#fff}
   .ci-linecost{font-weight:700;color:#1F3864;white-space:nowrap}
@@ -3956,13 +3962,39 @@ async function openComposiciones(){
   document.getElementById('compRight').innerHTML = '<div class="comp-empty-r">Elegí un rubro de la izquierda para ver o cargar su composición. También podés crear un rubro nuevo con el botón de arriba.</div>';
   document.getElementById('compOverlay').classList.add('show');
 }
-function closeComposiciones(){ document.getElementById('compOverlay').classList.remove('show'); }
+async function closeComposiciones(){
+  document.getElementById('compOverlay').classList.remove('show');
+  // Si se entró desde el presupuesto, recargar el árbol para que la
+  // composición recién creada aparezca en el desplegable
+  if(comp._volverAlPresupuesto){
+    comp._volverAlPresupuesto = false;
+    try{
+      await _reloadArbolForce();
+      const cap = (document.getElementById('pmRubCap')||{}).value || '';
+      if(typeof _fillCompSelect === 'function') _fillCompSelect();
+      showToast('Composiciones actualizadas','success','Ya podés elegirla en el presupuesto');
+    }catch(e){ console.warn('refrescar arbol', e); }
+  }
+}
 
+/* El usuario piensa en «Tubo Tigre PVC 100 mm», no en «INS-270». El campo
+   busca y muestra el nombre; el código queda debajo, como referencia. */
 function _fillCompInsDatalist(){
   const dl=document.getElementById('compInsList'); if(!dl) return;
   dl.innerHTML = (ed.insList||[]).map(function(i){
-    return '<option value="'+escapeHtml(i.codigo)+'">'+escapeHtml(i.codigo+(i.nombre?' · '+i.nombre:'')+(i.unidad?' ('+i.unidad+')':''))+'</option>';
+    const nom = i.nombre || i.codigo;
+    return '<option value="'+escapeHtml(nom)+'">'+escapeHtml(i.codigo+(i.unidad?' · '+i.unidad:''))+'</option>';
   }).join('');
+}
+
+/* Busca el insumo por nombre exacto, y si no por código */
+function _insPorNombre(txt){
+  const t = String(txt||'').trim().toLowerCase();
+  if(!t) return null;
+  const L = ed.insList||[];
+  return L.find(function(x){ return String(x.nombre||'').trim().toLowerCase() === t; })
+      || L.find(function(x){ return String(x.codigo||'').trim().toLowerCase() === t; })
+      || null;
 }
 
 async function _reloadArbolForce(){ ed.arbol=null; await loadArbol(); }
@@ -4122,8 +4154,10 @@ function _rowHtml(it,i){
   if(isMat){
     const ins=(ed.insList||[]).find(function(x){return x.codigo===it.codigo_catalogo;});
     const nm=it.material||(ins?ins.nombre:'');
-    mid='<div class="ci-codwrap"><input class="ci-cod" data-i="'+i+'" list="compInsList" value="'+escapeHtml(it.codigo_catalogo||'')+'" placeholder="código insumo"><button type="button" class="ci-newins" data-i="'+i+'" title="Crear insumo nuevo">＋</button></div>'+
-        '<span class="ci-name" data-i="'+i+'">'+escapeHtml(nm||'')+'</span>';
+    mid='<div class="ci-codwrap"><input class="ci-cod" data-i="'+i+'" list="compInsList" value="'+escapeHtml(nm||it.codigo_catalogo||'')+'" placeholder="Escribí el insumo…"><button type="button" class="ci-newins" data-i="'+i+'" title="Crear insumo nuevo">＋</button></div>'+
+        '<span class="ci-name" data-i="'+i+'">'+
+          (it.codigo_catalogo ? escapeHtml(it.codigo_catalogo) : '<em style="color:#c0392b">sin insumo del catálogo</em>')+
+        '</span>';
   } else {
     mid='<input class="ci-mat" data-i="'+i+'" value="'+escapeHtml(it.material||'')+'" placeholder="Ej. Oficial albañil">';
   }
@@ -4235,10 +4269,19 @@ function _bindEditor(){
     renderCompEditor();
   }); });
   right.querySelectorAll('.ci-cod').forEach(function(el){ el.addEventListener('change', function(){
-    const i=+el.getAttribute('data-i'); const code=el.value.trim(); comp.items[i].codigo_catalogo=code;
-    const ins=(ed.insList||[]).find(function(x){return x.codigo===code;});
-    if(ins){ comp.items[i].material=ins.nombre||code; if(ins.unidad) comp.items[i].unidad=ins.unidad; comp.items[i].producto_id=null; }
-    else { comp.items[i].material=code; }
+    const i=+el.getAttribute('data-i'); const txt=el.value.trim();
+    const ins=_insPorNombre(txt);
+    if(ins){
+      comp.items[i].codigo_catalogo = ins.codigo;
+      comp.items[i].material = ins.nombre || ins.codigo;
+      if(ins.unidad) comp.items[i].unidad = ins.unidad;
+      comp.items[i].producto_id = null;
+    }else{
+      // No está en el catálogo: se deja el texto y se avisa con el ＋ al lado
+      comp.items[i].codigo_catalogo = '';
+      comp.items[i].material = txt;
+      if(txt) showToast('«'+txt+'» no está en el catálogo','info','Usá el ＋ para crearlo, o elegí uno de la lista');
+    }
     renderCompEditor();
   }); });
   right.querySelectorAll('.ci-mat').forEach(function(el){ el.addEventListener('input', function(){ comp.items[+el.getAttribute('data-i')].material=el.value; }); });
@@ -5348,6 +5391,20 @@ async function _impApply(a){
 
 
 document.getElementById('btnComp').addEventListener('click', openComposiciones);
+
+/* Atajo desde el presupuesto: abre Composiciones ya posicionado en el
+   capítulo elegido, y al cerrar refresca la lista para poder usar la nueva
+   sin volver a entrar al presupuesto. */
+const _bcn = document.getElementById('pmRubCompNew');
+if(_bcn) _bcn.addEventListener('click', async function(){
+  const cap = (document.getElementById('pmRubCap')||{}).value || '';
+  await openComposiciones();
+  if(cap){
+    const bs = document.getElementById('compSearch');
+    if(bs){ bs.value = cap; comp.search = cap; renderCompTree(); }
+  }
+  comp._volverAlPresupuesto = true;
+});
 document.getElementById('compClose').addEventListener('click', closeComposiciones);
 document.getElementById('compSearch').addEventListener('input', function(e){ comp.search=e.target.value; renderCompTree(); });
 document.getElementById('compNewRubro').addEventListener('click', openNewRubro);
