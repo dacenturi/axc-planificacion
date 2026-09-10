@@ -503,7 +503,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.2 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.3 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -1494,11 +1494,17 @@ async function loadArbol(){
       // Insumos que pertenecen a cada composición: sirve para distinguir después
       // lo que salió de la receta de lo que se agregó a mano en el presupuesto.
       ed.recetaIns = {};
+      const moSinPrecio = {};
       const recPorId = {}; Object.keys(rid).forEach(function(rc){ recPorId[rid[rc]] = rc; });
       if(ids.length){
         const { data:its } = await sb.from('receta_items').select('receta_id,tipo_componente,precio_unit,codigo_catalogo,material').eq('activo', true).in('receta_id', ids);
         (its||[]).forEach(function(x){
-          if(x.tipo_componente==='mano_obra' && Number(x.precio_unit)>0) conMO[x.receta_id]=true;
+          // Antes exigia precio_unit > 0: una linea de mano de obra sin precio
+          // cargado hacia que el rubro figurara «sin M.O.» aunque la tuviera.
+          if(x.tipo_componente==='mano_obra'){
+            conMO[x.receta_id] = true;
+            if(!(Number(x.precio_unit)>0)) moSinPrecio[x.receta_id] = true;
+          }
           const rc = recPorId[x.receta_id];
           if(!rc) return;
           const set = (ed.recetaIns[rc] = ed.recetaIns[rc] || {});
@@ -1511,6 +1517,7 @@ async function loadArbol(){
       ed.arbol.forEach(function(r){
         r.origen = om[r.codigo] || '';
         r.sin_mo = !!rid[r.codigo] && !conMO[rid[r.codigo]];
+        r.mo_sin_precio = !!rid[r.codigo] && !!moSinPrecio[rid[r.codigo]];
       });
     }catch(e2){ console.warn('origen recetas', e2); }
     ed.arbolByCod = {}; ed.byCap = {};
@@ -1949,6 +1956,26 @@ function recalcCostoRubro(r){
   r.precio_total    = r.costo_parcial;          // C. PARCIAL, el costo de la linea
 }
 
+/* Material y mano de obra por unidad de los rubros con receta: salen de
+   los insumos ya explotados en el presupuesto, divididos por la cantidad.
+   Antes la fila mostraba «—» aunque el total sí los contara. */
+function _costosDeReceta(r){
+  const q = Number(r.cantidad)||0;
+  const cod = r.rubro_codigo||'';
+  let mat = 0, mo = 0;
+  (ed.insumos||[]).forEach(function(x){
+    if((x.rubro_codigo||'') !== cod) return;
+    const pu = (x.precio_unitario!=null && x.precio_unitario!=='')
+      ? Number(x.precio_unitario)||0
+      : Number((ed.precioByIns||{})[x.codigo_insumo])||0;
+    const sub = (Number(x.cantidad)||0) * pu;
+    if((x.tipo||'insumo') === 'mano_obra' || /^MO-/i.test(String(x.codigo_insumo||''))) mo += sub;
+    else mat += sub;
+  });
+  return { mat: q>0 ? Math.round(mat/q) : 0, mo: q>0 ? Math.round(mo/q) : 0,
+           matTot: Math.round(mat), moTot: Math.round(mo), hay: (mat+mo) > 0 };
+}
+
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
   setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
@@ -1971,7 +1998,13 @@ function renderRubros(){
       // Material y mano de obra por unidad, como en la planilla. Si estan
       // cargados, el unitario y el total salen de ellos.
       (r.tiene_receta
-        ? '<td class="pm-num" style="color:#9aa3b2">—</td><td class="pm-num" style="color:#9aa3b2">—</td>'
+        ? (function(){ const c=_costosDeReceta(r);
+            return c.hay
+              ? '<td class="pm-num" style="color:#42506a">'+fmtGs(c.mat)+'<div style="font-size:10px;color:#9aa3b2">de la receta</div></td>'+
+                '<td class="pm-num" style="color:'+(c.mo>0?'#3B6D11':'#c0392b')+'">'+fmtGs(c.mo)+
+                  '<div style="font-size:10px;color:'+(c.mo>0?'#9aa3b2':'#c0392b')+'">'+(c.mo>0?'de la receta':'sin mano de obra')+'</div></td>'
+              : '<td class="pm-num" style="color:#9aa3b2">—</td><td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">recalculá los insumos</span></td>';
+          })()
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="material_unit" value="'+
             fmtGs(Number(r.material_unit)||0)+'" style="text-align:right"></td>'+
           '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="mano_obra_unit" value="'+
@@ -1979,12 +2012,20 @@ function renderRubros(){
       // CC. unitario: material + mano de obra. Se puede escribir directo y el
       // parcial se recalcula, para los rubros donde no se desglosa el costo.
       (r.tiene_receta
-        ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">de la receta</span></td>'
+        ? (function(){ const c=_costosDeReceta(r);
+            return c.hay
+              ? '<td class="pm-num"><b>'+fmtGs(c.mat+c.mo)+'</b><div style="font-size:10px;color:#9aa3b2">de la receta</div></td>'
+              : '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">de la receta</span></td>';
+          })()
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_unit" value="'+
             fmtGs(Number(r.cantidad)>0 ? Math.round((Number(r.precio_total)||0)/Number(r.cantidad)) : 0)+
             '" style="text-align:right"></td>') +
       (r.tiene_receta
-        ? '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>'
+        ? (function(){ const c=_costosDeReceta(r);
+            return c.hay
+              ? '<td class="pm-num"><b>'+fmtGs(c.matTot+c.moTot)+'</b><div style="font-size:10px;color:#9aa3b2">por cantidad</div></td>'
+              : '<td class="pm-num" style="color:#9aa3b2">— <span style="font-size:10px">por cantidad</span></td>';
+          })()
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
       // Orden manual: el residente decide qué rubro va primero en el papel
       '<td style="white-space:nowrap">'+
@@ -4158,7 +4199,10 @@ function _extraBadge(rubroCod, it){
 }
 
 function _sinMOBadge(r){
-  return (r && r.sin_mo) ? '<span class="nomo-badge" title="Esta composición no tiene mano de obra: el costo que muestra es solo material">⚠ sin M.O.</span>' : '';
+  if(!r) return '';
+  if(r.sin_mo) return '<span class="nomo-badge" title="Esta composición no tiene ninguna línea de mano de obra: el costo que muestra es solo material">⚠ sin M.O.</span>';
+  if(r.mo_sin_precio) return '<span class="nomo-badge" title="Tiene mano de obra, pero alguna línea quedó sin precio cargado">⚠ M.O. sin precio</span>';
+  return '';
 }
 function _origenBadge(o){
   const l=_origenLabel(o); if(!l) return '';
