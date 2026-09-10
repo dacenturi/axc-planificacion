@@ -503,7 +503,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.3 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.4 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -1264,6 +1264,10 @@ body{
   .org-obra{background:#E4F3E7;color:#1B5524;border:1px solid #BFE0C7}
   .org-axc{background:#F4F6F9;color:#8893a5;border:1px solid #E4E8EF;font-weight:600}
   .ci-precio.ref{background:#FDF7E8;border-color:#C8A028;color:#8a6d10;font-weight:700}
+  .ci-prec-org{font-size:10px;color:#8893a5;line-height:1.35;margin-top:3px;max-width:210px;white-space:normal;text-align:right}
+  .ci-prec-org.vieja{color:#8a6d10}
+  .autor-badge{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;color:#42506a;
+    background:#eef1f6;border:1px solid #dbe1ea;border-radius:999px;padding:1px 7px;white-space:nowrap}
   .ci-refdot{color:#C8A028;font-weight:800;margin-left:3px;cursor:help}
   .val-seg{display:inline-flex;border:1px solid #d3d9e3;border-radius:8px;overflow:hidden}
   .val-seg button{border:none;background:#fff;padding:5px 12px;font-size:12px;cursor:pointer;color:#4a5568;font-weight:600}
@@ -1360,7 +1364,7 @@ async function loadProfileAndApp(){
 // ════════════════════════════════════════════════════════
 // Estado del editor (en memoria; commit al Guardar)
 // ════════════════════════════════════════════════════════
-const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, listasLoaded:false };
+const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, precioMeta:{}, listasLoaded:false };
 
 // ── Lista ───────────────────────────────────────────────
 async function loadList(){
@@ -1485,9 +1489,16 @@ async function loadArbol(){
     const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
     try{
-      const { data:recs } = await sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true);
-      const om={}, rid={};
-      (recs||[]).forEach(function(x){ if(!(x.rubro_codigo in om)){ om[x.rubro_codigo]=x.origen||''; rid[x.rubro_codigo]=x.id; } });
+      let rq = await sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at').eq('activo', true);
+      if(rq.error) rq = await sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true);
+      const recs = rq.data;
+      const om={}, rid={}, recMeta={};
+      (recs||[]).forEach(function(x){
+        if(!(x.rubro_codigo in om)){
+          om[x.rubro_codigo]=x.origen||''; rid[x.rubro_codigo]=x.id;
+          recMeta[x.rubro_codigo] = { creado_por:x.creado_por||'', created_at:x.created_at||'' };
+        }
+      });
       // rubros cuya composición no tiene mano de obra con importe
       const conMO={};
       const ids=Object.keys(rid).map(function(k){return rid[k];});
@@ -1516,6 +1527,9 @@ async function loadArbol(){
       }
       ed.arbol.forEach(function(r){
         r.origen = om[r.codigo] || '';
+        const rm = (recMeta||{})[r.codigo] || {};
+        r.receta_creado_por = rm.creado_por || '';
+        r.receta_creada_en  = rm.created_at || '';
         r.sin_mo = !!rid[r.codigo] && !conMO[rid[r.codigo]];
         r.mo_sin_precio = !!rid[r.codigo] && !!moSinPrecio[rid[r.codigo]];
       });
@@ -1573,18 +1587,35 @@ function _onCompChange(){
 }
 async function loadInsList(){
   if(ed.insList) return;
+  ed.precioMeta = ed.precioMeta || {};
   try{
     const { data:ins } = await sb.from('insumos').select('codigo,unidad_compra,producto_id').eq('activo', true);
     const ids = (ins||[]).map(function(i){ return i.producto_id; }).filter(function(x){ return x!=null; });
     let names = {}, precios = {};
     if(ids.length){
-      const { data:prods } = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids);
-      (prods||[]).forEach(function(p){ names[String(p.id)] = p.nombre; precios[String(p.id)] = Number(p.precio_referencia)||0; });
+      // Se traen tambien proveedor y fecha: sin eso no se puede juzgar si el
+      // precio de una composicion sigue vigente.
+      let cols = 'id,nombre,precio_referencia,proveedor,precio_actualizado_en,updated_at';
+      let r = await sb.from('productos_catalogo').select(cols).in('id', ids);
+      if(r.error){ r = await sb.from('productos_catalogo').select('id,nombre,precio_referencia').in('id', ids); }
+      (r.data||[]).forEach(function(p){
+        names[String(p.id)] = p.nombre;
+        precios[String(p.id)] = Number(p.precio_referencia)||0;
+        ed.precioMeta[String(p.id)] = {
+          proveedor: p.proveedor || '',
+          fecha: p.precio_actualizado_en || p.updated_at || ''
+        };
+      });
     }
     ed.precioByIns = {};
     ed.prodIdByIns = {};
     (ins||[]).forEach(function(i){ ed.precioByIns[i.codigo] = i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0; if(i.producto_id!=null) ed.prodIdByIns[i.codigo] = String(i.producto_id); });
-    ed.insList = (ins||[]).map(function(i){ return { codigo:i.codigo, unidad:i.unidad_compra||'', nombre: names[String(i.producto_id)]||'', precio: (i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0) }; });
+    ed.insList = (ins||[]).map(function(i){
+      const meta = (i.producto_id!=null ? (ed.precioMeta[String(i.producto_id)]||{}) : {});
+      return { codigo:i.codigo, unidad:i.unidad_compra||'', nombre: names[String(i.producto_id)]||'',
+               precio: (i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0),
+               proveedor: meta.proveedor||'', precioFecha: meta.fecha||'' };
+    });
     ed.insList.sort(function(a,b){
       const na=parseInt((String(a.codigo).match(/(\d+)/)||[])[1]||'999999',10);
       const nb=parseInt((String(b.codigo).match(/(\d+)/)||[])[1]||'999999',10);
@@ -4112,7 +4143,7 @@ function renderCompTree(){
         '<button type="button" class="rub-del" data-cod="'+escapeHtml(r.codigo)+'" title="Dar de baja rubro">✕</button>'+
         '<span class="rdot">'+dot+'</span>'+
         '<span class="rc">'+escapeHtml(r.codigo)+'</span>'+
-        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+_origenBadge(r.origen)+_sinMOBadge(r)+'</span>'+
+        '<span class="rn">'+escapeHtml(r.nombre||'')+(r.unidad?' · '+escapeHtml(r.unidad):'')+_origenBadge(r.origen)+_autorComp(r)+_sinMOBadge(r)+'</span>'+
       '</div>';
     });
   });
@@ -4176,6 +4207,19 @@ function _origenLabel(o){
   const op=ORIGEN_OPCIONES.filter(function(x){return x.v===v;})[0];
   return op ? op.l : 'AXC';            // todos los rubros muestran su origen
 }
+/* Si la composición no es de la revista ni del catálogo AXC, la firma quien
+   la elaboró: sin eso no se sabe a quién preguntarle por los coeficientes. */
+function _autorComp(r){
+  if(!r) return '';
+  const v = _origenValor(r.origen);
+  if(v === 'revista') return '';
+  const quien = r.creado_por || r.receta_creado_por || '';
+  const cuando = r.receta_creada_en || r.created_at || '';
+  if(!quien && !cuando) return '';
+  const nom = String(quien).split('@')[0];
+  return '<span class="autor-badge" title="Quién elaboró esta composición">✎ '+
+    escapeHtml(nom || 'sin autor')+(cuando ? (' · '+_fechaCorta(cuando)) : '')+'</span>';
+}
 // Texto completo del origen, siempre visible en la ficha
 function _origenTexto(o){
   const v=_origenValor(o);
@@ -4213,6 +4257,34 @@ function _origenBadge(o){
 // El presupuesto y la orden de compra siguen usando el catálogo.
 function _hasRef(it){ return it && it.tipo==='insumo' && it.precio_unit!=null && it.precio_unit!=='' && Number(it.precio_unit)>0; }
 function _catPrice(it){ const p=ed.precioByIns[it.codigo_catalogo]; return (p!=null && p>0)?p:0; }
+
+/* De dónde salió el precio y de cuándo es. Un precio de hace ocho meses no
+   sirve para costear, y hasta ahora no había forma de saberlo. */
+function _precioOrigen(it){
+  const ins = (ed.insList||[]).find(function(x){ return x.codigo === it.codigo_catalogo; });
+  if(!ins) return '';
+  const partes = [];
+  if(ins.nombre) partes.push(escapeHtml(ins.nombre));
+  if(ins.proveedor) partes.push(escapeHtml(ins.proveedor));
+  let vieja = false;
+  if(ins.precioFecha){
+    const d = new Date(ins.precioFecha);
+    if(!isNaN(d)){
+      const dias = Math.floor((Date.now() - d.getTime()) / 86400000);
+      partes.push('actualizado ' + _fechaCorta(ins.precioFecha) + (dias>90 ? (' · hace '+Math.round(dias/30)+' meses') : ''));
+      vieja = dias > 90;
+    }
+  } else {
+    partes.push('sin fecha de actualización');
+    vieja = true;
+  }
+  if(!partes.length) return '';
+  return '<div class="ci-prec-org'+(vieja?' vieja':'')+'">'+partes.join(' · ')+'</div>';
+}
+function _fechaCorta(iso){
+  const p = String(iso).slice(0,10).split('-');
+  return p.length===3 ? (p[2]+'/'+p[1]+'/'+p[0]) : String(iso);
+}
 function _priceOf(it){
   if(it.tipo==='insumo'){
     if(_valMode==='ref' && _hasRef(it)) return Number(it.precio_unit)||0;
@@ -4273,7 +4345,8 @@ function _rowHtml(it,i){
     '<td class="n"><input class="ci-c2" data-i="'+i+'" value="'+escapeHtml(String(it.coef2!=null?it.coef2:''))+'" style="text-align:right"></td>'+
     '<td class="n"><input class="ci-merma" data-i="'+i+'" value="'+escapeHtml(String(mermaDisp||0))+'" style="text-align:right"></td>'+
     '<td class="n" style="white-space:nowrap"><input class="ci-precio'+((esRef&&editandoRef)?' ref':'')+'" data-i="'+i+'" value="'+escapeHtml(String(precioVal===''?'':(precioVal||0)))+'"'+precioRO+precioTit+' style="text-align:right;width:88px">'+
-      (esRef?'<span class="ci-refdot" title="Precio de referencia — catálogo: '+fmtGs(_catPrice(it))+'">◆</span>':'')+'</td>'+
+      (esRef?'<span class="ci-refdot" title="Precio de referencia — catálogo: '+fmtGs(_catPrice(it))+'">◆</span>':'')+
+      (isMat ? _precioOrigen(it) : '')+'</td>'+
     '<td class="n ci-linecost" data-i="'+i+'">'+fmtGs(_lineCost(it))+'</td>'+
     '<td><button type="button" class="ci-del" data-i="'+i+'">✕</button></td>'+
   '</tr>';
