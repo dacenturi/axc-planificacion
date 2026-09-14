@@ -588,6 +588,8 @@ body{
 .kpi-card.aprobado::before{background:linear-gradient(180deg,#1B5524 0%,#2A7A35 100%)}
 .kpi-card.solicitado::before{background:linear-gradient(180deg,var(--gold) 0%,var(--gold-soft) 100%)}
 .kpi-card.rechazado::before{background:linear-gradient(180deg,#A32D2D 0%,#C8302A 100%)}
+.kpi-card.espera::before{background:linear-gradient(180deg,#C8A028 0%,#E5C658 100%)}
+.kpi-card.espera .kpi-icon{background:rgba(200,160,40,.12);color:#8a6d10}
 .kpi-card.contado::before{background:linear-gradient(180deg,#0EA5E9 0%,#0284C7 100%)}
 .kpi-card.credito::before{background:linear-gradient(180deg,#7C5CFC 0%,#6D28D9 100%)}
 .kpi-label{
@@ -1063,7 +1065,7 @@ body{
   <div class="kpi-grid" id="kpiGrid">
     <div class="kpi-card total">
       <div class="kpi-icon">💰</div>
-      <div class="kpi-label">Valor Total Comprado</div>
+      <div class="kpi-label">Comprado · OC aprobadas</div>
       <div class="kpi-value" id="kpiTotalValor">—</div>
       <div class="kpi-trend" id="kpiTotalTrend">&nbsp;</div>
     </div>
@@ -1075,25 +1077,25 @@ body{
     </div>
     <div class="kpi-card solicitado">
       <div class="kpi-icon">⏳</div>
-      <div class="kpi-label">OC Solicitadas</div>
+      <div class="kpi-label">Pendientes de aprobar</div>
       <div class="kpi-value" id="kpiSolicitadas">—</div>
       <div class="kpi-trend" id="kpiSolicitadasTrend">&nbsp;</div>
     </div>
-    <div class="kpi-card rechazado">
-      <div class="kpi-icon">✗</div>
-      <div class="kpi-label">OC Rechazadas</div>
-      <div class="kpi-value" id="kpiRechazadas">—</div>
-      <div class="kpi-trend" id="kpiRechazadasTrend">&nbsp;</div>
+    <div class="kpi-card espera">
+      <div class="kpi-icon">🕐</div>
+      <div class="kpi-label">Espera de aprobación</div>
+      <div class="kpi-value" id="kpiEspera">—</div>
+      <div class="kpi-trend" id="kpiEsperaTrend">&nbsp;</div>
     </div>
     <div class="kpi-card contado">
       <div class="kpi-icon">💵</div>
-      <div class="kpi-label">Total Contado</div>
+      <div class="kpi-label">Contado · de lo aprobado</div>
       <div class="kpi-value compact" id="kpiContado">—</div>
       <div class="kpi-trend" id="kpiContadoTrend">&nbsp;</div>
     </div>
     <div class="kpi-card credito">
       <div class="kpi-icon">🧾</div>
-      <div class="kpi-label">Total Crédito</div>
+      <div class="kpi-label">Crédito · a pagar</div>
       <div class="kpi-value compact" id="kpiCredito">—</div>
       <div class="kpi-trend" id="kpiCreditoTrend">&nbsp;</div>
     </div>
@@ -1717,31 +1719,51 @@ function renderKPIs(){
   // Totales por condición de pago (Contado / Crédito), sobre todas las OC
   // solicitadas del período (excluye Anuladas). Se lee del campo Tipo de compra,
   // normalizado sin acentos ni mayúsculas para tolerar "Crédito"/"Credito".
-  const contadoMonto = noAnuladas.reduce((acc,it) =>
+  // Contado y crédito se calculan sobre LO APROBADO, igual que el total
+  // comprado. Antes se calculaban sobre todo lo solicitado y por eso los
+  // dos números no cerraban entre sí en la misma pantalla.
+  const contadoMonto = aprobadosItems.reduce((acc,it) =>
     acc + (tipoPago(it.oc_tipo_compra) === 'contado' ? (Number(it.subtotal)||0) : 0), 0);
-  const creditoMonto = noAnuladas.reduce((acc,it) =>
+  const creditoMonto = aprobadosItems.reduce((acc,it) =>
     acc + (tipoPago(it.oc_tipo_compra) === 'credito' ? (Number(it.subtotal)||0) : 0), 0);
 
+  // Monto que todavía espera aprobación: es lo que el dueño puede frenar
+  const pendItems = items.filter(it => it.oc_estado === 'Solicitado' || it.oc_estado === 'Observado');
+  const pendMonto = pendItems.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
+
+  // Cuánto llevan esperando las pendientes
+  const pendFechas = new Map();
+  pendItems.forEach(it => { if(it.oc_fecha && !pendFechas.has(it.oc_id)) pendFechas.set(it.oc_id, it.oc_fecha); });
+  const dias = [...pendFechas.values()].map(f => Math.floor((Date.now() - new Date(f).getTime())/86400000))
+                                       .filter(d => d >= 0 && d < 3650);
+  const diasProm = dias.length ? Math.round(dias.reduce((a,b)=>a+b,0)/dias.length) : 0;
+  const masDe30  = dias.filter(d => d > 30).length;
+
   document.getElementById('kpiTotalValor').textContent = fmtMoneyCompact(totalValor);
-  document.getElementById('kpiTotalTrend').innerHTML = `Sobre <strong>${totalOC}</strong> OC en el período`;
+  document.getElementById('kpiTotalTrend').innerHTML = `<strong>${aprob}</strong> OC aprobadas de <strong>${totalOC}</strong> en el período`;
 
   document.getElementById('kpiAprobadas').textContent = aprob;
   const pct = totalOC > 0 ? Math.round((aprob/totalOC)*100) : 0;
   document.getElementById('kpiAprobadasTrend').innerHTML = `<strong>${pct}%</strong> del total filtrado`;
 
   document.getElementById('kpiSolicitadas').textContent = solic;
-  document.getElementById('kpiSolicitadasTrend').innerHTML = `<strong>${fmtMoney(solicitadoMonto)}</strong> solicitado en el período`;
+  document.getElementById('kpiSolicitadasTrend').innerHTML = `<strong>${fmtMoney(pendMonto)}</strong> esperando decisión`;
 
-  document.getElementById('kpiRechazadas').textContent = rech;
-  document.getElementById('kpiRechazadasTrend').textContent = 'No aprobadas';
+  const elEsp = document.getElementById('kpiEspera');
+  if(elEsp){
+    elEsp.textContent = dias.length ? (diasProm + (diasProm===1?' día':' días')) : '—';
+    document.getElementById('kpiEsperaTrend').innerHTML = dias.length
+      ? (masDe30 ? `<strong>${masDe30}</strong> con más de 30 días` : 'Ninguna pasa los 30 días')
+      : 'Sin OC pendientes';
+  }
 
   document.getElementById('kpiContado').textContent = fmtMoneyCompact(contadoMonto);
   document.getElementById('kpiContado').title = fmtMoney(contadoMonto);
-  document.getElementById('kpiContadoTrend').innerHTML = `<strong>${fmtMoney(contadoMonto)}</strong> en compras al contado`;
+  document.getElementById('kpiContadoTrend').innerHTML = `<strong>${totalValor>0?Math.round(contadoMonto/totalValor*100):0}%</strong> de lo comprado`;
 
   document.getElementById('kpiCredito').textContent = fmtMoneyCompact(creditoMonto);
   document.getElementById('kpiCredito').title = fmtMoney(creditoMonto);
-  document.getElementById('kpiCreditoTrend').innerHTML = `<strong>${fmtMoney(creditoMonto)}</strong> en compras a crédito`;
+  document.getElementById('kpiCreditoTrend').innerHTML = `<strong>${totalValor>0?Math.round(creditoMonto/totalValor*100):0}%</strong> de lo comprado · deuda con proveedores`;
 }
 
 // Clasifica el Tipo de compra en condición de pago: 'contado', 'credito' u 'otro'.
@@ -2561,13 +2583,13 @@ async function exportPDF(incluirDetalle = true){
     const aprob = [...ocsUnicas.values()].filter(s => s === 'Aprobado').length;
     const solic = [...ocsUnicas.values()].filter(s => s === 'Solicitado' || s === 'Observado').length;
     const rech = [...ocsUnicas.values()].filter(s => s === 'Rechazado').length;
-    // Monto total solicitado del período (todas las OC menos las Anuladas)
-    const noAnuladasPdf = state.filtered.filter(it => it.oc_estado !== 'Anulada');
-    const solicitadoMonto = noAnuladasPdf.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
-    // Totales por condición de pago (mismo universo: excluye Anuladas)
-    const contadoMonto = noAnuladasPdf.reduce((acc,it) =>
+    // Mismo criterio que la pantalla: el dinero se mide sobre lo aprobado,
+    // y lo pendiente se informa aparte. Así el PDF y el tablero coinciden.
+    const pendItemsPdf = state.filtered.filter(it => it.oc_estado === 'Solicitado' || it.oc_estado === 'Observado');
+    const solicitadoMonto = pendItemsPdf.reduce((acc,it) => acc + (Number(it.subtotal)||0), 0);
+    const contadoMonto = aprobadosItems.reduce((acc,it) =>
       acc + (tipoPago(it.oc_tipo_compra) === 'contado' ? (Number(it.subtotal)||0) : 0), 0);
-    const creditoMonto = noAnuladasPdf.reduce((acc,it) =>
+    const creditoMonto = aprobadosItems.reduce((acc,it) =>
       acc + (tipoPago(it.oc_tipo_compra) === 'credito' ? (Number(it.subtotal)||0) : 0), 0);
 
     doc.setTextColor(31, 56, 100);
@@ -2579,9 +2601,9 @@ async function exportPDF(incluirDetalle = true){
     y += 8;
 
     const kpis = [
-      ['Valor Total Comprado', fmtPdfMoney(totalValor), [31,56,100]],
+      ['Comprado (OC aprobadas)', fmtPdfMoney(totalValor), [31,56,100]],
       ['OC Aprobadas', String(aprob), [27,85,36]],
-      ['OC Solicitadas', String(solic), [122,86,0], fmtPdfMoney(solicitadoMonto) + ' solicitado'],
+      ['Pendientes de aprobar', String(solic), [122,86,0], fmtPdfMoney(solicitadoMonto) + ' esperando decision'],
       ['OC Rechazadas', String(rech), [163,45,45]],
     ];
     const kpiW = (pageW - M*2 - 6) / 4;
@@ -2614,8 +2636,8 @@ async function exportPDF(incluirDetalle = true){
 
     // Segunda fila de KPIs: condición de pago (Contado / Crédito)
     const kpisPago = [
-      ['Total Contado', fmtPdfMoney(contadoMonto), [2,132,199]],
-      ['Total Credito', fmtPdfMoney(creditoMonto), [109,40,217]],
+      ['Contado (de lo aprobado)', fmtPdfMoney(contadoMonto), [2,132,199]],
+      ['Credito a pagar (de lo aprobado)', fmtPdfMoney(creditoMonto), [109,40,217]],
     ];
     const kpiW2 = (pageW - M*2 - 2) / 2;
     kpisPago.forEach((k, i) => {
