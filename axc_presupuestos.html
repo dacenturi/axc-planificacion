@@ -528,7 +528,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.2 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.4 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -1191,7 +1191,19 @@ body{
   .comp-addrow button{border:1px solid #1F3864;background:#eef2f8;color:#1F3864;border-radius:8px;padding:7px 13px;font-size:12.5px;font-weight:700;cursor:pointer}
   .comp-addrow button:hover{background:#1F3864;color:#fff}
   .comp-foot{margin-top:auto;position:sticky;bottom:0;background:#f4f6fa;padding-top:14px;border-top:2px solid #C8A028;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
-  .comp-total{font-size:13px;color:#42506a}
+  .comp-obs-wrap{margin-top:14px}
+.comp-obs-lbl{display:block;font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#1F3864;margin-bottom:5px}
+.comp-obs-lbl span{font-weight:600;text-transform:none;letter-spacing:0;color:#8893a5}
+.comp-obs{width:100%;border:1.5px solid #d6dde9;border-radius:9px;padding:9px 12px;font-size:13px;
+  font-family:inherit;resize:vertical;line-height:1.5;color:#3a4560}
+.comp-obs:focus{outline:none;border-color:#1F3864;box-shadow:0 0 0 3px rgba(31,56,100,.1)}
+.pp-dup{border:1px solid #d6dde9;background:#fff;border-radius:8px;width:30px;height:30px;font-size:14px;
+  cursor:pointer;color:#42506a;line-height:1;margin-left:8px;flex:0 0 auto}
+.pp-dup:hover{border-color:#1F3864;background:#EDF3FB;color:#1F3864}
+.rub-obs{border:none;background:#fdf8ec;color:#8a6d10;border-radius:6px;width:22px;height:22px;
+  font-size:12px;cursor:pointer;line-height:1;margin-left:6px;vertical-align:middle}
+.rub-obs:hover{background:#f6ead0}
+.comp-total{font-size:13px;color:#42506a}
   .comp-total b{font-size:20px;color:#1F3864;font-family:ui-monospace,Menlo,Consolas,monospace}
   .comp-foot-actions{display:flex;gap:8px}
   .comp-tipo-mo{background:#f3f1ea}
@@ -1507,9 +1519,13 @@ function renderList(){
       '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+'</div>' +
       '<div class="pp-total" data-cod="'+escapeHtml(p.codigo)+'"><span class="pp-total-v">…</span></div>' +
       '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
+      '<button type="button" class="pp-dup" data-dup="'+escapeHtml(p.codigo)+'" title="Duplicar este presupuesto">⧉</button>' +
       '<span class="pp-chev">›</span></div>';
   }).join('');
   box.querySelectorAll('.pp-row').forEach(function(r){ r.addEventListener('click', function(){ openEdit(r.dataset.cod); }); });
+  box.querySelectorAll('button[data-dup]').forEach(function(b){
+    b.addEventListener('click', function(ev){ ev.stopPropagation(); duplicarPresupuesto(b.getAttribute('data-dup')); });
+  });
 }
 
 function suggestNextCode(){
@@ -1525,14 +1541,14 @@ async function loadArbol(){
     const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
     try{
-      let rq = await sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at').eq('activo', true);
+      let rq = await sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion').eq('activo', true);
       if(rq.error) rq = await sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true);
       const recs = rq.data;
       const om={}, rid={}, recMeta={};
       (recs||[]).forEach(function(x){
         if(!(x.rubro_codigo in om)){
           om[x.rubro_codigo]=x.origen||''; rid[x.rubro_codigo]=x.id;
-          recMeta[x.rubro_codigo] = { creado_por:x.creado_por||'', created_at:x.created_at||'' };
+          recMeta[x.rubro_codigo] = { creado_por:x.creado_por||'', created_at:x.created_at||'', observacion:x.observacion||'' };
         }
       });
       // rubros cuya composición no tiene mano de obra con importe
@@ -1568,6 +1584,7 @@ async function loadArbol(){
         const rm = (recMeta||{})[r.codigo] || {};
         r.receta_creado_por = rm.creado_por || '';
         r.receta_creada_en  = rm.created_at || '';
+        r.receta_obs        = rm.observacion || '';
         r.sin_mo = !!rid[r.codigo] && !conMO[rid[r.codigo]];
         r.mo_sin_precio = !!rid[r.codigo] && !!moSinPrecio[rid[r.codigo]];
       });
@@ -1610,6 +1627,12 @@ function _costoComposicion(codigo){
   return Math.round(tot);
 }
 
+/* Texto normalizado para buscar: sin acentos ni mayúsculas */
+function _txtBuscar(v){
+  return String(v==null?'':v).toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
+}
+
 function _fillCompSelect(){
   const cap = (document.getElementById('pmRubCap').value||'');
   const sel = document.getElementById('pmRubComp');
@@ -1620,9 +1643,9 @@ function _fillCompSelect(){
     const c0=document.getElementById('pmRubCompCnt'); if(c0) c0.textContent='';
     _rubLiveUpdate(); return;
   }
-  const q = norm((document.getElementById('pmRubCompBuscar')||{}).value || '');
+  const q = _txtBuscar((document.getElementById('pmRubCompBuscar')||{}).value || '');
   let items = ed.byCap[cap].slice().sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo)); });
-  if(q) items = items.filter(function(r){ return norm(r.codigo+' '+r.nombre).indexOf(q) >= 0; });
+  if(q) items = items.filter(function(r){ return _txtBuscar(r.codigo+' '+r.nombre).indexOf(q) >= 0; });
   sel.innerHTML = '<option value="">Composición…</option>' +
     items.map(function(r){
       const icon = r.tiene_receta ? '🧱 ' : '💰 ';
@@ -1798,6 +1821,134 @@ function _aplicarPermisoMargen(){
   const b=document.getElementById('pmPropBtn');
   if(b) b.style.display = state.puedeVerMargen ? '' : 'none';
 }
+
+/* ── Duplicar un presupuesto ─────────────────────────────────────────
+   Copiar uno viejo ahorra mucha carga, pero arrastra los precios de
+   entonces. Por eso se ofrece recalcular con los precios de hoy: las
+   cantidades y los rubros son lo que se reutiliza, los precios no. */
+async function duplicarPresupuesto(codigo){
+  const h = (state.list||[]).find(function(x){ return x.codigo === codigo; });
+  if(!h) return;
+  const edadDias = h.actualizado_en || h.creado_en
+    ? Math.floor((Date.now() - new Date(h.actualizado_en||h.creado_en).getTime())/86400000) : null;
+  const viejo = edadDias != null && edadDias > 60;
+
+  const r1 = await axcPrompt({
+    titulo:'Duplicar '+codigo,
+    subtitulo:h.descripcion||'',
+    mensaje:'Se copian los rubros, las cantidades y los insumos a un presupuesto nuevo. '+
+            'El original no se toca.',
+    label:'Código del presupuesto nuevo',
+    valor:_proximoCodigoPP(),
+    placeholder:'Ej. PP80'
+  });
+  if(!r1) return;
+  const nuevoCod = String(r1).trim().toUpperCase();
+  if(!nuevoCod) return;
+  if((state.list||[]).some(function(x){ return (x.codigo||'').toUpperCase() === nuevoCod; })){
+    showToast('Ya existe un presupuesto con ese código','error'); return;
+  }
+
+  const rec = await pmAvisoSalida({
+    titulo:'¿Con qué precios?',
+    subtitulo:nuevoCod+' · copia de '+codigo,
+    texto: viejo
+      ? ('El presupuesto original es de hace <b>'+Math.round(edadDias/30)+' meses</b>. Los precios de entonces '+
+         'ya no son los de hoy: el cemento, la arena y la mano de obra cambiaron.')
+      : 'Podés traer los precios tal como están en el original, o recalcularlos con el catálogo de hoy.',
+    puntos:['<b>Recalcular</b> vuelve a explotar las composiciones con los precios actuales del catálogo. Las cantidades no cambian.',
+            '<b>Copiar tal cual</b> deja los precios congelados del original. Sirve para versionar un presupuesto reciente.',
+            'En los dos casos se copian los rubros, los sectores y las cantidades.'],
+    textoVolver:'Copiar tal cual',
+    textoGuardar:'Recalcular con precios de hoy',
+    ocultarSalir:true,
+    onGuardar: async function(){ /* la decisión se toma abajo */ }
+  });
+  const recalcular = (rec === 'guardado');
+
+  try{
+    showToast('Duplicando '+codigo+'…','info');
+    const [rub, ins] = await Promise.all([
+      sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden'),
+      sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo)
+    ]);
+    const _u = _userTag(), _now = new Date().toISOString();
+    const cab = { codigo:nuevoCod, obra:h.obra, descripcion:(h.descripcion||'')+' (copia de '+codigo+')',
+                  iva_pct:h.iva_pct, activo:false, creado_por:_u, creado_en:_now,
+                  actualizado_por:_u, actualizado_en:_now, origen:h.origen||null };
+    const c1 = await sb.from('presupuesto_cab').insert(cab);
+    if(c1.error) throw c1.error;
+
+    const filasR = (rub.data||[]).map(function(r,i){
+      const c = {...r}; delete c.id; delete c.created_at;
+      c.presupuesto = nuevoCod; c.orden = i+1; return c;
+    });
+    if(filasR.length){
+      const r2 = await sb.from('presupuesto_rubros').insert(filasR);
+      if(r2.error) throw r2.error;
+    }
+    if(!recalcular && (ins.data||[]).length){
+      const filasI = (ins.data||[]).map(function(x){
+        const c = {...x}; delete c.id; delete c.created_at;
+        c.presupuesto = nuevoCod; return c;
+      });
+      const r3 = await sb.from('presupuesto_insumos').insert(filasI);
+      if(r3.error) throw r3.error;
+    }
+    _audit('presupuesto', nuevoCod, 'duplicar', { desde: codigo, recalculado: recalcular });
+    await loadList();
+    showToast('Presupuesto '+nuevoCod+' creado', 'success',
+      'Copia de '+codigo+' · queda en borrador'+(recalcular?' · falta recalcular los insumos':''));
+    await openEdit(nuevoCod);
+    if(recalcular){
+      await calcInsumosFromRecetas(true);
+      renderRubros(); renderInsumos();
+      ed.tocado = true;
+      showToast('Insumos recalculados con los precios de hoy','success','Revisá y guardá el presupuesto');
+    }
+  }catch(e){
+    console.warn('duplicar', e);
+    showToast('No se pudo duplicar','error', e.message||String(e));
+  }
+}
+
+/* Sugerencia de código: el siguiente PP libre */
+function _proximoCodigoPP(){
+  let max = 0;
+  (state.list||[]).forEach(function(p){
+    const m = /^PP(\d+)/i.exec(String(p.codigo||''));
+    if(m) max = Math.max(max, Number(m[1])||0);
+  });
+  return 'PP' + (max + 1);
+}
+
+/* Prompt con la estética del sistema */
+function axcPrompt(o){
+  return new Promise(function(resolve){
+    const ov = document.getElementById('sgOv');
+    document.getElementById('sgTit').textContent = o.titulo||'';
+    document.getElementById('sgSub').textContent = o.subtitulo||'';
+    document.getElementById('sgTexto').innerHTML = (o.mensaje||'')+
+      '<div style="margin-top:14px"><label style="display:block;font-size:11px;font-weight:800;'+
+      'text-transform:uppercase;letter-spacing:.4px;color:#1F3864;margin-bottom:5px">'+escapeHtml(o.label||'')+'</label>'+
+      '<input id="sgInput" style="width:100%;border:1.5px solid #d6dde9;border-radius:9px;padding:10px 13px;'+
+      'font-size:14px;font-family:inherit" value="'+escapeHtml(o.valor||'')+'" placeholder="'+escapeHtml(o.placeholder||'')+'"></div>';
+    document.getElementById('sgLista').innerHTML = '';
+    document.getElementById('sgSalir').style.display = 'none';
+    document.getElementById('sgVolver').textContent = 'Cancelar';
+    const bG = document.getElementById('sgGuardar');
+    bG.style.display = ''; bG.textContent = 'Continuar';
+    ov.classList.add('show');
+    const inp = document.getElementById('sgInput');
+    setTimeout(function(){ inp && inp.focus(); inp && inp.select(); }, 60);
+    function cerrar(v){ ov.classList.remove('show'); resolve(v); }
+    document.getElementById('sgVolver').onclick = function(){ cerrar(null); };
+    bG.onclick = function(){ cerrar(document.getElementById('sgInput').value); };
+    if(inp) inp.onkeydown = function(e){ if(e.key==='Enter'){ e.preventDefault(); bG.click(); } };
+    ov.onclick = function(e){ if(e.target===ov) cerrar(null); };
+  });
+}
+
 function openNew(){
   ed.open = true; ed.isNew = true; ed.origCodigo = '';
   ed.rubros = []; ed.insumos = [];
@@ -1912,7 +2063,7 @@ async function openEdit(codigo){
   const h = state.list.find(function(x){ return x.codigo === codigo; });
   if(!h) return;
   ed.open = true; ed.isNew = false; ed.origCodigo = codigo;
-  ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.tocado = false;
+  ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.tocado = false; ed.abiertoCon = null;
   document.getElementById('pmTitle').textContent = 'Editar ' + codigo;
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
@@ -1930,6 +2081,7 @@ async function openEdit(codigo){
   await loadListas();
   _setObraValue(h.obra || '');
   try{
+    ed.abiertoCon = h.actualizado_en || h.creado_en || null;   // para detectar guardados de otros
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
     ed.rubros = (rub||[]).map(function(r){
       const cat = ed.arbolByCod[String(r.rubro_codigo||'')];
@@ -2226,7 +2378,10 @@ function renderRubros(){
       '<td><div class="pm-rubcell">'+
         (r.capitulo ? '<span class="pm-rubcap">'+escapeHtml(r.capitulo)+'</span>' : '<span class="pm-rubcap pm-rubcap-empty">(Sin capítulo)</span>')+
         tag+'</div></td>' +
-      '<td><div class="pm-desccell"><span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+
+      // Si la composición tiene observación, un ícono discreto la muestra
+      '<td><div class="pm-desccell"><span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+
+        ((_cat && _cat.receta_obs) ? '<button type="button" class="rub-obs" data-obs="'+escapeHtml(r.rubro_codigo||'')+'" title="Esta composición tiene una observación">📝</button>' : '')+
+        '</span>'+
         '<span class="pm-rubname">'+escapeHtml(r.descripcion||'')+'</span></div></td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
       '<td class="pm-num"><input type="number" step="0.01" data-i="'+i+'" data-f="cantidad" value="'+r.cantidad+'"></td>' +
@@ -2274,6 +2429,22 @@ function renderRubros(){
     return (_unCap ? '' : _filaCap(cap, _porCap[cap])) +
            _porCap[cap].map(function(i){ return _fila(ed.rubros[i], i); }).join('');
   }).join('') + (_unCap ? '' : _filaTot());
+  // Ver la observación de la composición desde el presupuesto
+  tb.querySelectorAll('button[data-obs]').forEach(function(b){
+    b.addEventListener('click', async function(){
+      const cod = b.getAttribute('data-obs');
+      const cat = (ed.arbolByCod||{})[cod] || {};
+      await pmAvisoSalida({
+        titulo:'Observación de la composición',
+        subtitulo:cod+' · '+(cat.nombre||''),
+        texto:escapeHtml(cat.receta_obs||'').replace(/\n/g,'<br>'),
+        puntos:[(cat.receta_creado_por ? ('La escribió '+escapeHtml(String(cat.receta_creado_por).split('@')[0])+
+                 (cat.receta_creada_en ? (' el '+_fechaCorta(cat.receta_creada_en)) : '')) : 'Sin autor registrado')],
+        textoVolver:'Cerrar', ocultarSalir:true
+      });
+    });
+  });
+
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
       const i = Number(inp.dataset.i), f = inp.dataset.f;
@@ -2836,6 +3007,39 @@ async function saveBudget(){
   if(!ed.rubros.length){ showToast('Agregá al menos un rubro al presupuesto', 'error'); return; }
   const sinSector = ed.rubros.filter(function(r){ return !r.sector; });
   if(sinSector.length){ showToast('Hay '+sinSector.length+' rubro(s) sin sector. Revisalos.', 'error'); return; }
+  // ¿Alguien guardó mientras vos editabas? El guardado borra los rubros y
+  // los reinserta, así que escribir ahora borraría su trabajo.
+  if(!ed.isNew && ed.abiertoCon){
+    try{
+      const { data:act } = await sb.from('presupuesto_cab')
+        .select('actualizado_en,actualizado_por').eq('codigo', codigo).maybeSingle();
+      const ahora = act && (act.actualizado_en || null);
+      if(ahora && ahora !== ed.abiertoCon){
+        const quien = String((act.actualizado_por)||'otra persona').split('@')[0];
+        const hora  = _lockHora(ahora);
+        const r = await pmAvisoSalida({
+          titulo:'Alguien guardó este presupuesto mientras lo editabas',
+          subtitulo:codigo+' · guardó '+quien+(hora?(' a las '+hora):''),
+          texto:'Si guardás ahora, <b>se borra lo que '+escapeHtml(quien)+' acaba de grabar</b> y queda sólo tu versión. '+
+                'El guardado reemplaza todos los rubros e insumos del presupuesto.',
+          puntos:['<b>Recargar</b> trae la versión de '+escapeHtml(quien)+' y perdés lo que cargaste vos sin guardar.',
+                  '<b>Guardar igual</b> deja tu versión y borra la de '+escapeHtml(quien)+'.',
+                  'Si no estás seguro, recargá y volvé a cargar lo tuyo: es más corto que reconstruir lo del otro.'],
+          textoVolver:'Recargar y perder lo mío',
+          textoGuardar:'Guardar igual (borra lo del otro)',
+          ocultarSalir:true,
+          onGuardar: async function(){ /* sigue el guardado normal */ }
+        });
+        if(r !== 'guardado'){
+          ed.tocado = false;
+          closeModal();
+          await openEdit(codigo);
+          return;
+        }
+      }
+    }catch(e){ console.warn('control de concurrencia', e); }
+  }
+
   if(ed.bloqueado){
     showToast('Este presupuesto está aprobado y no se puede editar','error','Pedí al administrador que lo reabra');
     return;
@@ -2907,6 +3111,7 @@ async function saveBudget(){
       if(ii.error) throw ii.error;
     }
     ed.tocado = false;
+    ed.abiertoCon = new Date().toISOString();   // desde ahora, esta es la versión buena
     // El residente tiene que saber que quedó guardado y en qué estado
     showToast('Presupuesto guardado en el sistema', 'success',
       (ed.codigo||'')+' · '+ed.rubros.length+' rubro'+(ed.rubros.length===1?'':'s')+
@@ -4454,14 +4659,16 @@ function renderCompTree(){
 
 async function selectCompRubro(codigo){
   const r=ed.arbolByCod[String(codigo)]; if(!r) return;
-  comp.rubro=r; comp.recetaId=null; comp.items=[]; comp.origen=''; comp._tocado=false;
+  comp.rubro=r; comp.recetaId=null; comp.items=[]; comp.origen=''; comp.observacion=''; comp._tocado=false;
   if(comp._volverAlPresupuesto) comp._rubroEditado = r.codigo || '';
   const right=document.getElementById('compRight');
   right.innerHTML='<div class="comp-empty-r">Cargando composición…</div>';
   try{
-    const { data:recs } = await sb.from('recetas').select('id,origen').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    let rq0 = await sb.from('recetas').select('id,origen,observacion').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    if(rq0.error) rq0 = await sb.from('recetas').select('id,origen').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    const recs = rq0.data;
     if(recs && recs.length){
-      comp.recetaId=recs[0].id; comp.origen=recs[0].origen||'';
+      comp.recetaId=recs[0].id; comp.origen=recs[0].origen||''; comp.observacion=recs[0].observacion||'';
       const { data:items } = await sb.from('receta_items').select('*').eq('receta_id', comp.recetaId).eq('activo', true).order('orden');
       comp.items=(items||[]).map(function(it){ return {
         id:it.id, tipo:it.tipo_componente||'insumo', codigo_catalogo:it.codigo_catalogo||'',
@@ -4710,6 +4917,12 @@ function renderCompEditor(){
       ? '<div class="comp-refbar" style="background:#FDECEC;border-color:#F2C9C9;color:#8B1F1F"><span>⚠ Esta composición <b>no tiene mano de obra</b>. El costo unitario es solo material: si cotizás con este rubro, el jornal queda afuera.</span></div>'
       : '')+
     '<div class="comp-foot">'+
+      '<div class="comp-obs-wrap">'+
+        '<label class="comp-obs-lbl">Observación de la composición '+
+          '<span>· la ve el residente al cargar el rubro en el presupuesto</span></label>'+
+        '<textarea id="compObs" class="comp-obs" rows="2" placeholder="Ej. el precio incluye andamios · no incluye el hidrófugo · rinde para muro de hasta 3 m">'+
+          escapeHtml(comp.observacion||'')+'</textarea>'+
+      '</div>'+
       '<div class="comp-total">Costo unitario del rubro:&nbsp; <b id="compUnitTotal">Gs '+fmtGs(_unitTotal())+'</b> <span style="color:#8893a5">/ '+escapeHtml(r.unidad||'unidad')+'</span>'+_origenBadge(comp.origen)+'</div>'+
       '<div class="comp-foot-actions">'+
         '<button type="button" class="pm-btn-ghost" id="compCancel">Cancelar</button>'+
@@ -4782,6 +4995,8 @@ function _bindEditor(){
   document.getElementById('compAddMO').addEventListener('click', function(){ comp.items.push({id:null,tipo:'mano_obra',codigo_catalogo:'',material:'',unidad:'jor',coef1:1,coef2:1,merma_pct:0,precio_unit:0,producto_id:null,_removed:false}); renderCompEditor(); });
   document.getElementById('compCancel').addEventListener('click', function(){ selectCompRubro(comp.rubro.codigo); });
   document.getElementById('compSave').addEventListener('click', saveComposicion);
+  const _co = document.getElementById('compObs');
+  if(_co) _co.addEventListener('input', function(){ comp.observacion = _co.value; comp._tocado = true; });
 }
 
 async function copiarComponentesDesde(){
@@ -4823,11 +5038,11 @@ async function saveComposicion(){
     await sb.from('rubros').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||null, capitulo:(r.capitulo||'')||null }).eq('codigo', r.codigo);
     let recetaId=comp.recetaId;
     if(!recetaId){
-      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:_origenValor(comp.origen), activo:true, creado_por:_userTag() }).select('id').single();
+      const insR=await sb.from('recetas').insert({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', rubro_codigo:r.codigo, origen:_origenValor(comp.origen), activo:true, creado_por:_userTag(), observacion:(comp.observacion||null) }).select('id').single();
       if(insR.error) throw insR.error;
       recetaId=insR.data.id; comp.recetaId=recetaId;
     } else {
-      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', origen:_origenValor(comp.origen) }).eq('id', recetaId);
+      await sb.from('recetas').update({ nombre:r.nombre||r.codigo, unidad:r.unidad||'', origen:_origenValor(comp.origen), observacion:(comp.observacion||null) }).eq('id', recetaId);
     }
     let orden=0;
     for(const it of comp.items){
