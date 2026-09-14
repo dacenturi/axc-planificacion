@@ -925,6 +925,30 @@ body{
   .app-header,.page-actions,.filters-panel,.pagination,.btn-pdf,.btn-secondary{display:none !important}
   .chart-card,.kpi-card,.table-card{break-inside:avoid;box-shadow:none;border:1px solid #ccc}
 }
+
+.mat-box{padding:0 4px 14px}
+.mat-input{width:100%;border:1.5px solid var(--border);border-radius:11px;padding:12px 16px;font-size:14px;font-family:inherit;color:var(--navy);background:#fff}
+.mat-input:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px rgba(31,56,100,.08)}
+.mat-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+.mat-chip{background:#fff;border:1px solid var(--border);border-radius:999px;padding:5px 13px;font-size:12px;font-weight:600;color:var(--text-muted);cursor:pointer}
+.mat-chip:hover{border-color:var(--navy);color:var(--navy);background:#EDF3FB}
+.mat-sec{margin-top:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff}
+.mat-sec-h{display:flex;align-items:center;gap:10px;padding:10px 15px;background:#EDF3FB;border-bottom:1px solid var(--border)}
+.mat-sec-h b{font-size:13px;color:var(--navy)}
+.mat-sec-h span{font-size:11.5px;color:var(--text-muted)}
+.mat-sec-h .tot{margin-left:auto;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums}
+.mat-tab{width:100%;border-collapse:collapse;font-size:12.5px}
+.mat-tab th{background:#f7f9fc;color:var(--text-muted);font-weight:700;text-align:left;padding:7px 11px;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.mat-tab td{padding:8px 11px;border-top:1px solid #eef1f6;color:#3a4560;vertical-align:top}
+.mat-tab .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mat-tab tr:hover td{background:#fafbfd}
+.mat-prod{font-weight:600;color:var(--navy);line-height:1.35}
+.mat-prod small{display:block;color:var(--text-muted);font-weight:500;font-size:10.5px}
+.mat-pu{font-weight:800}
+.mat-pu.sube{color:#B03A3A}.mat-pu.baja{color:#1B5524}
+.mat-vacio{padding:28px;text-align:center;color:var(--text-muted);font-size:13px}
+.mat-evo{display:flex;gap:16px;flex-wrap:wrap;padding:12px 15px;background:#FDF8EC;border-top:1px solid #e6d29a;font-size:12px;color:#8a6d10}
+.mat-evo b{color:#6b5409}
 </style>
 </head>
 <body>
@@ -1127,6 +1151,25 @@ body{
       <div class="chart-wrap">
         <canvas id="chartProveedor"></canvas>
       </div>
+    </div>
+  </div>
+
+  <!-- COMPRAS POR MATERIAL -->
+  <div class="chart-grid" id="sec-material">
+    <div class="chart-card col-12">
+      <div class="chart-head">
+        <div class="chart-title">
+          <span class="chart-title-icon navy">🔎</span>
+          <span>Compras por material</span>
+        </div>
+        <span class="chart-meta" id="matMeta">Escribí un material para ver todas sus compras</span>
+      </div>
+      <div class="mat-box">
+        <input id="matBuscar" class="mat-input" type="text" autocomplete="off"
+               placeholder="Ej. cemento · arena · varilla · pintura…">
+        <div class="mat-chips" id="matChips"></div>
+      </div>
+      <div id="matResultado"></div>
     </div>
   </div>
 
@@ -1447,13 +1490,21 @@ async function loadData(){
         oc_proveedor: oc.proveedor || '',
         oc_residente: oc.residente || '',
         oc_tipo_compra: oc.tipo_compra || '',
+        oc_presupuesto: oc.presupuesto || '',
         oc_estado: oc.estado,
         oc_observacion: oc.observacion || '',
       };
     }).filter(Boolean);
 
     populateFilterOptions();
+    renderMatChips();
     applyFiltersAndRender();
+    const _mb = document.getElementById('matBuscar');
+    if(_mb && !_mb._listo){
+      _mb._listo = true;
+      let t = null;
+      _mb.addEventListener('input', function(){ clearTimeout(t); t = setTimeout(renderMaterial, 220); });
+    }
     document.getElementById('pageSubtitle').textContent =
       `${state.ocs.length} órdenes · ${state.items.length} items`;
   }catch(e){
@@ -1687,11 +1738,123 @@ function applyFiltersAndRender(){
   state.filtered = applyFilters();
   updateFiltersSummary();
   renderKPIs();
+  renderMaterial();
   renderAllCharts();
   renderTable();
 }
 
 // ─── KPIs ────────────────────────────────────────────────
+
+/* ── Compras por material ────────────────────────────────────────────
+   El dueño pregunta «cuánto cemento compramos y a cuánto». Esto lo
+   responde: busca por nombre, agrupa por sector y muestra la evolución
+   del precio unitario, que es donde aparece el problema. */
+function _matNorm(v){
+  return String(v==null?'':v).toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
+}
+function _matFecha(f){
+  try{ return new Date(f).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'2-digit'}); }
+  catch(e){ return '—'; }
+}
+
+function renderMaterial(){
+  const q = _matNorm((document.getElementById('matBuscar')||{}).value || '');
+  const cont = document.getElementById('matResultado');
+  const meta = document.getElementById('matMeta');
+  if(!cont) return;
+  if(q.length < 2){
+    cont.innerHTML = '<div class="mat-vacio">Escribí al menos dos letras del material.</div>';
+    if(meta) meta.textContent = 'Escribí un material para ver todas sus compras';
+    return;
+  }
+  // Se busca dentro de lo filtrado: respeta obra, fecha, proveedor y estado
+  const hits = (state.filtered||[]).filter(it =>
+    _matNorm(it.producto_nombre).indexOf(q) >= 0 && it.oc_estado !== 'Anulada');
+  if(!hits.length){
+    cont.innerHTML = '<div class="mat-vacio">No hay compras de «'+escapeHtml(q)+'» con los filtros actuales.</div>';
+    if(meta) meta.textContent = 'Sin resultados';
+    return;
+  }
+
+  const total = hits.reduce((a,x)=>a+(Number(x.subtotal)||0),0);
+  const ocs   = new Set(hits.map(x=>x.oc_id)).size;
+  if(meta) meta.textContent = hits.length+' compra(s) · '+ocs+' OC · '+fmtMoney(total);
+
+  // Evolución del precio unitario: primera y última compra
+  const conPU = hits.filter(x => (Number(x.cantidad)||0) > 0 && x.oc_fecha)
+    .map(x => ({ f:new Date(x.oc_fecha), pu:(Number(x.subtotal)||0)/(Number(x.cantidad)||1),
+                 prov:x.oc_proveedor||'—', un:x.unidad||'' }))
+    .sort((a,b)=>a.f-b.f);
+  let evo = '';
+  if(conPU.length >= 2){
+    const p = conPU[0], u = conPU[conPU.length-1];
+    const dif = p.pu>0 ? Math.round((u.pu/p.pu-1)*1000)/10 : null;
+    evo = '<div class="mat-evo">'+
+      '<span>Primera compra: <b>'+_matFecha(p.f)+'</b> · '+fmtMoney(Math.round(p.pu))+'/'+escapeHtml(p.un)+' · '+escapeHtml(p.prov)+'</span>'+
+      '<span>Última: <b>'+_matFecha(u.f)+'</b> · '+fmtMoney(Math.round(u.pu))+'/'+escapeHtml(u.un)+' · '+escapeHtml(u.prov)+'</span>'+
+      (dif!=null ? '<span>Variación: <b>'+(dif>0?'+':'')+dif+'%</b></span>' : '')+
+    '</div>';
+  }
+
+  // Agrupado por sector
+  const porSec = {};
+  hits.forEach(it => { (porSec[it.oc_sector || '(Sin sector)'] = porSec[it.oc_sector || '(Sin sector)'] || []).push(it); });
+  const secs = Object.keys(porSec).sort((a,b) =>
+    porSec[b].reduce((s,x)=>s+(Number(x.subtotal)||0),0) - porSec[a].reduce((s,x)=>s+(Number(x.subtotal)||0),0));
+
+  const puRef = conPU.length ? conPU[conPU.length-1].pu : 0;
+  let h = evo;
+  secs.forEach(sec => {
+    const filas = porSec[sec].slice().sort((a,b)=> new Date(b.oc_fecha) - new Date(a.oc_fecha));
+    const sub = filas.reduce((a,x)=>a+(Number(x.subtotal)||0),0);
+    h += '<div class="mat-sec"><div class="mat-sec-h"><b>'+escapeHtml(sec)+'</b>'+
+         '<span>'+filas.length+' compra(s)</span><span class="tot">'+fmtMoney(sub)+'</span></div>'+
+      '<table class="mat-tab"><thead><tr><th>Fecha</th><th>OC</th><th>Obra</th><th>Presupuesto</th>'+
+      '<th>Producto</th><th>Proveedor</th><th>Residente</th><th class="n">Cant.</th>'+
+      '<th class="n">P. unit.</th><th class="n">Subtotal</th></tr></thead><tbody>'+
+      filas.map(it => {
+        const cant = Number(it.cantidad)||0;
+        const pu = cant>0 ? Math.round((Number(it.subtotal)||0)/cant) : 0;
+        const cls = (puRef>0 && pu>0) ? (pu > puRef*1.02 ? ' sube' : (pu < puRef*0.98 ? ' baja' : '')) : '';
+        return '<tr><td>'+_matFecha(it.oc_fecha)+'</td>'+
+          '<td>'+escapeHtml(it.oc_numero||'—')+'</td>'+
+          '<td>'+escapeHtml(it.oc_obra||'—')+'</td>'+
+          '<td>'+escapeHtml(it.oc_presupuesto||'—')+'</td>'+
+          '<td><div class="mat-prod">'+escapeHtml(it.producto_nombre||'—')+
+            (it.oc_estado!=='Aprobado' ? '<small>'+escapeHtml(it.oc_estado)+'</small>' : '')+'</div></td>'+
+          '<td>'+escapeHtml(it.oc_proveedor||'—')+'</td>'+
+          '<td>'+escapeHtml(it.oc_residente||'—')+'</td>'+
+          '<td class="n">'+cant.toLocaleString('es-PY')+' '+escapeHtml(it.unidad||'')+'</td>'+
+          '<td class="n mat-pu'+cls+'">'+fmtMoney(pu)+'</td>'+
+          '<td class="n">'+fmtMoney(Number(it.subtotal)||0)+'</td></tr>';
+      }).join('')+'</tbody></table></div>';
+  });
+  cont.innerHTML = h;
+}
+
+/* Atajos con los materiales más comprados */
+function renderMatChips(){
+  const box = document.getElementById('matChips');
+  if(!box) return;
+  const cuenta = {};
+  (state.items||[]).forEach(it => {
+    const n = (it.producto_nombre||'').trim();
+    if(!n) return;
+    const clave = _matNorm(n).split(' ').slice(0,1)[0];
+    if(clave.length < 4) return;
+    cuenta[clave] = (cuenta[clave]||0) + (Number(it.subtotal)||0);
+  });
+  const top = Object.keys(cuenta).sort((a,b)=>cuenta[b]-cuenta[a]).slice(0,8);
+  box.innerHTML = top.map(t => '<button type="button" class="mat-chip" data-mat="'+escapeHtml(t)+'">'+escapeHtml(t)+'</button>').join('');
+  box.querySelectorAll('button[data-mat]').forEach(b => {
+    b.addEventListener('click', () => {
+      document.getElementById('matBuscar').value = b.getAttribute('data-mat');
+      renderMaterial();
+    });
+  });
+}
+
 function renderKPIs(){
   const items = state.filtered;
   // Total comprado = solo items con OC aprobada
