@@ -532,7 +532,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v5.9 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.0 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -664,7 +664,7 @@ body{
       </div>
 
       <!-- RUBROS -->
-      <div class="pm-sectitle">Rubros (Obra → Sector → Rubro)</div>
+      <div class="pm-sectitle" style="display:flex;align-items:center;gap:12px"><span>Rubros (Obra → Sector → Rubro)</span><button type="button" id="pmOrdenar" class="pm-ordbtn" title="Acomodar por capítulo y por código de rubro">⇅ Ordenar</button></div>
       <div class="pm-tablewrap">
         <table class="pm-table">
           <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">CC. unitario</th><th class="pm-num">C. parcial (Gs)</th><th></th></tr></thead>
@@ -1065,6 +1065,9 @@ body{
 
 <style>
   .pm-sectitle{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#1F3864;margin:18px 0 8px;border-bottom:2px solid #C8A028;padding-bottom:5px}
+  .pm-ordbtn{margin-left:auto;background:#fff;border:1.5px solid #d6dde9;border-radius:8px;padding:5px 12px;
+    font-size:11.5px;font-weight:700;color:#42506a;cursor:pointer;font-family:inherit;letter-spacing:0;text-transform:none}
+  .pm-ordbtn:hover{border-color:#1F3864;color:#1F3864;background:#EDF3FB}
   .pm-tablewrap{border:1px solid #e6eaf1;border-radius:10px;overflow:auto;max-height:min(66vh,860px);resize:vertical}
   .pm-tablewrap thead th{position:sticky;top:0;z-index:2;background:#f5f7fb;box-shadow:0 1px 0 #e6eaf1}
   .pm-capr td{background:#eef2f8;border-top:2px solid #d7dfeb;border-bottom:1px solid #e2e8f2;padding:8px 12px}
@@ -2074,6 +2077,56 @@ function _costosDeReceta(r){
            matTot: Math.round(mat), moTot: Math.round(mo), hay: (mat+mo) > 0 };
 }
 
+/* Capítulo del rubro, mirando también el catálogo si la línea no lo trae */
+function _capituloDe(r){
+  const c = String(r.capitulo||'').trim();
+  if(c) return c;
+  const cat = (ed.arbolByCod||{})[r.rubro_codigo||''];
+  return (cat && String(cat.capitulo||'').trim()) || '(Sin capítulo)';
+}
+
+/* Inserta el rubro nuevo después del último de su mismo capítulo, y dentro
+   del capítulo respetando el orden de código. Si el capítulo no existe
+   todavía, va al final. No reordena nada de lo ya cargado. */
+function _insertarOrdenado(nuevo){
+  const cap = _capituloDe(nuevo);
+  const cod = String(nuevo.rubro_codigo||'');
+  let ultimo = -1, destino = -1;
+  ed.rubros.forEach(function(r,i){
+    if(_capituloDe(r) !== cap) return;
+    ultimo = i;
+    if(destino < 0 && String(r.rubro_codigo||'').localeCompare(cod,'es',{numeric:true}) > 0) destino = i;
+  });
+  if(ultimo < 0) ed.rubros.push(nuevo);                    // capítulo nuevo
+  else if(destino >= 0) ed.rubros.splice(destino, 0, nuevo);
+  else ed.rubros.splice(ultimo + 1, 0, nuevo);
+}
+
+/* Ordenar todo: capítulos por número y rubros por código. Es a pedido,
+   no automático: si alguien movió una línea con las flechas fue por algo. */
+async function ordenarRubros(){
+  if(ed.rubros.length < 2){ showToast('No hay suficientes rubros para ordenar','info'); return; }
+  const r = await pmAvisoSalida({
+    titulo:'Ordenar los rubros del presupuesto',
+    subtitulo:(document.getElementById('pmCodigo')||{}).value || '',
+    texto:'Se van a acomodar los <b>'+ed.rubros.length+' rubros</b> por número de capítulo y, dentro de cada capítulo, por código de rubro.',
+    puntos:['Si moviste alguna línea a mano con las flechas ▲▼, ese orden se pierde.',
+            'Los importes y las cantidades no cambian: sólo cambia el orden en que se muestran y se imprimen.',
+            'El orden queda guardado recién cuando guardes el presupuesto.'],
+    ocultarSalir:true, textoVolver:'Cancelar',
+    textoGuardar:'Ordenar ahora',
+    onGuardar: async function(){ /* el orden se aplica al volver */ }
+  });
+  if(r !== 'guardado') return;
+  ed.rubros.sort(function(a,b){
+    return _capituloDe(a).localeCompare(_capituloDe(b),'es',{numeric:true}) ||
+           String(a.rubro_codigo||'').localeCompare(String(b.rubro_codigo||''),'es',{numeric:true});
+  });
+  ed.tocado = true;
+  renderRubros(); renderInsumos();
+  showToast('Rubros ordenados','success','Por capítulo y código · guardá para que quede así');
+}
+
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
   setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
@@ -2243,7 +2296,9 @@ function addRubro(){
                   material_unit: (a.tiene_receta?null:mat), mano_obra_unit: (a.tiene_receta?null:mo),
                   capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' };
   if(!a.tiene_receta && (mat>0 || mo>0)) recalcCostoRubro(nuevo);   // el precio sale del costo
-  ed.rubros.push(nuevo);
+  // Se ubica junto a los de su capítulo, y dentro del capítulo por código:
+  // así el presupuesto se va ordenando mientras se carga, sin esperar a guardar.
+  _insertarOrdenado(nuevo);
   const teniaReceta = !!a.tiene_receta;
   // limpiar cascada
   document.getElementById('pmRubCap').value=''; 
@@ -3488,6 +3543,8 @@ function pmAvisoSalida(o){
     ul.innerHTML = (o.puntos||[]).map(function(t){ return '<li>'+t+'</li>'; }).join('');
     const bG = document.getElementById('sgGuardar');
     bG.style.display = o.onGuardar ? '' : 'none';
+    document.getElementById('sgSalir').style.display = o.ocultarSalir ? 'none' : '';
+    document.getElementById('sgVolver').textContent = o.textoVolver || 'Seguir editando';
     bG.textContent = o.textoGuardar || 'Guardar y salir';
     ov.classList.add('show');
 
@@ -3552,6 +3609,8 @@ document.getElementById('pmCancelBtn').addEventListener('click', cerrarPresupues
   if(pan) pan.oninput = function(){ ivaDesdePanel(pan.value); };
 })();
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
+const _bOrd = document.getElementById('pmOrdenar');
+if(_bOrd) _bOrd.addEventListener('click', ordenarRubros);
 document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
 document.getElementById('pmCotBtn').addEventListener('click', buildCotizacion);
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
