@@ -343,10 +343,6 @@ body{
   border-radius:10px;padding:9px 15px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
 .pm-head-btn:hover{background:rgba(255,255,255,.22)}
 /* Bloques plegables de abajo: se abren cuando hacen falta */
-.pm-mv{border:1px solid #d6dde9;background:#fff;border-radius:7px;width:26px;height:26px;font-size:10px;
-  cursor:pointer;color:#42506a;line-height:1;margin-right:3px;padding:0}
-.pm-mv:hover:not(:disabled){border-color:#1F3864;background:#EDF3FB;color:#1F3864}
-.pm-mv:disabled{opacity:.3;cursor:default}
 .pm-fold{border:1px solid var(--border,#e2e6ee);border-radius:12px;margin-top:16px;overflow:hidden;background:#fff}
 .pm-fold>summary{cursor:pointer;padding:13px 18px;font-size:12px;font-weight:800;letter-spacing:.5px;
   text-transform:uppercase;color:var(--navy,#1F3864);background:var(--surface-2,#f5f7fb);list-style:none;
@@ -532,7 +528,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.0 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.1 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -664,7 +660,7 @@ body{
       </div>
 
       <!-- RUBROS -->
-      <div class="pm-sectitle" style="display:flex;align-items:center;gap:12px"><span>Rubros (Obra → Sector → Rubro)</span><button type="button" id="pmOrdenar" class="pm-ordbtn" title="Acomodar por capítulo y por código de rubro">⇅ Ordenar</button></div>
+      <div class="pm-sectitle" style="display:flex;align-items:center;gap:12px"><span>Rubros (Obra → Sector → Rubro)</span><span class="pm-ordnota">Se ordenan solos por capítulo y código</span></div>
       <div class="pm-tablewrap">
         <table class="pm-table">
           <thead><tr><th>Sector</th><th>Rubro</th><th>Descripción</th><th>Unid.</th><th class="pm-num">Cantidad</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">CC. unitario</th><th class="pm-num">C. parcial (Gs)</th><th></th></tr></thead>
@@ -1065,9 +1061,7 @@ body{
 
 <style>
   .pm-sectitle{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#1F3864;margin:18px 0 8px;border-bottom:2px solid #C8A028;padding-bottom:5px}
-  .pm-ordbtn{margin-left:auto;background:#fff;border:1.5px solid #d6dde9;border-radius:8px;padding:5px 12px;
-    font-size:11.5px;font-weight:700;color:#42506a;cursor:pointer;font-family:inherit;letter-spacing:0;text-transform:none}
-  .pm-ordbtn:hover{border-color:#1F3864;color:#1F3864;background:#EDF3FB}
+  .pm-ordnota{margin-left:auto;font-size:11px;font-weight:600;color:#9aa4b2;letter-spacing:0;text-transform:none}
   .pm-tablewrap{border:1px solid #e6eaf1;border-radius:10px;overflow:auto;max-height:min(66vh,860px);resize:vertical}
   .pm-tablewrap thead th{position:sticky;top:0;z-index:2;background:#f5f7fb;box-shadow:0 1px 0 #e6eaf1}
   .pm-capr td{background:#eef2f8;border-top:2px solid #d7dfeb;border-bottom:1px solid #e2e8f2;padding:8px 12px}
@@ -2078,53 +2072,21 @@ function _costosDeReceta(r){
 }
 
 /* Capítulo del rubro, mirando también el catálogo si la línea no lo trae */
+/* Orden único del presupuesto: capítulo y, dentro del capítulo, código de
+   rubro. Se aplica al agregar y al guardar, así el presupuesto sale siempre
+   igual sin importar en qué orden se cargó. */
+function _ordenarRubrosAuto(){
+  ed.rubros.sort(function(a,b){
+    return _capituloDe(a).localeCompare(_capituloDe(b),'es',{numeric:true}) ||
+           String(a.rubro_codigo||'').localeCompare(String(b.rubro_codigo||''),'es',{numeric:true});
+  });
+}
+
 function _capituloDe(r){
   const c = String(r.capitulo||'').trim();
   if(c) return c;
   const cat = (ed.arbolByCod||{})[r.rubro_codigo||''];
   return (cat && String(cat.capitulo||'').trim()) || '(Sin capítulo)';
-}
-
-/* Inserta el rubro nuevo después del último de su mismo capítulo, y dentro
-   del capítulo respetando el orden de código. Si el capítulo no existe
-   todavía, va al final. No reordena nada de lo ya cargado. */
-function _insertarOrdenado(nuevo){
-  const cap = _capituloDe(nuevo);
-  const cod = String(nuevo.rubro_codigo||'');
-  let ultimo = -1, destino = -1;
-  ed.rubros.forEach(function(r,i){
-    if(_capituloDe(r) !== cap) return;
-    ultimo = i;
-    if(destino < 0 && String(r.rubro_codigo||'').localeCompare(cod,'es',{numeric:true}) > 0) destino = i;
-  });
-  if(ultimo < 0) ed.rubros.push(nuevo);                    // capítulo nuevo
-  else if(destino >= 0) ed.rubros.splice(destino, 0, nuevo);
-  else ed.rubros.splice(ultimo + 1, 0, nuevo);
-}
-
-/* Ordenar todo: capítulos por número y rubros por código. Es a pedido,
-   no automático: si alguien movió una línea con las flechas fue por algo. */
-async function ordenarRubros(){
-  if(ed.rubros.length < 2){ showToast('No hay suficientes rubros para ordenar','info'); return; }
-  const r = await pmAvisoSalida({
-    titulo:'Ordenar los rubros del presupuesto',
-    subtitulo:(document.getElementById('pmCodigo')||{}).value || '',
-    texto:'Se van a acomodar los <b>'+ed.rubros.length+' rubros</b> por número de capítulo y, dentro de cada capítulo, por código de rubro.',
-    puntos:['Si moviste alguna línea a mano con las flechas ▲▼, ese orden se pierde.',
-            'Los importes y las cantidades no cambian: sólo cambia el orden en que se muestran y se imprimen.',
-            'El orden queda guardado recién cuando guardes el presupuesto.'],
-    ocultarSalir:true, textoVolver:'Cancelar',
-    textoGuardar:'Ordenar ahora',
-    onGuardar: async function(){ /* el orden se aplica al volver */ }
-  });
-  if(r !== 'guardado') return;
-  ed.rubros.sort(function(a,b){
-    return _capituloDe(a).localeCompare(_capituloDe(b),'es',{numeric:true}) ||
-           String(a.rubro_codigo||'').localeCompare(String(b.rubro_codigo||''),'es',{numeric:true});
-  });
-  ed.tocado = true;
-  renderRubros(); renderInsumos();
-  showToast('Rubros ordenados','success','Por capítulo y código · guardá para que quede así');
 }
 
 function renderRubros(){
@@ -2213,8 +2175,6 @@ function renderRubros(){
         : '<td class="pm-num"><input type="text" inputmode="numeric" data-i="'+i+'" data-f="precio_total" value="'+fmtGs(r.precio_total)+'" style="text-align:right"></td>') +
       // Orden manual: el residente decide qué rubro va primero en el papel
       '<td style="white-space:nowrap">'+
-        '<button class="pm-mv" data-up="'+i+'" type="button" title="Subir esta línea"'+(i===0?' disabled':'')+'>▲</button>'+
-        '<button class="pm-mv" data-down="'+i+'" type="button" title="Bajar esta línea"'+(i===ed.rubros.length-1?' disabled':'')+'>▼</button>'+
         (r.rubro_codigo ? '<button class="mo-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" data-mokind="mano_obra" type="button" title="Agregar mano de obra a este rubro">👷</button>'+
                           '<button class="lg-edit" data-moadd="'+escapeHtml(r.rubro_codigo)+'" data-mokind="logistica" type="button" title="Agregar logística a este rubro">🚛</button>' : '')+
         '<button class="pm-delx" data-del="'+i+'" type="button">×</button></td></tr>';
@@ -2225,20 +2185,6 @@ function renderRubros(){
     return (_unCap ? '' : _filaCap(cap, _porCap[cap])) +
            _porCap[cap].map(function(i){ return _fila(ed.rubros[i], i); }).join('');
   }).join('') + (_unCap ? '' : _filaTot());
-  // Subir y bajar. Se mueve la línea entera; el orden se guarda al grabar.
-  function _mover(desde, hacia){
-    if(hacia < 0 || hacia >= ed.rubros.length) return;
-    const x = ed.rubros.splice(desde,1)[0];
-    ed.rubros.splice(hacia,0,x);
-    renderRubros(); renderInsumos();
-  }
-  tb.querySelectorAll('button[data-up]').forEach(function(b){
-    b.addEventListener('click', function(){ const i=Number(b.getAttribute('data-up')); _mover(i, i-1); });
-  });
-  tb.querySelectorAll('button[data-down]').forEach(function(b){
-    b.addEventListener('click', function(){ const i=Number(b.getAttribute('data-down')); _mover(i, i+1); });
-  });
-
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
       const i = Number(inp.dataset.i), f = inp.dataset.f;
@@ -2296,9 +2242,8 @@ function addRubro(){
                   material_unit: (a.tiene_receta?null:mat), mano_obra_unit: (a.tiene_receta?null:mo),
                   capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' };
   if(!a.tiene_receta && (mat>0 || mo>0)) recalcCostoRubro(nuevo);   // el precio sale del costo
-  // Se ubica junto a los de su capítulo, y dentro del capítulo por código:
-  // así el presupuesto se va ordenando mientras se carga, sin esperar a guardar.
-  _insertarOrdenado(nuevo);
+  ed.rubros.push(nuevo);
+  _ordenarRubrosAuto();      // el presupuesto se ordena solo, mientras se carga
   const teniaReceta = !!a.tiene_receta;
   // limpiar cascada
   document.getElementById('pmRubCap').value=''; 
@@ -2829,6 +2774,7 @@ async function saveBudget(){
     const rd = await sb.from('presupuesto_rubros').delete().eq('presupuesto', codigo);
     if(rd.error) throw rd.error;
     if(ed.rubros.length){
+      _ordenarRubrosAuto();   // el orden guardado es siempre capítulo + código
       const payload = ed.rubros.map(function(r,idx){
         const mat = (r.material_unit==null||r.material_unit==='') ? null : Number(r.material_unit);
         const mo  = (r.mano_obra_unit==null||r.mano_obra_unit==='') ? null : Number(r.mano_obra_unit);
@@ -3609,8 +3555,7 @@ document.getElementById('pmCancelBtn').addEventListener('click', cerrarPresupues
   if(pan) pan.oninput = function(){ ivaDesdePanel(pan.value); };
 })();
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
-const _bOrd = document.getElementById('pmOrdenar');
-if(_bOrd) _bOrd.addEventListener('click', ordenarRubros);
+
 document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
 document.getElementById('pmCotBtn').addEventListener('click', buildCotizacion);
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
