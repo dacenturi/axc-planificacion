@@ -528,7 +528,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.1 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.2 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -1832,6 +1832,82 @@ function _setObraValue(obra){
   refreshSectoresForObra();
 }
 
+
+/* ── Edición simultánea ──────────────────────────────────────────────
+   Dos residentes en el mismo presupuesto es pérdida segura de trabajo:
+   el guardado borra los rubros y los reinserta, así que el segundo pisa
+   al primero. Se marca quién lo tiene abierto y el resto entra a mirar.
+   La marca caduca sola a los 3 minutos sin señal, para que una tablet
+   apagada no deje el presupuesto trabado. */
+var EDIT_LOCK = { codigo:'', mio:false, timer:null };
+const LOCK_VENCE_MIN = 3;
+
+function _lockVencida(latido){
+  if(!latido) return true;
+  return (Date.now() - new Date(latido).getTime()) > LOCK_VENCE_MIN * 60000;
+}
+function _lockHora(iso){
+  try{ return new Date(iso).toLocaleTimeString('es-PY',{hour:'2-digit',minute:'2-digit'}); }
+  catch(e){ return ''; }
+}
+
+/* Devuelve null si se pudo tomar; si no, los datos de quien lo tiene */
+async function tomarEdicion(codigo){
+  const yo = _userTag();
+  try{
+    const { data } = await sb.from('presupuesto_edicion').select('*').eq('codigo', codigo).maybeSingle();
+    if(data && data.usuario !== yo && !_lockVencida(data.latido)) return data;   // ocupado
+    const fila = { codigo:codigo, usuario:yo, latido:new Date().toISOString() };
+    if(!data || data.usuario !== yo) fila.desde = new Date().toISOString();
+    await sb.from('presupuesto_edicion').upsert(fila, { onConflict:'codigo' });
+    EDIT_LOCK.codigo = codigo; EDIT_LOCK.mio = true;
+    if(EDIT_LOCK.timer) clearInterval(EDIT_LOCK.timer);
+    EDIT_LOCK.timer = setInterval(function(){
+      sb.from('presupuesto_edicion').update({ latido:new Date().toISOString() }).eq('codigo', codigo).eq('usuario', yo);
+    }, 60000);
+    return null;
+  }catch(e){
+    console.warn('tomarEdicion', e);
+    return null;   // si la tabla no existe todavía, no se traba el trabajo
+  }
+}
+
+async function soltarEdicion(){
+  if(EDIT_LOCK.timer){ clearInterval(EDIT_LOCK.timer); EDIT_LOCK.timer = null; }
+  if(!EDIT_LOCK.mio || !EDIT_LOCK.codigo) { EDIT_LOCK.codigo=''; EDIT_LOCK.mio=false; return; }
+  const cod = EDIT_LOCK.codigo, yo = _userTag();
+  EDIT_LOCK.codigo=''; EDIT_LOCK.mio=false;
+  try{ await sb.from('presupuesto_edicion').delete().eq('codigo', cod).eq('usuario', yo); }
+  catch(e){ console.warn('soltarEdicion', e); }
+}
+
+/* Franja de solo lectura cuando otro lo tiene abierto */
+function mostrarBarraOcupado(lock){
+  const bar = document.getElementById('pmLockBar');
+  const body = document.querySelector('.pm-body');
+  const save = document.getElementById('pmSaveBtn');
+  if(body) body.classList.add('pm-ro');
+  if(save) save.style.display = 'none';
+  if(!bar) return;
+  const quien = String(lock.usuario||'').split('@')[0];
+  bar.style.display = 'flex';
+  bar.innerHTML =
+    '<div class="ico">👀</div>'+
+    '<div><b>Lo está editando '+escapeHtml(quien)+', desde las '+_lockHora(lock.desde)+'</b>'+
+    '<p>Para que no se pierda trabajo, mientras tanto sólo podés mirarlo. '+
+    'Dos personas editando el mismo presupuesto se pisan: el que guarda último borra lo del otro.<br>'+
+    'Cuando '+escapeHtml(quien)+' cierre el presupuesto, volvé a abrirlo y vas a poder editar. '+
+    'Si cerró sin salir, se libera solo en unos minutos.</p></div>'+
+    '<div class="acc"><button type="button" id="pmReintentar">↻ Volver a probar</button></div>';
+  const b = document.getElementById('pmReintentar');
+  if(b) b.onclick = async function(){
+    b.disabled = true; b.textContent = 'Probando…';
+    const cod = (document.getElementById('pmCodigo')||{}).value || '';
+    closeModal();
+    await openEdit(cod);
+  };
+}
+
 async function openEdit(codigo){
   const h = state.list.find(function(x){ return x.codigo === codigo; });
   if(!h) return;
@@ -1845,6 +1921,9 @@ async function openEdit(codigo){
   ivaSet(h.iva_pct);
   ed.activo = h.activo !== false; renderEstadoUI();
   aplicarBloqueo(h);
+  // ¿Lo tiene abierto otra persona?
+  const ocupado = await tomarEdicion(codigo);
+  if(ocupado){ ed.bloqueado = true; mostrarBarraOcupado(ocupado); }
   document.getElementById('ppOverlay').style.display = 'flex'; _aplicarPermisoMargen();
   renderRubros(); renderInsumos(); loadInsList();
   await loadArbol();
@@ -1868,7 +1947,17 @@ async function openEdit(codigo){
   }catch(e){ console.warn('openEdit', e); showToast('Error cargando el presupuesto', 'error'); }
 }
 
-function closeModal(){ document.getElementById('ppOverlay').style.display = 'none'; ed.open = false; ed.bloqueado = false; }
+function closeModal(){
+  document.getElementById('ppOverlay').style.display = 'none';
+  ed.open = false; ed.bloqueado = false;
+  soltarEdicion();
+}
+// Si cierran la pestaña sin salir, se avisa al servidor antes de irse
+window.addEventListener('beforeunload', function(){
+  if(EDIT_LOCK.mio && EDIT_LOCK.codigo){
+    try{ navigator.sendBeacon && soltarEdicion(); }catch(e){}
+  }
+});
 
 /* IVA del presupuesto: 5 % o 10 % según el caso, o el que haga falta.
    Se guarda en la cabecera y se aplica en la propuesta y en la planilla. */
