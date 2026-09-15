@@ -410,6 +410,8 @@ body{
 .mg-form{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:14px}
 .mg-formula{margin-top:12px;padding:11px 14px;border-radius:9px;background:#EEF3FA;border:1px solid #d4e0f0;color:#1F3864;font-size:12.5px;line-height:1.6}
 .mg-formula b{font-weight:800}
+.mg-opt-nota{margin-top:10px;font-size:12px;color:#5a6377;background:#f5f7fb;border:1px solid #e2e6ee;
+  border-radius:9px;padding:8px 13px;line-height:1.5}
 .mg-fila.tiene{cursor:pointer}
 .mg-fila.tiene:hover td{background:#f2f6fc}
 .mg-chev{display:inline-block;color:#8893a5;margin-right:6px;transition:transform .15s;font-size:11px}
@@ -544,7 +546,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v6.9 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.0 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -836,6 +838,7 @@ body{
           <input id="mgAlcance" class="pm-input" placeholder="Ej. Se presenta la oferta económica para los trabajos del Nivel P4 del edificio existente, según proyecto final aprobado."></div>
       </div>
       <div class="mg-formula" id="mgFormula">—</div>
+      <div class="mg-opt-nota">Cliente, atención, referencia, profesional, superficie y alcance son <b>opcionales</b>: si los dejás vacíos, no se imprimen.</div>
       <div class="pm-sectitle" style="margin-top:18px">MARGEN POR RUBRO <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#8893a5">· dejalo vacío para usar el general</span></div>
       <div style="overflow-x:auto"><table class="ins-tbl" id="mgTabla"></table></div>
       <div class="mg-tot" id="mgTot"></div>
@@ -3426,28 +3429,43 @@ async function emitirPropuesta(){
     const prev = await sb.from('propuesta_cab').select('version').eq('codigo',codigo).order('version',{ascending:false}).limit(1);
     const version = (prev.data && prev.data.length ? Number(prev.data[0].version) : 0) + 1;
 
-    let costoT=0, ventaT=0;
+    let costoT=0, ventaT=0, totalOpcEmitido=0;
     const items = MG.rows.map(function(r,i){
       const pct=_mgPctDe(r.codigo);
       const cu = r.cantidad>0 ? Math.round(r.costo/r.cantidad) : r.costo;
       const pu = _mgPrecio(cu,pct); const pt = Math.round(pu*r.cantidad);
-      if(!r.opcional){ costoT+=r.costo; ventaT+=pt; }
+      if(r.opcional) totalOpcEmitido += pt; else { costoT+=r.costo; ventaT+=pt; }
       return { orden:i+1, sector:r.sector, capitulo:r.capitulo, rubro_codigo:r.codigo,
                descripcion:r.descripcion, unidad:r.unidad, cantidad:r.cantidad,
                costo_unit:cu, margen_pct:pct, precio_unit:pu, precio_total:pt,
                opcional:!!r.opcional };
     });
 
-    const c = await sb.from('propuesta_cab').insert({
+    const _vv = function(id){ const e=document.getElementById(id); return e ? (e.value||'').trim() : ''; };
+    const cabBase = {
       codigo:codigo, version:version, presupuesto:presu, obra:obra, cliente:cliente,
       descripcion:desc, margen_general:gen, formula:'sobre_venta', validez_dias:validez,
       condiciones:cond, observaciones:obs, costo_total:costoT, venta_total:ventaT,
       emitido_por:_userTag()
-    }).select('id').single();
+    };
+    const cabExtra = { atencion:_vv('mgAtencion')||null, referencia:_vv('mgRef')||null,
+      profesional:_vv('mgProf')||null, superficie:(_vv('mgSup')?Number(_vv('mgSup')):null),
+      alcance:_vv('mgAlcance')||null, venta_opcional:totalOpcEmitido };
+    let c = await sb.from('propuesta_cab').insert(Object.assign({}, cabBase, cabExtra)).select('id').single();
+    if(c.error && /atencion|referencia|profesional|superficie|alcance|venta_opcional/i.test(c.error.message||'')){
+      c = await sb.from('propuesta_cab').insert(cabBase).select('id').single();   // base sin las columnas nuevas
+    }
     if(c.error) throw c.error;
 
     items.forEach(function(it){ it.propuesta_id = c.data.id; });
-    const it = await sb.from('propuesta_items').insert(items);
+    // Si la base todavía no tiene la columna «opcional», se guarda sin ella:
+    // el documento sale igual porque la marca viaja en memoria.
+    let it = await sb.from('propuesta_items').insert(items);
+    if(it.error && /opcional/i.test(it.error.message||'')){
+      it = await sb.from('propuesta_items').insert(items.map(function(x){
+        const y = Object.assign({}, x); delete y.opcional; return y;
+      }));
+    }
     if(it.error) throw it.error;
 
     document.getElementById('mgOverlay').style.display='none';
