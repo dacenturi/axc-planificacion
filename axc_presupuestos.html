@@ -546,7 +546,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.2 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.5 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -2026,6 +2026,16 @@ function _setObraValue(obra){
    al primero. Se marca quién lo tiene abierto y el resto entra a mirar.
    La marca caduca sola a los 3 minutos sin señal, para que una tablet
    apagada no deje el presupuesto trabado. */
+/* Identificador de esta pestaña: dos ventanas del mismo usuario son dos
+   sesiones distintas y no pueden editar el mismo presupuesto a la vez. */
+const SESION_ID = (function(){
+  try{
+    let v = sessionStorage.getItem('axc_sesion');
+    if(!v){ v = Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
+            sessionStorage.setItem('axc_sesion', v); }
+    return v;
+  }catch(e){ return Math.random().toString(36).slice(2,12); }
+})();
 var EDIT_LOCK = { codigo:'', mio:false, timer:null };
 const LOCK_VENCE_MIN = 3;
 
@@ -2043,15 +2053,35 @@ async function tomarEdicion(codigo){
   const yo = _userTag();
   try{
     const { data } = await sb.from('presupuesto_edicion').select('*').eq('codigo', codigo).maybeSingle();
-    if(data && data.usuario !== yo && !_lockVencida(data.latido)) return data;   // ocupado
-    const fila = { codigo:codigo, usuario:yo, latido:new Date().toISOString() };
-    if(!data || data.usuario !== yo) fila.desde = new Date().toISOString();
-    await sb.from('presupuesto_edicion').upsert(fila, { onConflict:'codigo' });
+    // Ocupado si la marca es de OTRA SESIÓN y sigue viva, aunque sea el
+    // mismo usuario en otra pestaña: fue así como se duplicó PP78.
+    const ajena = data && (data.sesion ? data.sesion !== SESION_ID : data.usuario !== yo);
+    if(ajena && !_lockVencida(data.latido)) return data;
+    const fila = { codigo:codigo, usuario:yo, sesion:SESION_ID, latido:new Date().toISOString() };
+    if(!data || ajena) fila.desde = new Date().toISOString();
+    let up = await sb.from('presupuesto_edicion').upsert(fila, { onConflict:'codigo' });
+    if(up.error && /sesion/i.test(up.error.message||'')){
+      delete fila.sesion;                                   // falta la columna: sigue por usuario
+      up = await sb.from('presupuesto_edicion').upsert(fila, { onConflict:'codigo' });
+    }
     EDIT_LOCK.codigo = codigo; EDIT_LOCK.mio = true;
     if(EDIT_LOCK.timer) clearInterval(EDIT_LOCK.timer);
-    EDIT_LOCK.timer = setInterval(function(){
-      sb.from('presupuesto_edicion').update({ latido:new Date().toISOString() }).eq('codigo', codigo).eq('usuario', yo);
-    }, 60000);
+    EDIT_LOCK.timer = setInterval(async function(){
+      try{
+        // Renovar la señal y, de paso, comprobar que la marca sigue siendo mía.
+        const { data:lk } = await sb.from('presupuesto_edicion').select('*').eq('codigo', codigo).maybeSingle();
+        const perdida = !lk || (lk.sesion ? lk.sesion !== SESION_ID : lk.usuario !== yo);
+        if(perdida && ed.open && ed.origCodigo === codigo && !ed.bloqueado){
+          ed.bloqueado = true;                      // pasa a solo lectura en el acto
+          if(lk) mostrarBarraOcupado(lk);
+          showToast('Otra ventana tomó '+codigo, 'error',
+            'Esta pantalla pasó a solo lectura para no pisar su trabajo');
+          return;
+        }
+        await sb.from('presupuesto_edicion').update({ latido:new Date().toISOString() })
+          .eq('codigo', codigo).eq('usuario', yo);
+      }catch(e){ console.warn('latido', e); }
+    }, 45000);
     return null;
   }catch(e){
     console.warn('tomarEdicion', e);
@@ -2077,11 +2107,15 @@ function mostrarBarraOcupado(lock){
   if(save) save.style.display = 'none';
   if(!bar) return;
   const quien = String(lock.usuario||'').split('@')[0];
+  const mismaPersona = String(lock.usuario||'') === _userTag();
   bar.style.display = 'flex';
   bar.innerHTML =
     '<div class="ico">👀</div>'+
-    '<div><b>Lo está editando '+escapeHtml(quien)+', desde las '+_lockHora(lock.desde)+'</b>'+
-    '<p>Para que no se pierda trabajo, mientras tanto sólo podés mirarlo. '+
+    '<div><b>'+(mismaPersona
+        ? 'Ya lo tenés abierto en otra ventana, desde las '+_lockHora(lock.desde)
+        : 'Lo está editando '+escapeHtml(quien)+', desde las '+_lockHora(lock.desde))+'</b>'+
+    '<p>Para que no se pierda trabajo, acá sólo podés mirarlo. '+
+    (mismaPersona ? 'Editar el mismo presupuesto en dos ventanas hace que la que guardes última borre lo de la otra. Volvé a la ventana donde lo estabas editando, o cerrala y recargá esta. ' : '')+
     'Dos personas editando el mismo presupuesto se pisan: el que guarda último borra lo del otro.<br>'+
     'Cuando '+escapeHtml(quien)+' cierre el presupuesto, volvé a abrirlo y vas a poder editar. '+
     'Si cerró sin salir, se libera solo en unos minutos.</p></div>'+
@@ -3146,6 +3180,68 @@ async function saveBudget(){
       }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
+    // ── Capa 2: la marca de edición tiene que seguir siendo mía ───
+    // Entre que se abrió y se guarda pueden haber pasado horas. Si otra
+    // sesión tomó el presupuesto, guardar acá borraría su trabajo.
+    if(!ed.isNew){
+      try{
+        const { data:lk } = await sb.from('presupuesto_edicion').select('*').eq('codigo', codigo).maybeSingle();
+        const ajena = lk && (lk.sesion ? lk.sesion !== SESION_ID : lk.usuario !== _userTag());
+        if(ajena && !_lockVencida(lk.latido)){
+          const q = String(lk.usuario||'').split('@')[0];
+          await pmAvisoSalida({
+            titulo:'Otra persona tomó este presupuesto',
+            subtitulo:codigo+' · '+escapeHtml(q)+' lo abrió a las '+_lockHora(lk.desde),
+            texto:'Mientras tenías esta ventana abierta, <b>'+escapeHtml(q)+'</b> empezó a editar '+codigo+'. '+
+                  'Si guardás ahora, se borra lo que esa persona esté cargando.',
+            puntos:['No se guardó nada. Tu pantalla queda como está.',
+                    'Coordiná con '+escapeHtml(q)+' quién termina primero.',
+                    'Cuando cierre el presupuesto, volvé a abrirlo y cargá lo tuyo sobre la versión actualizada.'],
+            textoVolver:'Entendido', ocultarSalir:true
+          });
+          btn.disabled=false; btn.textContent=old; return;
+        }
+      }catch(e){ console.warn('control de marca', e); }
+    }
+
+    // ── Red de seguridad contra duplicados ────────────────────────
+    // El 15/09 PP78 se guardó con cada rubro repetido: 97 filas en vez
+    // de 49. No se pudo reproducir cómo la lista llegó a ese estado, así
+    // que se controla acá, justo antes de escribir.
+    const _vistos = {}, _dup = [];
+    ed.rubros.forEach(function(r){
+      const k = [r.rubro_codigo||'', r.sector||'', r.descripcion||'', r.cantidad].join('|');
+      if(_vistos[k]) _dup.push(r.rubro_codigo || r.descripcion || '(sin código)');
+      _vistos[k] = 1;
+    });
+    if(_dup.length){
+      const lista = Array.from(new Set(_dup)).slice(0,8).join(', ');
+      const r = await pmAvisoSalida({
+        titulo:'Hay rubros repetidos en la lista',
+        subtitulo:codigo+' · '+_dup.length+' línea(s) duplicada(s)',
+        texto:'Aparecen <b>'+_dup.length+' rubros repetidos</b> con el mismo código, sector, descripción y cantidad. '+
+              'Guardar así deja el presupuesto con el doble de líneas y el total inflado.',
+        puntos:['Repetidos: '+escapeHtml(lista)+(Array.from(new Set(_dup)).length>8?'…':''),
+                '<b>Quitar los repetidos</b> deja una sola copia de cada uno y guarda.',
+                'Si algún rubro va dos veces a propósito, cambiale la cantidad o la descripción para diferenciarlo.'],
+        textoVolver:'Revisar la lista', textoGuardar:'Quitar los repetidos y guardar',
+        ocultarSalir:true, onGuardar: async function(){}
+      });
+      if(r !== 'guardado'){ btn.disabled=false; btn.textContent=old; return; }
+      const _ok = {};
+      ed.rubros = ed.rubros.filter(function(x){
+        const k = [x.rubro_codigo||'', x.sector||'', x.descripcion||'', x.cantidad].join('|');
+        if(_ok[k]) return false; _ok[k]=1; return true;
+      });
+      // Los insumos de un rubro repetido también entraron dos veces
+      const _oki = {};
+      ed.insumos = ed.insumos.filter(function(x){
+        const k = [x.rubro_codigo||'', x.codigo_insumo||'', x.material||'', x.cantidad].join('|');
+        if(_oki[k]) return false; _oki[k]=1; return true;
+      });
+      renderRubros(); renderInsumos();
+    }
+
     // Rubros: reemplazo completo
     const rd = await sb.from('presupuesto_rubros').delete().eq('presupuesto', codigo);
     if(rd.error) throw rd.error;
@@ -3193,6 +3289,28 @@ async function saveBudget(){
       }
       if(ii.error) throw ii.error;
     }
+    // ── Capa 4: control posterior al guardado ─────────────────────
+    // No importa por qué se duplique: si lo que quedó en la base no es
+    // lo que se envió, hay que enterarse ahora, no una semana después.
+    try{
+      const ver = await sb.from('presupuesto_rubros')
+        .select('id', { count:'exact', head:true }).eq('presupuesto', codigo);
+      const enBase = Number(ver.count);
+      if(!ver.error && enBase !== ed.rubros.length){
+        await pmAvisoSalida({
+          titulo:'El guardado no quedó como se esperaba',
+          subtitulo:codigo+' · se enviaron '+ed.rubros.length+' rubros y en el sistema hay '+enBase,
+          texto: enBase > ed.rubros.length
+            ? 'Quedaron <b>'+(enBase-ed.rubros.length)+' filas de más</b>. Puede haber otra ventana guardando al mismo tiempo.'
+            : 'Faltan <b>'+(ed.rubros.length-enBase)+' filas</b>. Parte de lo cargado no llegó a grabarse.',
+          puntos:['Cerrá el presupuesto y volvé a abrirlo para ver cómo quedó realmente.',
+                  'No sigas cargando sobre esta pantalla: puede estar desactualizada.',
+                  'Avisá a Daniel con el código '+codigo+' y la hora, para revisar qué pasó.'],
+          textoVolver:'Entendido', ocultarSalir:true
+        });
+      }
+    }catch(e){ console.warn('control posterior', e); }
+
     ed.tocado = false;
     ed.abiertoCon = new Date().toISOString();   // desde ahora, esta es la versión buena
     // El residente tiene que saber que quedó guardado y en qué estado
