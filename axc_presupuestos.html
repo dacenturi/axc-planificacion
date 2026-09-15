@@ -546,7 +546,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.0 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.1 · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -2151,25 +2151,28 @@ window.addEventListener('beforeunload', function(){
 /* IVA del presupuesto: 5 % o 10 % según el caso, o el que haga falta.
    Se guarda en la cabecera y se aplica en la propuesta y en la planilla. */
 /* Filas de cierre: neto, IVA y total. Si no hay IVA, una sola fila. */
+/* Cierre de totales con los colores de la planilla de AXC:
+   celeste el total sin IVA, lila el IVA, verde el total con IVA.
+   Filas compactas: una línea cada una, sin renglones sueltos. */
 function ivaFilas(neto, pct, colspan, size){
   const p = Number(pct)||0;
   const n = Number(neto)||0;
   const vacia = '<td colspan="'+colspan+'" style="border:none;background:#fff"></td>';
   if(p <= 0){
-    return '<tr class="tot">'+vacia+
-      '<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">SIN IVA</span></td>'+
-      '<td class="n" style="font-size:'+size+'">'+fmtGs(n)+'</td></tr>';
+    return '<tr class="tot t-fin">'+vacia+
+      '<td class="lbl">TOTAL GENERAL SIN IVA</td>'+
+      '<td class="n">'+fmtGs(n)+'</td></tr>';
   }
   const iva = Math.round(n * p / 100);
-  return '<tr class="tot">'+vacia+
-      '<td class="lbl" style="font-size:12px">SUBTOTAL SIN IVA</td>'+
-      '<td class="n" style="font-size:14px">'+fmtGs(n)+'</td></tr>'+
-    '<tr class="tot">'+vacia+
-      '<td class="lbl" style="font-size:12px">IVA '+p+' %</td>'+
-      '<td class="n" style="font-size:14px">'+fmtGs(iva)+'</td></tr>'+
-    '<tr class="tot">'+vacia+
-      '<td class="lbl">TOTAL GENERAL<br><span style="font-weight:600;font-size:11px;opacity:.85">IVA INCLUIDO</span></td>'+
-      '<td class="n" style="font-size:'+size+'">'+fmtGs(n + iva)+'</td></tr>';
+  return '<tr class="tot t-neto">'+vacia+
+      '<td class="lbl">TOTAL GENERAL SIN IVA</td>'+
+      '<td class="n">'+fmtGs(n)+'</td></tr>'+
+    '<tr class="tot t-iva">'+vacia+
+      '<td class="lbl">IVA '+p+' %</td>'+
+      '<td class="n">'+fmtGs(iva)+'</td></tr>'+
+    '<tr class="tot t-fin">'+vacia+
+      '<td class="lbl">TOTAL GENERAL IVA INCLUIDO</td>'+
+      '<td class="n">'+fmtGs(n + iva)+'</td></tr>';
 }
 
 /* Totales del presupuesto, visibles mientras se carga:
@@ -3513,9 +3516,11 @@ function imprimirPropuesta(P){
       });
     });
   });
-  // Bloque de opcionales, con su propio subtotal
+  // Los opcionales van en su propia hoja: el cliente ve primero el precio
+  // firme y después, aparte, lo que puede elegir.
+  let cuerpoOpc = '';
   if(itemsOpc.length){
-    cuerpo += '<tr class="sec opc"><td colspan="4">TRABAJOS OPCIONALES · a confirmar por el cliente</td>'+
+    cuerpoOpc += '<tr class="sec opc"><td colspan="4">TRABAJOS OPCIONALES · a confirmar por el cliente</td>'+
               '<td class="lbl">SUB-TOTAL</td><td class="n">'+fmtGs(totalOpc)+'</td></tr>';
     let nO = 0;
     Object.keys(porSecO).sort().forEach(function(sec){
@@ -3523,18 +3528,18 @@ function imprimirPropuesta(P){
       Object.keys(porCapO).sort().forEach(function(cap){
         nO++;
         const subO = porCapO[cap].reduce(function(a,x){ return a+x.precio_total; },0);
-        cuerpo += '<tr class="cap opc"><td class="ref">O'+nO+'</td><td colspan="4">'+
+        cuerpoOpc += '<tr class="cap opc"><td class="ref">O'+nO+'</td><td colspan="4">'+
                   escapeHtml(String(cap).replace(/^\d+\s*/,'').toUpperCase())+'</td>'+
                   '<td class="n">'+fmtGs(subO)+'</td></tr>';
         porCapO[cap].forEach(function(r,i){
-          cuerpo += '<tr class="opc"><td class="ref">O'+nO+'.'+(i+1)+'</td><td>'+escapeHtml(r.descripcion)+'</td>'+
+          cuerpoOpc += '<tr class="opc"><td class="ref">O'+nO+'.'+(i+1)+'</td><td>'+escapeHtml(r.descripcion)+'</td>'+
             '<td class="c">'+escapeHtml(r.unidad||'')+'</td><td class="c">'+nf2(r.cantidad)+'</td>'+
             '<td class="n">'+fmtGs(r.precio_unit)+'</td><td class="n">'+fmtGs(r.precio_total)+'</td></tr>';
         });
       });
     });
     const ivaO = Math.round(totalOpc * (Number(P.iva_pct)||0) / 100);
-    cuerpo += '<tr class="sub opc"><td colspan="5" class="lbl">SUBTOTAL OPCIONALES SIN IVA</td>'+
+    cuerpoOpc += '<tr class="sub opc"><td colspan="5" class="lbl">SUBTOTAL OPCIONALES SIN IVA</td>'+
               '<td class="n">'+fmtGs(totalOpc)+'</td></tr>'+
       ((Number(P.iva_pct)||0)>0
         ? '<tr class="sub opc"><td colspan="5" class="lbl">IVA '+(Number(P.iva_pct)||0)+' %</td>'+
@@ -3550,7 +3555,7 @@ function imprimirPropuesta(P){
   if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes'); return; }
   w.document.write(
 '<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Propuesta '+escapeHtml(P.codigo)+'</title><style>'+
-'@page{size:A4 landscape;margin:11mm 12mm}*{box-sizing:border-box}'+
+'@page{size:A4 portrait;margin:12mm 11mm 16mm}*{box-sizing:border-box}'+
 'body{font-family:Segoe UI,Arial,sans-serif;background:#eef1f5;margin:0;color:#1a1f2b;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
 '.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:10px 20px;display:flex;align-items:center;font-size:13px;z-index:5}'+
 '.bar button{margin-left:auto;background:#C9A961;color:#1c2430;border:0;padding:9px 18px;border-radius:7px;font-weight:700;cursor:pointer}'+
@@ -3572,6 +3577,14 @@ function imprimirPropuesta(P){
 'tr.sub.opc td{background:#FDF7E8;color:#8a6d10;font-weight:700;border-color:#e8d9ae}'+
 'td.capsub{font-weight:700;color:#1F3864;font-variant-numeric:tabular-nums}'+
 'table.ficha{margin:0 0 14px;border:1px solid #1F3864}'+
+'.salto{page-break-before:always;break-before:page;height:0}'+
+'.opc-hdr{margin:0 0 12px;padding:11px 15px;background:#FDF7E8;border-left:4px solid #C8A028}'+
+'.opc-ti{font-size:15px;font-weight:800;color:#8a6d10;letter-spacing:.5px}'+
+'.opc-ts{font-size:11px;color:#9a8340;margin-top:2px}'+
+'.opc-nota{margin-top:11px;font-size:10.5px;color:#6b7280;line-height:1.6;font-style:italic}'+
+'.obs-box{margin-top:16px;border:1px solid #e2e6ee;border-radius:5px;padding:11px 15px;background:#fafbfd}'+
+'.obs-box h4{font-size:11px;letter-spacing:.6px;color:#1F3864;margin:0 0 6px}'+
+'.obs-cond{font-size:11px;color:#3a4560;margin-top:5px}'+
 'table.ficha td{border:1px solid #c4d4e8;padding:6px 11px;font-size:11.5px;color:#1a2236}'+
 'table.ficha td.et{background:#EDF3FB;font-weight:800;width:150px;letter-spacing:.4px;color:#1F3864}'+
 '.meta .sup{margin-top:7px;background:#1F4E78;color:#fff;padding:5px 11px;border-radius:4px;font-size:11px;font-weight:700}'+
@@ -3579,12 +3592,18 @@ function imprimirPropuesta(P){
 '.alcance{font-size:12px;line-height:1.65;color:#3a4560;margin:0 0 15px;padding:10px 13px;background:#f7f9fc;border-left:3px solid #C8A028}'+
 'td.ref{text-align:right;font-weight:700;width:70px;color:#5a6677}'+
 'td{word-break:break-word}td.c{text-align:center;white-space:nowrap}td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}td.lbl{text-align:right;font-weight:700;white-space:normal}'+
-'tr.tot td{background:#1F3864 !important;color:#fff !important;font-weight:800;font-size:15px;border-color:#1F3864;padding:12px 10px}'+
+'tr.tot td{font-weight:800;font-size:12.5px;padding:5px 10px;border-color:#1a1a1a}'+
+'tr.t-neto td{background:#2CA8E0 !important;color:#0d2b3d !important}'+
+'tr.t-iva td{background:#DCE1F2 !important;color:#1a2236 !important}'+
+'tr.t-fin td{background:#8CD44A !important;color:#12300a !important;font-size:13.5px}'+
+'tr.tot td[colspan]{background:#fff !important;border:none !important}'+
 '.cond{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin:22px 24px 0;font-size:12px;line-height:1.65;color:#33405c}'+
 '.cond h4{margin:0 0 6px;font-size:12px;letter-spacing:.8px;color:#1F3864}'+
 '.firmas{display:flex;justify-content:space-around;margin-top:52px;padding:0 24px}'+
 '.firmas div{border-top:1px solid #8893a5;padding-top:7px;width:240px;text-align:center;font-weight:700;font-size:12px}'+
 '.pie{margin-top:24px;padding:9px 24px 0;border-top:1px solid #e6e9ee;font-size:10px;color:#9aa4b2;display:flex;justify-content:space-between}'+
+'@media print{ .pie-pag{position:fixed;bottom:4mm;left:0;right:0;text-align:center;font-size:9.5px;color:#8893a5;letter-spacing:.3px} .pie-pag:after{counter-increment:page;content:"Pagina " counter(page)} }'+
+'.pie-pag{display:none}'+
 '@media print{.bar{display:none}body{background:#fff}.page{width:auto;margin:0;box-shadow:none}thead{display:table-header-group}tr{page-break-inside:avoid}}'+
 '</style></head><body>'+
 '<div class="bar">Propuesta '+escapeHtml(P.codigo)+' v'+P.version+' — documento para el cliente'+
@@ -3613,10 +3632,25 @@ function imprimirPropuesta(P){
 '<th style="width:86px">Cant.</th><th style="width:130px">Precio Unit.</th><th style="width:150px">Precio Total</th></tr></thead>'+
 '<tbody>'+cuerpo+
 ivaFilas(P.venta, P.iva_pct, 4, '17px')+'</tbody></table>'+
-'<div class="cond">'+
-'<div><h4>CONDICIONES</h4>'+(P.condiciones?li(P.condiciones):'<div>A convenir</div>')+
-'<div style="margin-top:8px">Oferta válida por '+(Number(P.validez)||15)+' días.</div></div>'+
-'<div><h4>OBSERVACIONES</h4>'+(P.observaciones?li(P.observaciones):'<div>—</div>')+'</div></div>'+
+// Observaciones a todo el ancho. Las condiciones de pago, si las hay,
+// van como una línea más: no necesitan columna propia.
+'<div class="obs-box"><h4>OBSERVACIONES</h4>'+
+  (P.observaciones?li(P.observaciones):'')+
+  (P.condiciones?'<div class="obs-cond"><b>Condiciones de pago:</b> '+escapeHtml(P.condiciones)+'</div>':'')+
+  '<div class="obs-cond">Oferta válida por '+(Number(P.validez)||15)+' días.</div>'+
+'</div>'+
+// Hoja aparte con los trabajos opcionales
+(cuerpoOpc
+ ? '<div class="salto"></div>'+
+   '<div class="opc-hdr"><div class="opc-ti">TRABAJOS OPCIONALES</div>'+
+   '<div class="opc-ts">'+escapeHtml(P.codigo)+' v'+P.version+
+   (P.cliente?' · '+escapeHtml(P.cliente):'')+' · no incluidos en el total de la propuesta</div></div>'+
+   '<table><thead><tr><th style="width:56px">Ítem</th><th>Descripción</th><th style="width:52px">Unid.</th>'+
+   '<th style="width:70px">Cant.</th><th style="width:104px">Precio Unit.</th>'+
+   '<th style="width:118px">Precio Total</th></tr></thead><tbody>'+cuerpoOpc+'</tbody></table>'+
+   '<div class="opc-nota">Estos trabajos se cotizan por separado y quedan a decisión del cliente. '+
+   'Confirmados, se incorporan al contrato mediante adenda con su propio plazo de ejecución.</div>'
+ : '')+
 '<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(P.codigo)+' v'+P.version+'</span>'+
 '<span>Precios en guaraníes'+((Number(P.iva_pct)||0)>0?', IVA '+P.iva_pct+' % incluido en el total':', sin IVA')+' · Emitido '+hoy.toLocaleString('es-PY')+'</span></div>'+
@@ -3731,7 +3765,7 @@ function buildCotizacion(){
   if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
   w.document.write(
 '<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Presupuesto '+escapeHtml(codigo)+'</title><style>'+
-'@page{size:A4 landscape;margin:11mm 12mm}'+
+'@page{size:A4 portrait;margin:12mm 11mm 16mm}'+
 '*{box-sizing:border-box}'+
 'body{font-family:Segoe UI,Arial,sans-serif;background:#eef1f5;margin:0;color:#1a1f2b;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
 '.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:10px 20px;display:flex;gap:12px;align-items:center;font-size:13px;z-index:5}'+
@@ -3755,6 +3789,14 @@ function buildCotizacion(){
 'tr.cap .capcod{display:inline-block;background:#1F3864;color:#fff;border-radius:3px;padding:1px 6px;font-size:10.5px;margin-right:7px;font-family:ui-monospace,Menlo,Consolas,monospace}'+
 'td.capsub{font-weight:700;color:#1F3864;font-variant-numeric:tabular-nums}'+
 'table.ficha{margin:0 0 14px;border:1px solid #1F3864}'+
+'.salto{page-break-before:always;break-before:page;height:0}'+
+'.opc-hdr{margin:0 0 12px;padding:11px 15px;background:#FDF7E8;border-left:4px solid #C8A028}'+
+'.opc-ti{font-size:15px;font-weight:800;color:#8a6d10;letter-spacing:.5px}'+
+'.opc-ts{font-size:11px;color:#9a8340;margin-top:2px}'+
+'.opc-nota{margin-top:11px;font-size:10.5px;color:#6b7280;line-height:1.6;font-style:italic}'+
+'.obs-box{margin-top:16px;border:1px solid #e2e6ee;border-radius:5px;padding:11px 15px;background:#fafbfd}'+
+'.obs-box h4{font-size:11px;letter-spacing:.6px;color:#1F3864;margin:0 0 6px}'+
+'.obs-cond{font-size:11px;color:#3a4560;margin-top:5px}'+
 'table.ficha td{border:1px solid #c4d4e8;padding:6px 11px;font-size:11.5px;color:#1a2236}'+
 'table.ficha td.et{background:#EDF3FB;font-weight:800;width:150px;letter-spacing:.4px;color:#1F3864}'+
 '.meta .sup{margin-top:7px;background:#1F4E78;color:#fff;padding:5px 11px;border-radius:4px;font-size:11px;font-weight:700}'+
@@ -3771,12 +3813,18 @@ function buildCotizacion(){
 'td.desc .cod{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:#8893a5;margin-top:2px}'+
 'td.c{text-align:center;white-space:nowrap}td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'+
 'td.lbl{text-align:right;font-weight:700}'+
-'tr.tot td{background:#1F3864 !important;color:#fff !important;font-weight:800;font-size:14px;border-color:#1F3864;padding:12px 10px}'+
+'tr.tot td{font-weight:800;font-size:12px;padding:5px 10px;border-color:#1a1a1a}'+
+'tr.t-neto td{background:#2CA8E0 !important;color:#0d2b3d !important}'+
+'tr.t-iva td{background:#DCE1F2 !important;color:#1a2236 !important}'+
+'tr.t-fin td{background:#8CD44A !important;color:#12300a !important;font-size:13px}'+
+'tr.tot td[colspan]{background:#fff !important;border:none !important}'+
 '.obs{margin:20px 24px 0;font-size:12px;line-height:1.65;color:#33405c}'+
 '.obs h4{margin:0 0 6px;font-size:12px;letter-spacing:.8px;color:#1F3864}'+
 '.firmas{display:flex;justify-content:space-around;margin-top:48px;padding:0 24px;font-size:12px;color:#5a6677}'+
 '.firmas div{border-top:1px solid #8893a5;padding-top:7px;width:230px;text-align:center;font-weight:700;color:#1a1f2b}'+
 '.pie{margin-top:26px;padding:9px 24px 0;border-top:1px solid #e6e9ee;font-size:10px;color:#9aa4b2;display:flex;justify-content:space-between}'+
+'@media print{ .pie-pag{position:fixed;bottom:4mm;left:0;right:0;text-align:center;font-size:9.5px;color:#8893a5;letter-spacing:.3px} .pie-pag:after{counter-increment:page;content:"Pagina " counter(page)} }'+
+'.pie-pag{display:none}'+
 '@media print{.bar{display:none}body{background:#fff}.page{width:auto;margin:0;box-shadow:none}'+
 'thead{display:table-header-group}tr{page-break-inside:avoid}.firmas{page-break-inside:avoid}}'+
 '</style></head><body>'+
