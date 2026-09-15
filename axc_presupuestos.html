@@ -546,7 +546,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.5 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v7.7 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -1448,7 +1448,7 @@ async function loadProfileAndApp(){
 // ════════════════════════════════════════════════════════
 // Estado del editor (en memoria; commit al Guardar)
 // ════════════════════════════════════════════════════════
-const ed = { open:false, isNew:true, origCodigo:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, precioMeta:{}, listasLoaded:false };
+const ed = { open:false, isNew:true, origCodigo:'', duenio:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, precioMeta:{}, listasLoaded:false };
 
 // ── Lista ───────────────────────────────────────────────
 async function loadList(){
@@ -2098,6 +2098,27 @@ async function soltarEdicion(){
   catch(e){ console.warn('soltarEdicion', e); }
 }
 
+/* Franja de solo lectura: el presupuesto es de otra residente.
+   Se puede consultar e imprimir, pero no guardar. */
+function mostrarBarraDeOtro(duenio, creadoEn){
+  const bar = document.getElementById('pmLockBar');
+  const body = document.querySelector('.pm-body');
+  const save = document.getElementById('pmSaveBtn');
+  if(body) body.classList.add('pm-ro');
+  if(save) save.style.display = 'none';
+  if(!bar) return;
+  const quien = String(duenio||'').split('@')[0];
+  bar.style.display = 'flex';
+  bar.innerHTML =
+    '<div class="ico">👤</div>'+
+    '<div><b>Este presupuesto lo elaboró '+escapeHtml(quien)+
+      (creadoEn ? ', el '+_fechaCorta(creadoEn) : '')+'</b>'+
+    '<p>Podés consultarlo, imprimir la planilla y ver el análisis de costos, '+
+    'pero no guardar cambios: cada presupuesto lo edita quien lo armó.<br>'+
+    'Si necesitás modificarlo, pedíselo a '+escapeHtml(quien)+
+    ' o que un administrador lo haga.</p></div>';
+}
+
 /* Franja de solo lectura cuando otro lo tiene abierto */
 function mostrarBarraOcupado(lock){
   const bar = document.getElementById('pmLockBar');
@@ -2133,7 +2154,7 @@ async function openEdit(codigo){
   const h = state.list.find(function(x){ return x.codigo === codigo; });
   if(!h) return;
   ed.open = true; ed.isNew = false; ed.origCodigo = codigo;
-  ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.tocado = false; ed.abiertoCon = null;
+  ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.tocado = false; ed.abiertoCon = null; ed.duenio = '';
   document.getElementById('pmTitle').textContent = 'Editar ' + codigo;
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
@@ -2142,9 +2163,18 @@ async function openEdit(codigo){
   ivaSet(h.iva_pct);
   ed.activo = h.activo !== false; renderEstadoUI();
   aplicarBloqueo(h);
+  // ── Dueño del presupuesto ─────────────────────────────────────
+  // Lo edita quien lo elaboró. El resto lo ve completo, pero sin poder
+  // guardar: así nadie modifica el trabajo de otra residente.
+  ed.duenio = (h.creado_por||'').trim();
+  const _ajeno = ed.duenio && ed.duenio !== _userTag() && !_esAdmin();
+  if(_ajeno){ ed.bloqueado = true; mostrarBarraDeOtro(ed.duenio, h.creado_en); }
+
   // ¿Lo tiene abierto otra persona?
-  const ocupado = await tomarEdicion(codigo);
-  if(ocupado){ ed.bloqueado = true; mostrarBarraOcupado(ocupado); }
+  if(!_ajeno){
+    const ocupado = await tomarEdicion(codigo);
+    if(ocupado){ ed.bloqueado = true; mostrarBarraOcupado(ocupado); }
+  }
   document.getElementById('ppOverlay').style.display = 'flex'; _aplicarPermisoMargen();
   renderRubros(); renderInsumos(); loadInsList();
   await loadArbol();
@@ -3180,6 +3210,13 @@ async function saveBudget(){
       }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
+    // El dueño del presupuesto es quien lo edita
+    if(!ed.isNew && ed.duenio && ed.duenio !== _userTag() && !_esAdmin()){
+      showToast('No podés guardar este presupuesto','error',
+        'Lo elaboró '+String(ed.duenio).split('@')[0]+' · pedíle que haga el cambio o consultá a un administrador');
+      btn.disabled=false; btn.textContent=old; return;
+    }
+
     // ── Capa 2: la marca de edición tiene que seguir siendo mía ───
     // Entre que se abrió y se guarda pueden haber pasado horas. Si otra
     // sesión tomó el presupuesto, guardar acá borraría su trabajo.
@@ -3699,6 +3736,7 @@ function imprimirPropuesta(P){
 'td.capsub{font-weight:700;color:#1F3864;font-variant-numeric:tabular-nums}'+
 'table.ficha{margin:0 0 8px;border:1px solid #1F3864}'+
 '.salto{page-break-before:always;break-before:page;height:0}'+
+'.firmas{page-break-inside:avoid;break-inside:avoid}'+
 '.opc-hdr{margin:0 0 12px;padding:11px 15px;background:#FDF7E8;border-left:4px solid #C8A028}'+
 '.opc-ti{font-size:12px;font-weight:800;color:#8a6d10;letter-spacing:.5px}'+
 '.opc-ts{font-size:11px;color:#9a8340;margin-top:2px}'+
@@ -3761,6 +3799,8 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
   '<div class="obs-cond">Oferta válida por '+(Number(P.validez)||15)+' días.</div>'+
 '</div>'+
 // Hoja aparte con los trabajos opcionales
+'<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'+
+// Hoja aparte con los opcionales, con su propio cierre y sus firmas
 (cuerpoOpc
  ? '<div class="salto"></div>'+
    '<div class="opc-hdr"><div class="opc-ti">TRABAJOS OPCIONALES</div>'+
@@ -3770,9 +3810,10 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
    '<th style="width:54px">Cant.</th><th style="width:82px">Precio Unit.</th>'+
    '<th style="width:92px">Precio Total</th></tr></thead><tbody>'+cuerpoOpc+'</tbody></table>'+
    '<div class="opc-nota">Estos trabajos se cotizan por separado y quedan a decisión del cliente. '+
-   'Confirmados, se incorporan al contrato mediante adenda con su propio plazo de ejecución.</div>'
+   'Confirmados, se incorporan al contrato mediante adenda con su propio plazo de ejecución.</div>'+
+   '<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'
  : '')+
-'<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'+
+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(P.codigo)+' v'+P.version+'</span>'+
 '<span>Precios en guaraníes'+((Number(P.iva_pct)||0)>0?', IVA '+P.iva_pct+' % incluido en el total':', sin IVA')+' · Emitido '+hoy.toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
@@ -3911,6 +3952,7 @@ function buildCotizacion(){
 'td.capsub{font-weight:700;color:#1F3864;font-variant-numeric:tabular-nums}'+
 'table.ficha{margin:0 0 14px;border:1px solid #1F3864}'+
 '.salto{page-break-before:always;break-before:page;height:0}'+
+'.firmas{page-break-inside:avoid;break-inside:avoid}'+
 '.opc-hdr{margin:0 0 12px;padding:11px 15px;background:#FDF7E8;border-left:4px solid #C8A028}'+
 '.opc-ti{font-size:15px;font-weight:800;color:#8a6d10;letter-spacing:.5px}'+
 '.opc-ts{font-size:11px;color:#9a8340;margin-top:2px}'+
