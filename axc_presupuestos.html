@@ -343,6 +343,19 @@ body{
   border-radius:10px;padding:9px 15px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
 .pm-head-btn:hover{background:rgba(255,255,255,.22)}
 /* Bloques plegables de abajo: se abren cuando hacen falta */
+.adj-drop{border:2px dashed #d6dde9;border-radius:12px;padding:20px;text-align:center;cursor:pointer;background:#fafbfd}
+.adj-drop:hover,.adj-drop.on{border-color:#1F3864;background:#EDF3FB}
+.adj-drop b{display:block;font-size:14px;color:#1F3864}
+.adj-drop span{display:block;font-size:11.5px;color:#8893a5;margin-top:4px}
+.adj-row{display:flex;align-items:center;gap:11px;padding:9px 13px;border:1px solid #e2e6ee;border-radius:10px;margin-top:8px;background:#fff}
+.adj-ico{width:32px;height:32px;border-radius:8px;background:#EDF3FB;color:#1F3864;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:15px}
+.adj-nom{flex:1;min-width:0;font-size:13px;font-weight:600;color:#1F3864;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adj-nom small{display:block;font-size:10.5px;font-weight:500;color:#8893a5}
+.adj-acc{display:flex;gap:6px;flex:0 0 auto}
+.adj-acc a,.adj-acc button{border:1px solid #d6dde9;background:#fff;border-radius:7px;padding:4px 10px;font-size:11.5px;font-weight:700;color:#42506a;cursor:pointer;text-decoration:none;font-family:inherit}
+.adj-acc a:hover{border-color:#1F3864;color:#1F3864}
+.adj-acc button:hover{border-color:#B03A3A;color:#B03A3A}
+.pp-clip{display:inline-flex;align-items:center;gap:3px;margin-left:8px;font-size:11px;font-weight:700;color:#8a6d10;background:#FDF7E8;border:1px solid #e6d29a;border-radius:999px;padding:1px 8px}
 .pm-fold{border:1px solid var(--border,#e2e6ee);border-radius:12px;margin-top:16px;overflow:hidden;background:#fff}
 .pm-fold>summary{cursor:pointer;padding:13px 18px;font-size:12px;font-weight:800;letter-spacing:.5px;
   text-transform:uppercase;color:var(--navy,#1F3864);background:var(--surface-2,#f5f7fb);list-style:none;
@@ -546,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v8.0 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v8.1 · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -768,6 +781,18 @@ body{
       </div>
       <div id="pmDesfAviso" class="pm-desf-aviso"></div>
       <div class="pm-hint">Los insumos se muestran agrupados por rubro con su subtotal; abajo el total consolidado del presupuesto (lo que controla la orden de compra). Al agregar uno a mano podés asignarlo a un rubro o dejarlo como «General». La <b>mano de obra</b> (👷) y la <b>logística</b> (🚛) se cargan desde sus propios bloques, más abajo, o con los botones de cada rubro: siempre van imputadas a un rubro, suman al costo del rubro y al total general, pero <b>no entran en el consolidado de materiales ni en el saldo de la orden de compra</b>.</div>
+      </div></details>
+
+      <details class="pm-fold" id="pmFoldAdj">
+      <summary>Adjuntos <small id="pmAdjCnt">planos, cotizaciones, planillas</small></summary>
+      <div class="pm-fold-body">
+        <div class="adj-drop" id="pmAdjDrop">
+          <input type="file" id="pmAdjFile" multiple hidden
+                 accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.dwg,.zip">
+          <b>📎 Agregar archivos</b>
+          <span>Planos, cotizaciones de proveedores, planillas de medición · hasta 10 MB cada uno</span>
+        </div>
+        <div id="pmAdjLista"></div>
       </div></details>
 
       <details class="pm-fold" id="pmFoldObs">
@@ -1478,9 +1503,10 @@ function _fmtF(iso, withTime){
 // Calcula el monto total de cada presupuesto en segundo plano y lo pinta en las tarjetas
 async function _enrichListTotals(){
   try{
-    const [rub, cabIva, ins, insc] = await Promise.all([
+    const [rub, cabIva, adjs, ins, insc] = await Promise.all([
       sb.from('presupuesto_rubros').select('presupuesto,precio_total,tiene_receta'),
       sb.from('presupuesto_cab').select('codigo,iva_pct'),
+      sb.from('presupuesto_adjuntos').select('presupuesto'),
       sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,cantidad,precio_unitario'),
       sb.from('insumos').select('codigo,producto_id')
     ]);
@@ -1500,6 +1526,13 @@ async function _enrichListTotals(){
     // El presupuesto es de uso interno: guarda costo sin IVA. Se muestran
     // los dos numeros para que nadie tome el neto como precio final.
     const ivaByCod={}; (cabIva.data||[]).forEach(function(c){ ivaByCod[c.codigo]=Number(c.iva_pct)||0; });
+    // Un clip en la tarjeta avisa que el presupuesto tiene planos o cotizaciones
+    const adjByCod={}; (adjs && adjs.data ? adjs.data : []).forEach(function(a){
+      adjByCod[a.presupuesto] = (adjByCod[a.presupuesto]||0) + 1; });
+    document.querySelectorAll('.pp-adj').forEach(function(el){
+      const n = adjByCod[el.getAttribute('data-cod')] || 0;
+      el.innerHTML = n ? ('<span class="pp-clip" title="'+n+' archivo(s) adjunto(s)">📎 '+n+'</span>') : '';
+    });
     state._ivaPct = ivaByCod;
     document.querySelectorAll('.pp-total').forEach(function(el){
       const cod=el.getAttribute('data-cod');
@@ -1554,6 +1587,7 @@ function renderList(){
       '<div class="pp-code">'+escapeHtml(p.codigo)+'</div>' +
       '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+'</div>' +
       '<div class="pp-total" data-cod="'+escapeHtml(p.codigo)+'"><span class="pp-total-v">…</span></div>' +
+      '<span class="pp-adj" data-cod="'+escapeHtml(p.codigo)+'"></span>' +
       '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
       '<button type="button" class="pp-dup" data-dup="'+escapeHtml(p.codigo)+'" title="Duplicar este presupuesto">⧉</button>' +
       '<span class="pp-chev">›</span></div>';
@@ -2155,6 +2189,7 @@ async function openEdit(codigo){
   if(!h) return;
   ed.open = true; ed.isNew = false; ed.origCodigo = codigo;
   ed.rubros = []; ed.insumos = []; ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.tocado = false; ed.abiertoCon = null; ed.duenio = '';
+  ed.adjuntos = [];
   document.getElementById('pmTitle').textContent = 'Editar ' + codigo;
   document.getElementById('pmSub').textContent = h.descripcion || '';
   const cod = document.getElementById('pmCodigo'); cod.value = codigo; cod.disabled = true;
@@ -2176,7 +2211,7 @@ async function openEdit(codigo){
     if(ocupado){ ed.bloqueado = true; mostrarBarraOcupado(ocupado); }
   }
   document.getElementById('ppOverlay').style.display = 'flex'; _aplicarPermisoMargen();
-  renderRubros(); renderInsumos(); loadInsList();
+  renderRubros(); renderInsumos(); loadInsList(); cargarAdjuntos(codigo);
   await loadArbol();
   await loadListas();
   _setObraValue(h.obra || '');
@@ -2439,6 +2474,117 @@ function _capituloDe(r){
   const cat = (ed.arbolByCod||{})[r.rubro_codigo||''];
   return (cat && String(cat.capitulo||'').trim()) || '(Sin capítulo)';
 }
+
+
+/* ── Adjuntos del presupuesto ────────────────────────────────────────
+   Planos, cotizaciones de proveedores, planillas de medición. Viven en
+   el bucket del sistema y se listan por presupuesto. */
+const ADJ_BUCKET = 'oc-adjuntos';
+const ADJ_MAX = 10 * 1024 * 1024;
+
+function _adjIcono(nombre){
+  const e = String(nombre||'').split('.').pop().toLowerCase();
+  if(e === 'pdf') return '📕';
+  if(['jpg','jpeg','png','webp','gif'].includes(e)) return '🖼';
+  if(['xls','xlsx','csv'].includes(e)) return '📊';
+  if(['doc','docx'].includes(e)) return '📄';
+  if(e === 'dwg') return '📐';
+  if(['zip','rar'].includes(e)) return '🗜';
+  return '📎';
+}
+function _adjTam(b){
+  const n = Number(b)||0;
+  return n > 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.round(n/1024)+' KB';
+}
+
+async function cargarAdjuntos(codigo){
+  ed.adjuntos = [];
+  if(!codigo) { renderAdjuntos(); return; }
+  try{
+    const { data, error } = await sb.from('presupuesto_adjuntos')
+      .select('*').eq('presupuesto', codigo).order('created_at');
+    if(!error) ed.adjuntos = data || [];
+  }catch(e){ console.warn('adjuntos', e); }
+  renderAdjuntos();
+}
+
+function renderAdjuntos(){
+  const cont = document.getElementById('pmAdjLista');
+  const cnt  = document.getElementById('pmAdjCnt');
+  const drop = document.getElementById('pmAdjDrop');
+  if(!cont) return;
+  const n = (ed.adjuntos||[]).length;
+  if(cnt) cnt.textContent = n ? (n+' archivo'+(n===1?'':'s')) : 'planos, cotizaciones, planillas';
+  if(drop) drop.style.display = ed.bloqueado ? 'none' : '';
+  cont.innerHTML = (ed.adjuntos||[]).map(function(a){
+    return '<div class="adj-row">'+
+      '<div class="adj-ico">'+_adjIcono(a.nombre)+'</div>'+
+      '<div class="adj-nom">'+escapeHtml(a.nombre||'archivo')+
+        '<small>'+_adjTam(a.tamano)+' · '+escapeHtml(String(a.subido_por||'').split('@')[0])+
+        (a.created_at?' · '+_fechaCorta(a.created_at):'')+'</small></div>'+
+      '<div class="adj-acc">'+
+        '<a href="'+escapeHtml(a.url)+'" target="_blank" rel="noopener">Ver</a>'+
+        (ed.bloqueado ? '' : '<button type="button" data-adjdel="'+escapeHtml(String(a.id))+'">Quitar</button>')+
+      '</div></div>';
+  }).join('');
+  cont.querySelectorAll('button[data-adjdel]').forEach(function(b){
+    b.addEventListener('click', function(){ borrarAdjunto(b.getAttribute('data-adjdel')); });
+  });
+}
+
+async function subirAdjuntos(files){
+  const codigo = (document.getElementById('pmCodigo').value||'').trim().toUpperCase();
+  if(!codigo){ showToast('Poné primero el código del presupuesto','error'); return; }
+  if(ed.bloqueado){ showToast('Este presupuesto es de sólo lectura','error'); return; }
+  for(const f of Array.from(files||[])){
+    if(f.size > ADJ_MAX){ showToast('«'+f.name+'» pesa más de 10 MB','error','Comprimilo o subilo en partes'); continue; }
+    try{
+      showToast('Subiendo '+f.name+'…','info');
+      const limpio = f.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+      const path = 'presu/'+codigo+'/'+Date.now()+'_'+limpio;
+      const up = await sb.storage.from(ADJ_BUCKET).upload(path, f, { upsert:false, contentType:f.type||undefined });
+      if(up.error) throw up.error;
+      const url = sb.storage.from(ADJ_BUCKET).getPublicUrl(path).data.publicUrl;
+      const ins = await sb.from('presupuesto_adjuntos').insert({
+        presupuesto: codigo, nombre: f.name, url: url, path: path,
+        tamano: f.size, tipo: f.type || null, subido_por: _userTag()
+      }).select('*').single();
+      if(ins.error) throw ins.error;
+      ed.adjuntos.push(ins.data);
+      renderAdjuntos();
+      showToast('Adjunto agregado','success', f.name);
+    }catch(e){
+      console.warn('subir adjunto', e);
+      showToast('No se pudo subir '+f.name,'error', e.message||String(e));
+    }
+  }
+}
+
+async function borrarAdjunto(id){
+  const a = (ed.adjuntos||[]).find(function(x){ return String(x.id) === String(id); });
+  if(!a) return;
+  if(!confirm('¿Quitar «'+a.nombre+'» de este presupuesto?')) return;
+  try{
+    if(a.path) await sb.storage.from(ADJ_BUCKET).remove([a.path]);
+    await sb.from('presupuesto_adjuntos').delete().eq('id', a.id);
+    ed.adjuntos = ed.adjuntos.filter(function(x){ return String(x.id) !== String(id); });
+    renderAdjuntos();
+    showToast('Adjunto quitado','success', a.nombre);
+  }catch(e){ showToast('No se pudo quitar','error', e.message||String(e)); }
+}
+
+(function(){
+  const drop = document.getElementById('pmAdjDrop');
+  const inp  = document.getElementById('pmAdjFile');
+  if(!drop || !inp) return;
+  drop.addEventListener('click', function(){ inp.click(); });
+  inp.addEventListener('change', function(){ subirAdjuntos(inp.files); inp.value=''; });
+  ['dragenter','dragover'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('on'); }); });
+  ['dragleave','drop'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('on'); }); });
+  drop.addEventListener('drop', function(e){ subirAdjuntos(e.dataTransfer.files); });
+})();
 
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
