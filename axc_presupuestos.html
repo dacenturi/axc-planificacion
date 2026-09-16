@@ -4009,6 +4009,52 @@ function _anxTipo(a){
   return 'otro';
 }
 
+/* Descarga el adjunto con la sesión del usuario: funciona aunque el bucket
+   sea privado. Si no, prueba con una URL firmada y por último con la guardada. */
+function _anxRuta(a){
+  if(a.path) return a.path;
+  const m = /\/object\/(?:public|sign|authenticated)\/[^/]+\/([^?#]+)/.exec(String(a.url||''));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+async function _anxBlob(a){
+  const ruta = _anxRuta(a); const errores = [];
+  if(ruta){
+    try{
+      const r = await sb.storage.from(ADJ_BUCKET).download(ruta);
+      if(r.data && !r.error && r.data.size) return r.data;
+      if(r.error) errores.push(r.error.message||String(r.error));
+    }catch(e){ errores.push(e.message||String(e)); }
+    try{
+      const sg = await sb.storage.from(ADJ_BUCKET).createSignedUrl(ruta, 600);
+      if(sg.data && sg.data.signedUrl){
+        const f = await fetch(sg.data.signedUrl);
+        if(f.ok) return await f.blob();
+        errores.push('firmada HTTP '+f.status);
+      }
+    }catch(e){ errores.push(e.message||String(e)); }
+  }
+  if(a.url){
+    const f = await fetch(a.url);
+    if(f.ok) return await f.blob();
+    errores.push('HTTP '+f.status);
+  }
+  throw new Error(errores.join(' · ') || 'el adjunto no tiene ruta');
+}
+/* Imagen → JPEG embebido (reducido a 2200 px) para que el documento no dependa del enlace */
+async function _anxImagen(blob){
+  let bmp;
+  try{ bmp = await createImageBitmap(blob); }
+  catch(e){ throw new Error('formato de imagen no soportado por el navegador'); }
+  const k = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(bmp.width*k); cv.height = Math.round(bmp.height*k);
+  const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0,0,cv.width,cv.height);
+  cx.drawImage(bmp, 0, 0, cv.width, cv.height);
+  if(bmp.close) bmp.close();
+  const url = cv.toDataURL('image/jpeg', 0.9); cv.width = cv.height = 0;
+  return url;
+}
+
 /* Ventana para elegir adjuntos. Si el presupuesto no tiene, genera directo. */
 function elegirAnexos(titulo, generar){
   const adj = (ed.adjuntos||[]);
@@ -4108,16 +4154,19 @@ async function anexarAdjuntos(w, lista, ref){
     try{
       if(w.closed) return;
       if(k==='img'){
+        if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · descargando…';
+        const src = await _anxImagen(await _anxBlob(a));
         const h = d.createElement('div'); h.className = 'anx-hoja';
         h.innerHTML = '<div class="anx-t">'+escapeHtml(nom)+'</div>';
         const im = d.createElement('img'); im.className = 'anx-img'; im.alt = a.nombre||'';
         esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
-        im.src = a.url; h.appendChild(im); cont.appendChild(h);
+        im.src = src; h.appendChild(im); cont.appendChild(h);
         estado[i] = 'Imagen · 1 hoja';
       } else if(k==='pdf'){
         const lib = await _cargarPdfJs();
-        const r = await fetch(a.url); if(!r.ok) throw new Error('HTTP '+r.status);
-        const doc = await lib.getDocument({ data: await r.arrayBuffer() }).promise;
+        if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · descargando…';
+        const blob = await _anxBlob(a);
+        const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
         const nPag = Math.min(doc.numPages, ANX_MAX_PAG);
         for(let p=1;p<=nPag;p++){
           if(w.closed) return;
@@ -4145,7 +4194,8 @@ async function anexarAdjuntos(w, lista, ref){
       }
     }catch(e){
       console.warn('anexo', a.nombre, e);
-      estado[i] = '<span class="anx-err">No se pudo insertar</span>'+(enlace?' · '+enlace:'');
+      estado[i] = '<span class="anx-err">No se pudo insertar</span>'+(enlace?' · '+enlace:'')+
+        '<br><small style="color:#8893a5">'+escapeHtml(e.message||String(e))+'</small>';
     }
     pintarIdx();
   }
