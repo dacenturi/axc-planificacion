@@ -789,7 +789,7 @@ body{
         <div class="adj-drop" id="pmAdjDrop">
           <input type="file" id="pmAdjFile" multiple hidden
                  accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx,.dwg,.zip">
-          <b>📎 Agregar archivos</b>
+          <b>📎 Agregar archivos</b> <small style="font-weight:500">(podés elegir varios a la vez o arrastrarlos)</small>
           <span>Planos, cotizaciones de proveedores, planillas de medición · hasta 10 MB cada uno</span>
         </div>
         <div id="pmAdjLista"></div>
@@ -2345,6 +2345,9 @@ function _esAdmin(){ return !!state.isAdmin; }
 function aplicarBloqueo(h){
   const pub = !!(h && h.publicado_en);
   ed.bloqueado = pub && !ed.desbloqueado;
+  // Los adjuntos se dibujan al abrir; si el candado cambia (reabrir / publicar)
+  // hay que volver a mostrar u ocultar «Agregar archivos» y «Quitar».
+  try{ if(typeof renderAdjuntos==='function') renderAdjuntos(); }catch(e){}
   const body = document.querySelector('.pm-body');
   const bar  = document.getElementById('pmLockBar');
   const save = document.getElementById('pmSaveBtn');
@@ -3983,9 +3986,10 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
 
 // ── Anexos en los documentos impresos ───────────────────
 // Antes de generar la planilla, la propuesta o el análisis se puede elegir
-// qué adjuntos del presupuesto van al final del documento. Imágenes y PDF
-// se insertan como hojas; los demás (Excel, Word, DWG…) quedan listados
-// en el índice con su enlace.
+// qué adjuntos van al final del documento, siempre en hojas aparte:
+//  · Fotos: reducidas, hasta 2 por hoja del tamaño del documento.
+//  · Planos y documentos: cada hoja con su tamaño de origen (A4, A3, A1…).
+//  · Excel, Word, DWG…: listados en el índice con su enlace.
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const ANX_MAX_PAG = 40;           // tope de hojas por PDF adjunto
@@ -4040,19 +4044,31 @@ async function _anxBlob(a){
   }
   throw new Error(errores.join(' · ') || 'el adjunto no tiene ruta');
 }
-/* Imagen → JPEG embebido (reducido a 2200 px) para que el documento no dependa del enlace */
-async function _anxImagen(blob){
+const ANX_DPI = 150;              // resolución de planos y documentos
+const ANX_MAX_PX = 6000;          // lado mayor máximo de una hoja rasterizada
+const ANX_FOTOS_X_HOJA = 2;
+const PT_MM = 25.4/72, A4 = { w:210, h:297 };
+
+/* Imagen → JPEG embebido. maxPx limita el lado mayor; devuelve también el tamaño. */
+async function _anxImagen(blob, maxPx){
   let bmp;
   try{ bmp = await createImageBitmap(blob); }
   catch(e){ throw new Error('formato de imagen no soportado por el navegador'); }
-  const k = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+  const k = Math.min(1, maxPx / Math.max(bmp.width, bmp.height));
   const cv = document.createElement('canvas');
   cv.width = Math.round(bmp.width*k); cv.height = Math.round(bmp.height*k);
   const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0,0,cv.width,cv.height);
   cx.drawImage(bmp, 0, 0, cv.width, cv.height);
+  const out = { src: cv.toDataURL('image/jpeg', 0.9), w: bmp.width, h: bmp.height };
   if(bmp.close) bmp.close();
-  const url = cv.toDataURL('image/jpeg', 0.9); cv.width = cv.height = 0;
-  return url;
+  cv.width = cv.height = 0;
+  return out;
+}
+// Las imágenes se toman como foto salvo que el nombre indique un plano o documento
+function _anxModoDefault(a){
+  const n = String(a.nombre||'').toLowerCase();
+  if(_anxTipo(a)==='pdf') return 'doc';
+  return /plano|planta|corte|fachada|lamina|lámina|detalle|croquis|esquema|escane|scan|documento|nota|contrato/.test(n) ? 'doc' : 'foto';
 }
 
 /* Ventana para elegir adjuntos. Si el presupuesto no tiene, genera directo. */
@@ -4064,11 +4080,12 @@ function elegirAnexos(titulo, generar){
     ov = document.createElement('div');
     ov.className = 'mini-overlay'; ov.id = 'anxOverlay'; ov.style.zIndex = '10005';
     ov.innerHTML =
-      '<div class="mini-modal" style="width:min(560px,94vw)">'+
+      '<div class="mini-modal" style="width:min(640px,94vw)">'+
         '<div class="mini-head"><span id="anxTit"></span><button type="button" class="mini-x" id="anxX">&times;</button></div>'+
         '<div class="mini-body" style="padding:16px 18px">'+
-          '<div style="font-size:13px;color:#5a6677;margin-bottom:10px">¿Querés agregar adjuntos al final del documento? '+
-            'Las imágenes y los PDF se insertan como hojas; los demás archivos quedan listados con su enlace.</div>'+
+          '<div style="font-size:13px;color:#5a6677;margin-bottom:10px;line-height:1.5">Los adjuntos van en hojas aparte, al final. '+
+            '<b>Foto:</b> reducida, hasta '+ANX_FOTOS_X_HOJA+' por hoja. '+
+            '<b>Documento / plano:</b> cada hoja con su tamaño original.</div>'+
           '<div style="display:flex;gap:8px;margin-bottom:8px">'+
             '<button type="button" class="pm-btn-ghost" id="anxTodos" style="padding:5px 11px;font-size:12px">Marcar todos</button>'+
             '<button type="button" class="pm-btn-ghost" id="anxNinguno" style="padding:5px 11px;font-size:12px">Ninguno</button></div>'+
@@ -4081,18 +4098,23 @@ function elegirAnexos(titulo, generar){
     ov.addEventListener('click', function(e){ if(e.target===ov) ov.classList.remove('show'); });
     document.getElementById('anxX').onclick = function(){ ov.classList.remove('show'); };
   }
-  const etq = { pdf:'PDF · se inserta', img:'Imagen · se inserta', otro:'Sólo enlace en el índice' };
   document.getElementById('anxTit').textContent = titulo;
   document.getElementById('anxLista').innerHTML = adj.map(function(a,i){
-    const k = _anxTipo(a);
-    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #eef1f6;cursor:pointer">'+
-      '<input type="checkbox" data-i="'+i+'" checked style="width:16px;height:16px;accent-color:#1F3864">'+
+    const k = _anxTipo(a), m = _anxModoDefault(a);
+    const selector = k==='otro'
+      ? '<span style="font-size:11px;color:#8893a5;white-space:nowrap">sólo enlace</span>'
+      : '<select data-m="'+i+'" style="border:1px solid #d8dde6;border-radius:7px;padding:4px 6px;font:inherit;font-size:12px">'+
+          '<option value="foto"'+(m==='foto'?' selected':'')+'>📷 Foto (reducida)</option>'+
+          '<option value="doc"'+(m==='doc'?' selected':'')+'>📐 Documento / plano (tamaño original)</option></select>';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #eef1f6">'+
+      '<input type="checkbox" data-i="'+i+'" checked style="width:16px;height:16px;accent-color:#1F3864;cursor:pointer">'+
       '<span style="font-size:18px">'+_adjIcono(a.nombre)+'</span>'+
       '<span style="flex:1;min-width:0"><b style="display:block;font-size:13px;color:#1a2236;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
         escapeHtml(a.nombre||'archivo')+'</b>'+
-      '<small style="color:#8893a5">'+_adjTam(a.tamano)+' · '+etq[k]+'</small></span></label>';
+      '<small style="color:#8893a5">'+_adjTam(a.tamano)+' · '+(k==='pdf'?'PDF':(k==='img'?'Imagen':'Otro formato'))+'</small></span>'+
+      selector+'</div>';
   }).join('');
-  const cajas = function(){ return Array.prototype.slice.call(document.querySelectorAll('#anxLista input')); };
+  const cajas = function(){ return Array.prototype.slice.call(document.querySelectorAll('#anxLista input[data-i]')); };
   const actualizar = function(){
     const n = cajas().filter(function(c){ return c.checked; }).length;
     const b = document.getElementById('anxCon');
@@ -4104,93 +4126,163 @@ function elegirAnexos(titulo, generar){
   document.getElementById('anxNinguno').onclick = function(){ cajas().forEach(function(c){ c.checked=false; }); actualizar(); };
   document.getElementById('anxSin').onclick = function(){ ov.classList.remove('show'); generar([]); };
   document.getElementById('anxCon').onclick = function(){
-    const sel = cajas().filter(function(c){ return c.checked; }).map(function(c){ return adj[Number(c.dataset.i)]; });
+    const sel = cajas().filter(function(c){ return c.checked; }).map(function(c){
+      const i = Number(c.dataset.i), s = document.querySelector('#anxLista select[data-m="'+i+'"]');
+      return Object.assign({}, adj[i], { _modo: s ? s.value : 'otro' });
+    });
     ov.classList.remove('show'); generar(sel);
   };
   actualizar();
   ov.classList.add('show');
 }
 
-/* Agrega el índice y las hojas de anexos a la ventana ya abierta del documento. */
+/* Agrega los anexos a la ventana ya abierta del documento, en hojas propias. */
 async function anexarAdjuntos(w, lista, ref){
   if(!w || w.closed || !lista || !lista.length) return;
+  // Primero las fotos (se agrupan de a dos por hoja), después planos y documentos
+  const _m = function(a){ return _anxTipo(a)==='otro' ? 2 : ((a._modo||_anxModoDefault(a))==='foto' ? 0 : 1); };
+  lista = lista.map(function(a,i){ return {a:a,i:i}; })
+    .sort(function(x,y){ return _m(x.a)-_m(y.a) || x.i-y.i; }).map(function(x){ return x.a; });
   const d = w.document;
   const btn = d.querySelector('.bar button');
   const txtBtn = btn ? btn.textContent : '';
-  if(btn){ btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = '⏳ Preparando anexos…'; }
+  const aviso = function(t){ if(btn) btn.textContent = t; };
+  if(btn){ btn.disabled = true; btn.style.opacity = '.6'; }
+  aviso('⏳ Preparando anexos…');
+
+  // Ancho en pantalla igual al de la hoja principal del documento
+  const pag = d.querySelector('.page');
+  const anchoPx = pag ? pag.getBoundingClientRect().width : 794;
   const st = d.createElement('style');
+  let reglasPag = '';
   st.textContent =
-    '.anx-hoja{page-break-before:always;break-before:page;padding:14px 24px 0}'+
-    '.anx-t{font-size:12px;font-weight:800;color:#1F3864;letter-spacing:.4px;border-bottom:2px solid #C8A028;padding-bottom:5px;margin-bottom:10px;display:flex;justify-content:space-between;gap:10px}'+
+    '.anx-sheet{background:#fff;margin:18px auto;box-shadow:0 2px 14px rgba(0,0,0,.14);position:relative;box-sizing:border-box}'+
+    '.anx-std{width:'+Math.round(anchoPx)+'px;max-width:100%;min-height:'+Math.round(anchoPx*297/210*.6)+'px;padding:22px 26px}'+
+    '.anx-doc{max-width:calc(100% - 20px);overflow:hidden}'+
+    '.anx-doc img{display:block;width:100%;height:auto}'+
+    '.anx-tag{position:absolute;top:0;left:0;background:rgba(31,56,100,.88);color:#fff;font:700 11px Segoe UI,Arial,sans-serif;padding:4px 9px;border-bottom-right-radius:6px}'+
+    '.anx-t{font:800 13px Segoe UI,Arial,sans-serif;color:#1F3864;letter-spacing:.4px;border-bottom:2px solid #C8A028;padding-bottom:5px;margin-bottom:12px;display:flex;justify-content:space-between;gap:10px}'+
     '.anx-t span{font-weight:600;color:#8893a5}'+
-    '.anx-img{display:block;max-width:100%;max-height:245mm;margin:0 auto;object-fit:contain}'+
-    'table.anx-idx{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px;border:1px solid #c4d4e8}'+
+    '.anx-foto{margin:0 0 16px;text-align:center;page-break-inside:avoid;break-inside:avoid}'+
+    '.anx-foto img{display:inline-block;max-width:100%;max-height:108mm;object-fit:contain;border:1px solid #e2e6ee;border-radius:3px}'+
+    '.anx-foto figcaption{font:600 11px Segoe UI,Arial,sans-serif;color:#5a6677;margin-top:5px}'+
+    'table.anx-idx{width:100%;border-collapse:collapse;font:11.5px Segoe UI,Arial,sans-serif;border:1px solid #c4d4e8}'+
     'table.anx-idx th{background:#1F3864;color:#fff;padding:7px 9px;text-align:left;font-size:11px}'+
     'table.anx-idx td{border:1px solid #d8e0ec;padding:6px 9px;word-break:break-word}'+
-    'table.anx-idx a{color:#1F4E78}'+
-    '.anx-err{color:#A32D2D;font-weight:700}'+
-    '@media print{.anx-img{max-height:250mm}}';
+    'table.anx-idx a{color:#1F4E78}.anx-err{color:#A32D2D;font-weight:700}'+
+    '@media print{'+
+      '.anx-sheet{margin:0!important;box-shadow:none!important;break-before:page;page-break-before:always}'+
+      '.anx-std{width:auto!important;min-height:0!important;padding:0!important}'+
+      '.anx-doc{width:100%!important;max-width:none!important;height:100vh;overflow:hidden}'+
+      '.anx-doc img{width:100%!important;height:100vh!important;object-fit:contain}.anx-tag{display:none}'+
+    '}';
   d.head.appendChild(st);
-  const cont = d.querySelector('.page') || d.body;
+  // Las reglas de tamaño de cada hoja se agregan en otro <style> a medida que se conocen
+  const stPag = d.createElement('style'); d.head.appendChild(stPag);
+  const hoja = function(clase){ const h = d.createElement('div'); h.className = 'anx-sheet '+clase; d.body.appendChild(h); return h; };
 
-  const idx = d.createElement('div');
-  idx.className = 'anx-hoja';
+  // Índice en su propia hoja
+  const idx = hoja('anx-std');
   const estado = lista.map(function(){ return 'Preparando…'; });
   const pintarIdx = function(){
     idx.innerHTML = '<div class="anx-t">ANEXOS'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>'+
       '<table class="anx-idx"><thead><tr><th style="width:44px">N°</th><th>Archivo</th>'+
-      '<th style="width:80px">Tamaño</th><th style="width:210px">Contenido</th></tr></thead><tbody>'+
+      '<th style="width:74px">Tamaño</th><th style="width:230px">Contenido</th></tr></thead><tbody>'+
       lista.map(function(a,i){
         return '<tr><td>A'+(i+1)+'</td><td>'+escapeHtml(a.nombre||'archivo')+'</td><td>'+_adjTam(a.tamano)+'</td>'+
           '<td>'+estado[i]+'</td></tr>';
       }).join('')+'</tbody></table>';
   };
-  pintarIdx(); cont.appendChild(idx);
+  pintarIdx();
 
+  let nPag = 0, hojaFotos = null, fotosEnHoja = 0;
   const esperas = [];
+  const ponerImg = function(padre, src){
+    const im = d.createElement('img');
+    esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
+    im.src = src; padre.appendChild(im); return im;
+  };
+  // Hoja con el tamaño exacto del original (mm). Chrome respeta @page con nombre.
+  const hojaDoc = function(src, wmm, hmm, etiqueta){
+    nPag++;
+    const nombre = 'anxp'+nPag;
+    reglasPag += '@page '+nombre+'{size:'+wmm.toFixed(1)+'mm '+hmm.toFixed(1)+'mm;margin:0}'+
+      '@media print{.'+nombre+'{page:'+nombre+'}}';
+    stPag.textContent = reglasPag;
+    const h = hoja('anx-doc '+nombre);
+    // En pantalla se ve a escala real (96 px por pulgada) salvo que no entre
+    h.style.width = (wmm/25.4*96).toFixed(0)+'px';
+    ponerImg(h, src);
+    const t = d.createElement('div'); t.className = 'anx-tag'; t.textContent = etiqueta; h.appendChild(t);
+    hojaFotos = null;   // la próxima foto empieza hoja nueva
+  };
+  const agregarFoto = function(src, pie){
+    if(!hojaFotos || fotosEnHoja >= ANX_FOTOS_X_HOJA){
+      hojaFotos = hoja('anx-std'); fotosEnHoja = 0;
+      hojaFotos.innerHTML = '<div class="anx-t">REGISTRO FOTOGRÁFICO'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>';
+    }
+    const fig = d.createElement('figure'); fig.className = 'anx-foto';
+    ponerImg(fig, src);
+    const cap = d.createElement('figcaption'); cap.textContent = pie; fig.appendChild(cap);
+    hojaFotos.appendChild(fig); fotosEnHoja++;
+  };
+
   for(let i=0;i<lista.length;i++){
-    const a = lista[i], k = _anxTipo(a), nom = 'A'+(i+1)+' · '+(a.nombre||'archivo');
+    const a = lista[i], k = _anxTipo(a), modo = a._modo || _anxModoDefault(a);
+    const nom = 'A'+(i+1)+' · '+(a.nombre||'archivo');
     const enlace = a.url ? '<a href="'+escapeHtml(a.url)+'" target="_blank" rel="noopener">abrir archivo</a>' : '';
     try{
       if(w.closed) return;
+      if(k==='otro'){ estado[i] = 'No se inserta · '+(enlace||'sin enlace'); pintarIdx(); continue; }
+      aviso('⏳ Anexo A'+(i+1)+' · descargando…');
+      const blob = await _anxBlob(a);
+
       if(k==='img'){
-        if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · descargando…';
-        const src = await _anxImagen(await _anxBlob(a));
-        const h = d.createElement('div'); h.className = 'anx-hoja';
-        h.innerHTML = '<div class="anx-t">'+escapeHtml(nom)+'</div>';
-        const im = d.createElement('img'); im.className = 'anx-img'; im.alt = a.nombre||'';
-        esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
-        im.src = src; h.appendChild(im); cont.appendChild(h);
-        estado[i] = 'Imagen · 1 hoja';
-      } else if(k==='pdf'){
+        if(modo==='foto'){
+          const im = await _anxImagen(blob, 1400);
+          agregarFoto(im.src, nom);
+          estado[i] = 'Foto';
+        }else{
+          const im = await _anxImagen(blob, ANX_MAX_PX);
+          // Tamaño de origen a 150 dpi; si queda más chico que un A4, se lleva a A4
+          let wmm = im.w/ANX_DPI*25.4, hmm = im.h/ANX_DPI*25.4;
+          const vert = hmm >= wmm, ref4 = vert ? A4 : { w:A4.h, h:A4.w };
+          if(wmm < ref4.w && hmm < ref4.h){ const f = Math.min(ref4.w/wmm, ref4.h/hmm); wmm*=f; hmm*=f; }
+          hojaDoc(im.src, wmm, hmm, nom);
+          estado[i] = 'Documento · '+Math.round(wmm)+'×'+Math.round(hmm)+' mm';
+        }
+      } else {   // PDF
         const lib = await _cargarPdfJs();
-        if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · descargando…';
-        const blob = await _anxBlob(a);
-        const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-        const nPag = Math.min(doc.numPages, ANX_MAX_PAG);
-        for(let p=1;p<=nPag;p++){
+        const pdf = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+        const tope = Math.min(pdf.numPages, ANX_MAX_PAG);
+        const tam = {};
+        for(let p=1;p<=tope;p++){
           if(w.closed) return;
-          if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · hoja '+p+' de '+nPag+'…';
-          const pg = await doc.getPage(p);
-          const v0 = pg.getViewport({ scale:1 });
-          const esc = Math.min(2.2, 1700 / Math.max(v0.width, v0.height));
+          aviso('⏳ Anexo A'+(i+1)+' · hoja '+p+' de '+tope+'…');
+          const pg = await pdf.getPage(p);
+          const v0 = pg.getViewport({ scale:1 });            // en puntos
+          const maxLado = modo==='foto' ? 1400 : ANX_MAX_PX;
+          const esc = Math.min(modo==='foto' ? 2 : ANX_DPI/72, maxLado / Math.max(v0.width, v0.height));
           const vp = pg.getViewport({ scale: esc });
           const cv = document.createElement('canvas');
           cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
           const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0,0,cv.width,cv.height);
           await pg.render({ canvasContext: cx, viewport: vp }).promise;
-          const h = d.createElement('div'); h.className = 'anx-hoja';
-          h.innerHTML = '<div class="anx-t">'+escapeHtml(nom)+'<span>hoja '+p+' de '+doc.numPages+'</span></div>';
-          const im = d.createElement('img'); im.className = 'anx-img';
-          esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
-          im.src = cv.toDataURL('image/jpeg', 0.88);
-          h.appendChild(im); cont.appendChild(h);
+          const src = cv.toDataURL('image/jpeg', modo==='foto' ? 0.88 : 0.92);
           cv.width = cv.height = 0;
+          const pie = nom + (pdf.numPages>1 ? ' · hoja '+p+' de '+pdf.numPages : '');
+          if(modo==='foto') agregarFoto(src, pie);
+          else{
+            const wmm = v0.width*PT_MM, hmm = v0.height*PT_MM;
+            hojaDoc(src, wmm, hmm, pie);
+            const t = _anxFormato(wmm, hmm); tam[t] = (tam[t]||0)+1;
+          }
+          if(pg.cleanup) pg.cleanup();
         }
-        estado[i] = 'PDF · '+nPag+' hoja'+(nPag===1?'':'s')+
-          (doc.numPages>nPag ? ' (de '+doc.numPages+'; resto: '+enlace+')' : '');
-      } else {
-        estado[i] = 'No se inserta · '+(enlace||'sin enlace');
+        const det = modo==='foto' ? 'como foto' : Object.keys(tam).map(function(t){ return t+(tam[t]>1?' ×'+tam[t]:''); }).join(', ');
+        estado[i] = 'PDF · '+tope+' hoja'+(tope===1?'':'s')+' · '+det+
+          (pdf.numPages>tope ? '<br>(de '+pdf.numPages+'; el resto: '+enlace+')' : '');
+        if(pdf.destroy) pdf.destroy();
       }
     }catch(e){
       console.warn('anexo', a.nombre, e);
@@ -4199,8 +4291,16 @@ async function anexarAdjuntos(w, lista, ref){
     }
     pintarIdx();
   }
+  aviso('⏳ Terminando…');
   await Promise.all(esperas);
   if(btn && !w.closed){ btn.disabled = false; btn.style.opacity = ''; btn.textContent = txtBtn; }
+}
+// Nombre del formato ISO más cercano, para el índice
+function _anxFormato(wmm, hmm){
+  const c = Math.min(wmm,hmm), l = Math.max(wmm,hmm);
+  const F = [['A0',841,1189],['A1',594,841],['A2',420,594],['A3',297,420],['A4',210,297],['A5',148,210],['Carta',216,279],['Oficio',216,330]];
+  for(const f of F){ if(Math.abs(c-f[1])<=6 && Math.abs(l-f[2])<=6) return f[0]+(wmm>hmm?' apaisado':''); }
+  return Math.round(wmm)+'×'+Math.round(hmm)+' mm';
 }
 
 function buildCotizacion(anexos){
