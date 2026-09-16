@@ -3989,7 +3989,7 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
 // qué adjuntos van al final del documento, siempre en hojas aparte:
 //  · Fotos: reducidas, hasta 2 por hoja del tamaño del documento.
 //  · Planos y documentos: cada hoja con su tamaño de origen (A4, A3, A1…).
-//  · Excel, Word, DWG…: listados en el índice con su enlace.
+//  · Excel, Word, DWG…: no se pueden dibujar; se avisa al generar.
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const ANX_MAX_PAG = 40;           // tope de hojas por PDF adjunto
@@ -4102,7 +4102,7 @@ function elegirAnexos(titulo, generar){
   document.getElementById('anxLista').innerHTML = adj.map(function(a,i){
     const k = _anxTipo(a), m = _anxModoDefault(a);
     const selector = k==='otro'
-      ? '<span style="font-size:11px;color:#8893a5;white-space:nowrap">sólo enlace</span>'
+      ? '<span style="font-size:11px;color:#A32D2D;white-space:nowrap">no se imprime</span>'
       : '<select data-m="'+i+'" style="border:1px solid #d8dde6;border-radius:7px;padding:4px 6px;font:inherit;font-size:12px">'+
           '<option value="foto"'+(m==='foto'?' selected':'')+'>📷 Foto (reducida)</option>'+
           '<option value="doc"'+(m==='doc'?' selected':'')+'>📐 Documento / plano (tamaño original)</option></select>';
@@ -4174,27 +4174,19 @@ async function anexarAdjuntos(w, lista, ref){
       '.anx-sheet{margin:0!important;box-shadow:none!important;break-before:page;page-break-before:always}'+
       '.anx-std{width:auto!important;min-height:0!important;padding:0!important}'+
       '.anx-doc{width:100%!important;max-width:none!important;height:100vh;overflow:hidden}'+
-      '.anx-doc img{width:100%!important;height:100vh!important;object-fit:contain}.anx-tag{display:none}'+
+      '.anx-doc img{width:100%!important;height:100vh!important;object-fit:contain}'+
+      '.anx-tag{font-size:7.5pt;padding:2px 7px;background:#1F3864!important;color:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
     '}';
   d.head.appendChild(st);
   // Las reglas de tamaño de cada hoja se agregan en otro <style> a medida que se conocen
   const stPag = d.createElement('style'); d.head.appendChild(stPag);
   const hoja = function(clase){ const h = d.createElement('div'); h.className = 'anx-sheet '+clase; d.body.appendChild(h); return h; };
 
-  // Índice en su propia hoja
-  const idx = hoja('anx-std');
-  const estado = lista.map(function(){ return 'Preparando…'; });
-  const pintarIdx = function(){
-    idx.innerHTML = '<div class="anx-t">ANEXOS'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>'+
-      '<table class="anx-idx"><thead><tr><th style="width:44px">N°</th><th>Archivo</th>'+
-      '<th style="width:74px">Tamaño</th><th style="width:230px">Contenido</th></tr></thead><tbody>'+
-      lista.map(function(a,i){
-        return '<tr><td>A'+(i+1)+'</td><td>'+escapeHtml(a.nombre||'archivo')+'</td><td>'+_adjTam(a.tamano)+'</td>'+
-          '<td>'+estado[i]+'</td></tr>';
-      }).join('')+'</tbody></table>';
-  };
-  pintarIdx();
-
+  // Sin índice: el anexo arranca directo con las fotos y los documentos.
+  // Lo que no se puede insertar se avisa en la pantalla del sistema.
+  const estado = lista.map(function(){ return ''; });
+  const fallidos = [], sinInsertar = [];
+  const pintarIdx = function(){};
   let nPag = 0, hojaFotos = null, fotosEnHoja = 0;
   const esperas = [];
   const ponerImg = function(padre, src){
@@ -4213,13 +4205,13 @@ async function anexarAdjuntos(w, lista, ref){
     // En pantalla se ve a escala real (96 px por pulgada) salvo que no entre
     h.style.width = (wmm/25.4*96).toFixed(0)+'px';
     ponerImg(h, src);
-    const t = d.createElement('div'); t.className = 'anx-tag'; t.textContent = etiqueta; h.appendChild(t);
+    const t = d.createElement('div'); t.className = 'anx-tag'; t.textContent = 'ANEXO · '+etiqueta; h.appendChild(t);
     hojaFotos = null;   // la próxima foto empieza hoja nueva
   };
   const agregarFoto = function(src, pie){
     if(!hojaFotos || fotosEnHoja >= ANX_FOTOS_X_HOJA){
       hojaFotos = hoja('anx-std'); fotosEnHoja = 0;
-      hojaFotos.innerHTML = '<div class="anx-t">REGISTRO FOTOGRÁFICO'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>';
+      hojaFotos.innerHTML = '<div class="anx-t">ANEXO'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>';
     }
     const fig = d.createElement('figure'); fig.className = 'anx-foto';
     ponerImg(fig, src);
@@ -4229,11 +4221,11 @@ async function anexarAdjuntos(w, lista, ref){
 
   for(let i=0;i<lista.length;i++){
     const a = lista[i], k = _anxTipo(a), modo = a._modo || _anxModoDefault(a);
-    const nom = 'A'+(i+1)+' · '+(a.nombre||'archivo');
+    const nom = String(a.nombre||'archivo').replace(/\.[a-z0-9]{2,5}$/i,'');
     const enlace = a.url ? '<a href="'+escapeHtml(a.url)+'" target="_blank" rel="noopener">abrir archivo</a>' : '';
     try{
       if(w.closed) return;
-      if(k==='otro'){ estado[i] = 'No se inserta · '+(enlace||'sin enlace'); pintarIdx(); continue; }
+      if(k==='otro'){ sinInsertar.push(a.nombre||'archivo'); continue; }
       aviso('⏳ Anexo A'+(i+1)+' · descargando…');
       const blob = await _anxBlob(a);
 
@@ -4281,18 +4273,21 @@ async function anexarAdjuntos(w, lista, ref){
         }
         const det = modo==='foto' ? 'como foto' : Object.keys(tam).map(function(t){ return t+(tam[t]>1?' ×'+tam[t]:''); }).join(', ');
         estado[i] = 'PDF · '+tope+' hoja'+(tope===1?'':'s')+' · '+det+
-          (pdf.numPages>tope ? '<br>(de '+pdf.numPages+'; el resto: '+enlace+')' : '');
+          '';
+        if(pdf.numPages>tope) fallidos.push((a.nombre||'archivo')+': sólo se agregaron '+tope+' de '+pdf.numPages+' hojas');
         if(pdf.destroy) pdf.destroy();
       }
     }catch(e){
       console.warn('anexo', a.nombre, e);
-      estado[i] = '<span class="anx-err">No se pudo insertar</span>'+(enlace?' · '+enlace:'')+
-        '<br><small style="color:#8893a5">'+escapeHtml(e.message||String(e))+'</small>';
+      fallidos.push((a.nombre||'archivo')+': '+(e.message||String(e)));
     }
     pintarIdx();
   }
   aviso('⏳ Terminando…');
   await Promise.all(esperas);
+  if(fallidos.length) showToast('No se pudieron agregar '+fallidos.length+' adjunto(s)','error', fallidos.join(' · '));
+  if(sinInsertar.length) showToast('Adjuntos que no se pueden imprimir','info',
+    sinInsertar.join(', ')+' · Excel, Word o DWG: exportalos a PDF y subilos para que salgan en el anexo');
   if(btn && !w.closed){ btn.disabled = false; btn.style.opacity = ''; btn.textContent = txtBtn; }
 }
 // Nombre del formato ISO más cercano, para el índice
