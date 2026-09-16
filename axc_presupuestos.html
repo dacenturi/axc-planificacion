@@ -3720,7 +3720,7 @@ function renderMargen(){
   });
 }
 
-async function emitirPropuesta(){
+async function emitirPropuesta(anexos){
   const presu   = (document.getElementById('pmCodigo').value||'').trim();
   const obra    = (document.getElementById('pmObra').value||'').trim();
   const desc    = (document.getElementById('pmDescripcion').value||'').trim();
@@ -3782,7 +3782,7 @@ async function emitirPropuesta(){
       validez:validez, condiciones:cond, observaciones:obs, items:items, venta:ventaT,
       atencion:_v('mgAtencion'), referencia:_v('mgRef'), profesional:_v('mgProf'),
       superficie:_v('mgSup'), alcance:_v('mgAlcance'),
-      iva_pct: ivaGet() });
+      iva_pct: ivaGet(), anexos: anexos||[] });
   }catch(e){
     showToast('No se pudo emitir','error', e.message||String(e));
   }finally{ btn.disabled=false; btn.textContent=old; }
@@ -3978,9 +3978,182 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
 '<span>Precios en guaraníes'+((Number(P.iva_pct)||0)>0?', IVA '+P.iva_pct+' % incluido en el total':', sin IVA')+' · Emitido '+hoy.toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
+  anexarAdjuntos(w, P.anexos, P.codigo+' v'+P.version+(P.obra?' · '+P.obra:''));
 }
 
-function buildCotizacion(){
+// ── Anexos en los documentos impresos ───────────────────
+// Antes de generar la planilla, la propuesta o el análisis se puede elegir
+// qué adjuntos del presupuesto van al final del documento. Imágenes y PDF
+// se insertan como hojas; los demás (Excel, Word, DWG…) quedan listados
+// en el índice con su enlace.
+const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const ANX_MAX_PAG = 40;           // tope de hojas por PDF adjunto
+let _pdfjsProm = null;
+function _cargarPdfJs(){
+  if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if(_pdfjsProm) return _pdfjsProm;
+  _pdfjsProm = new Promise(function(ok, mal){
+    const s = document.createElement('script');
+    s.src = PDFJS_SRC;
+    s.onload = function(){ window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; ok(window.pdfjsLib); };
+    s.onerror = function(){ _pdfjsProm = null; mal(new Error('No se pudo cargar el lector de PDF')); };
+    document.head.appendChild(s);
+  });
+  return _pdfjsProm;
+}
+function _anxTipo(a){
+  const n = String(a.nombre||a.path||'').toLowerCase(), t = String(a.tipo||'').toLowerCase();
+  if(t.indexOf('pdf')>=0 || /\.pdf$/.test(n)) return 'pdf';
+  if(t.indexOf('image/')===0 || /\.(png|jpe?g|gif|webp|bmp)$/.test(n)) return 'img';
+  return 'otro';
+}
+
+/* Ventana para elegir adjuntos. Si el presupuesto no tiene, genera directo. */
+function elegirAnexos(titulo, generar){
+  const adj = (ed.adjuntos||[]);
+  if(!adj.length){ generar([]); return; }
+  let ov = document.getElementById('anxOverlay');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.className = 'mini-overlay'; ov.id = 'anxOverlay'; ov.style.zIndex = '10005';
+    ov.innerHTML =
+      '<div class="mini-modal" style="width:min(560px,94vw)">'+
+        '<div class="mini-head"><span id="anxTit"></span><button type="button" class="mini-x" id="anxX">&times;</button></div>'+
+        '<div class="mini-body" style="padding:16px 18px">'+
+          '<div style="font-size:13px;color:#5a6677;margin-bottom:10px">¿Querés agregar adjuntos al final del documento? '+
+            'Las imágenes y los PDF se insertan como hojas; los demás archivos quedan listados con su enlace.</div>'+
+          '<div style="display:flex;gap:8px;margin-bottom:8px">'+
+            '<button type="button" class="pm-btn-ghost" id="anxTodos" style="padding:5px 11px;font-size:12px">Marcar todos</button>'+
+            '<button type="button" class="pm-btn-ghost" id="anxNinguno" style="padding:5px 11px;font-size:12px">Ninguno</button></div>'+
+          '<div id="anxLista" style="max-height:46vh;overflow:auto;border:1px solid #e2e6ee;border-radius:9px"></div>'+
+          '<div class="mini-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'+
+            '<button type="button" class="pm-btn-ghost" id="anxSin">Generar sin adjuntos</button>'+
+            '<button type="button" class="pm-btn" id="anxCon">Generar con adjuntos</button></div>'+
+        '</div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function(e){ if(e.target===ov) ov.classList.remove('show'); });
+    document.getElementById('anxX').onclick = function(){ ov.classList.remove('show'); };
+  }
+  const etq = { pdf:'PDF · se inserta', img:'Imagen · se inserta', otro:'Sólo enlace en el índice' };
+  document.getElementById('anxTit').textContent = titulo;
+  document.getElementById('anxLista').innerHTML = adj.map(function(a,i){
+    const k = _anxTipo(a);
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #eef1f6;cursor:pointer">'+
+      '<input type="checkbox" data-i="'+i+'" checked style="width:16px;height:16px;accent-color:#1F3864">'+
+      '<span style="font-size:18px">'+_adjIcono(a.nombre)+'</span>'+
+      '<span style="flex:1;min-width:0"><b style="display:block;font-size:13px;color:#1a2236;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
+        escapeHtml(a.nombre||'archivo')+'</b>'+
+      '<small style="color:#8893a5">'+_adjTam(a.tamano)+' · '+etq[k]+'</small></span></label>';
+  }).join('');
+  const cajas = function(){ return Array.prototype.slice.call(document.querySelectorAll('#anxLista input')); };
+  const actualizar = function(){
+    const n = cajas().filter(function(c){ return c.checked; }).length;
+    const b = document.getElementById('anxCon');
+    b.textContent = n ? ('Generar con '+n+' adjunto'+(n===1?'':'s')) : 'Generar con adjuntos';
+    b.disabled = !n; b.style.opacity = n ? '1' : '.5';
+  };
+  cajas().forEach(function(c){ c.onchange = actualizar; });
+  document.getElementById('anxTodos').onclick = function(){ cajas().forEach(function(c){ c.checked=true; }); actualizar(); };
+  document.getElementById('anxNinguno').onclick = function(){ cajas().forEach(function(c){ c.checked=false; }); actualizar(); };
+  document.getElementById('anxSin').onclick = function(){ ov.classList.remove('show'); generar([]); };
+  document.getElementById('anxCon').onclick = function(){
+    const sel = cajas().filter(function(c){ return c.checked; }).map(function(c){ return adj[Number(c.dataset.i)]; });
+    ov.classList.remove('show'); generar(sel);
+  };
+  actualizar();
+  ov.classList.add('show');
+}
+
+/* Agrega el índice y las hojas de anexos a la ventana ya abierta del documento. */
+async function anexarAdjuntos(w, lista, ref){
+  if(!w || w.closed || !lista || !lista.length) return;
+  const d = w.document;
+  const btn = d.querySelector('.bar button');
+  const txtBtn = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = '⏳ Preparando anexos…'; }
+  const st = d.createElement('style');
+  st.textContent =
+    '.anx-hoja{page-break-before:always;break-before:page;padding:14px 24px 0}'+
+    '.anx-t{font-size:12px;font-weight:800;color:#1F3864;letter-spacing:.4px;border-bottom:2px solid #C8A028;padding-bottom:5px;margin-bottom:10px;display:flex;justify-content:space-between;gap:10px}'+
+    '.anx-t span{font-weight:600;color:#8893a5}'+
+    '.anx-img{display:block;max-width:100%;max-height:245mm;margin:0 auto;object-fit:contain}'+
+    'table.anx-idx{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px;border:1px solid #c4d4e8}'+
+    'table.anx-idx th{background:#1F3864;color:#fff;padding:7px 9px;text-align:left;font-size:11px}'+
+    'table.anx-idx td{border:1px solid #d8e0ec;padding:6px 9px;word-break:break-word}'+
+    'table.anx-idx a{color:#1F4E78}'+
+    '.anx-err{color:#A32D2D;font-weight:700}'+
+    '@media print{.anx-img{max-height:250mm}}';
+  d.head.appendChild(st);
+  const cont = d.querySelector('.page') || d.body;
+
+  const idx = d.createElement('div');
+  idx.className = 'anx-hoja';
+  const estado = lista.map(function(){ return 'Preparando…'; });
+  const pintarIdx = function(){
+    idx.innerHTML = '<div class="anx-t">ANEXOS'+(ref?'<span>'+escapeHtml(ref)+'</span>':'')+'</div>'+
+      '<table class="anx-idx"><thead><tr><th style="width:44px">N°</th><th>Archivo</th>'+
+      '<th style="width:80px">Tamaño</th><th style="width:210px">Contenido</th></tr></thead><tbody>'+
+      lista.map(function(a,i){
+        return '<tr><td>A'+(i+1)+'</td><td>'+escapeHtml(a.nombre||'archivo')+'</td><td>'+_adjTam(a.tamano)+'</td>'+
+          '<td>'+estado[i]+'</td></tr>';
+      }).join('')+'</tbody></table>';
+  };
+  pintarIdx(); cont.appendChild(idx);
+
+  const esperas = [];
+  for(let i=0;i<lista.length;i++){
+    const a = lista[i], k = _anxTipo(a), nom = 'A'+(i+1)+' · '+(a.nombre||'archivo');
+    const enlace = a.url ? '<a href="'+escapeHtml(a.url)+'" target="_blank" rel="noopener">abrir archivo</a>' : '';
+    try{
+      if(w.closed) return;
+      if(k==='img'){
+        const h = d.createElement('div'); h.className = 'anx-hoja';
+        h.innerHTML = '<div class="anx-t">'+escapeHtml(nom)+'</div>';
+        const im = d.createElement('img'); im.className = 'anx-img'; im.alt = a.nombre||'';
+        esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
+        im.src = a.url; h.appendChild(im); cont.appendChild(h);
+        estado[i] = 'Imagen · 1 hoja';
+      } else if(k==='pdf'){
+        const lib = await _cargarPdfJs();
+        const r = await fetch(a.url); if(!r.ok) throw new Error('HTTP '+r.status);
+        const doc = await lib.getDocument({ data: await r.arrayBuffer() }).promise;
+        const nPag = Math.min(doc.numPages, ANX_MAX_PAG);
+        for(let p=1;p<=nPag;p++){
+          if(w.closed) return;
+          if(btn) btn.textContent = '⏳ Anexo A'+(i+1)+' · hoja '+p+' de '+nPag+'…';
+          const pg = await doc.getPage(p);
+          const v0 = pg.getViewport({ scale:1 });
+          const esc = Math.min(2.2, 1700 / Math.max(v0.width, v0.height));
+          const vp = pg.getViewport({ scale: esc });
+          const cv = document.createElement('canvas');
+          cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+          const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0,0,cv.width,cv.height);
+          await pg.render({ canvasContext: cx, viewport: vp }).promise;
+          const h = d.createElement('div'); h.className = 'anx-hoja';
+          h.innerHTML = '<div class="anx-t">'+escapeHtml(nom)+'<span>hoja '+p+' de '+doc.numPages+'</span></div>';
+          const im = d.createElement('img'); im.className = 'anx-img';
+          esperas.push(new Promise(function(ok){ im.onload = ok; im.onerror = ok; }));
+          im.src = cv.toDataURL('image/jpeg', 0.88);
+          h.appendChild(im); cont.appendChild(h);
+          cv.width = cv.height = 0;
+        }
+        estado[i] = 'PDF · '+nPag+' hoja'+(nPag===1?'':'s')+
+          (doc.numPages>nPag ? ' (de '+doc.numPages+'; resto: '+enlace+')' : '');
+      } else {
+        estado[i] = 'No se inserta · '+(enlace||'sin enlace');
+      }
+    }catch(e){
+      console.warn('anexo', a.nombre, e);
+      estado[i] = '<span class="anx-err">No se pudo insertar</span>'+(enlace?' · '+enlace:'');
+    }
+    pintarIdx();
+  }
+  await Promise.all(esperas);
+  if(btn && !w.closed){ btn.disabled = false; btn.style.opacity = ''; btn.textContent = txtBtn; }
+}
+
+function buildCotizacion(anexos){
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
   if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
@@ -4204,10 +4377,11 @@ ivaFilas(total, (ed.iva_pct!=null?ed.iva_pct:ivaGet()), 4, '16px')+
 '<span>Precios en guaraníes'+(((ed.iva_pct!=null?ed.iva_pct:ivaGet())||0)>0?', IVA incluido en el total':', sin IVA')+' · Cantidades de material redondeadas a entero · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
+  anexarAdjuntos(w, anexos, codigo+(obra?' · '+obra:''));
   showToast('Presupuesto generado','success', codigo+' · '+D.rows.length+' rubro'+(D.rows.length===1?'':'s')+' · Gs '+fmtGs(total));
 }
 
-function buildReporte(){
+function buildReporte(anexos){
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
   if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
@@ -4268,7 +4442,7 @@ function buildReporte(){
 
   const html =
 '<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+
-escapeHtml(['Análisis de costos '+codigo, (obra||'').trim(), (desc||'').trim(),
+escapeHtml(['Análisis de costos '+codigo, (obra||'').trim(), (descripcion||'').trim(),
             new Date().toISOString().slice(0,10).split('-').reverse().join('-')]
            .filter(Boolean).join(' · '))+'</title>'+
 '<style>'+
@@ -4327,6 +4501,7 @@ escapeHtml(['Análisis de costos '+codigo, (obra||'').trim(), (desc||'').trim(),
   const w=window.open('','_blank');
   if(!w){ showToast('Permití las ventanas emergentes para ver el reporte','error'); return; }
   w.document.open(); w.document.write(html); w.document.close();
+  anexarAdjuntos(w, anexos, codigo+(obra?' · '+obra:''));
 }
 
 // ── Calcular insumos desde las recetas del árbol ────────
@@ -4517,12 +4692,20 @@ document.getElementById('pmCancelBtn').addEventListener('click', cerrarPresupues
 })();
 document.getElementById('pmSaveBtn').addEventListener('click', saveBudget);
 
-document.getElementById('pmReporteBtn').addEventListener('click', buildReporte);
-document.getElementById('pmCotBtn').addEventListener('click', buildCotizacion);
+document.getElementById('pmReporteBtn').addEventListener('click', function(){
+  if(!ed.open || !ed.rubros.length){ buildReporte([]); return; }
+  elegirAnexos('Análisis de costos · adjuntos', buildReporte);
+});
+document.getElementById('pmCotBtn').addEventListener('click', function(){
+  if(!ed.open || !ed.rubros.length){ buildCotizacion([]); return; }
+  elegirAnexos('Planilla de costos · adjuntos', buildCotizacion);
+});
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('mgCancel').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
-document.getElementById('mgEmitir').addEventListener('click', emitirPropuesta);
+document.getElementById('mgEmitir').addEventListener('click', function(){
+  elegirAnexos('Propuesta económica · adjuntos', emitirPropuesta);
+});
 // Margen y coeficiente son la misma cosa: coeficiente = 1 - margen.
 // Se escriben cualquiera de los dos y el otro se acomoda.
 (function(){
