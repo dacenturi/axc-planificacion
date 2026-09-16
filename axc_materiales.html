@@ -298,7 +298,7 @@ function multi(id,vals,clave){
   w.innerHTML='<button type="button" class="ms-btn"></button><div class="ms-pan">'+
     (vals.length?vals.map(v=>'<label class="ms-opt"><input type="checkbox" value="'+esc(v)+'"'+
       (SEL[clave].includes(v)?' checked':'')+'><span>'+esc(v)+'</span></label>').join('')
-     :'<div class="ms-vacio">'+esc(ph)+'</div>')+
+     :'<div class="ms-vacio">'+esc(w.getAttribute('data-vacio')||ph)+'</div>')+
     (vals.length?'<div class="ms-acc"><button type="button" data-all>Todos</button>'+
       '<button type="button" data-none>Ninguno</button></div>':'')+'</div>';
   const btn=w.querySelector('.ms-btn'), pan=w.querySelector('.ms-pan');
@@ -314,21 +314,19 @@ function multi(id,vals,clave){
     w.classList.toggle('open');};
   pan.onclick=e=>e.stopPropagation();
   pan.querySelectorAll('input[type=checkbox]').forEach(c=>c.addEventListener('change',()=>{
-    refrescar(); if(clave==='obra') actualizarSectores(); leerFiltros(); aplicar();}));
+    refrescar(); cascada(clave); leerFiltros(); aplicar();}));
   const bA=pan.querySelector('[data-all]'), bN=pan.querySelector('[data-none]');
   if(bA) bA.onclick=()=>{pan.querySelectorAll('input').forEach(c=>c.checked=true);
-    refrescar(); if(clave==='obra') actualizarSectores(); leerFiltros(); aplicar();};
+    refrescar(); cascada(clave); leerFiltros(); aplicar();};
   if(bN) bN.onclick=()=>{pan.querySelectorAll('input').forEach(c=>c.checked=false);
-    refrescar(); if(clave==='obra') actualizarSectores(); leerFiltros(); aplicar();};
+    refrescar(); cascada(clave); leerFiltros(); aplicar();};
   refrescar();
 }
 document.addEventListener('click',()=>document.querySelectorAll('.ms.open').forEach(o=>o.classList.remove('open')));
 function llenarSelects(){
   const u=(k)=>[...new Set(S.items.map(x=>String(x[k]||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es',{numeric:true}));
-  multi('fObra',u('obra'),'obra'); multi('fRubro',u('rubro'),'rubro');
-  multi('fProv',u('proveedor'),'prov'); multi('fEstado',u('estado'),'estado');
-  multi('fPresu',u('presupuesto').filter(v=>!/^sin presupuesto/i.test(v)),'presu');
-  actualizarSectores();
+  multi('fObra',u('obra'),'obra');
+  cascada('obra');
   // atajos con los materiales de mayor monto
   const c={}; S.items.forEach(x=>{const k=norm(x.producto_nombre).split(' ')[0]; if(k.length>3) c[k]=(c[k]||0)+x.sub;});
   document.getElementById('chips').innerHTML=Object.keys(c).sort((a,b)=>c[b]-c[a]).slice(0,10)
@@ -340,13 +338,38 @@ function llenarSelects(){
     document.getElementById('fMat').value=act.join(', ');
     leerFiltros(); aplicar();});
 }
-function actualizarSectores(){
+/* Filtros encadenados:
+   Obra → Sector → Presupuesto / Rubro / Proveedor / Estado.
+   Cada lista muestra sólo lo que existe en las obras (y sectores) elegidos;
+   lo que estaba marcado y ya no corresponde se desmarca solo. */
+const LISTA=(base,k)=>[...new Set(base.map(x=>String(x[k]||'').trim()).filter(Boolean))]
+  .sort((a,b)=>a.localeCompare(b,'es',{numeric:true}));
+const OPC={};   // opciones disponibles en cada lista, para saber si se eligieron «todas»
+function cascada(desde){
   const ob=SEL.obra||[];
-  const v=ob.length?[...new Set(S.items.filter(x=>ob.includes(x.obra)).map(x=>String(x.sector||'').trim()).filter(Boolean))]
-    .sort((a,b)=>a.localeCompare(b,'es',{numeric:true})):[];
-  const w=document.getElementById('fSector');
-  if(w) w.setAttribute('data-ph', ob.length?'Todos':'Eleg\u00ed una obra');
-  multi('fSector',v,'sector');
+  const porObra=ob.length?S.items.filter(x=>ob.includes(x.obra)):S.items;
+  const nObra=ob.length===1?ob[0]:(ob.length+' obras');
+  if(desde==='obra'){
+    const w=document.getElementById('fSector');
+    w.setAttribute('data-ph',ob.length?'Todos':'Eleg\u00ed una obra');
+    w.setAttribute('data-vacio',ob.length?'Sin sectores en '+nObra:'Eleg\u00ed una obra');
+    OPC.sector=ob.length?LISTA(porObra,'sector'):[];
+    multi('fSector',OPC.sector,'sector');
+  }
+  if(desde!=='obra' && desde!=='sector') return;   // los demás no encadenan
+  const se=SEL.sector||[];
+  const base=se.length?porObra.filter(x=>se.includes(String(x.sector||'').trim())):porObra;
+  const donde=ob.length?(' en '+nObra+(se.length?' / sector elegido':'')):'';
+  [['fPresu','presupuesto','presu','Sin presupuestos'],
+   ['fRubro','rubro','rubro','Sin rubros'],
+   ['fProv','proveedor','prov','Sin proveedores'],
+   ['fEstado','estado','estado','Sin estados']].forEach(([id,campo,clave,vac])=>{
+    let v=LISTA(base,campo);
+    if(clave==='presu') v=v.filter(x=>!/^sin presupuesto/i.test(x));
+    OPC[clave]=v;
+    document.getElementById(id).setAttribute('data-vacio',vac+donde);
+    multi(id,v,clave);
+  });
 }
 
 let F={};
@@ -808,14 +831,16 @@ function pdf(){
     // Filtros aplicados
     let y=38;
     const act=[];
-    const j=a=>a.join(', ');
+    // Si se marcaron todas las opciones de la lista, se resume para no llenar la hoja
+    const j=(a,k)=>(k&&OPC[k]&&OPC[k].length>3&&a.length===OPC[k].length)
+      ?('Todos los disponibles para la obra ('+a.length+')'):a.join(', ');
     if(F.mats.length)act.push(['Material',j(F.mats)]);
     if(F.obra.length)act.push(['Obra',j(F.obra)]);
-    if(F.sector.length)act.push(['Sector',j(F.sector)]);
-    if(F.presu.length)act.push(['Presupuesto',j(F.presu)]);
-    if(F.rubro.length)act.push(['Rubro',j(F.rubro)]);
-    if(F.prov.length)act.push(['Proveedor',j(F.prov)]);
-    if(F.estado.length)act.push(['Estado',j(F.estado)]);
+    if(F.sector.length)act.push(['Sector',j(F.sector,'sector')]);
+    if(F.presu.length)act.push(['Presupuesto',j(F.presu,'presu')]);
+    if(F.rubro.length)act.push(['Rubro',j(F.rubro,'rubro')]);
+    if(F.prov.length)act.push(['Proveedor',j(F.prov,'prov')]);
+    if(F.estado.length)act.push(['Estado',j(F.estado,'estado')]);
     if(F.d)act.push(['Desde',F.d]); if(F.h)act.push(['Hasta',F.h]);
     act.push(['Agrupado por',document.getElementById('fGrp').selectedOptions[0].text]);
     doc.setTextColor(31,56,100); doc.setFont('helvetica','bold'); doc.setFontSize(10);
