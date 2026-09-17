@@ -3587,12 +3587,10 @@ async function abrirDetalle(id){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtAdjBtn" title="Planos, contratos o cualquier documento del certificado">📎 Adjuntos</button>';
   }
   if(c.estado !== 'Anulado'){
-    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtPlanilla" title="Planilla de avance por sector, con acumulados, % de avance y saldo">📊 Planilla de avance</button>';
-    acc.innerHTML += ' <button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
+    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf" title="Planilla de avance y orden de pago, con o sin anexos">📄 Generar PDF</button>';
   }
   if(c.estado === 'Aprobado'){
-    acc.innerHTML += ' <button type="button" class="btn-g" id="dtFirmaR">✍ Firma residente</button>'+
-                     ' <button type="button" class="btn-ok" id="dtOrden">💰 Orden de pago</button>';
+    acc.innerHTML += ' <button type="button" class="btn-g" id="dtFirmaR">✍ Firma residente</button>';
     if(state.puedeAprobar) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
   }
 
@@ -3701,12 +3699,10 @@ async function abrirDetalle(id){
     if(bA) bA.onclick = ()=> cambiarEstado(id,'Aprobado');
     const bN=document.getElementById('dtAnular');
     if(bN) bN.onclick = ()=> cambiarEstado(id,'Anulado');
-    const bP=document.getElementById('dtPdf'); if(bP) bP.onclick = ()=> pedirPDF(c, its||[]);
+    const bP=document.getElementById('dtPdf'); if(bP) bP.onclick = ()=> pedirReportes(c, its||[]);
     const bD=document.getElementById('dtDesc'); if(bD) bD.onclick = ()=> pedirDescuentos(c);
-    const bO=document.getElementById('dtOrden'); if(bO) bO.onclick = ()=> generarOrdenPago(c, its||[]);
     const bFR=document.getElementById('dtFirmaR'); if(bFR) bFR.onclick = ()=> firmarCertificado(c);
     const bOr=document.getElementById('dtOrdenar'); if(bOr) bOr.onclick = ()=> ordenarItems(c, its||[]);
-    const bPl=document.getElementById('dtPlanilla'); if(bPl) bPl.onclick = ()=> pedirPlanilla(c, its||[]);
     const bAd2=document.getElementById('dtAdjBtn'); if(bAd2) bAd2.onclick = ()=> panelAdjuntos(c, its||[]);
     const bRe=document.getElementById('dtReabrir'); if(bRe) bRe.onclick = async function(){
       const r = await axcDialog({
@@ -3962,7 +3958,7 @@ async function cambiarEstado(id, estado){
    el descuento del anticipo y del préstamo tomados del certificado, el
    saldo a cobrar y los dos bloques de firma.
    ═══════════════════════════════════════════════════════════════════ */
-function generarOrdenPago(c, its){
+async function generarOrdenPago(c, its, opts){
   const LQ = saldoCert(c);
   const anticipo = LQ.anticipo, prestamo = LQ.prestamo;
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
@@ -4117,6 +4113,10 @@ function generarOrdenPago(c, its){
   doc.text('Certificado '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+
            fmtFecha(hoyISO()), M, H-11);
   doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
+
+  const opO = opts || {};
+  if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
 
   doc.save('orden_de_pago_'+(c.numero||c.id)+'.pdf');
 }
@@ -4298,6 +4298,58 @@ function panelAdjuntos(c, its){
       }catch(e){ showToast('No se pudo quitar','error', e.message||''); }
     }
   });
+}
+
+/* ── Qué reportes generamos ──────────────────────────────────────────
+   Un solo botón: se elige qué documento sale y, en cada uno, si lleva las
+   fotos de los trabajos y los documentos adjuntos del certificado. */
+async function pedirReportes(c, its){
+  const nF = dtFotos.length, nA = dtAdj.length;
+  const aprobado = c.estado === 'Aprobado';
+  const r = await new Promise(resolve=>{
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+    const anexos = (pfx) =>
+      (nF||nA) ? '<div style="margin:6px 0 0 30px;display:flex;gap:16px;flex-wrap:wrap">'+
+        (nF ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>' : '')+
+        (nA ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'A">📎 Documentos adjuntos ('+nA+')</label>' : '')+
+      '</div>' : '';
+    const bloque = (pfx, ico, tit, sub, on, off) =>
+      '<div style="border:1.5px solid #e2e6ee;border-radius:11px;padding:11px 12px;margin-bottom:10px'+(off?';opacity:.55':'')+'">'+
+        '<label style="display:flex;gap:10px;align-items:flex-start;cursor:'+(off?'not-allowed':'pointer')+'">'+
+          '<input type="checkbox" id="'+pfx+'" '+(on?'checked':'')+' '+(off?'disabled':'')+' style="margin-top:3px;width:17px;height:17px">'+
+          '<span><b style="font-size:13.5px">'+ico+' '+tit+'</b>'+
+          '<span style="display:block;font-size:11.5px;color:#64748b">'+sub+'</span></span></label>'+
+        (off ? '' : anexos(pfx))+
+      '</div>';
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(560px,100%);max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+        '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+          '<div style="font-weight:800;font-size:16px">📄 Generar PDF</div>'+
+          '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué documentos necesitás</div></div>'+
+        '<div style="padding:14px 18px">'+
+          bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false)+
+          bloque('rpOp','💰','Orden de pago','Liquidación con descuentos, firma del residente y aprobación.', aprobado, !aprobado)+
+          (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px">La orden de pago sale recién cuando el certificado está aprobado.</div>' : '')+
+        '</div>'+
+        '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
+          '<button type="button" class="btn-g" id="rpCancel">Cancelar</button>'+
+          '<button type="button" class="btn-ok" id="rpOk">Generar</button></div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    const val = id => { const e = ov.querySelector('#'+id); return !!(e && e.checked); };
+    const cerrar = v => { ov.remove(); resolve(v); };
+    ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
+    ov.querySelector('#rpOk').onclick = ()=> cerrar({
+      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA') },
+      orden:    val('rpOp'), ordenOps:{    fotos:val('rpOpF'), adjuntos:val('rpOpA') }
+    });
+    ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
+  });
+  if(!r) return;
+  if(!r.planilla && !r.orden){ showToast('Elegí al menos un documento','error'); return; }
+  if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
+  if(r.orden)    await generarOrdenPago(c, its, r.ordenOps);
 }
 
 /* ── Qué anexos lleva el PDF ─────────────────────────────────────────
