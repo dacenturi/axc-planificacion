@@ -1784,6 +1784,7 @@ async function agregarLibre(){
     codigo_insumo:'', descripcion:desc.trim(), unidad:un,
     cant_presup:0, precio_presup:0, libre:true
   });
+  ed.sel[keyLinea('', '', desc.trim())] = true;
   renderLineas();
 }
 
@@ -1827,8 +1828,11 @@ function renderLineas(){
   if(!L.length){
     cont.innerHTML = '<div class="vacio"><b>'+(ed.presus.length?'Ningún presupuesto agregado tiene trabajos certificables.':'Todavía no hay trabajos.')+'</b>'+
       '<br><small>Podés certificar igual agregando trabajos libres, con precio manual.</small>'+
-      '<div style="margin-top:14px"><button type="button" class="btn-nav" id="btnLibre">➕ Agregar un trabajo libre</button></div></div>';
+      '<div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'+
+        '<button type="button" class="btn-g" id="btnDesdeCP">📋 Desde los precios del contratista</button>'+
+        '<button type="button" class="btn-nav" id="btnLibre">➕ Agregar un trabajo libre</button></div></div>';
     const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
+    const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
     actualizarTotales();
     return;
   }
@@ -1867,9 +1871,12 @@ function renderLineas(){
     ((ordP.length > 1 && subPP > 0)
       ? '<div class="grp-sub" style="border-color:var(--navy);background:#EDF3FB"><span>Subtotal '+escapeHtml(pp)+'</span><b>'+gs(subPP)+'</b></div>' : '');
   }).join('') +
-  '<div style="margin-top:14px"><button type="button" class="btn-g" id="btnLibre">➕ Agregar un trabajo que no está en el presupuesto</button></div>';
+  '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'+
+    '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'+
+    '<button type="button" class="btn-g" id="btnLibre">➕ Agregar un trabajo que no está en el presupuesto</button></div>';
 
   const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
+  const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
   enganchesLineas();
   actualizarTotales();
 }
@@ -2123,8 +2130,16 @@ function cpRefHTML(l, k, precio, pact, cant){
     guardar = '<button type="button" class="cp-save" data-cps="'+escapeHtml(k)+'" '+
       'title="Guardar este precio como acuerdo con el contratista">＋ fijar como precio del contratista</button>';
   }
-  if(!partes.length && !histHTML && !guardar) return '';
-  return '<div class="cp-ref">'+partes.join('')+histHTML+guardar+'</div>';
+  // Elegir el precio de la lista del contratista (acuerdos de cualquier alcance
+  // e historial de pagos para este rubro)
+  let lista = '';
+  const nAc = l.rubro_codigo ? CP.lista.filter(x=>x.rubro_codigo===l.rubro_codigo).length : 0;
+  if(nAc || h.length){
+    lista = '<button type="button" class="cp-save" data-cpl="'+escapeHtml(k)+'" style="margin-left:0;border-color:#1f3864;color:#1f3864;background:#EDF3FB" '+
+      'title="Elegir un precio de la lista del contratista">📋 Precios del contratista'+(nAc?' ('+nAc+')':'')+'</button>';
+  }
+  if(!partes.length && !histHTML && !guardar && !lista) return '';
+  return '<div class="cp-ref">'+partes.join('')+histHTML+lista+guardar+'</div>';
 }
 
 /* ── Precios pactados por contratista ─────────────────────────
@@ -2142,7 +2157,7 @@ async function cpCargar(contratista){
   CP.cargado = c;
   try{
     const { data } = await sb.from('contratista_precios')
-      .select('rubro_codigo,obra,sector,precio_unit,vigente_desde,observacion')
+      .select('rubro_codigo,descripcion,unidad,obra,sector,precio_unit,vigente_desde,observacion')
       .eq('contratista', c).eq('activo', true);
     CP.lista = data || [];
   }catch(e){ CP.lista = []; console.warn('precios contratista', e); }
@@ -2188,6 +2203,145 @@ function cpPrecio(rubro, obra, sector){
            alcance: c.sector ? (c.obra+' · '+c.sector) : (c.obra ? c.obra : 'todas las obras'),
            desde: c.vigente_desde ? String(c.vigente_desde).slice(0,10) : '',
            observacion: c.observacion || '' };
+}
+
+/* ── Selector de precios del contratista ─────────────────────────────
+   Ventana con buscador: cada opción es un acuerdo guardado en «Precios por
+   contratista» o un precio que ya se le pagó. Al elegir, se usa ese precio. */
+function cpAlcanceTxt(x){ return x.sector ? ((x.obra||'')+' · '+x.sector) : (x.obra ? ('toda la obra '+x.obra) : 'todas las obras'); }
+
+function cpSelector(o){
+  return new Promise(resolve=>{
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+        '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+          '<div style="font-weight:800;font-size:16px">📋 '+escapeHtml(o.titulo)+'</div>'+
+          '<div style="font-size:12px;opacity:.85">'+escapeHtml(o.subtitulo||'')+'</div></div>'+
+        '<div style="padding:10px 18px;border-bottom:1px solid #e2e6ee"><input type="text" id="cpsBuscar" placeholder="Buscar por código, trabajo, obra o sector…" '+
+          'style="width:100%;padding:9px 12px;border:1.5px solid #d6dce8;border-radius:9px;font-size:13.5px"></div>'+
+        '<div id="cpsLista" style="overflow:auto;padding:6px 18px;flex:1"></div>'+
+        '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+          '<small style="color:#64748b">'+escapeHtml(o.pie||'')+'</small>'+
+          '<button type="button" class="btn-g" id="cpsCancelar">Cancelar</button></div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    const cerrar = v => { ov.remove(); resolve(v); };
+    const pintar = ()=>{
+      const q = norm(ov.querySelector('#cpsBuscar').value);
+      const L = o.opciones.filter(x => !q || norm(x.buscar||'').indexOf(q) >= 0);
+      let grupo = null, h = '';
+      L.forEach(x=>{
+        const i = o.opciones.indexOf(x);
+        if(x.grupo !== grupo){ grupo = x.grupo; h += '<div style="margin:12px 0 4px;font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#8a6d10">'+escapeHtml(grupo||'')+'</div>'; }
+        h += '<div data-cpi="'+i+'" style="display:flex;align-items:center;gap:12px;padding:9px 10px;border:1px solid #eef1f6;border-radius:9px;margin-bottom:6px;cursor:pointer'+(x.aplica?';background:#f0f8f1;border-color:#bfe0c4':'')+'">'+
+          '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">'+x.titulo+'</div>'+
+            '<div style="font-size:11.5px;color:#64748b">'+x.detalle+'</div></div>'+
+          '<div style="text-align:right;white-space:nowrap"><b style="font-size:14px;color:#1f3864">'+gs(x.precio)+'</b>'+
+            (x.unidad?'<div style="font-size:11px;color:#64748b">por '+escapeHtml(x.unidad)+'</div>':'')+'</div></div>';
+      });
+      ov.querySelector('#cpsLista').innerHTML = h || '<div class="vacio" style="padding:24px;text-align:center;color:#8893a5">Nada coincide con la búsqueda.</div>';
+    };
+    pintar();
+    ov.querySelector('#cpsBuscar').oninput = pintar;
+    ov.querySelector('#cpsBuscar').focus();
+    ov.querySelector('#cpsCancelar').onclick = ()=> cerrar(null);
+    ov.addEventListener('click', ev=>{
+      if(ev.target === ov) return cerrar(null);
+      const d = ev.target.closest('[data-cpi]');
+      if(d) cerrar(o.opciones[Number(d.getAttribute('data-cpi'))]);
+    });
+  });
+}
+
+/* Precio de una línea que ya se está certificando */
+async function cpElegirPrecioLinea(k){
+  const l = ed.lineas.filter(x => keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion) === k)[0];
+  if(!l) return;
+  const contratista = (document.getElementById('edContra')||{}).value || '';
+  const sec = sectorLinea(l, ed.med[k] || {});
+  const obra = l.obra || (ed.obras && ed.obras[0]) || '';
+  const opciones = [];
+  CP.lista.filter(x => x.rubro_codigo === l.rubro_codigo).forEach(x=>{
+    const aplica = (!x.obra || cpNorm(x.obra) === cpNorm(obra)) && (!x.sector || cpNorm(x.sector) === cpNorm(sec));
+    opciones.push({ grupo:'Acuerdos de precio', precio:Number(x.precio_unit)||0, unidad:x.unidad||l.unidad||'', aplica:aplica,
+      titulo: escapeHtml(cpAlcanceTxt(x)) + (aplica ? ' <span style="color:#1B5524;font-size:11px">· aplica acá</span>' : ' <span style="color:#8a6d10;font-size:11px">· otro alcance</span>'),
+      detalle: (x.vigente_desde ? 'desde el '+fmtFecha(x.vigente_desde) : '') + (x.observacion ? ' · '+escapeHtml(x.observacion) : ''),
+      buscar: [x.obra, x.sector, x.observacion].join(' ') });
+  });
+  const vistos = {};
+  ((CP.hist && CP.hist[l.rubro_codigo]) || []).forEach(x=>{
+    const kk = x.precio+'|'+x.obra+'|'+x.sector;
+    if(vistos[kk] || Object.keys(vistos).length >= 8) return;
+    vistos[kk] = 1;
+    opciones.push({ grupo:'Ya se le pagó', precio:x.precio, unidad:l.unidad||'',
+      titulo: escapeHtml((x.obra||'—') + (x.sector ? ' · '+x.sector : '')),
+      detalle: escapeHtml((x.numero||'') + (x.fecha ? ' · '+fmtFecha(x.fecha) : '') + (x.estado ? ' · '+x.estado : '')),
+      buscar: [x.obra, x.sector, x.numero].join(' ') });
+  });
+  if(!opciones.length){ showToast('No hay precios guardados para este rubro','info'); return; }
+  const r = await cpSelector({
+    titulo:'Precios de '+contratista, subtitulo:(l.rubro_codigo||'')+' · '+(l.rubro_desc||l.descripcion||''),
+    pie:'En verde, los acuerdos que corresponden a esta obra y sector.', opciones:opciones
+  });
+  if(!r) return;
+  ed.med[k] = ed.med[k] || {};
+  ed.med[k].precio = r.precio;
+  renderLineas();
+  showToast('Precio aplicado: '+gs(r.precio),'success', r.aplica===false ? 'Ojo: ese acuerdo es de otro alcance' : '');
+}
+
+/* Agregar un trabajo eligiéndolo de la lista de precios del contratista.
+   Si el rubro está en el presupuesto, se agrega esa línea (con su saldo);
+   si no, entra como trabajo fuera de presupuesto con el precio pactado. */
+async function cpAgregarDesdeLista(){
+  const contratista = ((document.getElementById('edContra')||{}).value || '').trim();
+  if(!contratista){ showToast('Primero elegí el contratista','error'); return; }
+  await cpCargar(contratista);
+  if(!CP.lista.length){
+    showToast(contratista+' no tiene precios guardados','info','Se cargan con «fijar como precio del contratista» o en «Precios por contratista»');
+    return;
+  }
+  const esLineaRubro = l => !l.libre && !/^(MO|LG)-/i.test(l.codigo_insumo||'');
+  const opciones = CP.lista.slice().sort((a,b)=>
+    String(a.rubro_codigo||'').localeCompare(String(b.rubro_codigo||''),'es',{numeric:true})).map(x=>{
+    const enPres = ed.lineas.filter(l => l.rubro_codigo === x.rubro_codigo && esLineaRubro(l));
+    return { grupo: enPres.length ? 'Están en el presupuesto' : 'No están en el presupuesto (se agregan como trabajo libre)',
+      precio:Number(x.precio_unit)||0, unidad:x.unidad||'', acuerdo:x, enPres:enPres,
+      titulo: '<span style="color:#1f3864">'+escapeHtml(x.rubro_codigo||'')+'</span> · '+escapeHtml(x.descripcion||(enPres[0]&&enPres[0].rubro_desc)||''),
+      detalle: escapeHtml(cpAlcanceTxt(x)) + (x.vigente_desde ? ' · desde el '+fmtFecha(x.vigente_desde) : ''),
+      buscar: [x.rubro_codigo, x.descripcion, x.obra, x.sector].join(' ') };
+  }).sort((a,b)=> (b.enPres.length?1:0) - (a.enPres.length?1:0));
+  const r = await cpSelector({
+    titulo:'Precios de '+contratista, subtitulo:'Elegí el trabajo que vas a certificar',
+    pie:'El precio elegido se puede corregir después en la línea.', opciones:opciones
+  });
+  if(!r) return;
+  const x = r.acuerdo;
+  let l = null;
+  if(r.enPres.length){
+    // Si hay varias líneas del rubro (varios sectores), se prefiere la del sector del acuerdo
+    l = r.enPres.filter(z => x.sector && cpNorm(z.sector) === cpNorm(x.sector))[0] || r.enPres[0];
+  }else{
+    const desc = ((x.rubro_codigo ? x.rubro_codigo+' · ' : '') + (x.descripcion || 'Trabajo pactado')).trim();
+    l = ed.lineas.filter(z => z.libre && keyLinea('', '', z.descripcion) === keyLinea('', '', desc))[0];
+    if(!l){
+      l = { rubro_codigo:'', rubro_desc:'Fuera de presupuesto', sector: x.sector || '(sin sector)',
+        presupuesto: ed.presus.length===1 ? ed.presus[0] : '',
+        obra: x.obra || (obrasDePresus()[0]||''),
+        codigo_insumo:'', descripcion:desc, unidad:x.unidad || 'gl',
+        cant_presup:0, precio_presup:0, libre:true };
+      ed.lineas.push(l);
+    }
+  }
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+  ed.sel[k] = true;
+  ed.med[k] = ed.med[k] || {};
+  ed.med[k].precio = r.precio;
+  renderLineas();
+  showToast('Trabajo agregado con '+gs(r.precio)+(r.unidad?' por '+r.unidad:''),'success',
+    r.enPres.length ? 'Cargá la medición' : 'Queda como trabajo fuera de presupuesto');
 }
 
 /* Guarda o actualiza el precio pactado. Rige desde hoy: los certificados ya
@@ -2387,6 +2541,9 @@ function enganchesLineas(){
   };
   cont.querySelectorAll('button[data-cps]').forEach(b=>{
     b.onclick = function(ev){ ev.stopPropagation(); cpPreguntarAlcance(b.getAttribute('data-cps')); };
+  });
+  cont.querySelectorAll('button[data-cpl]').forEach(b=>{
+    b.onclick = function(ev){ ev.stopPropagation(); cpElegirPrecioLinea(b.getAttribute('data-cpl')); };
   });
   cont.querySelectorAll('button[data-quit]').forEach(b=>{
     b.onclick = async function(ev){
@@ -3895,10 +4052,17 @@ async function generarPDF(c, its, conFotos){
   let y = 16;
 
   doc.setFillColor(31,56,100); doc.rect(0,0,W,28,'F');
+  // Logo de AXC sobre un recuadro blanco: el logo es oscuro y no se ve sobre el azul
+  let tx = M;
+  try{
+    doc.setFillColor(255,255,255); doc.roundedRect(M, 5, 44, 18, 2, 2, 'F');
+    doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 7.4, 38, 12.5);
+    tx = M + 50;
+  }catch(e){ tx = M; }
   doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
-  doc.text('CERTIFICADO DE OBRA', M, 13);
+  doc.text('CERTIFICADO DE OBRA', tx, 13);
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
-  doc.text('Sistema integrado de gestion', M, 19);
+  doc.text('Sistema integrado de gestion', tx, 19);
   doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(229,198,88);
   doc.text(pdfSafe(c.numero||('#'+c.id)), W-M, 13, {align:'right'});
   doc.setFontSize(8.5); doc.setTextColor(255,255,255); doc.setFont('helvetica','normal');
