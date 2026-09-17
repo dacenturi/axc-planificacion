@@ -788,7 +788,7 @@ const SUPABASE_URL = 'https://zvucnezwhgfgupasgqnd.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const state = { user:null, profile:null, isAdmin:false, list:[], listas:{obras:[],contratistas:[],sectores:[]}, presupuestos:[] };
+const state = { user:null, profile:null, isAdmin:false, puedeAprobar:false, puedeAnular:false, list:[], listas:{obras:[],contratistas:[],sectores:[]}, presupuestos:[] };
 
 /* Editor en memoria. `lineas` son las líneas certificables del presupuesto;
    `med` guarda lo que el residente carga en esta sesión. */
@@ -948,6 +948,11 @@ async function loadProfileAndApp(){
   }
   state.profile = profile;
   state.isAdmin = (String(profile.rol||'').toLowerCase() === 'admin');
+  // Permisos puntuales (módulo Perfiles y Permisos): un residente puede
+  // aprobar o anular certificados sin ser administrador.
+  const _perm = profile.permisos || {};
+  state.puedeAprobar = state.isAdmin || _perm.cert_aprobar === true;
+  state.puedeAnular  = state.isAdmin || _perm.cert_anular  === true;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
   document.getElementById('appContainer').style.display='block';
@@ -3239,10 +3244,8 @@ async function abrirDetalle(id){
   const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido');   // «Medido» es de certificados anteriores
   if(enCurso){
     acc.innerHTML = '<button type="button" class="btn-nav" id="dtEditar">Editar</button>';
-    if(state.isAdmin){
-      acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>'+
-                       ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
-    }
+    if(state.puedeAnular)  acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>';
+    if(state.puedeAprobar) acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
   }
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
@@ -3251,7 +3254,7 @@ async function abrirDetalle(id){
     acc.innerHTML += ' <button type="button" class="btn-g" id="dtFirmaR">✍ Firma residente</button>'+
                      ' <button type="button" class="btn-g" id="dtFirmaA">✍ Firma aprobación</button>'+
                      ' <button type="button" class="btn-ok" id="dtOrden">💰 Orden de pago</button>';
-    if(state.isAdmin) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
+    if(state.puedeAprobar) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
   }
 
   try{
@@ -3416,7 +3419,7 @@ function liquidacionHTML(c){
        (c.firma_residente ? '<span class="firma-ok">✍ Firmado por '+escapeHtml(c.firma_residente_nombre||c.medido_por||'el residente')+'</span> ' : '')+
        (c.firma_aprobador ? '<span class="firma-ok">✍ Aprobado por '+escapeHtml(c.firma_aprobador_nombre||c.aprobado_por||'')+'</span>' : '')+
      '</div>' : '')+
-    (state.isAdmin ? '<div class="liq-h">Se cargan con el botón «Descuentos». Se descuentan de lo que el contratista tiene pendiente de devolver. Las entregas se registran en «Cuenta de contratistas», en la barra principal.</div>' : '')+
+    (state.puedeAprobar ? '<div class="liq-h">Se cargan con el botón «Descuentos». Se descuentan de lo que el contratista tiene pendiente de devolver. Las entregas se registran en «Cuenta de contratistas», en la barra principal.</div>' : '')+
   '</div>';
 }
 
