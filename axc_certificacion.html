@@ -1109,7 +1109,7 @@ async function cerrarEditor(){
 }
 
 async function abrirEditor(id){
-  ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false;
+  ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false; ed.ordenPrevio={};
   ed.buscar=''; ed.filtro=''; ed.ubicaciones=[]; ed.sel={};
   const bq=document.getElementById('edBuscar'); if(bq) bq.value='';
   const pq=document.getElementById('edPresuBuscar'); if(pq) pq.value='';
@@ -1148,8 +1148,9 @@ async function abrirEditor(id){
       document.getElementById('edSector').value = c.sector||'';
       // Traer lo ya cargado en este certificado
       const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
-      (its||[]).forEach(it=>{
+      (its||[]).forEach((it, idx)=>{
         const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+        ed.ordenPrevio[k] = idx;   // el orden elegido se respeta al volver a guardar
         // Los trabajos libres no vienen del presupuesto: se reponen a mano
         if(!it.rubro_codigo && !ed.lineas.some(l=>keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)===k)){
           ed.lineas.push({ rubro_codigo:'', rubro_desc:'Fuera de presupuesto', sector:'(sin sector)',
@@ -3141,6 +3142,16 @@ async function guardar(estado){
       ed.id = certId;
     }
 
+    // Orden de los ítems: lo que ya estaba ordenado conserva su lugar y lo
+    // nuevo va al final, en el orden del presupuesto.
+    const _op = ed.ordenPrevio || {};
+    M.sort((a,b)=>{
+      const pa = (_op[a.key] != null) ? _op[a.key] : 1e6 + a.orden;
+      const pb = (_op[b.key] != null) ? _op[b.key] : 1e6 + b.orden;
+      return pa - pb;
+    });
+    M.forEach((x,i)=>{ x.orden = i; });
+
     const items = M.map(x=>({
       certificado_id: certId,
       presupuesto: x.linea.presupuesto || null,
@@ -3269,6 +3280,9 @@ async function abrirDetalle(id){
     if(state.puedeAnular)  acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>';
     if(state.puedeAprobar) acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
   }
+  if(c.estado !== 'Anulado' && (enCurso || state.puedeAprobar)){
+    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtOrdenar">↕ Ordenar ítems</button>';
+  }
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtPdf">📄 Certificado</button>';
   }
@@ -3385,6 +3399,7 @@ async function abrirDetalle(id){
     const bO=document.getElementById('dtOrden'); if(bO) bO.onclick = ()=> generarOrdenPago(c, its||[]);
     const bFR=document.getElementById('dtFirmaR'); if(bFR) bFR.onclick = ()=> firmarCertificado(c,'residente');
     const bFA=document.getElementById('dtFirmaA'); if(bFA) bFA.onclick = ()=> firmarCertificado(c,'aprobador');
+    const bOr=document.getElementById('dtOrdenar'); if(bOr) bOr.onclick = ()=> ordenarItems(c, its||[]);
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
@@ -3806,6 +3821,71 @@ async function pedirPDF(c, its){
   generarPDF(c, its, !!r.ok);
 }
 
+/* ── Ordenar los ítems de un certificado ──────────────────────────────
+   Cambia solo el campo «orden» de cada línea: el PDF y el detalle salen en
+   ese orden, y al editar el certificado se conserva. */
+function ordenarItems(c, its){
+  const lista = (its||[]).slice().sort((a,b)=>(Number(a.orden)||0)-(Number(b.orden)||0));
+  if(lista.length < 2){ showToast('Hay un solo ítem, no hay nada que ordenar','info'); return; }
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+      '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+        '<div style="font-weight:800;font-size:16px">↕ Ordenar ítems · '+escapeHtml(c.numero||'')+'</div>'+
+        '<div style="font-size:12px;opacity:.85">Así van a salir en el certificado y en el PDF</div></div>'+
+      '<div style="padding:10px 18px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid #e2e6ee">'+
+        '<button type="button" class="btn-g" data-ord="codigo">Ordenar por código de rubro</button>'+
+        '<button type="button" class="btn-g" data-ord="importe">Ordenar por importe</button></div>'+
+      '<div id="ordLista" style="overflow:auto;padding:8px 18px;flex:1"></div>'+
+      '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
+        '<button type="button" class="btn-g" data-ord="cancelar">Cancelar</button>'+
+        '<button type="button" class="btn-ok" data-ord="guardar">Guardar orden</button></div>'+
+    '</div>';
+  document.body.appendChild(ov);
+
+  const cod = x => String(x.rubro_codigo||'zzz');
+  const pintar = ()=>{
+    ov.querySelector('#ordLista').innerHTML = lista.map((x,i)=>
+      '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eef1f6">'+
+        '<b style="width:22px;text-align:right;color:#64748b">'+(i+1)+'</b>'+
+        '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">'+
+          (x.rubro_codigo?'<span style="color:#1f3864">'+escapeHtml(x.rubro_codigo)+'</span> · ':'')+escapeHtml(x.descripcion||'')+'</div>'+
+          '<div style="font-size:11.5px;color:#64748b">'+escapeHtml(x.sector||'')+' · '+qty(Number(x.cantidad)||0)+' '+escapeHtml(x.unidad||'')+' · '+gs(x.subtotal)+'</div></div>'+
+        '<button type="button" class="btn-g" data-up="'+i+'" '+(i===0?'disabled':'')+' title="Subir">▲</button>'+
+        '<button type="button" class="btn-g" data-dn="'+i+'" '+(i===lista.length-1?'disabled':'')+' title="Bajar">▼</button>'+
+      '</div>').join('');
+  };
+  pintar();
+
+  ov.addEventListener('click', async ev=>{
+    const t = ev.target.closest('button'); if(!t) { if(ev.target===ov) ov.remove(); return; }
+    if(t.dataset.up != null){ const i=+t.dataset.up; [lista[i-1],lista[i]]=[lista[i],lista[i-1]]; pintar(); return; }
+    if(t.dataset.dn != null){ const i=+t.dataset.dn; [lista[i+1],lista[i]]=[lista[i],lista[i+1]]; pintar(); return; }
+    const a = t.dataset.ord;
+    if(a==='cancelar'){ ov.remove(); return; }
+    if(a==='codigo'){ lista.sort((p,q)=>cod(p).localeCompare(cod(q),'es',{numeric:true})); pintar(); return; }
+    if(a==='importe'){ lista.sort((p,q)=>(Number(q.subtotal)||0)-(Number(p.subtotal)||0)); pintar(); return; }
+    if(a==='guardar'){
+      t.disabled = true; t.textContent = 'Guardando…';
+      try{
+        for(let i=0;i<lista.length;i++){
+          if(Number(lista[i].orden) === i) continue;
+          const { error } = await sb.from('certificado_items').update({ orden:i }).eq('id', lista[i].id);
+          if(error) throw error;
+        }
+        ov.remove();
+        showToast('Orden guardado','success');
+        abrirDetalle(c.id);
+      }catch(e){
+        console.error('ordenarItems', e);
+        showToast('No se pudo guardar el orden','error', e.message||'');
+        t.disabled = false; t.textContent = 'Guardar orden';
+      }
+    }
+  });
+}
+
 async function generarPDF(c, its, conFotos){
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   const { jsPDF } = window.jspdf;
@@ -3825,11 +3905,16 @@ async function generarPDF(c, its, conFotos){
   doc.text(pdfSafe(c.estado)+'  ·  '+fmtFecha(c.fecha), W-M, 20, {align:'right'});
 
   y = 37; doc.setTextColor(26,34,54);
+  // El sector va en la cabecera (antes era una columna de la tabla)
+  const _secs = [];
+  (its||[]).forEach(x=>{ const s=(x.sector||'').trim(); if(s && _secs.indexOf(s)<0) _secs.push(s); });
+  const sectorTxt = _secs.length ? _secs.join(', ') : (c.sector || '-');
   const info = [
-    ['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['PRESUPUESTOS', c.presupuesto||'-'],
+    ['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
+    ['PRESUPUESTOS', c.presupuesto||'-'],
     ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', c.aprobado_por||'-'], ['FECHA', fmtFecha(c.fecha)]
   ];
-  const col = (W - M*2)/6;
+  const col = (W - M*2)/info.length;
   info.forEach((it,i)=>{
     const cx = M + i*col;
     doc.setFontSize(6.5).setTextColor(139,147,167).setFont('helvetica','bold');
@@ -3849,19 +3934,38 @@ async function generarPDF(c, its, conFotos){
   ordObra.sort((a,b)=>a.localeCompare(b,'es'));
 
   const rows = []; let n = 0; const total = (its||[]).reduce((a,x)=>a+(Number(x.subtotal)||0),0);
+  const NC = 8;   // columnas de la tabla
+  const variosSec = _secs.length > 1;
   ordObra.forEach(o=>{
     if(ordObra.length > 1){
-      rows.push([{ content:'OBRA: '+pdfSafe(o), colSpan:10,
+      rows.push([{ content:'OBRA: '+pdfSafe(o), colSpan:NC,
         styles:{ fillColor:[237,243,251], textColor:[31,56,100], fontStyle:'bold', fontSize:9 } }]);
     }
+    // Con más de un sector, se agrupa por sector respetando el orden elegido
+    const grupos = [], porSec = {};
     porObra[o].forEach(x=>{
+      const s = variosSec ? ((x.sector||'').trim() || '(sin sector)') : '';
+      if(!porSec[s]){ porSec[s]=[]; grupos.push(s); }
+      porSec[s].push(x);
+    });
+    grupos.forEach(sg=>{
+    if(sg){
+      rows.push([{ content:'SECTOR: '+pdfSafe(sg), colSpan:NC,
+        styles:{ halign:'left', fillColor:[248,244,230], textColor:[138,109,16], fontStyle:'bold', fontSize:8.5 } }]);
+    }
+    porSec[sg].forEach(x=>{
       n++;
+      // Código del rubro delante del trabajo; si la línea es una parte del
+      // rubro (mano de obra), el rubro va debajo como referencia.
+      const cod = (x.rubro_codigo||'').trim();
+      const desc = String(x.descripcion||'').trim();
+      const rdesc = String(x.rubro_desc||'').trim();
       rows.push([
         String(n),
-        pdfSafe(x.descripcion) + (x.ubicacion?('\n'+pdfSafe(x.ubicacion)):''),
+        pdfSafe((cod ? cod+'  ' : '') + desc) +
+          (rdesc && norm(rdesc) !== norm(desc) && norm(rdesc) !== 'fuera de presupuesto' ? ('\nRubro: '+pdfSafe(rdesc)) : '') +
+          (x.ubicacion?('\n'+pdfSafe(x.ubicacion)):''),
         pdfSafe(x.presupuesto||'-'),
-        pdfSafe(x.sector||'-'),
-        pdfSafe((x.rubro_codigo||'') + (x.rubro_desc?('  '+x.rubro_desc):'')),
         pdfSafe(x.unidad||'-'),
         (x.cant_presup!=null? String(x.cant_presup).replace('.',',') : '-'),
         String(x.cantidad).replace('.',','),
@@ -3871,10 +3975,11 @@ async function generarPDF(c, its, conFotos){
         Math.round(Number(x.subtotal)||0).toLocaleString('es-PY')
       ]);
     });
+    });
     if(ordObra.length > 1){
       const sub = porObra[o].reduce((a,x)=>a+(Number(x.subtotal)||0),0);
       rows.push([
-        { content:'Subtotal '+pdfSafe(o), colSpan:9, styles:{ halign:'right', fontStyle:'bold', fillColor:[240,243,248], textColor:[31,56,100] } },
+        { content:'Subtotal '+pdfSafe(o), colSpan:NC-1, styles:{ halign:'right', fontStyle:'bold', fillColor:[240,243,248], textColor:[31,56,100] } },
         { content:'Gs. '+Math.round(sub).toLocaleString('es-PY'), styles:{ halign:'right', fontStyle:'bold', fillColor:[240,243,248], textColor:[31,56,100] } }
       ]);
     }
@@ -3882,20 +3987,19 @@ async function generarPDF(c, its, conFotos){
 
   doc.autoTable({
     startY: y,
-    head: [['#','Trabajo ejecutado','Presup.','Sector','Rubro','Unid.','Cant. presup.','Medicion','P. Unit.','Subtotal']],
+    head: [['#','Trabajo ejecutado','Presup.','Unid.','Cant. presup.','Medicion','P. Unit.','Subtotal']],
     body: rows,
-    foot: [[{ content:'TOTAL GENERAL CERTIFICADO', colSpan:9, styles:{halign:'right',fontStyle:'bold'} },
+    foot: [[{ content:'TOTAL GENERAL CERTIFICADO', colSpan:NC-1, styles:{halign:'right',fontStyle:'bold'} },
             { content:'Gs. '+Math.round(total).toLocaleString('es-PY'), styles:{halign:'right',fontStyle:'bold'} }]],
     theme:'grid',
     styles:{ font:'helvetica', fontSize:8, cellPadding:2, textColor:[26,34,54], lineColor:[226,230,238] },
     headStyles:{ fillColor:[31,56,100], textColor:[255,255,255], fontSize:7.5, fontStyle:'bold' },
     footStyles:{ fillColor:[31,56,100], textColor:[255,255,255] },
     columnStyles:{ 0:{halign:'center',cellWidth:7}, 1:{cellWidth:'auto'},
-                   2:{cellWidth:20,fontSize:7.5}, 3:{cellWidth:24,fontSize:7.5},
-                   4:{cellWidth:44,fontSize:7,textColor:[90,99,119]},
-                   5:{halign:'center',cellWidth:13}, 6:{halign:'right',cellWidth:20},
-                   7:{halign:'right',cellWidth:20}, 8:{halign:'right',cellWidth:30,fontSize:7.5},
-                   9:{halign:'right',cellWidth:26,fontStyle:'bold'} },
+                   2:{cellWidth:20,fontSize:7.5},
+                   3:{halign:'center',cellWidth:14}, 4:{halign:'right',cellWidth:22},
+                   5:{halign:'right',cellWidth:22}, 6:{halign:'right',cellWidth:32,fontSize:7.5},
+                   7:{halign:'right',cellWidth:28,fontStyle:'bold'} },
     margin:{ left:M, right:M }
   });
 
