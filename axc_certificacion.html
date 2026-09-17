@@ -3547,6 +3547,8 @@ document.getElementById('dtCerrar').onclick = ()=> document.getElementById('dtOv
 
 let dtActual = null;
 let dtFotos = [];
+let dtAdj = [];      // adjuntos del certificado (planos, contratos, notas)
+let dtCert = null;   // último certificado abierto en el detalle
 
 async function abrirDetalle(id){
   const c = state.list.filter(x=>x.id===id)[0];
@@ -3570,6 +3572,9 @@ async function abrirDetalle(id){
   }
   if(c.estado !== 'Anulado' && (enCurso || state.puedeAprobar)){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtOrdenar">↕ Ordenar ítems</button>';
+  }
+  if(c.estado !== 'Anulado'){
+    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtAdjBtn" title="Planos, contratos o cualquier documento del certificado">📎 Adjuntos</button>';
   }
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtPlanilla" title="Planilla de avance por sector, con acumulados, % de avance y saldo">📊 Planilla de avance</button>';
@@ -3603,6 +3608,10 @@ async function abrirDetalle(id){
       }
     }
     dtFotos = fotos;
+    dtCert = c;
+    dtAdj = await cargarAdjuntos(id);
+    const bAd = document.getElementById('dtAdjBtn');
+    if(bAd) bAd.textContent = '📎 Adjuntos'+(dtAdj.length?' ('+dtAdj.length+')':'');
     const porItem = {};
     fotos.forEach(f=>{ (porItem[f.item_id] = porItem[f.item_id]||[]).push(f); });
 
@@ -3689,7 +3698,8 @@ async function abrirDetalle(id){
     const bFR=document.getElementById('dtFirmaR'); if(bFR) bFR.onclick = ()=> firmarCertificado(c,'residente');
     const bFA=document.getElementById('dtFirmaA'); if(bFA) bFA.onclick = ()=> firmarCertificado(c,'aprobador');
     const bOr=document.getElementById('dtOrdenar'); if(bOr) bOr.onclick = ()=> ordenarItems(c, its||[]);
-    const bPl=document.getElementById('dtPlanilla'); if(bPl) bPl.onclick = ()=> generarPlanillaPDF(c, its||[]);
+    const bPl=document.getElementById('dtPlanilla'); if(bPl) bPl.onclick = ()=> pedirPlanilla(c, its||[]);
+    const bAd2=document.getElementById('dtAdjBtn'); if(bAd2) bAd2.onclick = ()=> panelAdjuntos(c, its||[]);
     const bRe=document.getElementById('dtReabrir'); if(bRe) bRe.onclick = async function(){
       const r = await axcDialog({
         tono:'warn', icono:'✎', titulo:'Editar un certificado aprobado',
@@ -4129,15 +4139,9 @@ function pdfSafe(s){
 }
 
 async function pedirPDF(c, its){
-  const nFotos = dtFotos.length;
-  if(!nFotos){ generarPDF(c, its, false); return; }
-  const r = await axcDialog({
-    tono:'', icono:'📄', titulo:'¿Cómo generamos el PDF?',
-    subtitulo:c.numero||'',
-    mensaje:'Este certificado tiene <b>'+nFotos+' foto(s)</b> adjunta(s). Podés incluirlas como anexo al final del documento o generar solo el certificado para firmar.',
-    ok:'Con el anexo de fotos', cancelar:'Solo el certificado'
-  });
-  generarPDF(c, its, !!r.ok);
+  const op = await pedirAnexos(c, 'Certificado de obra');
+  if(!op) return;
+  generarPDF(c, its, op);
 }
 
 /* Ubicación y observación de cada línea: van en una fila chica, en gris y
@@ -4152,6 +4156,223 @@ function pdfFilaNota(nota, colSpan){
   return [{ content:nota, colSpan:colSpan,
     styles:{ fontSize:6.4, fontStyle:'italic', textColor:[112,120,138], fillColor:[252,252,253],
              cellPadding:{ top:0.4, bottom:1.5, left:2, right:2 }, halign:'left' } }];
+}
+
+/* ── Adjuntos del certificado ────────────────────────────────────────
+   Documentos del certificado en general (planos, contrato, nota del cliente),
+   distintos de las fotos, que van pegadas a cada rubro medido.
+   Tabla: certificado_adjuntos · archivos en el bucket oc-adjuntos. */
+async function cargarAdjuntos(certId){
+  try{
+    const { data, error } = await sb.from('certificado_adjuntos')
+      .select('*').eq('certificado_id', certId).order('created_at');
+    if(error) throw error;
+    const L = data || [];
+    for(const a of L){
+      try{
+        const { data:sg } = await sb.storage.from('oc-adjuntos').createSignedUrl(a.url_storage, 3600);
+        a._url = (sg && sg.signedUrl) || '';
+      }catch(e){ a._url = ''; }
+      if(!a._url){
+        const { data:pu } = sb.storage.from('oc-adjuntos').getPublicUrl(a.url_storage);
+        a._url = (pu && pu.publicUrl) || '';
+      }
+      a._esImg = /^image\//i.test(a.tipo||'') || /\.(jpe?g|png|webp)$/i.test(a.nombre||'');
+    }
+    return L;
+  }catch(e){
+    console.warn('adjuntos', e);
+    if(/certificado_adjuntos/i.test(e.message||'')){
+      showToast('Falta la tabla de adjuntos','error','Correr el script de certificado_adjuntos en la base');
+    }
+    return [];
+  }
+}
+
+function panelAdjuntos(c, its){
+  const puedeSubir = c.estado !== 'Anulado';
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(680px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+      '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+        '<div style="font-weight:800;font-size:16px">📎 Adjuntos del certificado</div>'+
+        '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · planos, contratos o notas del certificado en general</div></div>'+
+      (puedeSubir ? '<div style="padding:12px 18px;border-bottom:1px solid #e2e6ee">'+
+        '<input type="file" id="adjFile" multiple accept="image/*,application/pdf,.dwg,.doc,.docx,.xls,.xlsx" '+
+        'style="width:100%;font-size:13px">'+
+        '<div style="font-size:11.5px;color:#64748b;margin-top:6px">Imágenes y PDF se imprimen como anexo. El resto queda guardado para descargar.</div>'+
+        '<div id="adjEstado" style="font-size:12px;color:#1f3864;margin-top:6px"></div></div>' : '')+
+      '<div id="adjLista" style="overflow:auto;padding:8px 18px;flex:1;min-height:110px"></div>'+
+      '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end">'+
+        '<button type="button" class="btn-g" id="adjCerrar">Cerrar</button></div>'+
+    '</div>';
+  document.body.appendChild(ov);
+
+  const pintar = ()=>{
+    const cont = ov.querySelector('#adjLista');
+    if(!dtAdj.length){
+      cont.innerHTML = '<div style="padding:22px;text-align:center;color:#8893a5;font-size:13px">Todavía no hay documentos adjuntos.</div>';
+      return;
+    }
+    cont.innerHTML = dtAdj.map((a,i)=>
+      '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #eef1f6">'+
+        '<div style="font-size:18px">'+(a._esImg?'🖼️':'📄')+'</div>'+
+        '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;word-break:break-word">'+escapeHtml(a.nombre||'')+'</div>'+
+          '<div style="font-size:11.5px;color:#64748b">'+escapeHtml(a.subido_por||'')+(a.created_at?' · '+fmtFecha(a.created_at):'')+'</div></div>'+
+        (a._url?'<a href="'+escapeHtml(a._url)+'" target="_blank" rel="noopener" class="btn-g" style="text-decoration:none">Abrir</a>':'')+
+        (puedeSubir?'<button type="button" class="btn-g" data-adjdel="'+i+'" title="Quitar">✕</button>':'')+
+      '</div>').join('');
+  };
+  pintar();
+
+  const fi = ov.querySelector('#adjFile');
+  if(fi) fi.onchange = async function(){
+    const files = Array.from(fi.files||[]);
+    if(!files.length) return;
+    const est = ov.querySelector('#adjEstado');
+    const quien = (state.profile && (state.profile.residente||state.profile.nombre)) || (state.user&&state.user.email) || null;
+    let ok = 0;
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      est.textContent = 'Subiendo '+(i+1)+' de '+files.length+': '+f.name+'…';
+      if(f.size > 15*1024*1024){ showToast('«'+f.name+'» pesa más de 15 MB','error'); continue; }
+      try{
+        const limpio = f.name.replace(/[^\w.\-]+/g,'_');
+        const path = 'certificados/'+c.id+'/adjuntos/'+Date.now()+'_'+limpio;
+        const up = await sb.storage.from('oc-adjuntos').upload(path, f, { contentType:f.type||'application/octet-stream', upsert:true });
+        if(up.error) throw up.error;
+        const ins = await sb.from('certificado_adjuntos').insert({
+          certificado_id: c.id, nombre: f.name, tipo: f.type || '', url_storage: path, subido_por: quien });
+        if(ins.error) throw ins.error;
+        ok++;
+      }catch(e){
+        console.error('adjunto', e);
+        showToast('No se pudo subir «'+f.name+'»','error', e.message||'');
+      }
+    }
+    fi.value = '';
+    est.textContent = '';
+    if(ok){
+      dtAdj = await cargarAdjuntos(c.id);
+      pintar();
+      const bAd = document.getElementById('dtAdjBtn');
+      if(bAd) bAd.textContent = '📎 Adjuntos'+(dtAdj.length?' ('+dtAdj.length+')':'');
+      showToast(ok+' documento(s) adjuntado(s)','success');
+    }
+  };
+
+  ov.addEventListener('click', async ev=>{
+    if(ev.target === ov) return ov.remove();
+    const t = ev.target.closest('button');
+    if(!t) return;
+    if(t.id === 'adjCerrar') return ov.remove();
+    if(t.dataset.adjdel != null){
+      const a = dtAdj[Number(t.dataset.adjdel)];
+      if(!a) return;
+      const r = await axcDialog({ tono:'danger', icono:'✕', titulo:'Quitar el adjunto',
+        mensaje:'Se va a quitar «'+escapeHtml(a.nombre||'')+'» del certificado. No se puede deshacer.',
+        ok:'Quitar', cancelar:'Volver' });
+      if(!r.ok) return;
+      try{
+        const del = await sb.from('certificado_adjuntos').delete().eq('id', a.id);
+        if(del.error) throw del.error;
+        try{ await sb.storage.from('oc-adjuntos').remove([a.url_storage]); }catch(e){}
+        dtAdj = await cargarAdjuntos(c.id);
+        pintar();
+        const bAd = document.getElementById('dtAdjBtn');
+        if(bAd) bAd.textContent = '📎 Adjuntos'+(dtAdj.length?' ('+dtAdj.length+')':'');
+        showToast('Adjunto quitado','success');
+      }catch(e){ showToast('No se pudo quitar','error', e.message||''); }
+    }
+  });
+}
+
+/* ── Qué anexos lleva el PDF ─────────────────────────────────────────
+   El residente elige: las fotos de cada rubro, los documentos del
+   certificado, los dos o ninguno. Devuelve null si cancela. */
+function pedirAnexos(c, titulo){
+  const nF = dtFotos.length, nA = dtAdj.length;
+  if(!nF && !nA) return Promise.resolve({ fotos:false, adjuntos:false });
+  return new Promise(resolve=>{
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+    const fila = (id, ico, txt, sub, on) =>
+      '<label style="display:flex;gap:11px;align-items:flex-start;padding:11px 12px;border:1.5px solid #e2e6ee;border-radius:10px;margin-bottom:8px;cursor:pointer">'+
+        '<input type="checkbox" id="'+id+'" '+(on?'checked':'')+' style="margin-top:3px;width:17px;height:17px">'+
+        '<span><b style="font-size:13.5px">'+ico+' '+txt+'</b><span style="display:block;font-size:11.5px;color:#64748b">'+sub+'</span></span></label>';
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(520px,100%);box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+        '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+          '<div style="font-weight:800;font-size:16px">📄 '+escapeHtml(titulo)+'</div>'+
+          '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué anexos incluir</div></div>'+
+        '<div style="padding:14px 18px">'+
+          (nF ? fila('anxFotos','📷','Fotos de los trabajos ('+nF+')','Se agregan al final, agrupadas por rubro medido.', true) : '')+
+          (nA ? fila('anxAdj','📎','Documentos del certificado ('+nA+')','Planos y documentos generales. Las imágenes y los PDF se imprimen; el resto se lista con su nombre.', true) : '')+
+          '<div style="font-size:11.5px;color:#8893a5">Sin marcar nada, sale solo el reporte para firmar.</div></div>'+
+        '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
+          '<button type="button" class="btn-g" id="anxCancel">Cancelar</button>'+
+          '<button type="button" class="btn-ok" id="anxOk">Generar PDF</button></div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    const cerrar = v => { ov.remove(); resolve(v); };
+    ov.querySelector('#anxCancel').onclick = ()=> cerrar(null);
+    ov.querySelector('#anxOk').onclick = ()=> cerrar({
+      fotos: !!(ov.querySelector('#anxFotos') && ov.querySelector('#anxFotos').checked),
+      adjuntos: !!(ov.querySelector('#anxAdj') && ov.querySelector('#anxAdj').checked)
+    });
+    ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
+  });
+}
+
+function pdfPiePaginas(doc, c, W, H, M, etiqueta){
+  const np = doc.getNumberOfPages();
+  for(let i=1;i<=np;i++){
+    doc.setPage(i);
+    doc.setDrawColor(226,230,238).setLineWidth(.3);
+    doc.line(M, H-10, W-M, H-10);
+    doc.setFont('helvetica','normal').setFontSize(7).setTextColor(139,147,167);
+    doc.text(etiqueta+' '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+fmtFecha(hoyISO()), M, H-6);
+    doc.text('Pagina '+i+' de '+np, W-M, H-6, {align:'right'});
+  }
+}
+
+/* Anexo con los documentos del certificado: las imágenes se imprimen, los
+   PDF y otros archivos se listan con su nombre y su enlace. */
+async function anexoAdjuntos(doc, c, W, H, M){
+  if(!dtAdj.length) return;
+  doc.addPage();
+  doc.setFillColor(31,56,100); doc.rect(0,0,W,18,'F');
+  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(12);
+  doc.text('ANEXO DE DOCUMENTOS  ·  '+pdfSafe(c.numero||''), M, 12);
+  let y = 28, fallidas = 0;
+  const otros = [];
+  for(const a of dtAdj){
+    if(!a._esImg){ otros.push(a); continue; }
+    try{
+      const dataUrl = await urlADataURL(a._url);
+      const props = doc.getImageProperties(dataUrl);
+      const maxW = W - M*2, maxH = H - y - 18;
+      let w = maxW, h = props.height * (w / props.width);
+      if(h > maxH){ h = maxH; w = props.width * (h / props.height); }
+      if(y + h > H - 14){ doc.addPage(); y = 20; }
+      doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9);
+      doc.text(pdfSafe(a.nombre||''), M, y); y += 4;
+      doc.addImage(dataUrl, 'JPEG', M, y, w, h);
+      y += h + 9;
+    }catch(e){ console.warn('adjunto pdf', e); fallidas++; otros.push(a); }
+  }
+  if(otros.length){
+    if(y > H - 40){ doc.addPage(); y = 20; }
+    doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9.5);
+    doc.text('Documentos adjuntos (no se imprimen: abrilos desde el sistema)', M, y); y += 6;
+    doc.setFont('helvetica','normal').setFontSize(8.5).setTextColor(26,34,54);
+    otros.forEach(a=>{
+      if(y > H - 16){ doc.addPage(); y = 20; }
+      doc.text('- '+pdfSafe(a.nombre||''), M, y); y += 5;
+    });
+  }
+  if(fallidas) showToast(fallidas+' adjunto(s) no se pudieron imprimir','info','Quedan listados por su nombre.');
 }
 
 /* ── Planilla de avance (formato de la planilla Excel de obra) ───────
@@ -4199,7 +4420,13 @@ async function planillaAnterior(c, its){
   return out;
 }
 
-async function generarPlanillaPDF(c, its){
+async function pedirPlanilla(c, its){
+  const op = await pedirAnexos(c, 'Planilla de avance');
+  if(!op) return;
+  generarPlanillaPDF(c, its, op);
+}
+
+async function generarPlanillaPDF(c, its, opts){
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   showToast('Armando la planilla de avance…','info');
   const ant = await planillaAnterior(c, its);
@@ -4393,16 +4620,10 @@ async function generarPlanillaPDF(c, its){
   firma(M+bw+8,         'RESIDENTE DE OBRA', c.medido_por);
   firma(M+(bw+8)*2,     'APROBACION', c.aprobado_por);
 
-  // Pie con número de página
-  const np = doc.getNumberOfPages();
-  for(let i=1;i<=np;i++){
-    doc.setPage(i);
-    doc.setDrawColor(226,230,238).setLineWidth(.3);
-    doc.line(M, H-10, W-M, H-10);
-    doc.setFont('helvetica','normal').setFontSize(7).setTextColor(139,147,167);
-    doc.text('Planilla de avance '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+fmtFecha(hoyISO()), M, H-6);
-    doc.text('Pagina '+i+' de '+np, W-M, H-6, {align:'right'});
-  }
+  const op = opts || {};
+  if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+  pdfPiePaginas(doc, c, W, H, M, 'Planilla de avance');
   doc.save('planilla_avance_'+(c.numero||c.id)+'.pdf');
 }
 
@@ -4472,6 +4693,8 @@ function ordenarItems(c, its){
 }
 
 async function generarPDF(c, its, conFotos){
+  // conFotos acepta el booleano de antes o {fotos, adjuntos}
+  const opA = (conFotos && typeof conFotos === 'object') ? conFotos : { fotos: !!conFotos, adjuntos:false };
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   const { jsPDF } = window.jspdf;
   // Apaisado: con presupuesto y sector por línea, vertical queda apretado
@@ -4661,8 +4884,15 @@ async function generarPDF(c, its, conFotos){
   firma3(M+(bw3+8)*2,   'CONFORME',    c.contratista||'',  'Contratista · C.I.');
   y += 44;
 
-  // Anexo fotográfico
-  if(conFotos && dtFotos.length){
+  if(opA.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(opA.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+
+  doc.save((c.numero||('certificado_'+c.id))+'.pdf');
+}
+
+/* Anexo fotográfico: las fotos de cada rubro medido */
+async function anexoFotos(doc, c, its, W, H, M){
+  if(dtFotos.length){
     let fallidas = 0;
     const porItemF = {};
     dtFotos.forEach(f=>{ (porItemF[f.item_id] = porItemF[f.item_id]||[]).push(f); });
@@ -4696,8 +4926,6 @@ async function generarPDF(c, its, conFotos){
     }
     if(fallidas) showToast(fallidas+' foto(s) no se pudieron incluir','info','Revisá la conexión y volvé a generar el PDF.');
   }
-
-  doc.save((c.numero||('certificado_'+c.id))+'.pdf');
 }
 
 </script>
