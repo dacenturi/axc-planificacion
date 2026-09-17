@@ -2213,7 +2213,7 @@ function cpAlcanceTxt(x){ return x.sector ? ((x.obra||'')+' · '+x.sector) : (x.
 function cpSelector(o){
   return new Promise(resolve=>{
     const ov = document.createElement('div');
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
     ov.innerHTML =
       '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
         '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
@@ -3109,16 +3109,107 @@ document.getElementById('ctX').onclick = function(){ document.getElementById('ct
 document.getElementById('ctCerrar').onclick = function(){ document.getElementById('ctOv').hidden = true; };
 document.getElementById('ctBuscar').oninput = renderCuenta;
 document.getElementById('ctNuevo').onclick = async function(){
-  const r = await axcDialog({
-    tono:'', icono:'👷', titulo:'¿A qué contratista?',
-    mensaje:'Escribí el nombre tal como figura en la lista de contratistas.',
-    campo:{ label:'Contratista', placeholder:'Ej. Nolasco Garcete', requerido:true },
-    ok:'Continuar'
-  });
-  if(!r.ok) return;
-  const c = state.listas.contratistas.filter(x=>cpNorm(x)===cpNorm(r.valor))[0] || r.valor.trim();
+  const c = await elegirContratista();
+  if(!c) return;
   if(await ctaOtorgar(c)) renderCuenta();
 };
+
+/* ── Selector de contratista ─────────────────────────────────────────
+   Muestra los contratistas de la lista maestra (listas · contratistas) con
+   buscador. Si el que se busca no está, permite darlo de alta ahí mismo,
+   para que quede disponible en todo el sistema. Evita nombres mal escritos
+   o montos cargados en el nombre (pasó con «1500000»). */
+function elegirContratista(){
+  return new Promise(resolve=>{
+    const base = [];
+    const add = v => { v = String(v||'').trim(); if(v && !base.some(x=>cpNorm(x)===cpNorm(v))) base.push(v); };
+    (state.listas.contratistas||[]).forEach(add);
+    base.sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
+
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(560px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+        '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+          '<div style="font-weight:800;font-size:16px">👷 ¿A qué contratista?</div>'+
+          '<div style="font-size:12px;opacity:.85">Elegí de la lista. Si no está, lo podés agregar.</div></div>'+
+        '<div style="padding:12px 18px;border-bottom:1px solid #e2e6ee">'+
+          '<input type="text" id="ecBuscar" placeholder="Buscar contratista…" autocomplete="off" '+
+          'style="width:100%;padding:10px 12px;border:1.5px solid #d6dce8;border-radius:9px;font-size:14px"></div>'+
+        '<div id="ecLista" style="overflow:auto;padding:6px 12px;flex:1;min-height:120px"></div>'+
+        '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+          '<small style="color:#64748b">'+base.length+' contratista(s) en la lista</small>'+
+          '<button type="button" class="btn-g" id="ecCancelar">Cancelar</button></div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    const inp = ov.querySelector('#ecBuscar');
+    const cerrar = v => { ov.remove(); resolve(v); };
+
+    const pintar = ()=>{
+      const qv = inp.value.trim();
+      const q = norm(qv);
+      const L = base.filter(x => !q || norm(x).indexOf(q) >= 0);
+      const exacto = base.some(x => cpNorm(x) === cpNorm(qv));
+      let h = L.map(x =>
+        '<div data-ec="'+escapeHtml(x)+'" style="padding:10px 12px;border-radius:8px;cursor:pointer;font-size:14px;border-bottom:1px solid #f1f3f7" '+
+        'onmouseover="this.style.background=\'#EDF3FB\'" onmouseout="this.style.background=\'\'">👷 '+escapeHtml(x)+'</div>').join('');
+      if(!L.length) h = '<div style="padding:16px;text-align:center;color:#8893a5;font-size:13px">'+
+        (base.length ? 'Ningún contratista coincide con «'+escapeHtml(qv)+'».' : 'Todavía no hay contratistas en la lista.')+'</div>';
+      if(qv && !exacto){
+        h += '<div style="padding:10px 4px 4px"><button type="button" class="btn-nav" id="ecNuevo" style="width:100%">'+
+             '＋ Agregar «'+escapeHtml(qv)+'» como contratista nuevo</button></div>';
+      }
+      ov.querySelector('#ecLista').innerHTML = h;
+      const bn = ov.querySelector('#ecNuevo');
+      if(bn) bn.onclick = ()=> altaContratista(qv, bn).then(v=>{ if(v) cerrar(v); });
+    };
+    pintar();
+    inp.oninput = pintar;
+    inp.onkeydown = ev => {
+      if(ev.key === 'Escape') cerrar(null);
+      if(ev.key === 'Enter'){
+        const q = norm(inp.value.trim());
+        const L = base.filter(x => !q || norm(x).indexOf(q) >= 0);
+        if(L.length === 1) cerrar(L[0]);
+      }
+    };
+    setTimeout(()=>inp.focus(), 30);
+    ov.querySelector('#ecCancelar').onclick = ()=> cerrar(null);
+    ov.addEventListener('click', ev=>{
+      if(ev.target === ov) return cerrar(null);
+      const d = ev.target.closest('[data-ec]');
+      if(d) cerrar(d.getAttribute('data-ec'));
+    });
+  });
+}
+
+async function altaContratista(nombre, btn){
+  const v = String(nombre||'').replace(/\s+/g,' ').trim();
+  if(v.length < 3){ showToast('El nombre es muy corto','error'); return null; }
+  if(/^[\d\s.,₲$-]+$/.test(v)){ showToast('Eso parece un monto, no un nombre','error','Escribí el nombre del contratista'); return null; }
+  const ok = await axcDialog({
+    tono:'warn', icono:'👷', titulo:'Agregar contratista nuevo',
+    mensaje:'Se va a agregar «'+v+'» a la lista de contratistas y va a quedar disponible en todo el sistema. Revisá que esté bien escrito.',
+    ok:'Agregar', cancelar:'Volver'
+  });
+  if(!ok.ok) return null;
+  if(btn){ btn.disabled = true; btn.textContent = 'Agregando…'; }
+  try{
+    const { error } = await sb.from('listas').insert({ tipo:'contratistas', valor:v, activo:true });
+    if(error) throw error;
+    if(!state.listas.contratistas.some(x=>cpNorm(x)===cpNorm(v))){
+      state.listas.contratistas.push(v);
+      state.listas.contratistas.sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
+    }
+    showToast('Contratista agregado','success', v);
+    return v;
+  }catch(e){
+    console.error('alta contratista', e);
+    showToast('No se pudo agregar a la lista','error', (e.message||'')+' · pedí a un administrador que lo cargue');
+    if(btn){ btn.disabled = false; btn.textContent = '＋ Agregar «'+v+'» como contratista nuevo'; }
+    return null;
+  }
+}
 
 async function abrirCuenta(){
   document.getElementById('ctOv').hidden = false;
@@ -4248,7 +4339,7 @@ function ordenarItems(c, its){
   const lista = (its||[]).slice().sort((a,b)=>(Number(a.orden)||0)-(Number(b.orden)||0));
   if(lista.length < 2){ showToast('Hay un solo ítem, no hay nada que ordenar','info'); return; }
   const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML =
     '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
       '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
