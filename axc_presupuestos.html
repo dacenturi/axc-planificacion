@@ -2219,7 +2219,7 @@ async function openEdit(codigo){
     ed.abiertoCon = h.actualizado_en || h.creado_en || null;   // para detectar guardados de otros
     const { data:rub } = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', codigo).order('orden');
     ed.rubros = (rub||[]).map(function(r){
-      const cat = ed.arbolByCod[String(r.rubro_codigo||'')];
+      const cat = _catDe(r.rubro_codigo);
       const cap = cat && cat.capitulo ? String(cat.capitulo).trim() : '';
       return { sector:r.sector||'', rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'',
                cantidad:Number(r.cantidad)||0, precio_total:Number(r.precio_total)||0, tiene_receta:!!r.tiene_receta,
@@ -2232,6 +2232,12 @@ async function openEdit(codigo){
     ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
       tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
     renderRubros(); renderInsumos();
+    const _rep = _rubrosCodigoRepetido(ed.rubros);
+    if(_rep.length){
+      showToast('Hay códigos de rubro repetidos en el mismo sector', 'error',
+        _rep.map(function(x){ return x.codigo+' ×'+x.filas.length+' ('+(x.sector||'sin sector')+')'; }).join(' · ')+
+        ' — Certificación los mezclaría. Se corrige al guardar.');
+    }
   }catch(e){ console.warn('openEdit', e); showToast('Error cargando el presupuesto', 'error'); }
 }
 
@@ -2471,10 +2477,46 @@ function _ordenarRubrosAuto(){
   });
 }
 
+/* Catálogo de un código de rubro. Un código diferenciado con sufijo
+   (01.039-B) no está en el catálogo: se toma el del código base para
+   no perder su capítulo. */
+function _catDe(code){
+  const m = ed.arbolByCod || {};
+  const c = String(code||'');
+  return m[c] || m[c.replace(/-[A-Z]$/i,'')] || null;
+}
+
+/* Rubros con el mismo código en el mismo sector, dentro del presupuesto.
+   La carga normal ya lo impide (addRubro), pero una carga manual o desde
+   Excel puede traerlos. Certificación identifica cada trabajo por su código:
+   si se repite, al medir uno se mide también el otro y el total se duplica.
+   Devuelve [{codigo, sector, filas:[índices]}]. */
+function _rubrosCodigoRepetido(lista){
+  const g = {}, orden = [];
+  (lista||ed.rubros||[]).forEach(function(r,i){
+    const cod = String(r.rubro_codigo||'').trim();
+    if(!cod) return;
+    const k = cod.toUpperCase()+'|'+String(r.sector||'').trim().toUpperCase();
+    if(!g[k]){ g[k] = { codigo:cod, sector:String(r.sector||'').trim(), filas:[] }; orden.push(k); }
+    g[k].filas.push(i);
+  });
+  return orden.map(function(k){ return g[k]; }).filter(function(x){ return x.filas.length > 1; });
+}
+
+/* Siguiente código libre con sufijo: 01.039 → 01.039-B, -C… */
+function _codigoLibre(base, usados){
+  const b = String(base).replace(/-[A-Z]$/i,'');
+  for(let n=1; n<26; n++){
+    const c = b+'-'+String.fromCharCode(65+n);
+    if(!usados[c.toUpperCase()]) return c;
+  }
+  return b+'-'+Date.now().toString(36).toUpperCase();
+}
+
 function _capituloDe(r){
   const c = String(r.capitulo||'').trim();
   if(c) return c;
-  const cat = (ed.arbolByCod||{})[r.rubro_codigo||''];
+  const cat = _catDe(r.rubro_codigo);
   return (cat && String(cat.capitulo||'').trim()) || '(Sin capítulo)';
 }
 
@@ -3426,6 +3468,66 @@ async function saveBudget(){
         if(_oki[k]) return false; _oki[k]=1; return true;
       });
       renderRubros(); renderInsumos();
+    }
+
+    // ── Mismo código en el mismo sector ──────────────────────────
+    // Partidas distintas (otro importe o cantidad) con el mismo código:
+    // Certificación las trataría como un solo trabajo. Pasó con PP75-2
+    // (01.039 dos veces en Nivel 2), cargado a mano desde un Excel.
+    const _rep = _rubrosCodigoRepetido(ed.rubros);
+    if(_rep.length){
+      // Con receta, o con mano de obra / insumos imputados, el código ata líneas
+      // del presupuesto: renombrar dejaría esas líneas en el rubro equivocado.
+      const _conReceta = _rep.filter(function(g){
+        const cu = g.codigo.toUpperCase();
+        return g.filas.some(function(i){ return ed.rubros[i].tiene_receta; }) ||
+               (ed.insumos||[]).some(function(x){ return !x._removed && String(x.rubro_codigo||'').toUpperCase() === cu; });
+      });
+      const _desc = function(g){
+        return '<b>'+escapeHtml(g.codigo)+'</b> ×'+g.filas.length+' en '+escapeHtml(g.sector||'sin sector')+': '+
+          g.filas.map(function(i){ const r=ed.rubros[i];
+            return escapeHtml(_qty(Number(r.cantidad)||0)+' '+(r.unidad||''))+' · ₲ '+fmtGs(Number(r.precio_total)||0);
+          }).join(' / ');
+      };
+      if(_conReceta.length){
+        // Con receta no se renombra solo: los insumos cuelgan del código
+        await pmAvisoSalida({
+          titulo:'Hay rubros con el mismo código en el mismo sector',
+          subtitulo:codigo+' · no se guardó',
+          texto:'Estos rubros tienen <b>receta</b> o líneas de insumos / mano de obra imputadas a su código, así que no se pueden diferenciar automáticamente. '+
+                'Si son el mismo trabajo, dejá una sola línea con la cantidad sumada. Si son distintos, pasá uno a otro sector.',
+          puntos:_conReceta.map(_desc),
+          textoVolver:'Revisar la lista', ocultarSalir:true
+        });
+        btn.disabled=false; btn.textContent=old; return;
+      }
+      const r = await pmAvisoSalida({
+        titulo:'Hay rubros con el mismo código en el mismo sector',
+        subtitulo:codigo+' · '+_rep.length+' código(s) repetido(s)',
+        texto:'Son partidas distintas con el mismo código. En Certificación se verían como <b>un solo trabajo</b>: '+
+              'al medir una se mide la otra y el total sale duplicado.',
+        puntos:_rep.map(_desc).concat([
+          '<b>Diferenciar y guardar</b> deja la primera con su código y a las demás les agrega -B, -C… (ej. 01.039-B).',
+          'Si son el mismo trabajo cargado dos veces, volvé a la lista y eliminá la que sobra.',
+          'Conviene aclarar también la descripción (zona o alcance) para que el residente sepa cuál mide.'
+        ]),
+        textoVolver:'Revisar la lista', textoGuardar:'Diferenciar y guardar',
+        ocultarSalir:true, onGuardar: async function(){}
+      });
+      if(r !== 'guardado'){ btn.disabled=false; btn.textContent=old; return; }
+      const _usados = {};
+      ed.rubros.forEach(function(x){ _usados[String(x.rubro_codigo||'').toUpperCase()] = 1; });
+      const _cambios = [];
+      _rep.forEach(function(g){
+        g.filas.slice(1).forEach(function(i){
+          const nuevo = _codigoLibre(g.codigo, _usados);
+          _usados[nuevo.toUpperCase()] = 1;
+          _cambios.push(ed.rubros[i].rubro_codigo+' → '+nuevo);
+          ed.rubros[i].rubro_codigo = nuevo;
+        });
+      });
+      renderRubros();
+      showToast('Códigos diferenciados', 'success', _cambios.join(' · '));
     }
 
     // Rubros: reemplazo completo
