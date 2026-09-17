@@ -320,6 +320,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .dlg-campo label{display:block;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:7px}
 .dlg-campo input{width:100%;border:1.5px solid var(--border);border-radius:10px;padding:13px 15px;font-size:15.5px;font-family:inherit;color:var(--text)}
 .dlg-campo input:focus{outline:none;border-color:var(--navy2)}
+.dlg-campo select{width:100%;border:1.5px solid var(--border);border-radius:10px;padding:13px 15px;font-size:15.5px;font-family:inherit;color:var(--text);background:#fff}
+.dlg-campo select:focus{outline:none;border-color:var(--navy2)}
 .dlg-req{font-size:13px;font-weight:600;color:#B03A3A;margin-top:7px}
 .dlg-foot{display:flex;justify-content:flex-end;gap:11px;padding:18px 28px;border-top:1px solid var(--border-soft);background:#fafbfd}
 .dlg-foot button{border-radius:10px;padding:14px 28px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;min-width:130px}
@@ -753,6 +755,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       <div class="dlg-campo" id="dlgCampo2" style="display:none">
         <label id="dlgLbl2">Unidad</label>
         <input type="text" id="dlgInput2" placeholder="">
+        <select id="dlgSel2" style="display:none"></select>
       </div>
       <div class="dlg-campo" id="dlgCampo3" style="display:none">
         <label id="dlgLbl3">Dato</label>
@@ -876,14 +879,27 @@ function axcDialog(o){
     } else { campo.style.display='none'; inp.value=''; }
     req.style.display='none';
 
+    // campo2 puede ser texto libre o una lista cerrada (campo2.lista):
+    // para datos maestros como la obra, elegir de la lista evita nombres sueltos.
     const campo2 = document.getElementById('dlgCampo2');
     const inp2 = document.getElementById('dlgInput2');
+    const sel2 = document.getElementById('dlgSel2');
+    const usaSel2 = !!(o.campo2 && o.campo2.lista);
     if(o.campo2){
       campo2.style.display='';
       document.getElementById('dlgLbl2').textContent = o.campo2.label || '';
-      inp2.placeholder = o.campo2.placeholder || '';
-      inp2.value = o.campo2.valor || '';
-    } else { campo2.style.display='none'; inp2.value=''; }
+      if(usaSel2){
+        inp2.style.display='none'; sel2.style.display='';
+        sel2.innerHTML = '<option value="">'+escapeHtml(o.campo2.placeholder || 'Seleccionar…')+'</option>' +
+          o.campo2.lista.map(function(x){ return '<option>'+escapeHtml(x)+'</option>'; }).join('');
+        sel2.value = o.campo2.valor || '';
+      }else{
+        sel2.style.display='none'; sel2.innerHTML='';
+        inp2.style.display='';
+        inp2.placeholder = o.campo2.placeholder || '';
+        inp2.value = o.campo2.valor || '';
+      }
+    } else { campo2.style.display='none'; inp2.value=''; inp2.style.display=''; sel2.style.display='none'; sel2.innerHTML=''; }
 
     const campo3 = document.getElementById('dlgCampo3');
     const inp3 = document.getElementById('dlgInput3');
@@ -911,7 +927,9 @@ function axcDialog(o){
     }
     function aceptar(){
       if(o.campo && o.campo.requerido && !inp.value.trim()){ req.style.display=''; inp.focus(); return; }
-      cerrar({ ok:true, valor:(o.campo?inp.value.trim():''), valor2:(o.campo2?inp2.value.trim():''), valor3:(o.campo3?inp3.value.trim():''), opcion:opSel });
+      if(usaSel2 && o.campo2.requerido && !sel2.value){ sel2.focus(); showToast('Elegí '+(o.campo2.label||'el dato'),'error'); return; }
+      const v2 = o.campo2 ? (usaSel2 ? sel2.value : inp2.value.trim()) : '';
+      cerrar({ ok:true, valor:(o.campo?inp.value.trim():''), valor2:v2, valor3:(o.campo3?inp3.value.trim():''), opcion:opSel });
     }
     function tecla(ev){
       if(ev.key === 'Escape') cerrar({ ok:false });
@@ -956,6 +974,7 @@ async function loadProfileAndApp(){
   // aprobar o anular certificados sin ser administrador.
   const _perm = profile.permisos || {};
   state.puedeAprobar = state.isAdmin || _perm.cert_aprobar === true;
+  state.puedeReabrir = state.isAdmin || _perm.cert_editar  === true;
   state.puedeAnular  = state.isAdmin || _perm.cert_anular  === true;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
@@ -1113,7 +1132,7 @@ async function cerrarEditor(){
 }
 
 async function abrirEditor(id){
-  ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false; ed.ordenPrevio={};
+  ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false; ed.ordenPrevio={}; ed.estadoPrevio=''; ed.motivoReapertura='';
   ed.buscar=''; ed.filtro=''; ed.ubicaciones=[]; ed.sel={};
   const bq=document.getElementById('edBuscar'); if(bq) bq.value='';
   const pq=document.getElementById('edPresuBuscar'); if(pq) pq.value='';
@@ -1139,6 +1158,7 @@ async function abrirEditor(id){
   if(id){
     const c = state.list.filter(x=>x.id===id)[0];
     if(c){
+      ed.estadoPrevio = c.estado || '';
       document.getElementById('edFecha').value = String(c.fecha||hoyISO()).slice(0,10);
       document.getElementById('edContra').value = c.contratista||'';
       document.getElementById('edObs').value = c.observacion||'';
@@ -2964,7 +2984,7 @@ async function ctaOtorgar(contratista){
     opciones:[{ id:'anticipo', titulo:'Anticipo de obra', detalle:'Adelanto a cuenta de trabajos por ejecutar.' },
               { id:'prestamo', titulo:'Préstamo', detalle:'Plata prestada al contratista, ajena al avance de obra.' }],
     campo:{ label:'Monto entregado (₲)', placeholder:'Ej. 5.000.000', requerido:true },
-    campo2:{ label:'Obra (opcional)', placeholder:'Dejalo vacío si no es de una obra puntual' },
+    campo2:{ label:'Obra (opcional)', placeholder:'Sin obra puntual', lista: state.listas.obras || [] },
     campo3:{ label:'Concepto (opcional)', placeholder:'Ej. anticipo para materiales de Nivel 3' },
     ok:'Registrar la entrega'
   });
@@ -3374,11 +3394,24 @@ async function guardar(estado){
       presupuesto: ed.presus.length ? ed.presus.join(', ') : null,
       fecha: document.getElementById('edFecha').value || hoyISO(),
       estado: estado,
-      observacion: document.getElementById('edObs').value.trim() || null,
+      observacion: (function(){
+        let v = document.getElementById('edObs').value.trim();
+        // El motivo de reapertura no se puede quitar: queda como historial
+        if(ed.motivoReapertura && v.indexOf(ed.motivoReapertura) < 0){
+          v = (ed.motivoReapertura + (v ? '\n'+v : ''));
+        }
+        return v || null;
+      })(),
       total: total,
       updated_at: new Date().toISOString()
     };
     cab.medido_por = quien; cab.medido_en = new Date().toISOString();
+    // Reabrir un certificado aprobado lo devuelve a borrador: la aprobación
+    // anterior ya no vale para los montos nuevos y hay que aprobarlo de nuevo.
+    if(ed.estadoPrevio === 'Aprobado'){
+      cab.aprobado_por = null; cab.aprobado_en = null;
+      cab.firma_aprobador = null; cab.firma_aprobador_nombre = null; cab.firma_aprobador_en = null;
+    }
 
     let certId = ed.id;
     if(certId){
@@ -3532,6 +3565,9 @@ async function abrirDetalle(id){
     if(state.puedeAnular)  acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>';
     if(state.puedeAprobar) acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
   }
+  if(c.estado === 'Aprobado' && state.puedeReabrir){
+    acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtReabrir" title="Corregir el certificado: vuelve a borrador y hay que aprobarlo de nuevo">✎ Editar (vuelve a borrador)</button>';
+  }
   if(c.estado !== 'Anulado' && (enCurso || state.puedeAprobar)){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtOrdenar">↕ Ordenar ítems</button>';
   }
@@ -3654,6 +3690,35 @@ async function abrirDetalle(id){
     const bFA=document.getElementById('dtFirmaA'); if(bFA) bFA.onclick = ()=> firmarCertificado(c,'aprobador');
     const bOr=document.getElementById('dtOrdenar'); if(bOr) bOr.onclick = ()=> ordenarItems(c, its||[]);
     const bPl=document.getElementById('dtPlanilla'); if(bPl) bPl.onclick = ()=> generarPlanillaPDF(c, its||[]);
+    const bRe=document.getElementById('dtReabrir'); if(bRe) bRe.onclick = async function(){
+      const r = await axcDialog({
+        tono:'warn', icono:'✎', titulo:'Editar un certificado aprobado',
+        subtitulo:c.numero||('#'+c.id),
+        mensaje:'Al guardar los cambios, el certificado <b>vuelve a Borrador</b> y hay que aprobarlo de nuevo. '+
+                'Se borran la aprobación y la firma del aprobador; la firma del residente se mantiene.',
+        lista:['Mientras esté en borrador, su avance no descuenta del presupuesto.',
+               'Si ya se pagó con este certificado, avisá a administración antes de cambiar los montos.'],
+        campo:{ label:'Motivo de la reapertura (obligatorio)',
+                placeholder:'Ej. se midió 12 m2 de más en el revoque del Nivel 2', requerido:true },
+        ok:'Editar', cancelar:'Volver'
+      });
+      if(!r.ok) return;
+      const motivo = String(r.valor||'').trim();
+      if(motivo.length < 10){
+        showToast('El motivo es muy corto','error','Explicá qué se corrige, para que quede registrado en el certificado');
+        return;
+      }
+      document.getElementById('dtOv').hidden = true;
+      await abrirEditor(c.id);
+      // El motivo queda en la observación del certificado, a la vista de todos
+      ed.motivoReapertura = 'Reapertura '+fmtFecha(hoyISO())+' ('+
+        ((state.profile && (state.profile.residente||state.profile.nombre)) || (state.user&&state.user.email) || '')+'): '+motivo;
+      const ob = document.getElementById('edObs');
+      if(ob && ob.value.indexOf(ed.motivoReapertura) < 0){
+        ob.value = (ed.motivoReapertura + (ob.value.trim() ? '\n'+ob.value.trim() : ''));
+      }
+      showToast('Motivo registrado','success','Queda en la observación del certificado');
+    };
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
@@ -4298,6 +4363,11 @@ async function generarPlanillaPDF(c, its){
   });
 
   y = doc.lastAutoTable.finalY + 4;
+  if(c.observacion){
+    doc.setFont('helvetica','bold').setFontSize(7.6).setTextColor(26,34,54);
+    const to = doc.splitTextToSize('Observaciones: '+pdfSafe(c.observacion), W-M*2);
+    doc.text(to, M, y); y += to.length*3.4 + 3;
+  }
   doc.setFont('helvetica','normal').setFontSize(6.8).setTextColor(90,99,119);
   const nota = 'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
                'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
