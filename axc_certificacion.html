@@ -4081,7 +4081,7 @@ function generarOrdenPago(c, its){
 
   // ── Firmas ───────────────────────────────────────────────────────
   if(y > H-58){ doc.addPage(); y = 24; }
-  const bw = (W-M*2-8)/2;   // el recuadro de aprobación interna se quitó: aprueba el residente al firmar
+  const bw = (W-M*2-8)/2;
   const firma = (cx, titulo, nombre, rol, conCI, imgFirma) => {
     doc.setDrawColor(226,230,238).setLineWidth(.4).setFillColor(255,255,255);
     doc.roundedRect(cx, y, bw, 46, 2, 2, 'FD');
@@ -4107,6 +4107,7 @@ function generarOrdenPago(c, its){
     }
   };
   firma(M, 'FIRMA DEL RESIDENTE', c.firma_residente_nombre||c.medido_por||'', 'Residente de obra', true, c.firma_residente);
+  firma(M+bw+8, 'APROBADO', APROBADOR_DOC, APROBADOR_ROL, false, null);
   y += 52;
 
   // ── Pie ──────────────────────────────────────────────────────────
@@ -4378,27 +4379,40 @@ async function pdfAPaginas(url){
    PDF y otros archivos se listan con su nombre y su enlace. */
 async function anexoAdjuntos(doc, c, W, H, M){
   if(!dtAdj.length) return;
-  doc.addPage();
-  doc.setFillColor(31,56,100); doc.rect(0,0,W,18,'F');
-  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(12);
-  doc.text('ANEXO DE DOCUMENTOS  ·  '+pdfSafe(c.numero||''), M, 12);
-  let y = 28, fallidas = 0;
+  let fallidas = 0;
   const otros = [];
+
+  /* Cada hoja del anexo arranca con su propia franja, con el nombre del
+     documento y la página: no queda ninguna hoja de portada en blanco. */
+  const hoja = (sub) => {
+    doc.addPage();
+    doc.setFillColor(31,56,100); doc.rect(0,0,W,15,'F');
+    doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(10.5);
+    doc.text('ANEXO DE DOCUMENTOS  ·  '+pdfSafe(c.numero||''), M, 10);
+    if(sub){
+      doc.setFont('helvetica','normal').setFontSize(8.5);
+      doc.text(pdfSafe(sub), W-M, 10, {align:'right'});
+    }
+    return 21;   // primera línea útil
+  };
+  const encajar = (pw, ph, top) => {
+    const maxW = W - M*2, maxH = H - top - 13;
+    let w = maxW, h = ph * (w / pw);
+    if(h > maxH){ h = maxH; w = pw * (h / ph); }
+    return { w:w, h:h, x: M + (maxW - w)/2 };
+  };
+
   for(const a of dtAdj){
-    // PDF adjunto: se dibuja cada página como imagen, con pdf.js
-    if(!a._esImg && (/pdf/i.test(a.tipo||'') || /\.pdf$/i.test(a.nombre||''))){
+    const esPdf = !a._esImg && (/pdf/i.test(a.tipo||'') || /\.pdf$/i.test(a.nombre||''));
+    if(esPdf){
       try{
         const paginas = await pdfAPaginas(a._url);
         if(!paginas.length) throw new Error('sin paginas');
         for(let i=0;i<paginas.length;i++){
           const pg = paginas[i];
-          doc.addPage();
-          doc.setFont('helvetica','bold').setFontSize(8).setTextColor(139,147,167);
-          doc.text(pdfSafe(a.nombre||'')+'  ·  pagina '+(i+1)+' de '+paginas.length, M, 12);
-          const maxW = W - M*2, maxH = H - 20 - 12;
-          let w = maxW, h = pg.h * (w / pg.w);
-          if(h > maxH){ h = maxH; w = pg.w * (h / pg.h); }
-          doc.addImage(pg.dataUrl, 'JPEG', M + (maxW - w)/2, 16, w, h);
+          const top = hoja(pdfSafe(a.nombre||'')+'  ·  pagina '+(i+1)+' de '+paginas.length);
+          const f = encajar(pg.w, pg.h, top);
+          doc.addImage(pg.dataUrl, 'JPEG', f.x, top, f.w, f.h);
         }
         continue;
       }catch(e){ console.warn('pdf adjunto', e); fallidas++; otros.push(a); continue; }
@@ -4407,24 +4421,22 @@ async function anexoAdjuntos(doc, c, W, H, M){
     try{
       const dataUrl = await urlADataURL(a._url);
       const props = doc.getImageProperties(dataUrl);
-      const maxW = W - M*2, maxH = H - y - 18;
-      let w = maxW, h = props.height * (w / props.width);
-      if(h > maxH){ h = maxH; w = props.width * (h / props.height); }
-      if(y + h > H - 14){ doc.addPage(); y = 20; }
-      doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9);
-      doc.text(pdfSafe(a.nombre||''), M, y); y += 4;
-      doc.addImage(dataUrl, 'JPEG', M, y, w, h);
-      y += h + 9;
+      const top = hoja(pdfSafe(a.nombre||''));
+      const f = encajar(props.width, props.height, top);
+      doc.addImage(dataUrl, 'JPEG', f.x, top, f.w, f.h);
     }catch(e){ console.warn('adjunto pdf', e); fallidas++; otros.push(a); }
   }
+
   if(otros.length){
-    if(y > H - 40){ doc.addPage(); y = 20; }
+    let y = hoja('documentos para abrir desde el sistema');
     doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9.5);
-    doc.text('Documentos adjuntos (no se pueden imprimir: abrilos desde el sistema)', M, y); y += 6;
-    doc.setFont('helvetica','normal').setFontSize(8.5).setTextColor(26,34,54);
+    doc.text('Documentos adjuntos que no se pueden imprimir', M, y); y += 5;
+    doc.setFont('helvetica','normal').setFontSize(8).setTextColor(112,120,138);
+    doc.text('Estan guardados en el certificado: abrilos desde el sistema, en «Adjuntos».', M, y); y += 7;
+    doc.setFont('helvetica','normal').setFontSize(9).setTextColor(26,34,54);
     otros.forEach(a=>{
-      if(y > H - 16){ doc.addPage(); y = 20; }
-      doc.text('- '+pdfSafe(a.nombre||''), M, y); y += 5;
+      if(y > H - 16){ y = hoja('documentos para abrir desde el sistema'); }
+      doc.text('-  '+pdfSafe(a.nombre||''), M+2, y); y += 5.4;
     });
   }
   if(fallidas) showToast(fallidas+' adjunto(s) no se pudieron imprimir','info','Quedan listados por su nombre.');
