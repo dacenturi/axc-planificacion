@@ -3963,7 +3963,9 @@ async function generarOrdenPago(c, its, opts){
   const anticipo = LQ.anticipo, prestamo = LQ.prestamo;
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const opO = opts || {};
+  const doc = opO.doc || new jsPDF({ unit:'mm', format:'a4' });
+  if(opO.doc) doc.addPage('a4', 'portrait');
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
   const NAVY=[31,56,100], GOLD=[200,160,40], GRIS=[139,147,167], TXT=[26,34,54];
 
@@ -4114,10 +4116,11 @@ async function generarOrdenPago(c, its, opts){
            fmtFecha(hoyISO()), M, H-11);
   doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
 
-  const opO = opts || {};
-  if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M);
-  if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
-
+  if(!opO.sinAnexos){
+    if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M);
+    if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+  }
+  if(opO.noSave) return doc;
   doc.save('orden_de_pago_'+(c.numero||c.id)+'.pdf');
 }
 
@@ -4330,7 +4333,12 @@ async function pedirReportes(c, its){
         '<div style="padding:14px 18px">'+
           bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false)+
           bloque('rpOp','💰','Orden de pago','Liquidación con descuentos, firma del residente y aprobación.', aprobado, !aprobado)+
-          (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px">La orden de pago sale recién cuando el certificado está aprobado.</div>' : '')+
+          (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px;margin-bottom:10px">La orden de pago sale recién cuando el certificado está aprobado.</div>' : '')+
+          '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1.5px dashed #d6dce8;border-radius:10px;cursor:pointer">'+
+            '<input type="checkbox" id="rpUnico" checked style="margin-top:3px;width:17px;height:17px">'+
+            '<span><b style="font-size:13px">📎 Un solo archivo</b>'+
+            '<span style="display:block;font-size:11.5px;color:#64748b">Los dos documentos salen en un mismo PDF, con los anexos una sola vez al final. '+
+            'Sin marcar, se descarga un archivo por documento.</span></span></label>'+
         '</div>'+
         '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
           '<button type="button" class="btn-g" id="rpCancel">Cancelar</button>'+
@@ -4341,6 +4349,7 @@ async function pedirReportes(c, its){
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#rpOk').onclick = ()=> cerrar({
+      unico:    val('rpUnico'),
       planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA') },
       orden:    val('rpOp'), ordenOps:{    fotos:val('rpOpF'), adjuntos:val('rpOpA') }
     });
@@ -4348,8 +4357,24 @@ async function pedirReportes(c, its){
   });
   if(!r) return;
   if(!r.planilla && !r.orden){ showToast('Elegí al menos un documento','error'); return; }
-  if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
-  if(r.orden)    await generarOrdenPago(c, its, r.ordenOps);
+
+  // Un archivo por documento
+  if(!r.unico || !(r.planilla && r.orden)){
+    if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
+    if(r.orden)    await generarOrdenPago(c, its, r.ordenOps);
+    return;
+  }
+
+  // Los dos en un mismo PDF: primero la planilla (apaisada), después la orden
+  // de pago (vertical) y los anexos una sola vez al final.
+  let doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { noSave:true, sinAnexos:true }));
+  if(!doc) return;
+  doc = await generarOrdenPago(c, its, Object.assign({}, r.ordenOps, { doc:doc, noSave:true, sinAnexos:true }));
+  if(!doc) return;
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
+  if(r.planillaOps.fotos    || r.ordenOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(r.planillaOps.adjuntos || r.ordenOps.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+  doc.save('certificado_'+(c.numero||c.id)+'.pdf');
 }
 
 /* ── Qué anexos lleva el PDF ─────────────────────────────────────────
@@ -4389,15 +4414,15 @@ function pedirAnexos(c, titulo){
   });
 }
 
-function pdfPiePaginas(doc, c, W, H, M, etiqueta){
+function pdfPiePaginas(doc, c, W, H, M, etiqueta, desde){
   const np = doc.getNumberOfPages();
-  for(let i=1;i<=np;i++){
+  for(let i=(desde||1);i<=np;i++){
     doc.setPage(i);
     doc.setDrawColor(226,230,238).setLineWidth(.3);
     doc.line(M, H-10, W-M, H-10);
     doc.setFont('helvetica','normal').setFontSize(7).setTextColor(139,147,167);
     doc.text(etiqueta+' '+pdfSafe(c.numero||'')+'  ·  '+pdfSafe(c.contratista||'')+'  ·  Emitido el '+fmtFecha(hoyISO()), M, H-6);
-    doc.text('Pagina '+i+' de '+np, W-M, H-6, {align:'right'});
+    doc.text('Pagina '+(i-(desde||1)+1)+' de '+(np-(desde||1)+1), W-M, H-6, {align:'right'});
   }
 }
 
@@ -4550,7 +4575,11 @@ async function generarPlanillaPDF(c, its, opts){
   showToast('Armando la planilla de avance…','info');
   const ant = await planillaAnterior(c, its);
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
+  const op = opts || {};
+  // op.doc: sigue en un documento ya empezado (los dos reportes en un archivo)
+  const doc = op.doc || new jsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
+  if(op.doc) doc.addPage('a4', 'landscape');
+  const desdePag = doc.getNumberOfPages();
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 10;
   const q2 = n => (Math.round((Number(n)||0)*100)/100).toLocaleString('es-PY',{maximumFractionDigits:2});
   const g0 = n => Math.round(Number(n)||0).toLocaleString('es-PY');
@@ -4739,10 +4768,12 @@ async function generarPlanillaPDF(c, its, opts){
   firma(M+bw+8,         'RESIDENTE DE OBRA', c.medido_por);
   firma(M+(bw+8)*2,     'APROBACION', APROBADOR_DOC);
 
-  const op = opts || {};
-  if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
-  if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
-  pdfPiePaginas(doc, c, W, H, M, 'Planilla de avance');
+  if(!op.sinAnexos){
+    if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
+    if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+  }
+  pdfPiePaginas(doc, c, W, H, M, 'Planilla de avance', desdePag);
+  if(op.noSave) return doc;
   doc.save('planilla_avance_'+(c.numero||c.id)+'.pdf');
 }
 
