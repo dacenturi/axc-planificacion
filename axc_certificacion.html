@@ -1913,7 +1913,8 @@ function lineaHTML(l, contratista){
   const esLG = /^LG-/i.test(l.codigo_insumo||'');
   const cargada = Number(cant) > 0;
   const sinRef = l.libre || !(l.precio_presup > 0);
-  const precioCambiado = precio !== '' && l.precio_presup > 0 && Number(precio) !== Number(l.precio_presup);
+  const gbMal = globalMalMedido(l.unidad, cant, l.cant_presup);
+  const precioCambiado = !gbMal && precio !== '' && l.precio_presup > 0 && Number(precio) !== Number(l.precio_presup);
   const faltaSector = !P.sector;
 
   // Aviso de quién certificó antes lo mismo: la defensa contra doble pago
@@ -2017,6 +2018,11 @@ function lineaHTML(l, contratista){
         (origen==='pact' ? 'Precio <b>pactado con el contratista</b>, distinto al del presupuesto: ' : 'Precio distinto al presupuestado: ')+
         'presupuesto '+gs(l.precio_presup)+' · certificado '+gs(precio)+' · diferencia '+gs((Number(precio)-l.precio_presup)*Number(cant||0))+
         ' sobre lo medido</div>' : '')+
+      (gbMal ? '<div class="aviso-dup" style="grid-column:1/-1">📐 <b>Este rubro es global ('+qty(l.cant_presup)+' '+escapeHtml(l.unidad)+')</b>: '+
+        'estás cargando <b>'+qty(cant)+'</b>, que parece una medición en m² o ml. '+
+        'Medilo como <b>fracción del global</b> (0,5 = 50 % hecho) con el precio del global pactado. '+
+        'Si el contratista cobra por m² o ml, corregí la unidad y la cantidad del rubro en Presupuestos. '+
+        'Esta línea queda <b>fuera de la comparación</b> contra el presupuesto.</div>' : '')+
       aviso +
     '</div>' : (aviso ? '<div class="lin-body" style="grid-template-columns:1fr">'+aviso+'</div>' : ''))+
   '</div>';
@@ -2519,6 +2525,9 @@ async function avisarExcedente(k, l){
             '</b>. El excedente de <b>'+qty(exceso)+' '+escapeHtml(l.unidad||'')+
             '</b> se va a registrar como <b>fuera de lo presupuestado</b>, para poder analizarlo después.',
     lista:[
+      ...(globalMalMedido(l.unidad, cant, l.cant_presup)
+        ? ['📐 <b>Es un rubro global</b>: si mediste en m² o ml, elegí «Ajustar» y cargalo como fracción (0,5 = 50 % hecho) con el precio del global.']
+        : []),
       'Presupuestado: <b>'+qty(l.cant_presup)+' '+escapeHtml(l.unidad||'')+'</b>',
       'Ya certificado: <b>'+qty(ant)+'</b> ('+qty(h.aprob)+' aprobado · '+qty(h.tramite)+' en trámite)',
       'Disponible: <b>'+qty(disp)+'</b>',
@@ -2542,6 +2551,14 @@ async function avisarExcedente(k, l){
   renderLineas();
 }
 
+/* Rubro global (gb): el presupuesto lo tiene como 1 unidad por el importe
+   total. Medirlo en m² o ml (cantidad > 1) mezcla unidades: la comparación
+   contra el presupuesto da cifras sin sentido (PP75-2 · 01.039, 17/09/2026). */
+function esGlobal(u){ return /^\s*(gb|gl|glb|global)\.?\s*$/i.test(String(u||'')); }
+function globalMalMedido(unidad, cant, cantPresup){
+  return esGlobal(unidad) && (Number(cant)||0) > 1 && (Number(cantPresup)||0) <= 1;
+}
+
 function medidas(){
   const out = [];
   ed.lineas.forEach((l,i)=>{
@@ -2559,7 +2576,9 @@ function medidas(){
       precio_origen: P.origen === 'pact' ? 'pactado' : (P.origen === 'presu' ? 'presupuesto' : (P.origen === 'man' ? 'manual' : null)),
       precio_alcance: P.alcance || null,
       // Diferencia contra el presupuesto (referencia interna) sobre lo medido
-      desvio: (l.precio_presup > 0) ? Math.round((precio - l.precio_presup) * cant) : 0,
+      desvio: (l.precio_presup > 0 && !globalMalMedido(l.unidad, cant, l.cant_presup))
+                ? Math.round((precio - l.precio_presup) * cant) : 0,
+      unidad_incompatible: globalMalMedido(l.unidad, cant, l.cant_presup),
       ubicacion:(m.ubicacion||'').trim(), observacion:(m.obs||'').trim(),
       excedente: cant > disp, sin_referencia: l.libre || !(l.precio_presup>0),
       fotos: ed.fotos[k] || []
@@ -2573,12 +2592,15 @@ function actualizarTotales(){
   const tot = M.reduce((s,x)=>s+x.subtotal,0);
   const exc = M.filter(x=>x.excedente).length;
   const desv = M.reduce((s,x)=>s+(x.desvio||0),0);
+  const inc = M.filter(x=>x.unidad_incompatible).length;
   document.getElementById('edTotal').textContent = gs(tot);
   document.getElementById('edResumen').innerHTML = M.length
     ? M.length+' trabajo(s) medido(s)' +
       (exc ? ' · <b style="color:#c0392b">'+exc+' supera'+(exc===1?'':'n')+' lo presupuestado</b>' : '') +
       (desv > 0 ? ' · <b style="color:#8a6d10">'+gs(desv)+' por encima del presupuesto</b>'
-                : (desv < 0 ? ' · <b style="color:#1B5524">'+gs(Math.abs(desv))+' por debajo del presupuesto</b>' : ''))
+                : (desv < 0 ? ' · <b style="color:#1B5524">'+gs(Math.abs(desv))+' por debajo del presupuesto</b>' : '')) +
+      (inc ? ' · <span style="color:#8a6d10" title="Rubros globales medidos en otra unidad: no se comparan contra el presupuesto">'+
+             inc+' global'+(inc===1?'':'es')+' sin comparar</span>' : '')
     : 'Nada cargado';
   document.getElementById('edGuardar').disabled = !M.length;
 }
@@ -3305,6 +3327,7 @@ async function abrirDetalle(id){
           '<td>'+n+'</td>'+
           '<td><b>'+escapeHtml(x.descripcion)+'</b>'+
             (x.excedente?' <span class="lin-tag sr">excedente</span>':'')+
+            (globalMalMedido(x.unidad, x.cantidad, x.cant_presup)?' <span class="lin-tag sr" title="Rubro global medido en otra unidad">global mal medido</span>':'')+
             (x.sin_referencia?' <span class="lin-tag sr">fuera de presupuesto</span>':'')+
             '<div class="det-obs">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(x.rubro_desc||''):'trabajo libre')+'</div>'+
             (x.ubicacion?'<div class="det-obs">📍 '+escapeHtml(x.ubicacion)+'</div>':'')+
@@ -3533,12 +3556,13 @@ async function cambiarEstado(id, estado){
 
     // Resumen por sector, con el desvío contra el presupuesto
     const porSec = {}, ordSec = [];
-    let desvio = 0, excedentes = 0, pactados = 0;
+    let desvio = 0, excedentes = 0, pactados = 0, globalesSinComparar = 0;
     (its||[]).forEach(x=>{
       const s = x.sector || '(sin sector)';
       if(!porSec[s]){ porSec[s] = { n:0, total:0 }; ordSec.push(s); }
       porSec[s].n++; porSec[s].total += Number(x.subtotal)||0;
-      if(Number(x.precio_presup) > 0) desvio += (Number(x.precio_unit) - Number(x.precio_presup)) * (Number(x.cantidad)||0);
+      if(globalMalMedido(x.unidad, x.cantidad, x.cant_presup)) globalesSinComparar++;
+      else if(Number(x.precio_presup) > 0) desvio += (Number(x.precio_unit) - Number(x.precio_presup)) * (Number(x.cantidad)||0);
       if(x.excedente) excedentes++;
       if(x.precio_origen === 'pactado') pactados++;
     });
@@ -3550,6 +3574,7 @@ async function cambiarEstado(id, estado){
     if(Math.round(desvio) > 0) avisos.push('el precio certificado está <b>'+gs(desvio)+' por encima</b> del presupuesto');
     if(Math.round(desvio) < 0) avisos.push('el precio certificado está <b>'+gs(Math.abs(desvio))+' por debajo</b> del presupuesto');
     if(pactados) avisos.push('<b>'+pactados+'</b> línea(s) con precio pactado con el contratista');
+    if(globalesSinComparar) avisos.push('<b>'+globalesSinComparar+'</b> rubro(s) global(es) medido(s) en otra unidad: quedan fuera de la comparación de precios');
 
     const r = await axcDialog({
       tono:'ok', icono:'✓', titulo:'Aprobar el certificado',
