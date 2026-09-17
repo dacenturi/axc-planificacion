@@ -3672,6 +3672,7 @@ async function abrirDetalle(id){
       return cab + cuerpo + pie;
     }).join('');
 
+    const _po = partirObs(c.observacion);
     document.getElementById('dtBody').innerHTML =
       '<div class="ficha">'+
         campo('Estado','<span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span>')+
@@ -3686,12 +3687,17 @@ async function abrirDetalle(id){
         (c.medido_por?campo('Medido por', escapeHtml(c.medido_por)):'')+
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
       '</div>'+
-      (c.observacion?'<div class="aviso-dup" style="margin-bottom:14px">'+escapeHtml(c.observacion).replace(/\n/g,'<br>')+'</div>':'')+
+      (_po.obs?'<div class="aviso-dup" style="margin-bottom:14px">'+escapeHtml(_po.obs).replace(/\n/g,'<br>')+'</div>':'')+
       '<table class="det-tbl"><thead><tr><th>#</th><th>Trabajo</th><th>Presup.</th><th>Sector</th>'+
       '<th class="r">Cant. presup.</th><th class="r">Medición</th><th class="r">Avance</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
       '<tbody>'+filas+'</tbody>'+
       '<tfoot><tr><td colspan="8" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>'+
-      liquidacionHTML(c);
+      liquidacionHTML(c)+
+      (_po.reaperturas.length
+        ? '<div style="margin-top:16px;padding-top:10px;border-top:1px solid #eef1f6;font-size:11.5px;color:#8893a5;line-height:1.6">'+
+          '<b style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#a3acbd">Historial de reaperturas</b><br>'+
+          _po.reaperturas.map(function(l){ return escapeHtml(l); }).join('<br>')+
+          '</div>' : '');
 
     const bE=document.getElementById('dtEditar');
     if(bE) bE.onclick = ()=>{ document.getElementById('dtOv').hidden=true; abrirEditor(id); };
@@ -3768,6 +3774,18 @@ async function completarSector(its, c){
 
 /* Liquidación: total certificado menos anticipo y préstamo. Reemplaza a la
    antigua «autorización de pago», que era un documento aparte. */
+/* La observación guarda dos cosas: lo que escribe el residente y el historial
+   de reaperturas. Se separan: la observación se muestra arriba y sale en los
+   reportes; las reaperturas quedan abajo, discretas, y no van al PDF. */
+function partirObs(txt){
+  const obs = [], reap = [];
+  String(txt||'').split('\n').forEach(function(l){
+    if(/^\s*Reapertura\s+\d{2}\/\d{2}\/\d{4}/i.test(l)) reap.push(l.trim());
+    else if(l.trim()) obs.push(l.trim());
+  });
+  return { obs: obs.join('\n'), reaperturas: reap };
+}
+
 function saldoCert(c){
   const tot = Number(c.total)||0;
   const ant = Number(c.anticipo)||0;
@@ -4338,7 +4356,7 @@ async function pedirReportes(c, its){
           '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1.5px dashed #d6dce8;border-radius:10px;cursor:pointer">'+
             '<input type="checkbox" id="rpUnico" checked style="margin-top:3px;width:17px;height:17px">'+
             '<span><b style="font-size:13px">📎 Un solo archivo</b>'+
-            '<span style="display:block;font-size:11.5px;color:#64748b">Los dos documentos salen en un mismo PDF, con los anexos de la planilla al final. '+
+            '<span style="display:block;font-size:11.5px;color:#64748b">Un mismo PDF: primero la orden de pago, después la planilla de avance y sus anexos. '+
             'Sin marcar, se descarga un archivo por documento.</span></span></label>'+
         '</div>'+
         '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
@@ -4361,16 +4379,16 @@ async function pedirReportes(c, its){
 
   // Un archivo por documento
   if(!r.unico || !(r.planilla && r.orden)){
-    if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
     if(r.orden)    await generarOrdenPago(c, its, r.ordenOps);
+    if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
     return;
   }
 
-  // Los dos en un mismo PDF: primero la planilla (apaisada), después la orden
-  // de pago (vertical) y los anexos una sola vez al final.
-  let doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { noSave:true, sinAnexos:true }));
+  // Los dos en un mismo PDF: primero la orden de pago (vertical), después la
+  // planilla de avance (apaisada) y al final sus anexos.
+  let doc = await generarOrdenPago(c, its, Object.assign({}, r.ordenOps, { noSave:true, sinAnexos:true }));
   if(!doc) return;
-  doc = await generarOrdenPago(c, its, Object.assign({}, r.ordenOps, { doc:doc, noSave:true, sinAnexos:true }));
+  doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { doc:doc, noSave:true, sinAnexos:true }));
   if(!doc) return;
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
   if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
@@ -4739,9 +4757,10 @@ async function generarPlanillaPDF(c, its, opts){
   });
 
   y = doc.lastAutoTable.finalY + 4;
-  if(c.observacion){
+  const _obsPl = partirObs(c.observacion).obs;
+  if(_obsPl){
     doc.setFont('helvetica','bold').setFontSize(7.6).setTextColor(26,34,54);
-    const to = doc.splitTextToSize('Observaciones: '+pdfSafe(c.observacion), W-M*2);
+    const to = doc.splitTextToSize('Observaciones: '+pdfSafe(_obsPl), W-M*2);
     doc.text(to, M, y); y += to.length*3.4 + 3;
   }
   doc.setFont('helvetica','normal').setFontSize(6.8).setTextColor(90,99,119);
@@ -4754,7 +4773,12 @@ async function generarPlanillaPDF(c, its, opts){
   // Firmas
   if(y > H-40){ doc.addPage(); y = 20; }
   const bw = (W - M*2 - 16)/3;
-  const firma = (cx, titulo, nombre) => {
+  const firma = (cx, titulo, nombre, imgFirma) => {
+    // Firma digital del residente, si está cargada: va sobre la línea
+    if(imgFirma){
+      try{ doc.addImage(imgFirma, 'PNG', cx+10, y+2, bw-20, 13); }
+      catch(e){ console.warn('firma planilla', e); }
+    }
     doc.setDrawColor(120,128,144).setLineWidth(.35);
     doc.line(cx+4, y+16, cx+bw-4, y+16);
     doc.setFont('helvetica','bold').setFontSize(8.5).setTextColor(26,34,54);
@@ -4766,7 +4790,7 @@ async function generarPlanillaPDF(c, its, opts){
   doc.text('Fecha: ____ / ____ / ________', M, y+4);
   y += 4;
   firma(M,              'CONTRATISTA', c.contratista);
-  firma(M+bw+8,         'RESIDENTE DE OBRA', c.medido_por);
+  firma(M+bw+8,         'RESIDENTE DE OBRA', c.firma_residente_nombre||c.medido_por, c.firma_residente);
   firma(M+(bw+8)*2,     'APROBACION', APROBADOR_DOC);
 
   if(!op.sinAnexos){
@@ -5006,10 +5030,11 @@ async function generarPDF(c, its, conFotos){
   });
   y = doc.lastAutoTable.finalY + 9;
 
-  if(c.observacion){
+  const _obsC = partirObs(c.observacion).obs;
+  if(_obsC){
     if(y > H-40){ doc.addPage(); y = 22; }
     doc.setFontSize(8).setTextColor(90,99,119);
-    const t = doc.splitTextToSize('Observaciones: '+pdfSafe(c.observacion), W-M*2);
+    const t = doc.splitTextToSize('Observaciones: '+pdfSafe(_obsC), W-M*2);
     doc.text(t, M, y);
     y += t.length*4 + 8;
   }
