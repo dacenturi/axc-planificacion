@@ -1457,6 +1457,8 @@ async function loadProfileAndApp(){
   // El permiso vive en perfiles.permisos, que se administra desde «Perfiles y Permisos».
   const _perm = profile.permisos || {};
   state.puedeVerMargen = (_perm.pres_margen === true) || profile.puede_ver_margen === true;
+  // Reabrir un presupuesto congelado: administradores y quien tenga el permiso
+  state.puedeReabrirPres = state.isAdmin || _perm.pres_reabrir === true;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
   document.getElementById('appContainer').style.display='block';
@@ -2228,6 +2230,10 @@ async function openEdit(codigo){
                mano_obra_unit:(r.mano_obra_unit==null?null:Number(r.mano_obra_unit)),
                capitulo:cap };
     });
+    // Cantidades tal como estaban al abrir: sirven para avisar si se cambia
+    // un rubro que ya tiene certificados u órdenes de compra encima.
+    ed.cantOrig = {};
+    ed.rubros.forEach(function(r){ if(r.rubro_codigo) ed.cantOrig[r.rubro_codigo] = Number(r.cantidad)||0; });
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
     ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
       tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
@@ -2374,18 +2380,22 @@ function aplicarBloqueo(h){
       '<div class="ico">🔒</div>'+
       '<div><b>Presupuesto aprobado · no se puede editar</b>'+
       '<p>Publicado el '+_fmtF(h.publicado_en,false)+(h.publicado_por?(' por '+escapeHtml(h.publicado_por)):'')+'. '+
+      (h.base_version ? '<b>Línea base v'+h.base_version+' congelada</b>: es la foto contra la que se comparan las órdenes de compra y los certificados. ' : '')+
       'Contra este presupuesto se emiten órdenes de compra y certificados: cambiarlo ahora movería saldos ya usados. '+
       'Podés consultarlo, imprimirlo y ver sus reportes.</p></div>'+
-      (_esAdmin() ? '<div class="acc"><button type="button" id="pmDesbloq">🔓 Reabrir para editar</button></div>'
-                  : '<div class="acc"><span style="font-size:12px;color:#7A5600">Solo el administrador puede reabrirlo</span></div>');
+      (state.puedeReabrirPres
+        ? '<div class="acc"><button type="button" id="pmDesbloq">🔓 Reabrir para editar</button></div>'
+        : '<div class="acc"><span style="font-size:12px;color:#7A5600">Necesitás el permiso «Reabrir presupuesto congelado»</span></div>');
     const b = document.getElementById('pmDesbloq');
     if(b) b.onclick = pedirDesbloqueo;
   }else{
     bar.innerHTML =
       '<div class="ico">🔓</div>'+
       '<div><b>Reabierto para edición</b>'+
-      '<p>Este presupuesto estaba aprobado. Los cambios que guardes afectan los saldos de las órdenes de compra '+
-      'y de los certificados ya emitidos contra él. El motivo queda registrado en las observaciones.</p></div>';
+      '<p>Este presupuesto estaba aprobado. Al guardar se congela una <b>versión nueva</b> de la línea base: '+
+      (h.base_version ? 'la v'+h.base_version+' queda como estaba, para seguir comparando contra lo pactado. ' : '')+
+      'Los cambios afectan los saldos de las órdenes de compra y de los certificados ya emitidos. '+
+      'El motivo queda registrado en las observaciones.</p></div>';
   }
 }
 
@@ -2421,6 +2431,18 @@ function renderEstadoUI(){
 async function toggleEstado(){
   const target = !ed.activo;
   if(target && !ed.rubros.length){ if(!confirm('Este presupuesto no tiene rubros cargados. ¿Publicarlo igual?')) return; }
+  // Al publicar por primera vez se congela la línea base: conviene dejar
+  // anotado con qué se aprobó (acta, correo, reunión).
+  const _yaPub = ((state.list||[]).find(function(x){ return x.codigo === ed.origCodigo; })||{}).publicado_en;
+  if(target && !_yaPub){
+    const obs = prompt(
+      'CONGELAR LA LÍNEA BASE\n\n'+
+      'Al publicar se guarda una foto completa del presupuesto: es el punto de\n'+
+      'comparación de las órdenes de compra y los certificados.\n\n'+
+      'Anotá con qué se aprobó (opcional): acta, correo, reunión, quién aprobó.');
+    if(obs === null) return;            // canceló: no publica
+    ed.obsLineaBase = (obs||'').trim() || null;
+  }
   if(!target){ if(!confirm('Al pasar a Borrador dejará de estar disponible en nuevas órdenes de compra. ¿Continuar?')) return; }
   ed.activo = target; renderEstadoUI();
   await saveBudget();   // publicar / despublicar persiste el cambio
@@ -3332,6 +3354,35 @@ function saveMO(){
 }
 
 // ── Guardar (commit idempotente) ────────────────────────
+/* Rubros del presupuesto que ya tienen consumo: certificados no anulados u
+   órdenes de compra vigentes. Devuelve { rubro_codigo: 'texto del consumo' } */
+async function rubrosConConsumo(codigo){
+  const out = {};
+  try{
+    const { data:ci } = await sb.from('certificado_items')
+      .select('rubro_codigo,cantidad,certificados!inner(estado)')
+      .eq('presupuesto', codigo).limit(5000);
+    (ci||[]).forEach(function(x){
+      if(!x.rubro_codigo || (x.certificados && x.certificados.estado === 'Anulado')) return;
+      const q = (Number(out['_q_'+x.rubro_codigo])||0) + (Number(x.cantidad)||0);
+      out['_q_'+x.rubro_codigo] = q;
+      out[x.rubro_codigo] = _qty(q)+' certificado(s)';
+    });
+  }catch(e){ console.warn('consumo certificados', e); }
+  try{
+    const { data:oi } = await sb.from('ordenes_compra_items')
+      .select('rubro_codigo,ordenes_compra!inner(presupuesto,estado)')
+      .eq('ordenes_compra.presupuesto', codigo).limit(5000);
+    (oi||[]).forEach(function(x){
+      const est = String((x.ordenes_compra||{}).estado||'');
+      if(!x.rubro_codigo || /anulad/i.test(est)) return;
+      out[x.rubro_codigo] = (out[x.rubro_codigo] ? out[x.rubro_codigo]+' + ' : '') + 'compras';
+    });
+  }catch(e){ console.warn('consumo OC', e); }
+  Object.keys(out).forEach(function(k){ if(k.indexOf('_q_') === 0) delete out[k]; });
+  return out;
+}
+
 async function saveBudget(){
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
   const obra = (document.getElementById('pmObra').value||'').trim();
@@ -3345,6 +3396,37 @@ async function saveBudget(){
   if(!ed.rubros.length){ showToast('Agregá al menos un rubro al presupuesto', 'error'); return; }
   const sinSector = ed.rubros.filter(function(r){ return !r.sector; });
   if(sinSector.length){ showToast('Hay '+sinSector.length+' rubro(s) sin sector. Revisalos.', 'error'); return; }
+
+  /* Presupuesto reabierto: si se cambia la cantidad de un rubro que ya tiene
+     certificados o compras, la comparación contra la línea base anterior deja
+     de cerrar. Lo sano es cargar los cambios de alcance como rubros nuevos. */
+  if(ed.desbloqueado && !ed.isNew){
+    const cambiados = ed.rubros.filter(function(r){
+      const o = (ed.cantOrig||{})[r.rubro_codigo];
+      return r.rubro_codigo && o != null && Math.abs((Number(r.cantidad)||0) - o) > 0.001;
+    });
+    if(cambiados.length){
+      const consumidos = await rubrosConConsumo(codigo);
+      const choque = cambiados.filter(function(r){ return consumidos[r.rubro_codigo]; });
+      if(choque.length){
+        const r = await pmAvisoSalida({
+          titulo:'Estás cambiando rubros que ya se consumieron',
+          subtitulo:codigo+' · línea base v'+((state.list||[]).find(function(x){return x.codigo===codigo;})||{}).base_version,
+          texto:'Estos rubros ya tienen certificados o compras emitidos contra la línea base anterior. '+
+                'Si cambiás sus cantidades, los saldos y el comparativo dejan de cerrar. '+
+                'Lo recomendable es dejarlos como están y cargar el cambio de alcance como <b>rubros nuevos</b>.',
+          puntos: choque.slice(0,8).map(function(r){
+            const o = (ed.cantOrig||{})[r.rubro_codigo];
+            return '<b>'+escapeHtml(r.rubro_codigo)+'</b>: '+_qty(o)+' → '+_qty(Number(r.cantidad)||0)+' '+escapeHtml(r.unidad||'')+
+                   ' · ya consumido: '+escapeHtml(consumidos[r.rubro_codigo]);
+          }),
+          textoVolver:'Revisar los rubros', textoGuardar:'Guardar igual',
+          ocultarSalir:true, onGuardar: async function(){}
+        });
+        if(r !== 'guardado'){ return; }
+      }
+    }
+  }
   // ¿Alguien guardó mientras vos editabas? El guardado borra los rubros y
   // los reinserta, así que escribir ahora borraría su trabajo.
   if(!ed.isNew && ed.abiertoCon){
@@ -3394,12 +3476,34 @@ async function saveBudget(){
       const _prev = (state.list||[]).find(function(p){ return p.codigo===codigo; }) || {};
       const _meta={ actualizado_por:_u, actualizado_en:_now, observaciones:observaciones };
       if(ed.isNew){ _meta.creado_por=_u; _meta.creado_en=_now; }
-      if(activo && !_prev.publicado_en){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
+      const _primeraPub = activo && !_prev.publicado_en;
+      if(_primeraPub){ _meta.publicado_en=_now; _meta.publicado_por=_u; }
       _meta.iva_pct = ivaGet();
       if(ed.desbloqueado && ed.motivoDesbloqueo){
         _audit('presupuesto', codigo, 'reabrir', { motivo: ed.motivoDesbloqueo, publicado_en: _prev.publicado_en||null });
       }
       await sb.from('presupuesto_cab').update(_meta).eq('codigo', codigo);
+
+      /* Línea base: la foto de lo aprobado por el cliente. Se congela al
+         publicar por primera vez y cada vez que se guarda después de una
+         reapertura, como versión nueva. Las anteriores no se tocan. */
+      if(activo && (_primeraPub || ed.desbloqueado)){
+        try{
+          const { data:_v, error:_ev } = await sb.rpc('congelar_presupuesto', {
+            p_codigo: codigo,
+            p_motivo: _primeraPub ? 'Aprobado por el cliente' : (ed.motivoDesbloqueo || 'Reapertura'),
+            p_quien:  _u,
+            p_observacion: _primeraPub ? (ed.obsLineaBase || null) : (ed.motivoDesbloqueo || null) });
+          if(_ev) throw _ev;
+          ed.desbloqueado = false; ed.motivoDesbloqueo = ''; ed.obsLineaBase = null;
+          showToast('Línea base v'+_v+' congelada','success',
+            'Es la foto contra la que se comparan las órdenes de compra y los certificados');
+        }catch(_ec){
+          console.error('congelar', _ec);
+          showToast('El presupuesto se guardó, pero no se congeló la línea base','error',
+            /congelar_presupuesto/i.test(_ec.message||'') ? 'Falta correr el script de línea base en la base' : (_ec.message||''));
+        }
+      }
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
     // El dueño del presupuesto es quien lo edita
     if(!ed.isNew && ed.duenio && ed.duenio !== _userTag() && !_esAdmin()){
