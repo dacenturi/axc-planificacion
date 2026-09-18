@@ -1070,7 +1070,7 @@ body{
     <div class="comp-head">
       <div>
         <h2>📑 Reporte consolidado por Obra</h2>
-        <div class="sub">Presupuestado · Consumo actual (órdenes de compra) · Disponibilidad</div>
+        <div class="sub">Presupuestado · Compras (órdenes de compra) · Mano de obra certificada · Disponibilidad</div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <button type="button" class="comp-head-btn" id="roPrint">🖨 Imprimir / PDF</button>
@@ -5330,10 +5330,21 @@ document.getElementById('ppSearch').addEventListener('input', function(){
 const RO = { prices:{}, capByRub:{} };
 async function _roLoadAux(){
   try{
-    const [ins, rubcat] = await Promise.all([
+    const [ins, rubcat, cert] = await Promise.all([
       sb.from('insumos').select('codigo,producto_id'),
-      sb.from('rubros').select('codigo,capitulo')
+      sb.from('rubros').select('codigo,capitulo'),
+      // Mano de obra ya certificada: es consumo real del rubro, igual que
+      // las compras. Solo certificados aprobados.
+      sb.from('certificado_items')
+        .select('presupuesto,rubro_codigo,subtotal,certificados!inner(estado)')
+        .eq('certificados.estado','Aprobado').limit(20000)
     ]);
+    RO.certByPP = {};
+    (cert.data||[]).forEach(function(x){
+      if(!x.presupuesto || !x.rubro_codigo) return;
+      const m = RO.certByPP[x.presupuesto] = RO.certByPP[x.presupuesto] || {};
+      m[x.rubro_codigo] = (m[x.rubro_codigo]||0) + (Number(x.subtotal)||0);
+    });
     const pids = (ins.data||[]).map(function(i){return i.producto_id;}).filter(function(x){return x!=null;});
     let precios={};
     if(pids.length){
@@ -5412,13 +5423,14 @@ function _roCompute(){
   const secF=document.getElementById('roSector').value;
   const ppF=document.getElementById('roPP').value;
   const cabs=REP.cab.filter(function(c){ return c.obra===obra && (!ppF||c.codigo===ppF); });
-  let totPres=0, totCons=0, nRub=0, nRec=0, nSrv=0;
+  let totPres=0, totCons=0, totCompras=0, totCertif=0, nRub=0, nRec=0, nSrv=0;
   const bySector={};
   const presupuestos=cabs.map(function(c){
     const items=REP.itemsByPP[c.codigo]||[];
     // consumo (dinero) por rubro_codigo desde OC (reservado + ejecutado)
     const consByRub={};
     items.forEach(function(it){ const rk=_resolveRub(it.producto_id); if(!rk) return; if(_EJE.indexOf(it.estado)>=0||_RES.indexOf(it.estado)>=0){ consByRub[rk]=(consByRub[rk]||0)+it.subtotal; } });
+    const certByRub=(RO.certByPP||{})[c.codigo]||{};   // mano de obra certificada
     // presupuestado (dinero) de insumos por rubro (recetas) + detalle de insumos
     const insMoneyByRub={}; const insListByRub={};
     REP.insumos.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(m){
@@ -5427,32 +5439,41 @@ function _roCompute(){
       insMoneyByRub[rk]=(insMoneyByRub[rk]||0)+q*pu;
       (insListByRub[rk]=insListByRub[rk]||[]).push({ cod:m.codigo_insumo, mat:m.material||'', unid:m.unidad||'', cant:q, pu:pu, sub:Math.round(q*pu) });
     });
-    const caps={}; let tP=0, tC=0;
+    const caps={}; let tP=0, tC=0, tCo=0, tCe=0;
     REP.rubros.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(r){
       const sector=r.sector||'(Sin sector)';
       if(secF && sector!==secF) return;
       const rk=r.rubro_codigo||'';
       const esReceta=!!r.tiene_receta;
       const pres = esReceta ? Math.round(insMoneyByRub[rk]||0) : Math.round(Number(r.precio_total)||0);
-      const cons = Math.round(consByRub[rk]||0);
+      const compras = Math.round(consByRub[rk]||0);
+      const certif  = Math.round(certByRub[rk]||0);
+      const cons = compras + certif;
       const disp = pres-cons;
       const cap = roCapitulo(rk, r);
-      (caps[cap]=caps[cap]||{pres:0,cons:0,rows:[]});
-      caps[cap].pres+=pres; caps[cap].cons+=cons;
-      caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, cons:cons, disp:disp, insumos:(insListByRub[rk]||[]) });
-      tP+=pres; tC+=cons; nRub++; if(esReceta) nRec++; else nSrv++;
-      bySector[sector]=bySector[sector]||{pres:0,cons:0}; bySector[sector].pres+=pres; bySector[sector].cons+=cons;
+      (caps[cap]=caps[cap]||{pres:0,cons:0,compras:0,certif:0,rows:[]});
+      caps[cap].pres+=pres; caps[cap].cons+=cons; caps[cap].compras+=compras; caps[cap].certif+=certif;
+      caps[cap].rows.push({ ref:rk, desc:r.descripcion||'', sector:sector, unid:r.unidad||'', cant:Number(r.cantidad)||0, receta:esReceta, pres:pres, compras:compras, certif:certif, cons:cons, disp:disp, insumos:(insListByRub[rk]||[]) });
+      tP+=pres; tC+=cons; tCo+=compras; tCe+=certif; nRub++; if(esReceta) nRec++; else nSrv++;
+      bySector[sector]=bySector[sector]||{pres:0,cons:0,compras:0,certif:0};
+      bySector[sector].pres+=pres; bySector[sector].cons+=cons;
+      bySector[sector].compras+=compras; bySector[sector].certif+=certif;
     });
-    totPres+=tP; totCons+=tC;
-    return { cod:c.codigo, desc:c.descripcion||'', activo:c.activo, caps:caps, totPres:tP, totCons:tC };
+    totPres+=tP; totCons+=tC; totCompras+=tCo; totCertif+=tCe;
+    return { cod:c.codigo, desc:c.descripcion||'', activo:c.activo, caps:caps, totPres:tP, totCons:tC, totCompras:tCo, totCertif:tCe };
   }).filter(function(p){ return Object.keys(p.caps).length>0; });
-  return { obra:obra, presupuestos:presupuestos, totPres:totPres, totCons:totCons, totDisp:totPres-totCons, bySector:bySector, nRub:nRub, nRec:nRec, nSrv:nSrv };
+  return { obra:obra, presupuestos:presupuestos, totPres:totPres, totCons:totCons,
+           totCompras:totCompras, totCertif:totCertif,
+           totDisp:totPres-totCons, bySector:bySector, nRub:nRub, nRec:nRec, nSrv:nSrv };
 }
 
 function _roKpisHtml(D){
   const k=function(l,v){ return '<div class="ro-kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>'; };
-  return k('Presupuestado','₲ '+_money(D.totPres)) + k('Consumo actual','₲ '+_money(D.totCons)) +
-         k('Disponibilidad','₲ '+_money(D.totDisp)) + k('Presupuestos',D.presupuestos.length) +
+  return k('Presupuestado','₲ '+_money(D.totPres)) +
+         k('Compras (OC)','₲ '+_money(D.totCompras)) +
+         k('Certificado (mano de obra)','₲ '+_money(D.totCertif)) +
+         k('Consumo total','₲ '+_money(D.totCons)) +
+         k('Disponibilidad','₲ '+_money(D.totDisp)) +
          k('Rubros',D.nRub) + k('Con receta / servicio',D.nRec+' / '+D.nSrv);
 }
 
@@ -5462,31 +5483,31 @@ function _roDetailHtml(D){
   let _compShown=0, _rubConIns=0;
   // Resumen por sector
   const secKeys=Object.keys(D.bySector).sort();
-  let resSec='<div class="ro-section-t">Resumen por sector</div><table class="ro-tbl"><thead><tr><th>Sector</th><th class="n">Presupuestado</th><th class="n">Consumo</th><th class="n">Disponible</th><th class="n">% cons.</th></tr></thead><tbody>';
+  let resSec='<div class="ro-section-t">Resumen por sector</div><table class="ro-tbl"><thead><tr><th>Sector</th><th class="n">Presupuestado</th><th class="n">Compras</th><th class="n">Certificado</th><th class="n">Consumo</th><th class="n">Disponible</th><th class="n">% cons.</th></tr></thead><tbody>';
   secKeys.forEach(function(s){ const x=D.bySector[s]; const disp=x.pres-x.cons; const pct=x.pres>0?(x.cons/x.pres*100):0;
-    resSec+='<tr><td>'+escapeHtml(s)+'</td><td class="n">₲ '+_money(x.pres)+'</td><td class="n">₲ '+_money(x.cons)+'</td><td class="n '+(disp<0?'ro-neg':'')+'">₲ '+_money(disp)+'</td><td class="n">'+pct.toFixed(0)+'%</td></tr>'; });
+    resSec+='<tr><td>'+escapeHtml(s)+'</td><td class="n">₲ '+_money(x.pres)+'</td><td class="n">₲ '+_money(x.compras||0)+'</td><td class="n">₲ '+_money(x.certif||0)+'</td><td class="n">₲ '+_money(x.cons)+'</td><td class="n '+(disp<0?'ro-neg':'')+'">₲ '+_money(disp)+'</td><td class="n">'+pct.toFixed(0)+'%</td></tr>'; });
   resSec+='</tbody></table>';
   // Detalle por presupuesto -> capítulo -> rubros
   let det='<div class="ro-section-t" style="margin-top:18px">Detalle por presupuesto</div>';
   D.presupuestos.forEach(function(p){
     const disp=p.totPres-p.totCons;
     det+='<div class="ro-pp"><div class="ro-pp-head"><div><span class="c">'+escapeHtml(p.cod)+'</span> <span class="d">'+escapeHtml(p.desc)+(p.activo?'':' · BORRADOR')+'</span></div>'+
-      '<div class="t">Presup. ₲ '+_money(p.totPres)+' &nbsp;·&nbsp; Consumo ₲ '+_money(p.totCons)+' &nbsp;·&nbsp; Disp. <b'+(disp<0?' style="color:#ffb4a8"':'')+'>₲ '+_money(disp)+'</b></div></div>'+
-      '<table class="ro-tbl"><thead><tr><th>Ref</th><th>Rubro</th><th>Sector</th><th class="c">Unid</th><th class="n">Cant</th><th class="n">Presupuestado</th><th class="n">Consumo</th><th class="n">Disponible</th><th class="n">%</th></tr></thead><tbody>';
+      '<div class="t">Presup. ₲ '+_money(p.totPres)+' &nbsp;·&nbsp; Compras ₲ '+_money(p.totCompras||0)+' &nbsp;·&nbsp; Certificado ₲ '+_money(p.totCertif||0)+' &nbsp;·&nbsp; Disp. <b'+(disp<0?' style="color:#ffb4a8"':'')+'>₲ '+_money(disp)+'</b></div></div>'+
+      '<table class="ro-tbl"><thead><tr><th>Ref</th><th>Rubro</th><th>Sector</th><th class="c">Unid</th><th class="n">Cant</th><th class="n">Presupuestado</th><th class="n">Compras</th><th class="n">Certificado</th><th class="n">Consumo</th><th class="n">Disponible</th><th class="n">%</th></tr></thead><tbody>';
     Object.keys(p.caps).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); }).forEach(function(cap){
       const g=p.caps[cap]; const cd=g.pres-g.cons;
-      det+='<tr class="cap"><td colspan="5">'+escapeHtml(cap)+'</td><td class="n">₲ '+_money(g.pres)+'</td><td class="n">₲ '+_money(g.cons)+'</td><td class="n">₲ '+_money(cd)+'</td><td class="n"></td></tr>';
+      det+='<tr class="cap"><td colspan="5">'+escapeHtml(cap)+'</td><td class="n">₲ '+_money(g.pres)+'</td><td class="n">₲ '+_money(g.compras||0)+'</td><td class="n">₲ '+_money(g.certif||0)+'</td><td class="n">₲ '+_money(g.cons)+'</td><td class="n">₲ '+_money(cd)+'</td><td class="n"></td></tr>';
       g.rows.forEach(function(r){ const pct=r.pres>0?(r.cons/r.pres*100):0;
         det+='<tr><td class="cod">'+escapeHtml(r.ref||'—')+'</td><td>'+escapeHtml(r.desc)+' <span class="ro-bad '+(r.receta?'rec':'srv')+'">'+(r.receta?'receta':'servicio')+'</span></td>'+
           '<td>'+escapeHtml(r.sector)+'</td><td class="c">'+escapeHtml(r.unid)+'</td><td class="n">'+_qty(r.cant)+'</td>'+
-          '<td class="n">₲ '+_money(r.pres)+'</td><td class="n">₲ '+_money(r.cons)+'</td><td class="n '+(r.disp<0?'ro-neg':'')+'">₲ '+_money(r.disp)+'</td><td class="n">'+pct.toFixed(0)+'%</td></tr>';
+          '<td class="n">₲ '+_money(r.pres)+'</td><td class="n">₲ '+_money(r.compras||0)+'</td><td class="n">₲ '+_money(r.certif||0)+'</td><td class="n">₲ '+_money(r.cons)+'</td><td class="n '+(r.disp<0?'ro-neg':'')+'">₲ '+_money(r.disp)+'</td><td class="n">'+pct.toFixed(0)+'%</td></tr>';
         if(r.insumos && r.insumos.length) _rubConIns++;
         if(verComp && r.insumos && r.insumos.length){
           _compShown++;
           let inner='<div class="ro-comp-inner"><div class="ro-comp-cap">🧱 Composición de '+escapeHtml(r.ref||r.desc)+'</div><table><thead><tr><th>Insumo</th><th>Material</th><th class="c">Unid</th><th class="n">Cantidad</th><th class="n">P.unit</th><th class="n">Subtotal</th></tr></thead><tbody>';
           r.insumos.forEach(function(it){ inner+='<tr><td class="cod">'+escapeHtml(it.cod)+'</td><td>'+escapeHtml(it.mat)+'</td><td class="c">'+escapeHtml(it.unid)+'</td><td class="n">'+_qty(it.cant)+'</td><td class="n">'+(it.pu>0?('₲ '+_money(it.pu)):'<span style="color:#c0392b">s/precio</span>')+'</td><td class="n">₲ '+_money(it.sub)+'</td></tr>'; });
           inner+='</tbody></table></div>';
-          det+='<tr class="ro-comp"><td></td><td colspan="8">'+inner+'</td></tr>';
+          det+='<tr class="ro-comp"><td></td><td colspan="10">'+inner+'</td></tr>';
         }
       });
     });
@@ -5512,7 +5533,7 @@ function printReporteObra(){
   const ppF=document.getElementById('roPP').value;
   const filtros=[secF?('Sector: '+secF):'', ppF?('Presupuesto: '+ppF):''].filter(Boolean).join(' · ') || 'Todos los sectores y presupuestos';
   const kpi=function(l,v){ return '<div class="kbox"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>'; };
-  const kpis=kpi('Presupuestado','₲ '+_money(D.totPres))+kpi('Consumo actual','₲ '+_money(D.totCons))+kpi('Disponibilidad','₲ '+_money(D.totDisp))+kpi('Presupuestos',D.presupuestos.length)+kpi('Rubros',D.nRub)+kpi('Receta / Servicio',D.nRec+' / '+D.nSrv);
+  const kpis=kpi('Presupuestado','₲ '+_money(D.totPres))+kpi('Compras (OC)','₲ '+_money(D.totCompras))+kpi('Certificado (M.O.)','₲ '+_money(D.totCertif))+kpi('Consumo total','₲ '+_money(D.totCons))+kpi('Disponibilidad','₲ '+_money(D.totDisp))+kpi('Rubros',D.nRub);
   const body=_roDetailHtml(D);
   const html='<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Reporte por Obra — '+escapeHtml(obra)+'</title><style>'+
     '*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1c2430;margin:0;background:#f3f4f6}'+
