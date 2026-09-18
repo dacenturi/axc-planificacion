@@ -2714,7 +2714,12 @@ function onTipoReporte(){
     // El rubro ya está fijo en Combustible: el filtro solo confunde
     const _fr=document.querySelector('.fld.f-cat select#r-rubro');
     if(_fr && _fr.parentElement) _fr.parentElement.style.display='none';
-    const pdfSel=gs('r-pdf-detalle'); if(pdfSel) pdfSel.style.display='none';
+    const pdfSel=gs('r-pdf-detalle');
+    if(pdfSel){
+      pdfSel.style.display='';
+      pdfSel.innerHTML='<option value="detalle">PDF con el detalle de cada carga</option>'+
+                       '<option value="resumen">PDF resumido (1 línea por residente)</option>';
+    }
     gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
     REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
     gs('rep-result').innerHTML='<div class="empty">Frecuencia y gasto de combustible por residente. Elegí el período y tocá Generar.</div>';
@@ -3439,7 +3444,41 @@ function exportCombustiblePDF(){
       }
     });
   }
-  doc.setFontSize(7.5); doc.setTextColor(130,130,130);
+  // Detalle de cada carga, por residente (opcional desde el selector)
+  const _sel=gs('r-pdf-detalle');
+  if(!_sel || _sel.value!=='resumen'){
+    P.filas.forEach(f=>{
+      const L=(f.movs||[]).slice().sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+      if(!L.length) return;
+      let sy=doc.lastAutoTable.finalY+9;
+      if(sy > doc.internal.pageSize.getHeight()-40){ doc.addPage(); sy=20; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(31,56,100);
+      doc.text(san(f.res)+'  ·  '+f.n+' carga(s)  ·  Gs '+fmt(f.tot), M, sy);
+      doc.autoTable({
+        head:[['Fecha','Factura','Proveedor','Obra','Monto Gs','Desde la anterior','Comentario']],
+        body:L.map((m,k)=>{
+          const sig=L[k+1];
+          const d=sig?Math.round((new Date(m.fecha)-new Date(sig.fecha))/86400000):null;
+          return [m.fecha||'-', san(m.nro_factura||'-'), san(m.proveedor||'-'), san(m.obra||'-'),
+                  fmt(m.total), d!=null?(d+' d'):'-', san((m.comentario||'').slice(0,70))];
+        }).concat([[{content:'Subtotal',styles:{fontStyle:'bold'}},{content:''},{content:''},{content:''},
+                    {content:fmt(f.tot),styles:{fontStyle:'bold',halign:'right'}},{content:''},{content:''}]]),
+        startY:sy+3, margin:{left:M,right:M},
+        styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,textColor:[40,40,40],lineColor:[228,228,228],lineWidth:0.1},
+        headStyles:{fillColor:[236,232,220],textColor:[70,60,30],fontStyle:'bold',fontSize:7.5,halign:'center'},
+        columnStyles:{0:{cellWidth:24},1:{cellWidth:34},2:{cellWidth:44},3:{cellWidth:44},
+                      4:{cellWidth:26,halign:'right'},5:{cellWidth:28,halign:'right'},6:{cellWidth:'auto'}},
+        didDrawPage:()=>{
+          const ph=doc.internal.pageSize.getHeight();
+          doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
+          doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
+          doc.text('Pagina '+doc.internal.getNumberOfPages(), W-M, ph-6, {align:'right'});
+        }
+      });
+    });
+  }
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(130,130,130);
   doc.text('Mide cuanto y cada cuanto se carga. Para saber si el consumo corresponde hacen falta litros y kilometraje.',
     M, doc.lastAutoTable.finalY+6);
   doc.save('caja_chica_combustible_'+todayISO()+'.pdf');
