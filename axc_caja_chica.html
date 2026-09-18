@@ -379,6 +379,16 @@ tr:last-child td{border-bottom:none}
 .cat-empty{padding:10px 11px;color:var(--text3);font-size:12px}
 .rdet-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;max-width:1360px;width:97vw;max-height:94vh;display:flex;flex-direction:column}
 .rdet-body .plan-table{font-size:13.5px}
+.cc-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.cc-kpi{border:1px solid var(--border);border-radius:12px;padding:11px 13px;background:var(--bg)}
+.cc-kpi .l{font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700}
+.cc-kpi .v{font-size:19px;font-weight:800;color:var(--text);margin-top:3px}
+.cc-kpi .s{font-size:11px;color:var(--text3);margin-top:1px}
+.mix-box{margin-top:14px;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--bg)}
+.mix-t{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700;margin-bottom:6px}
+.mix-tbl{font-size:12.5px}
+.mix-bar{background:#e8e2d4;border-radius:5px;height:8px;overflow:hidden}
+.mix-bar i{display:block;height:100%;background:#8a6d10;border-radius:5px}
 .rdet-body .plan-table th,.rdet-body .plan-table td{padding:9px 10px}
 .rdet-h{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--border);gap:12px}
 .rdet-h h3{font-family:'Syne';font-size:17px}
@@ -777,6 +787,7 @@ tr:last-child td{border-bottom:none}
           <div class="rep-tipo">
             <label class="rt-opt"><input type="radio" name="r-tipo" value="cuenta" checked onchange="onTipoReporte()"> 📄 Estado de cuenta</label>
             <label class="rt-opt" id="rt-consolidado"><input type="radio" name="r-tipo" value="consolidado" onchange="onTipoReporte()"> 📚 Consolidado</label>
+            <label class="rt-opt" id="rt-combustible" title="Frecuencia y gasto de combustible por residente, con alertas"><input type="radio" name="r-tipo" value="combustible" onchange="onTipoReporte()"> ⛽ Combustible</label>
           </div>
           <div class="rep-filters">
             <div class="fld" id="f-res"><label>Residente</label><select id="r-res" onchange="onResReporte()"></select></div>
@@ -2692,6 +2703,15 @@ function _dateFilter(q, col){
 function rTipo(){ const el=document.querySelector('input[name="r-tipo"]:checked'); return el?el.value:'cuenta'; }
 function onTipoReporte(){
   const t=rTipo();
+  const esComb=(t==='combustible');
+  if(esComb){
+    gs('f-res').style.display='none'; gs('f-res-cons').style.display='none'; gs('f-rnd').style.display='none';
+    const pdfSel=gs('r-pdf-detalle'); if(pdfSel) pdfSel.style.display='none';
+    gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
+    REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
+    gs('rep-result').innerHTML='<div class="empty">Frecuencia y gasto de combustible por residente. Elegí el período y tocá Generar.</div>';
+    return;
+  }
   const esCons=(t==='consolidado');
   gs('f-res').style.display = esCons?'none':'';
   gs('f-res-cons').style.display = esCons?'':'none';   // v7.28: filtro de residente para el consolidado
@@ -2728,7 +2748,9 @@ async function generarReporte(){
   const t=rTipo();
   gs('rep-info').textContent='Generando…'; gs('r-export').disabled=true; gs('r-export-pdf').disabled=true; REPORTE_DATA=null; REPORTE_PDF=null;
   try{
-    if(t==='consolidado'){
+    if(t==='combustible'){
+      await reporteCombustible();
+    } else if(t==='consolidado'){
       await reporteConsolidado();
     } else {
       const res=gs('r-res').value;
@@ -2740,6 +2762,112 @@ async function generarReporte(){
       await reporteResidente(res);
     }
   }catch(e){ gs('rep-result').innerHTML='<div class="empty">Error al generar: '+(e.message||e)+'</div>'; gs('rep-info').textContent=''; }
+}
+
+/* ── Reporte de combustible (fase 1) ─────────────────────────────────
+   Con lo que ya se carga hoy: fecha, residente, proveedor, obra y monto.
+   Responde tres preguntas: cuánto, cada cuánto y qué cargas mirar. */
+const COMB_ALERTA={ DIAS_SEGUIDAS:2, EXCESO_PCT:40 };
+
+async function reporteCombustible(){
+  const cont=gs('rep-result');
+  let q=_SB.from('caja_chica_movimientos')
+    .select('id,fecha,residente,proveedor,obra,rubro,total,estado,comentario,nro_factura')
+    .in('estado',['solicitado','observado','aprobado'])
+    .ilike('rubro','%combustible%');
+  q=_dateFilter(q,'fecha');
+  const obra=gs('r-obra')?gs('r-obra').value:''; if(obra) q=q.eq('obra',obra);
+  const prov=gs('r-prov')?gs('r-prov').value:''; if(prov) q=q.eq('proveedor',prov);
+  const { data, error }=await q;
+  if(error) throw error;
+  const movs=(data||[]).sort((a,b)=>String(a.fecha).localeCompare(String(b.fecha)));
+  if(!movs.length){
+    cont.innerHTML='<div class="empty">No hay cargas de combustible en el período elegido.</div>';
+    gs('rep-info').textContent=''; REPORTE_PDF=null; gs('r-export-pdf').disabled=true; return;
+  }
+
+  const dif=(a,b)=>Math.round((new Date(b)-new Date(a))/86400000);
+  const porRes={};
+  movs.forEach(m=>{
+    const r=m.residente||'(sin residente)';
+    (porRes[r]=porRes[r]||[]).push(m);
+  });
+
+  const filas=[], alertas=[];
+  Object.keys(porRes).sort().forEach(r=>{
+    const L=porRes[r];
+    const tot=L.reduce((a,x)=>a+Number(x.total||0),0);
+    const prom=tot/L.length;
+    // Días entre cargas
+    const gaps=[];
+    for(let i=1;i<L.length;i++) gaps.push(dif(L[i-1].fecha, L[i].fecha));
+    const promDias=gaps.length?(gaps.reduce((a,b)=>a+b,0)/gaps.length):null;
+    // Proveedor habitual
+    const pc={}; L.forEach(x=>{ const p=x.proveedor||'—'; pc[p]=(pc[p]||0)+1; });
+    const hab=Object.keys(pc).sort((a,b)=>pc[b]-pc[a])[0]||'—';
+    filas.push({ res:r, n:L.length, tot:tot, prom:prom, promDias:promDias,
+                 ultima:L[L.length-1].fecha, hab:hab, provs:Object.keys(pc).length });
+    // Alertas
+    for(let i=1;i<L.length;i++){
+      const d=dif(L[i-1].fecha, L[i].fecha);
+      if(d<=COMB_ALERTA.DIAS_SEGUIDAS) alertas.push({ res:r, fecha:L[i].fecha, tipo:'Dos cargas seguidas',
+        det:d+' día(s) después de la anterior · '+fmt(L[i].total)+' · '+(L[i].proveedor||'') });
+    }
+    L.forEach(x=>{
+      const dow=new Date(x.fecha+'T12:00:00').getDay();
+      if(dow===0||dow===6) alertas.push({ res:r, fecha:x.fecha, tipo:'Carga en fin de semana',
+        det:(dow===6?'sábado':'domingo')+' · '+fmt(x.total)+' · '+(x.proveedor||'') });
+      if(prom>0 && Number(x.total||0) > prom*(1+COMB_ALERTA.EXCESO_PCT/100))
+        alertas.push({ res:r, fecha:x.fecha, tipo:'Monto sobre el promedio',
+          det:fmt(x.total)+' contra un promedio de '+fmt(Math.round(prom))+' · '+(x.proveedor||'') });
+      if(hab && x.proveedor && x.proveedor!==hab)
+        alertas.push({ res:r, fecha:x.fecha, tipo:'Proveedor distinto al habitual',
+          det:(x.proveedor||'')+' en lugar de '+hab+' · '+fmt(x.total) });
+    });
+    // Importes repetidos exactos: suele ser carga por monto fijo
+    const mc={}; L.forEach(x=>{ mc[x.total]=(mc[x.total]||0)+1; });
+    Object.keys(mc).forEach(v=>{ if(mc[v]>=3) alertas.push({ res:r, fecha:'—', tipo:'Importe fijo repetido',
+      det:fmt(Number(v))+' en '+mc[v]+' cargas · probable carga por monto, no por tanque lleno' }); });
+  });
+  filas.sort((a,b)=>b.tot-a.tot);
+  alertas.sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+
+  const totG=filas.reduce((a,x)=>a+x.tot,0), totN=filas.reduce((a,x)=>a+x.n,0);
+  const gapsAll=filas.filter(x=>x.promDias!=null);
+  const promDiasG=gapsAll.length?(gapsAll.reduce((a,x)=>a+x.promDias,0)/gapsAll.length):null;
+  const k=(l,v,s)=>'<div class="cc-kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';
+
+  cont.innerHTML =
+    '<div class="cc-kpis">'+
+      k('Total combustible','₲ '+fmt(totG), filas.length+' residente(s)')+
+      k('Cargas', String(totN), 'en el período')+
+      k('Promedio por carga','₲ '+fmt(Math.round(totG/totN)))+
+      k('Días entre cargas', promDiasG!=null?promDiasG.toFixed(1):'—','promedio general')+
+      k('Alertas', String(alertas.length), alertas.length?'para revisar':'sin novedades')+
+    '</div>'+
+    '<div class="mix-box"><div class="mix-t">Por residente</div><table class="plan-table mix-tbl">'+
+    '<thead><tr><th>Residente</th><th class="num">Cargas</th><th class="num">Total ₲</th><th class="num">Prom. ₲</th>'+
+    '<th class="num">Días entre cargas</th><th>Última carga</th><th>Proveedor habitual</th><th class="num">% del total</th></tr></thead><tbody>'+
+    filas.map(f=>'<tr><td><b>'+_esc(f.res)+'</b></td><td class="num">'+f.n+'</td><td class="num">'+fmt(f.tot)+'</td>'+
+      '<td class="num">'+fmt(Math.round(f.prom))+'</td>'+
+      '<td class="num">'+(f.promDias!=null?f.promDias.toFixed(1):'—')+'</td>'+
+      '<td>'+_esc(f.ultima)+'</td><td>'+_esc(f.hab)+(f.provs>1?(' <span style="color:var(--text3)">(+'+(f.provs-1)+')</span>'):'')+'</td>'+
+      '<td class="num"><b>'+(totG>0?(f.tot/totG*100).toFixed(1):'0')+'%</b></td></tr>').join('')+
+    '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+totN+'</td><td class="num">'+fmt(totG)+'</td><td colspan="5"></td></tr></tfoot></table></div>'+
+    (alertas.length
+      ? '<div class="mix-box" style="margin-top:12px"><div class="mix-t">Cargas para revisar</div><table class="plan-table mix-tbl">'+
+        '<thead><tr><th>Fecha</th><th>Residente</th><th>Alerta</th><th>Detalle</th></tr></thead><tbody>'+
+        alertas.slice(0,60).map(a=>'<tr><td class="nw">'+_esc(a.fecha)+'</td><td>'+_esc(a.res)+'</td>'+
+          '<td><b style="color:#8a6d10">'+_esc(a.tipo)+'</b></td><td>'+_esc(a.det)+'</td></tr>').join('')+
+        '</tbody></table>'+(alertas.length>60?'<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Se muestran las 60 más recientes de '+alertas.length+'.</div>':'')+'</div>'
+      : '<div class="mix-box" style="margin-top:12px"><div class="mix-t">Cargas para revisar</div><div style="font-size:13px;color:var(--text2)">Sin alertas en el período.</div></div>')+
+    '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Con lo que se carga hoy se mide <b>cuánto</b> y <b>cada cuánto</b>. '+
+    'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>';
+
+  gs('rep-info').textContent = filas.length+' residente(s) · '+totN+' carga(s)';
+  REPORTE_PDF={ mode:'combustible', filas, alertas, totG, totN, promDiasG };
+  gs('r-export-pdf').disabled=false;
+  gs('r-export').disabled=true;
 }
 
 async function reporteRendicionInline(rid){
@@ -3215,11 +3343,71 @@ function exportTodosPDF(){
   } else { doc.save(filename); }
 }
 
+/* PDF del reporte de combustible: KPIs, tabla por residente y alertas */
+function exportCombustiblePDF(){
+  const P=REPORTE_PDF; if(!P || P.mode!=='combustible'){ toast('Generá primero el reporte','err'); return; }
+  const { jsPDF }=window.jspdf;
+  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  const W=doc.internal.pageSize.getWidth(), M=12;
+  const san=(t)=>String(t==null?'':t).replace(/[—–]/g,'-').replace(/₲/g,'Gs ');
+  try{ doc.addImage(AXC_LOGO,'PNG',M,10,30.5,10); }catch(e){}
+  doc.setFont('helvetica','bold'); doc.setTextColor(31,56,100); doc.setFontSize(15);
+  doc.text('Caja Chica · Combustible por residente', W-M, 15, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(8.5);
+  const desde=gs('r-desde')?gs('r-desde').value:'', hasta=gs('r-hasta')?gs('r-hasta').value:'';
+  doc.text('Periodo: '+(desde||'inicio')+' a '+(hasta||'hoy')+'  ·  Emitido: '+todayISO(), W-M, 20.5, {align:'right'});
+  doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,W-M,23);
+
+  doc.setFontSize(9); doc.setTextColor(40,40,40);
+  doc.text('Total: Gs '+fmt(P.totG)+'     Cargas: '+P.totN+
+           '     Promedio por carga: Gs '+fmt(Math.round(P.totG/P.totN))+
+           '     Dias entre cargas: '+(P.promDiasG!=null?P.promDiasG.toFixed(1):'-')+
+           '     Alertas: '+P.alertas.length, M, 30);
+
+  doc.autoTable({
+    head:[['Residente','Cargas','Total Gs','Prom. Gs','Dias entre cargas','Ultima carga','Proveedor habitual','% del total']],
+    body:P.filas.map(f=>[san(f.res), String(f.n), fmt(f.tot), fmt(Math.round(f.prom)),
+      f.promDias!=null?f.promDias.toFixed(1):'-', f.ultima||'-', san(f.hab),
+      (P.totG>0?(f.tot/P.totG*100).toFixed(1):'0')+'%'])
+      .concat([[{content:'TOTAL',styles:{fontStyle:'bold'}},{content:String(P.totN),styles:{fontStyle:'bold',halign:'right'}},
+                {content:fmt(P.totG),styles:{fontStyle:'bold',halign:'right'}},{content:''},{content:''},{content:''},{content:''},
+                {content:'100%',styles:{fontStyle:'bold',halign:'right'}}]]),
+    startY:35, margin:{left:M,right:M},
+    styles:{font:'helvetica',fontSize:8,cellPadding:1.8,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
+    headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:8,halign:'center'},
+    columnStyles:{0:{cellWidth:'auto'},1:{cellWidth:18,halign:'right'},2:{cellWidth:28,halign:'right'},3:{cellWidth:26,halign:'right'},
+      4:{cellWidth:30,halign:'right'},5:{cellWidth:26,halign:'center'},6:{cellWidth:46},7:{cellWidth:22,halign:'right'}}
+  });
+
+  if(P.alertas.length){
+    doc.autoTable({
+      head:[['Fecha','Residente','Alerta','Detalle']],
+      body:P.alertas.slice(0,80).map(a=>[a.fecha||'-', san(a.res), san(a.tipo), san(a.det)]),
+      startY:doc.lastAutoTable.finalY+8, margin:{left:M,right:M},
+      styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
+      headStyles:{fillColor:[122,86,10],textColor:[255,255,255],fontStyle:'bold',fontSize:7.5,halign:'center'},
+      columnStyles:{0:{cellWidth:24},1:{cellWidth:38},2:{cellWidth:52},3:{cellWidth:'auto'}},
+      didDrawPage:()=>{
+        const ph=doc.internal.pageSize.getHeight();
+        doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
+        doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
+        doc.text('Pagina '+doc.internal.getNumberOfPages(), W-M, ph-6, {align:'right'});
+      }
+    });
+  }
+  doc.setFontSize(7.5); doc.setTextColor(130,130,130);
+  doc.text('Mide cuanto y cada cuanto se carga. Para saber si el consumo corresponde hacen falta litros y kilometraje.',
+    M, doc.lastAutoTable.finalY+6);
+  doc.save('caja_chica_combustible_'+todayISO()+'.pdf');
+  toast('Reporte de combustible generado','ok');
+}
+
 function exportarReportePDF(P0, doc0){
   if(!P0){
     if(rTipo()==='rendicion'){ return exportRendicionPDF(); }
     if(REPORTE_PDF && REPORTE_PDF.mode==='consolidado'){ return exportConsolidadoPDF(); }
     if(REPORTE_PDF && REPORTE_PDF.mode==='todos'){ return exportTodosPDF(); }
+    if(REPORTE_PDF && REPORTE_PDF.mode==='combustible'){ return exportCombustiblePDF(); }
     if(!REPORTE_PDF || REPORTE_PDF.mode!=='residente'){ toast('El PDF está disponible en "Estado de cuenta" de un residente o en "Consolidado"','err'); return; }
   }
   const P=P0||REPORTE_PDF;
@@ -4179,9 +4367,31 @@ async function abrirDetalleRendicion(rid){
       <tbody>${body||'<tr><td colspan="7" class="empty">Sin comprobantes en esta rendición.</td></tr>'}</tbody>
       <tfoot><tr><td colspan="5" style="text-align:right">TOTAL RENDIDO</td><td class="num">₲ ${fmt(total)}</td><td></td></tr></tfoot>
     </table></div>
+    ${_rubroMixHTML(list)}
     ${rend?_firmasHTML(rend):''}`;
   const headers=['N.º','Fecha','Orden','Factura','Tipo','Proveedor','Obra','Sector','Rubro','Contratista','Total ₲','Estado'];
   REND_DETAIL={ rid, rend, list, total, headers, nro, periodo };
+}
+
+/* v7.41: peso de cada rubro dentro de la rendición — lo que gerencia mira
+   primero: cuánto se fue en combustible, en limpieza, en logística. */
+function _rubroMix(list){
+  const m={}, tot=(list||[]).reduce((a,x)=>a+Number(x.total||0),0);
+  (list||[]).forEach(x=>{ const r=(x.rubro||'(sin rubro)').trim()||'(sin rubro)';
+    if(!m[r]) m[r]={ rubro:r, monto:0, n:0 };
+    m[r].monto+=Number(x.total||0); m[r].n++; });
+  return Object.values(m).map(x=>Object.assign(x,{ pct: tot>0?(x.monto/tot*100):0 }))
+    .sort((a,b)=>b.monto-a.monto);
+}
+function _rubroMixHTML(list){
+  const mix=_rubroMix(list); if(!mix.length) return '';
+  const tot=mix.reduce((a,x)=>a+x.monto,0);
+  return '<div class="mix-box"><div class="mix-t">Peso por rubro</div><table class="plan-table mix-tbl">'+
+    '<thead><tr><th>Rubro</th><th class="num">Comprob.</th><th class="num">Total ₲</th><th class="num">% del total</th><th style="width:26%"></th></tr></thead><tbody>'+
+    mix.map(x=>'<tr><td>'+_esc(x.rubro)+'</td><td class="num">'+x.n+'</td><td class="num">'+fmt(x.monto)+'</td>'+
+      '<td class="num"><b>'+x.pct.toFixed(1)+'%</b></td>'+
+      '<td><div class="mix-bar"><i style="width:'+Math.max(2,Math.min(100,x.pct)).toFixed(1)+'%"></i></div></td></tr>').join('')+
+    '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+mix.reduce((a,x)=>a+x.n,0)+'</td><td class="num">'+fmt(tot)+'</td><td class="num">100%</td><td></td></tr></tfoot></table></div>';
 }
 
 function exportRendicionExcel(){
@@ -4411,6 +4621,30 @@ async function exportarPlanillaRendirPDF(rid, conAdjuntos){
       doc.text('Página '+doc.internal.getNumberOfPages(), W-M, ph-6, {align:'right'});
     }
   });
+
+  // v7.41: peso de cada rubro dentro de la rendición, debajo de la planilla
+  {
+    const mixSrc=(movs||[]).map(m=>({ rubro:m.rubro, total:Number(m.total||0) }));
+    const mix=_rubroMix(mixSrc);
+    if(mix.length){
+      const mTot=mix.reduce((a,x)=>a+x.monto,0);
+      doc.autoTable({
+        head:[['Rubro','Comprob.','Total Gs','% del total']],
+        body: mix.map(x=>[sanPdf(x.rubro), String(x.n), fmt(x.monto), x.pct.toFixed(1)+'%'])
+              .concat([[{content:'TOTAL',styles:{fontStyle:'bold'}},
+                        {content:String(mix.reduce((a,x)=>a+x.n,0)),styles:{fontStyle:'bold',halign:'right'}},
+                        {content:fmt(mTot),styles:{fontStyle:'bold',halign:'right'}},
+                        {content:'100%',styles:{fontStyle:'bold',halign:'right'}}]]),
+        startY: doc.lastAutoTable.finalY+7,
+        margin:{left:M,right:W/2},
+        tableWidth: (W/2)-M-6,
+        styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
+        headStyles:{fillColor:[122,86,10],textColor:[255,255,255],fontStyle:'bold',fontSize:7.5,halign:'center'},
+        columnStyles:{0:{cellWidth:'auto'},1:{cellWidth:18,halign:'right'},2:{cellWidth:26,halign:'right'},3:{cellWidth:22,halign:'right'}},
+        didDrawPage:()=>{}
+      });
+    }
+  }
 
   // Firmas debajo de la planilla: Residente siempre; Supervisor si ya aprobó
   let fy=doc.lastAutoTable.finalY+20;
