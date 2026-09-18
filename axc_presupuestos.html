@@ -3802,7 +3802,7 @@ const COEF_AXC = 0.69;
    Una fila por versión: cuál aceptó el cliente, con qué coeficiente y por
    cuánto. La aceptada es la única contra la que se comparan los costos. */
 async function openPropuestasLista(){
-  if(!state.puedeVerMargen){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
+  if(!state.isAdmin && !state.puedeVerMargen){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
   const presu = (document.getElementById('pmCodigo').value||'').trim();
   if(!presu){ showToast('Abrí primero un presupuesto','error'); return; }
 
@@ -3833,7 +3833,7 @@ async function openPropuestasLista(){
       }
       const ids = cabs.map(c=>c.id);
       const { data:its } = await sb.from('propuesta_items')
-        .select('propuesta_id,costo_unit,cantidad,precio_total,rubro_codigo,margen_pct').in('propuesta_id', ids);
+        .select('propuesta_id,costo_unit,cantidad,precio_total,rubro_codigo,margen_pct,opcional').in('propuesta_id', ids);
       const agg = {};
       (its||[]).forEach(function(x){
         const a = agg[x.propuesta_id] = agg[x.propuesta_id] || { costo:0, venta:0, n:0, dif:0 };
@@ -3849,13 +3849,52 @@ async function openPropuestasLista(){
         }).length;
       });
 
-      box.innerHTML =
+      // Ficha de la propuesta vigente: lo que hay que mirar primero
+      const acc = cabs.filter(function(c){ return c.aceptada; })[0];
+      let ficha = '';
+      if(acc){
+        const a = agg[acc.id] || { costo:0, venta:0, n:0 };
+        const coef = a.venta>0 ? (a.costo/a.venta) : 0;
+        const util = a.venta - a.costo;
+        const iva  = Math.round(a.venta * (Number(acc.iva_pct)||0) / 100);
+        const dato = function(l,v,s){ return '<div style="min-width:150px"><div style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</div>'+
+          '<div style="font-size:15px;font-weight:800;color:#1a2236;margin-top:2px">'+v+'</div>'+(s?('<div style="font-size:11px;color:#8893a5">'+s+'</div>'):'')+'</div>'; };
+        ficha =
+          '<div style="border:1.5px solid #bfe0c4;background:#f2faf3;border-radius:12px;padding:13px 15px;margin-bottom:14px">'+
+            '<div style="display:flex;align-items:center;gap:9px;margin-bottom:10px;flex-wrap:wrap">'+
+              '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:800">✓ PROPUESTA VIGENTE</span>'+
+              '<b style="font-size:14px">'+escapeHtml(acc.codigo||'')+' v'+acc.version+'</b>'+
+              '<span style="font-size:12px;color:#5a6377">'+escapeHtml(acc.obra||'')+(acc.descripcion?(' · '+escapeHtml(acc.descripcion)):'')+'</span>'+
+            '</div>'+
+            '<div style="display:flex;gap:22px;flex-wrap:wrap">'+
+              dato('Venta sin IVA','₲ '+fmtGs(a.venta), a.n+' rubro(s)')+
+              dato('IVA '+(Number(acc.iva_pct)||0)+' %','₲ '+fmtGs(iva))+
+              dato('Total con IVA','₲ '+fmtGs(a.venta+iva))+
+              dato('Costo interno','₲ '+fmtGs(a.costo))+
+              dato('Utilidad','₲ '+fmtGs(util), a.venta>0?((util/a.venta*100).toFixed(1)+' % de la venta'):'')+
+              dato('Coeficiente', coef?coef.toFixed(4):'—', 'margen '+(a.venta>0?((util/a.venta*100).toFixed(1)):'—')+' %')+
+              dato('Aceptada', acc.aceptada_en?_fmtF(acc.aceptada_en,false):'—', escapeHtml(acc.aceptada_por||''))+
+              (acc.cliente?dato('Cliente', escapeHtml(acc.cliente), escapeHtml(acc.atencion||'')):'')+
+              (acc.validez_dias?dato('Validez', acc.validez_dias+' días', 'desde la emisión'):'')+
+            '</div>'+
+            (acc.aceptada_obs?('<div style="margin-top:10px;font-size:12px;color:#5a6377"><b>Respaldo:</b> '+escapeHtml(acc.aceptada_obs)+'</div>'):'')+
+            (acc.condiciones?('<div style="margin-top:4px;font-size:12px;color:#5a6377"><b>Condiciones:</b> '+escapeHtml(acc.condiciones)+'</div>'):'')+
+          '</div>';
+      } else {
+        ficha = '<div style="border:1px solid #f0e2bd;background:#fdf7e8;border-radius:11px;padding:11px 14px;margin-bottom:14px;font-size:12.5px;color:#6b5410">'+
+          'Ninguna versión está marcada como aceptada. Hasta que marques una, el comparativo de costo contra venta no tiene referencia.</div>';
+      }
+
+      box.innerHTML = ficha +
         '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
         '<th class="n">Margen gral.</th><th class="n">Coef. real</th><th class="n">Rubros</th>'+
-        '<th class="n">Venta total</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
+        '<th class="n">Costo</th><th class="n">Utilidad</th><th class="n">Venta sin IVA</th>'+
+        '<th class="n">Total con IVA</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
         cabs.map(function(c){
           const a = agg[c.id] || { costo:0, venta:0, n:0, dif:0 };
           const coef = a.venta>0 ? (a.costo/a.venta) : 0;
+          const util = a.venta - a.costo;
+          const iva  = Math.round(a.venta * (Number(c.iva_pct)||0) / 100);
           return '<tr'+(c.aceptada?' style="background:#f0f8f1"':'')+'>'+
             '<td><b>v'+c.version+'</b></td>'+
             '<td>'+escapeHtml(_fmtF(c.emitido_en,false)||'')+'</td>'+
@@ -3864,7 +3903,10 @@ async function openPropuestasLista(){
             '<td class="n"><b>'+(coef?coef.toFixed(4):'—')+'</b>'+
               (a.dif?('<div style="font-size:11px;color:#8a6d10">'+a.dif+' rubro(s) ajustado(s)</div>'):'')+'</td>'+
             '<td class="n">'+a.n+'</td>'+
+            '<td class="n">₲ '+fmtGs(a.costo)+'</td>'+
+            '<td class="n">₲ '+fmtGs(util)+(a.venta>0?('<div style="font-size:11px;color:#8893a5">'+(util/a.venta*100).toFixed(1)+' %</div>'):'')+'</td>'+
             '<td class="n"><b>₲ '+fmtGs(a.venta)+'</b></td>'+
+            '<td class="n">₲ '+fmtGs(a.venta+iva)+(Number(c.iva_pct)?('<div style="font-size:11px;color:#8893a5">IVA '+Number(c.iva_pct)+' %</div>'):'')+'</td>'+
             '<td>'+(c.aceptada
               ? '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800">✓ ACEPTADA</span>'+
                 (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
@@ -3888,24 +3930,25 @@ async function openPropuestasLista(){
     if(t.dataset.plver){ await verPropuestaVersion(t.dataset.plver); return; }
     if(t.dataset.placep){
       const v = Number(t.dataset.placep);
-      const r = await axcDialog({
-        tono:'warn', icono:'✓', titulo:'Marcar la propuesta como aceptada',
-        subtitulo:presu+' · v'+v,
-        mensaje:'La propuesta aceptada es la <b>única</b> contra la que se comparan los costos reales. '+
-                'Si había otra marcada, deja de estarlo.',
-        campo:{ label:'Respaldo de la aceptación', placeholder:'Ej. correo del cliente del 10/09, acta de reunión', requerido:true },
-        ok:'Marcar aceptada', cancelar:'Volver'
-      });
-      if(!r.ok) return;
+      const obs = prompt(
+        'MARCAR LA PROPUESTA v'+v+' COMO ACEPTADA\n\n'+
+        'La aceptada es la unica contra la que se comparan los costos reales.\n'+
+        'Si habia otra marcada, deja de estarlo.\n\n'+
+        'Respaldo de la aceptacion (correo, acta, reunion):');
+      if(obs === null) return;
+      if(!obs.trim()){ showToast('Cargá el respaldo de la aceptación','error'); return; }
+      t.disabled = true; t.textContent = 'Marcando…';
       try{
         const { error } = await sb.rpc('aceptar_propuesta', {
-          p_presupuesto: presu, p_version: v, p_quien: _userTag(), p_obs: (r.valor||'').trim() || null });
+          p_presupuesto: presu, p_version: v, p_quien: _userTag(), p_obs: obs.trim() });
         if(error) throw error;
         showToast('Propuesta v'+v+' aceptada','success','Es la referencia para comparar costo contra venta');
         await pintar();
       }catch(e){
+        console.error('aceptar_propuesta', e);
+        t.disabled = false; t.textContent = '✓ Marcar aceptada';
         showToast('No se pudo marcar','error',
-          /aceptar_propuesta/i.test(e.message||'') ? 'Falta correr el script propuesta_aceptada.sql' : (e.message||''));
+          /aceptar_propuesta|function/i.test(e.message||'') ? 'Falta correr el script propuesta_aceptada.sql' : (e.message||''));
       }
     }
   });
@@ -5301,7 +5344,11 @@ document.getElementById('mgEmitir').addEventListener('click', function(){
   });
 })();
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
-document.getElementById('pmPropListBtn').addEventListener('click', openPropuestasLista);
+{ const _b=document.getElementById('pmPropListBtn');
+  if(_b) _b.addEventListener('click', function(){
+    try{ openPropuestasLista(); }
+    catch(e){ console.error('propuestas', e); showToast('No se pudo abrir la lista de propuestas','error', e.message||String(e)); }
+  }); }
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
 document.getElementById('pmRubCap').addEventListener('change', function(){
