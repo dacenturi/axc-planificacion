@@ -807,6 +807,7 @@ body{
       <button class="pm-cancel" id="pmCancelBtn" type="button">Cancelar</button>
       <button class="pm-toggle" id="pmCotBtn" type="button" style="background:#8a6d10;color:#fff;border-color:#8a6d10" title="Costo real de la obra. Uso interno.">📋 Planilla de costos</button>
       <button class="pm-toggle" id="pmPropBtn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864" title="Propuesta económica con margen, para el cliente">💼 Propuesta económica</button>
+      <button class="pm-toggle" id="pmPropListBtn" type="button" title="Versiones emitidas de la propuesta: cuál se aceptó, con qué coeficiente y por cuánto">📑 Propuestas</button>
       <button class="pm-toggle" id="pmReporteBtn" type="button" style="background:#0E7C86;color:#fff;border-color:#0E7C86" title="Reporte interno de costos">🔎 Análisis de costos</button>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
       <button class="pm-save" id="pmSaveBtn" type="button">Guardar presupuesto</button>
@@ -3797,6 +3798,144 @@ async function _mgCargarUltima(codigo){
 /* Coeficiente de AXC: 0,69 (margen 31 % sobre la venta) */
 const COEF_AXC = 0.69;
 
+/* ── Propuestas emitidas ─────────────────────────────────────────────
+   Una fila por versión: cuál aceptó el cliente, con qué coeficiente y por
+   cuánto. La aceptada es la única contra la que se comparan los costos. */
+async function openPropuestasLista(){
+  if(!state.puedeVerMargen){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
+  const presu = (document.getElementById('pmCodigo').value||'').trim();
+  if(!presu){ showToast('Abrí primero un presupuesto','error'); return; }
+
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(1040px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+      '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+        '<div style="font-weight:800;font-size:16px">📑 Propuestas emitidas · '+escapeHtml(presu)+'</div>'+
+        '<div style="font-size:12px;opacity:.85">La marcada como ACEPTADA es la que se usa para comparar costo contra venta</div></div>'+
+      '<div id="plBody" style="overflow:auto;padding:12px 18px;flex:1"><div class="vacio">Cargando…</div></div>'+
+      '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end">'+
+        '<button type="button" class="btn-g" id="plCerrar">Cerrar</button></div>'+
+    '</div>';
+  document.body.appendChild(ov);
+  ov.querySelector('#plCerrar').onclick = ()=> ov.remove();
+  ov.addEventListener('click', ev=>{ if(ev.target===ov) ov.remove(); });
+
+  const pintar = async function(){
+    const box = ov.querySelector('#plBody');
+    try{
+      const { data:cabs, error } = await sb.from('propuesta_cab')
+        .select('*').eq('presupuesto', presu).order('version');
+      if(error) throw error;
+      if(!cabs || !cabs.length){
+        box.innerHTML = '<div class="vacio">Todavía no se emitió ninguna propuesta para este presupuesto.</div>';
+        return;
+      }
+      const ids = cabs.map(c=>c.id);
+      const { data:its } = await sb.from('propuesta_items')
+        .select('propuesta_id,costo_unit,cantidad,precio_total,rubro_codigo,margen_pct').in('propuesta_id', ids);
+      const agg = {};
+      (its||[]).forEach(function(x){
+        const a = agg[x.propuesta_id] = agg[x.propuesta_id] || { costo:0, venta:0, n:0, dif:0 };
+        a.costo += (Number(x.costo_unit)||0) * (Number(x.cantidad)||0);
+        a.venta += Number(x.precio_total)||0;
+        a.n++;
+      });
+      cabs.forEach(function(c){
+        const a = agg[c.id] || { costo:0, venta:0, n:0 };
+        const gen = Number(c.margen_general);
+        a.dif = (its||[]).filter(function(x){
+          return x.propuesta_id===c.id && x.margen_pct!=null && !isNaN(gen) && Math.abs(Number(x.margen_pct)-gen)>0.001;
+        }).length;
+      });
+
+      box.innerHTML =
+        '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
+        '<th class="n">Margen gral.</th><th class="n">Coef. real</th><th class="n">Rubros</th>'+
+        '<th class="n">Venta total</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
+        cabs.map(function(c){
+          const a = agg[c.id] || { costo:0, venta:0, n:0, dif:0 };
+          const coef = a.venta>0 ? (a.costo/a.venta) : 0;
+          return '<tr'+(c.aceptada?' style="background:#f0f8f1"':'')+'>'+
+            '<td><b>v'+c.version+'</b></td>'+
+            '<td>'+escapeHtml(_fmtF(c.emitido_en,false)||'')+'</td>'+
+            '<td style="font-size:12px">'+escapeHtml(c.emitido_por||'')+'</td>'+
+            '<td class="n">'+(isNaN(Number(c.margen_general))?'—':(Number(c.margen_general)+' %'))+'</td>'+
+            '<td class="n"><b>'+(coef?coef.toFixed(4):'—')+'</b>'+
+              (a.dif?('<div style="font-size:11px;color:#8a6d10">'+a.dif+' rubro(s) ajustado(s)</div>'):'')+'</td>'+
+            '<td class="n">'+a.n+'</td>'+
+            '<td class="n"><b>₲ '+fmtGs(a.venta)+'</b></td>'+
+            '<td>'+(c.aceptada
+              ? '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800">✓ ACEPTADA</span>'+
+                (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
+                (c.aceptada_obs?('<div style="font-size:11px;color:#8893a5">'+escapeHtml(c.aceptada_obs)+'</div>'):'')
+              : '<span style="color:#8893a5;font-size:12px">emitida</span>')+'</td>'+
+            '<td style="text-align:right;white-space:nowrap">'+
+              '<button type="button" class="btn-g" data-plver="'+c.id+'">📄 Ver PDF</button> '+
+              (c.aceptada?'':'<button type="button" class="btn-ok" data-placep="'+c.version+'">✓ Marcar aceptada</button>')+
+            '</td></tr>';
+        }).join('')+'</tbody></table>'+
+        '<div style="font-size:11.5px;color:#8893a5;margin-top:10px">El coeficiente real es costo ÷ venta de toda la propuesta. '+
+        'Si algunos rubros tienen margen propio, el coeficiente no coincide exacto con el general.</div>';
+    }catch(e){
+      box.innerHTML = '<div class="vacio">No se pudieron leer las propuestas.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
+    }
+  };
+  await pintar();
+
+  ov.addEventListener('click', async function(ev){
+    const t = ev.target.closest('button'); if(!t) return;
+    if(t.dataset.plver){ await verPropuestaVersion(t.dataset.plver); return; }
+    if(t.dataset.placep){
+      const v = Number(t.dataset.placep);
+      const r = await axcDialog({
+        tono:'warn', icono:'✓', titulo:'Marcar la propuesta como aceptada',
+        subtitulo:presu+' · v'+v,
+        mensaje:'La propuesta aceptada es la <b>única</b> contra la que se comparan los costos reales. '+
+                'Si había otra marcada, deja de estarlo.',
+        campo:{ label:'Respaldo de la aceptación', placeholder:'Ej. correo del cliente del 10/09, acta de reunión', requerido:true },
+        ok:'Marcar aceptada', cancelar:'Volver'
+      });
+      if(!r.ok) return;
+      try{
+        const { error } = await sb.rpc('aceptar_propuesta', {
+          p_presupuesto: presu, p_version: v, p_quien: _userTag(), p_obs: (r.valor||'').trim() || null });
+        if(error) throw error;
+        showToast('Propuesta v'+v+' aceptada','success','Es la referencia para comparar costo contra venta');
+        await pintar();
+      }catch(e){
+        showToast('No se pudo marcar','error',
+          /aceptar_propuesta/i.test(e.message||'') ? 'Falta correr el script propuesta_aceptada.sql' : (e.message||''));
+      }
+    }
+  });
+}
+
+/* Reimprime una versión ya emitida, con sus precios guardados. No crea otra. */
+async function verPropuestaVersion(id){
+  try{
+    const { data:c, error } = await sb.from('propuesta_cab').select('*').eq('id', id).single();
+    if(error) throw error;
+    const { data:its, error:e2 } = await sb.from('propuesta_items')
+      .select('*').eq('propuesta_id', id).order('orden');
+    if(e2) throw e2;
+    imprimirPropuesta({
+      codigo:c.codigo, version:c.version, obra:c.obra, cliente:c.cliente, descripcion:c.descripcion,
+      validez:c.validez_dias, condiciones:c.condiciones, observaciones:c.observaciones,
+      items:(its||[]).map(function(x){
+        return { orden:x.orden, sector:x.sector, capitulo:x.capitulo, rubro_codigo:x.rubro_codigo,
+                 descripcion:x.descripcion, unidad:x.unidad, cantidad:Number(x.cantidad)||0,
+                 costo_unit:Number(x.costo_unit)||0, margen_pct:Number(x.margen_pct)||0,
+                 precio_unit:Number(x.precio_unit)||0, precio_total:Number(x.precio_total)||0,
+                 opcional:!!x.opcional };
+      }),
+      venta:Number(c.venta_total)||0, atencion:c.atencion, referencia:c.referencia,
+      profesional:c.profesional, superficie:c.superficie, alcance:c.alcance,
+      iva_pct:c.iva_pct, anexos:[], _reimpresion:true
+    });
+  }catch(e){ showToast('No se pudo abrir la propuesta','error', e.message||''); }
+}
+
 function openPropuesta(){
   if(!state.puedeVerMargen){ showToast('No tenés permiso para aplicar márgenes','error','Pedí el permiso a un administrador'); return; }
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
@@ -5162,6 +5301,7 @@ document.getElementById('mgEmitir').addEventListener('click', function(){
   });
 })();
 document.getElementById('pmToggleBtn').addEventListener('click', toggleEstado);
+document.getElementById('pmPropListBtn').addEventListener('click', openPropuestasLista);
 document.getElementById('pmRubAdd').addEventListener('click', addRubro);
 document.getElementById('pmObra').addEventListener('change', function(){ refreshSectoresForObra(); });
 document.getElementById('pmRubCap').addEventListener('change', function(){
@@ -5657,7 +5797,7 @@ function printReporteObra(){
 
 // Reporte de avance de presupuesto (datos en vivo)
 // ════════════════════════════════════════════════════════
-const REP = { loaded:false, cab:[], rubros:[], insumos:[], itemsByPP:{}, map:{}, rmap:{}, insMap:{} };
+const REP = { loaded:false, cab:[], rubros:[], insumos:[], itemsByPP:{}, map:{}, rmap:{}, insMap:{}, certByPP:{} };
 const _RES = ['solicitado','observado'];   // reservado
 const _EJE = ['aprobado','archivado'];      // ejecutado / comprado firme
 function _pn(s){ return (s==null?'':String(s)).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
@@ -5671,15 +5811,25 @@ function _resolveRub(pid){ return REP.rmap[String(pid)]||''; }
 async function loadReport(){
   document.getElementById('pageSubtitle').textContent = 'Cargando datos…';
   try{
-    const [cab, rub, ins, ocs, items, ppm, insu] = await Promise.all([
+    const [cab, rub, ins, ocs, items, ppm, insu, cert] = await Promise.all([
       sb.from('presupuesto_cab').select('codigo,obra,descripcion,activo'),
       sb.from('presupuesto_rubros').select('presupuesto,sector,orden,rubro_codigo,descripcion,unidad,cantidad,precio_total,tiene_receta'),
       sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,material,unidad,cantidad,rubro_codigo'),
       sb.from('ordenes_compra').select('id,estado,presupuesto'),
       sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit'),
       sb.from('producto_presupuesto_map').select('producto_id,material,rubro_codigo'),
-      sb.from('insumos').select('codigo,producto_id')
+      sb.from('insumos').select('codigo,producto_id'),
+      // Mano de obra ya certificada: es consumo del rubro, igual que una compra
+      sb.from('certificado_items')
+        .select('presupuesto,rubro_codigo,subtotal,certificados!inner(estado)')
+        .eq('certificados.estado','Aprobado').limit(20000)
     ]);
+    REP.certByPP = {};
+    ((cert && cert.data)||[]).forEach(function(x){
+      if(!x.presupuesto || !x.rubro_codigo) return;
+      const m = REP.certByPP[x.presupuesto] = REP.certByPP[x.presupuesto] || {};
+      m[x.rubro_codigo] = (m[x.rubro_codigo]||0) + (Number(x.subtotal)||0);
+    });
     REP.cab = (cab.data||[]).slice().sort(function(a,b){ const na=parseInt((/(\d+)/.exec(a.codigo)||[])[1]||'0',10), nb=parseInt((/(\d+)/.exec(b.codigo)||[])[1]||'0',10); return na-nb; });
     REP.rubros = rub.data||[];
     // mano de obra (MO-…) y logística (LG-…) no se compran por orden de compra: quedan fuera del control de avance
@@ -5730,12 +5880,14 @@ function buildRows(){
       rows.push({ pp:c.codigo, obra:c.obra||'', sector:'', tipo:'insumo', ref:m.codigo_insumo, desc:m.material, unid:m.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:false });
     });
     // RUBROS de servicio (dinero)
+    const certPP = REP.certByPP[c.codigo] || {};
     REP.rubros.filter(function(x){ return x.presupuesto===c.codigo && (Number(x.precio_total)||0)>0 && !x.tiene_receta; }).forEach(function(r){
       const key=_rubKey(r);
       let reserv=0, ejec=0;
       items.forEach(function(it){ if(_resolveRub(it.producto_id)!==key) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.subtotal; else if(_RES.indexOf(it.estado)>=0) reserv+=it.subtotal; });
-      const comprado=reserv+ejec, pres=Number(r.precio_total)||0, saldo=pres-comprado;
-      rows.push({ pp:c.codigo, obra:c.obra||'', sector:r.sector||'', tipo:'rubro', ref:r.rubro_codigo||'', desc:r.descripcion||'', unid:r.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:true });
+      const certif = Math.round(certPP[r.rubro_codigo]||0);   // mano de obra certificada
+      const comprado=reserv+ejec+certif, pres=Number(r.precio_total)||0, saldo=pres-comprado;
+      rows.push({ pp:c.codigo, obra:c.obra||'', sector:r.sector||'', tipo:'rubro', ref:r.rubro_codigo||'', desc:r.descripcion||'', unid:r.unidad||'', pres:pres, reserv:reserv, ejec:ejec, certif:certif, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:true });
     });
   });
   return rows.filter(function(r){
@@ -5786,12 +5938,13 @@ function _tableQty(rows){
 }
 function _tableMoney(rows){
   // agrupar por sector
-  let h='<div class="rp-block-title">Rubros / Servicios (control por dinero, Gs)</div><table class="rp-tbl"><thead><tr><th>Ref.</th><th>Descripción</th><th>Unid.</th><th class="n">Presup. Gs</th><th class="n">Reservado</th><th class="n">Ejecutado</th><th class="n">Comprado</th><th>%</th><th class="n">Saldo Gs</th></tr></thead><tbody>';
+  let h='<div class="rp-block-title">Rubros / Servicios (control por dinero, Gs)</div><table class="rp-tbl"><thead><tr><th>Ref.</th><th>Descripción</th><th>Unid.</th><th class="n">Presup. Gs</th><th class="n">Reservado</th><th class="n">Ejecutado</th><th class="n">Certificado</th><th class="n">Consumido</th><th>%</th><th class="n">Saldo Gs</th></tr></thead><tbody>';
   let curSec=null;
   rows.forEach(function(r){
-    if(r.sector!==curSec){ curSec=r.sector; if(curSec) h+='<tr class="rp-sector"><td colspan="9">'+escapeHtml(curSec)+'</td></tr>'; }
+    if(r.sector!==curSec){ curSec=r.sector; if(curSec) h+='<tr class="rp-sector"><td colspan="10">'+escapeHtml(curSec)+'</td></tr>'; }
     h+='<tr><td>'+escapeHtml(r.ref||'—')+'</td><td>'+escapeHtml(r.desc)+'</td><td>'+escapeHtml(r.unid)+'</td>'+
-       '<td class="n">'+_money(r.pres)+'</td><td class="n">'+_money(r.reserv)+'</td><td class="n">'+_money(r.ejec)+'</td><td class="n">'+_money(r.comprado)+'</td>'+
+       '<td class="n">'+_money(r.pres)+'</td><td class="n">'+_money(r.reserv)+'</td><td class="n">'+_money(r.ejec)+'</td>'+
+       '<td class="n">'+_money(r.certif||0)+'</td><td class="n">'+_money(r.comprado)+'</td>'+
        '<td>'+_pctBar(r.pct)+' <span style="font-size:11px">'+Math.round(r.pct)+'%</span></td>'+
        '<td class="n '+(r.saldo<0?'rp-saldo-neg':'')+'">'+_money(r.saldo)+'</td></tr>';
   });
@@ -5802,7 +5955,7 @@ function _tableMoney(rows){
 function exportExcel(){
   const rows=buildRows();
   if(!rows.length){ showToast('No hay datos para exportar', 'error'); return; }
-  const head=['Presupuesto','Obra','Tipo','Sector','Referencia','Descripción','Unidad','Presupuestado','Reservado','Ejecutado','Comprado','% Avance','Saldo disponible'];
+  const head=['Presupuesto','Obra','Tipo','Sector','Referencia','Descripción','Unidad','Presupuestado','Reservado','Ejecutado','Certificado','Consumido','% Avance','Saldo disponible'];
   let t='<table border="1" cellspacing="0" cellpadding="4"><thead><tr>';
   head.forEach(function(h){ t+='<th style="background:#1F3864;color:#fff;font-weight:bold">'+h+'</th>'; });
   t+='</tr></thead><tbody>';
@@ -5819,6 +5972,7 @@ function exportExcel(){
       '<td>'+(Math.round((r.pres+Number.EPSILON)*100)/100)+'</td>'+
       '<td>'+(Math.round(r.reserv*100)/100)+'</td>'+
       '<td>'+(Math.round(r.ejec*100)/100)+'</td>'+
+      '<td>'+(Math.round((r.certif||0)*100)/100)+'</td>'+
       '<td>'+(Math.round(r.comprado*100)/100)+'</td>'+
       '<td>'+Math.round(r.pct)+'%</td>'+
       '<td'+saldoStyle+'>'+(Math.round(r.saldo*100)/100)+'</td>'+
