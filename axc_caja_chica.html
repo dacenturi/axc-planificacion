@@ -792,7 +792,7 @@ tr:last-child td{border-bottom:none}
           <div class="rep-tipo">
             <label class="rt-opt"><input type="radio" name="r-tipo" value="cuenta" checked onchange="onTipoReporte()"> 📄 Estado de cuenta</label>
             <label class="rt-opt" id="rt-consolidado"><input type="radio" name="r-tipo" value="consolidado" onchange="onTipoReporte()"> 📚 Consolidado</label>
-            <label class="rt-opt" id="rt-combustible" title="Frecuencia y gasto de combustible por residente, con alertas"><input type="radio" name="r-tipo" value="combustible" onchange="onTipoReporte()"> ⛽ Combustible</label>
+            <label class="rt-opt" id="rt-combustible" title="Frecuencia y gasto de combustible por residente"><input type="radio" name="r-tipo" value="combustible" onchange="onTipoReporte()"> ⛽ Combustible</label>
           </div>
           <div class="rep-filters">
             <div class="fld" id="f-res"><label>Residente</label><select id="r-res" onchange="onResReporte()"></select></div>
@@ -2710,7 +2710,7 @@ function onTipoReporte(){
   const t=rTipo();
   const esComb=(t==='combustible');
   if(esComb){
-    gs('f-res').style.display='none'; gs('f-res-cons').style.display='none'; gs('f-rnd').style.display='none';
+    gs('f-res').style.display=''; gs('f-res-cons').style.display='none'; gs('f-rnd').style.display='none';
     // El rubro ya está fijo en Combustible: el filtro solo confunde
     const _fr=document.querySelector('.fld.f-cat select#r-rubro');
     if(_fr && _fr.parentElement) _fr.parentElement.style.display='none';
@@ -2782,7 +2782,6 @@ async function generarReporte(){
 /* ── Reporte de combustible (fase 1) ─────────────────────────────────
    Con lo que ya se carga hoy: fecha, residente, proveedor, obra y monto.
    Responde tres preguntas: cuánto, cada cuánto y qué cargas mirar. */
-const COMB_ALERTA={ DIAS_SEGUIDAS:2, EXCESO_PCT:40 };
 let COMB_DET={};
 
 /* Detalle de las cargas de un residente: se abre tocando el total */
@@ -2817,6 +2816,8 @@ async function reporteCombustible(){
     .in('estado',['solicitado','observado','aprobado'])
     .ilike('rubro','%combustible%');
   q=_dateFilter(q,'fecha');
+  const resF=gs('r-res')?gs('r-res').value:'';
+  if(resF && resF!=='__TODOS__') q=q.eq('residente',resF);
   const obra=gs('r-obra')?gs('r-obra').value:''; if(obra) q=q.eq('obra',obra);
   const prov=gs('r-prov')?gs('r-prov').value:''; if(prov) q=q.eq('proveedor',prov);
   const { data, error }=await q;
@@ -2834,7 +2835,7 @@ async function reporteCombustible(){
     (porRes[r]=porRes[r]||[]).push(m);
   });
 
-  const filas=[], alertas=[];
+  const filas=[];
   Object.keys(porRes).sort().forEach(r=>{
     const L=porRes[r];
     const tot=L.reduce((a,x)=>a+Number(x.total||0),0);
@@ -2852,30 +2853,8 @@ async function reporteCombustible(){
     filas.push({ res:r, n:L.length, tot:tot, prom:prom, promDias:promDias,
                  ultima:L[L.length-1].fecha, hab:hab, provs:Object.keys(pc).length,
                  obra:obraHab, obras:Object.keys(oc).length, movs:L });
-    // Alertas
-    for(let i=1;i<L.length;i++){
-      const d=dif(L[i-1].fecha, L[i].fecha);
-      if(d<=COMB_ALERTA.DIAS_SEGUIDAS) alertas.push({ res:r, fecha:L[i].fecha, tipo:'Dos cargas seguidas',
-        det:d+' día(s) después de la anterior · '+fmt(L[i].total)+' · '+(L[i].proveedor||'') });
-    }
-    L.forEach(x=>{
-      const dow=new Date(x.fecha+'T12:00:00').getDay();
-      if(dow===0||dow===6) alertas.push({ res:r, fecha:x.fecha, tipo:'Carga en fin de semana',
-        det:(dow===6?'sábado':'domingo')+' · '+fmt(x.total)+' · '+(x.proveedor||'') });
-      if(prom>0 && Number(x.total||0) > prom*(1+COMB_ALERTA.EXCESO_PCT/100))
-        alertas.push({ res:r, fecha:x.fecha, tipo:'Monto sobre el promedio',
-          det:fmt(x.total)+' contra un promedio de '+fmt(Math.round(prom))+' · '+(x.proveedor||'') });
-      if(hab && x.proveedor && x.proveedor!==hab)
-        alertas.push({ res:r, fecha:x.fecha, tipo:'Proveedor distinto al habitual',
-          det:(x.proveedor||'')+' en lugar de '+hab+' · '+fmt(x.total) });
-    });
-    // Importes repetidos exactos: suele ser carga por monto fijo
-    const mc={}; L.forEach(x=>{ mc[x.total]=(mc[x.total]||0)+1; });
-    Object.keys(mc).forEach(v=>{ if(mc[v]>=3) alertas.push({ res:r, fecha:'—', tipo:'Importe fijo repetido',
-      det:fmt(Number(v))+' en '+mc[v]+' cargas · probable carga por monto, no por tanque lleno' }); });
   });
   filas.sort((a,b)=>b.tot-a.tot);
-  alertas.sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
 
   const totG=filas.reduce((a,x)=>a+x.tot,0), totN=filas.reduce((a,x)=>a+x.n,0);
   const gapsAll=filas.filter(x=>x.promDias!=null);
@@ -2891,7 +2870,6 @@ async function reporteCombustible(){
       k('Cargas', String(totN), 'en el período')+
       k('Promedio por carga','₲ '+fmt(Math.round(totG/totN)))+
       k('Días entre cargas', promDiasG!=null?promDiasG.toFixed(1):'—','promedio general')+
-      k('Alertas', String(alertas.length), alertas.length?'para revisar':'sin novedades')+
     '</div>'+
     '<div class="mix-box"><div class="mix-t">Por residente · tocá el total para ver las cargas</div><table class="plan-table mix-tbl">'+
     '<thead><tr><th>Residente</th><th class="num">Cargas</th><th class="num">Total ₲</th><th class="num">Prom. ₲</th>'+
@@ -2905,18 +2883,12 @@ async function reporteCombustible(){
       '<td>'+_esc(f.hab)+(f.provs>1?(' <span style="color:var(--text3)">(+'+(f.provs-1)+')</span>'):'')+'</td></tr>'+
       '<tr class="cmb-det" id="cmb-det-'+i+'" style="display:none"><td colspan="8"></td></tr>').join('')+
     '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+totN+'</td><td class="num">'+fmt(totG)+'</td><td colspan="5"></td></tr></tfoot></table></div>'+
-    (alertas.length
-      ? '<div class="mix-box" style="margin-top:12px"><div class="mix-t">Cargas para revisar</div><table class="plan-table mix-tbl">'+
-        '<thead><tr><th>Fecha</th><th>Residente</th><th>Alerta</th><th>Detalle</th></tr></thead><tbody>'+
-        alertas.slice(0,60).map(a=>'<tr><td class="nw">'+_esc(a.fecha)+'</td><td>'+_esc(a.res)+'</td>'+
-          '<td><b style="color:#8a6d10">'+_esc(a.tipo)+'</b></td><td>'+_esc(a.det)+'</td></tr>').join('')+
-        '</tbody></table>'+(alertas.length>60?'<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Se muestran las 60 más recientes de '+alertas.length+'.</div>':'')+'</div>'
-      : '<div class="mix-box" style="margin-top:12px"><div class="mix-t">Cargas para revisar</div><div style="font-size:13px;color:var(--text2)">Sin alertas en el período.</div></div>')+
+
     '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Con lo que se carga hoy se mide <b>cuánto</b> y <b>cada cuánto</b>. '+
     'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>';
 
   gs('rep-info').textContent = filas.length+' residente(s) · '+totN+' carga(s)';
-  REPORTE_PDF={ mode:'combustible', filas, alertas, totG, totN, promDiasG };
+  REPORTE_PDF={ mode:'combustible', filas, totG, totN, promDiasG };
   gs('r-export-pdf').disabled=false;
   gs('r-export').disabled=true;
 }
@@ -3394,7 +3366,7 @@ function exportTodosPDF(){
   } else { doc.save(filename); }
 }
 
-/* PDF del reporte de combustible: KPIs, tabla por residente y alertas */
+/* PDF del reporte de combustible: KPIs, tabla por residente y detalle de cargas */
 function exportCombustiblePDF(){
   const P=REPORTE_PDF; if(!P || P.mode!=='combustible'){ toast('Generá primero el reporte','err'); return; }
   const { jsPDF }=window.jspdf;
@@ -3406,14 +3378,15 @@ function exportCombustiblePDF(){
   doc.text('Caja Chica · Combustible por residente', W-M, 15, {align:'right'});
   doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.setFontSize(8.5);
   const desde=gs('r-desde')?gs('r-desde').value:'', hasta=gs('r-hasta')?gs('r-hasta').value:'';
-  doc.text('Periodo: '+(desde||'inicio')+' a '+(hasta||'hoy')+'  ·  Emitido: '+todayISO(), W-M, 20.5, {align:'right'});
+  const _rf=gs('r-res')?gs('r-res').value:'';
+  const _resTxt=(_rf && _rf!=='__TODOS__' && _rf)?('Residente: '+san(_rf)+'  ·  '):'';
+  doc.text(_resTxt+'Periodo: '+(desde||'inicio')+' a '+(hasta||'hoy')+'  ·  Emitido: '+todayISO(), W-M, 20.5, {align:'right'});
   doc.setDrawColor(200,160,40); doc.setLineWidth(0.6); doc.line(M,23,W-M,23);
 
   doc.setFontSize(9); doc.setTextColor(40,40,40);
   doc.text('Total: Gs '+fmt(P.totG)+'     Cargas: '+P.totN+
            '     Promedio por carga: Gs '+fmt(Math.round(P.totG/P.totN))+
-           '     Dias entre cargas: '+(P.promDiasG!=null?P.promDiasG.toFixed(1):'-')+
-           '     Alertas: '+P.alertas.length, M, 30);
+           '     Dias entre cargas: '+(P.promDiasG!=null?P.promDiasG.toFixed(1):'-'), M, 30);
 
   doc.autoTable({
     head:[['Residente','Cargas','Total Gs','Prom. Gs','Dias entre cargas','Ultima carga','Obra','Proveedor habitual']],
@@ -3428,22 +3401,6 @@ function exportCombustiblePDF(){
       4:{cellWidth:29,halign:'right'},5:{cellWidth:25,halign:'center'},6:{cellWidth:40},7:{cellWidth:42}}
   });
 
-  if(P.alertas.length){
-    doc.autoTable({
-      head:[['Fecha','Residente','Alerta','Detalle']],
-      body:P.alertas.slice(0,80).map(a=>[a.fecha||'-', san(a.res), san(a.tipo), san(a.det)]),
-      startY:doc.lastAutoTable.finalY+8, margin:{left:M,right:M},
-      styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
-      headStyles:{fillColor:[122,86,10],textColor:[255,255,255],fontStyle:'bold',fontSize:7.5,halign:'center'},
-      columnStyles:{0:{cellWidth:24},1:{cellWidth:38},2:{cellWidth:52},3:{cellWidth:'auto'}},
-      didDrawPage:()=>{
-        const ph=doc.internal.pageSize.getHeight();
-        doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
-        doc.text('AXC Constructora · Caja Chica · Generado por Conexdata', M, ph-6);
-        doc.text('Pagina '+doc.internal.getNumberOfPages(), W-M, ph-6, {align:'right'});
-      }
-    });
-  }
   // Detalle de cada carga, por residente (opcional desde el selector)
   const _sel=gs('r-pdf-detalle');
   if(!_sel || _sel.value!=='resumen'){
