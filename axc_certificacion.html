@@ -3397,7 +3397,11 @@ async function guardar(estado){
   try{
     const quien = state.profile.residente || state.profile.nombre || state.user.email;
     const total = M.reduce((s,x)=>s+x.subtotal,0);
+    // Contra qué foto del presupuesto se mide este certificado
+    const _bv = await versionesBase(ed.presus);
     const cab = {
+      base_version:   _bv.version,
+      base_versiones: _bv.detalle,
       obra: obra,
       sector: document.getElementById('edSector').value || null,
       contratista: contratista,
@@ -3682,7 +3686,9 @@ async function abrirDetalle(id){
           return v.length ? v.join(' · ') : '—';
         })()))+
         campo('Contratista', escapeHtml(c.contratista||'—'))+
-        campo('Presupuesto', escapeHtml(c.presupuesto||'—'))+
+        campo('Presupuesto', escapeHtml(c.presupuesto||'—')+
+          (c.base_versiones ? '<div style="font-size:11px;color:#8893a5;font-weight:400">línea base '+escapeHtml(c.base_versiones)+'</div>'
+           : (c.base_version ? '<div style="font-size:11px;color:#8893a5;font-weight:400">línea base v'+c.base_version+'</div>' : '')))+
         campo('Fecha', fmtFecha(c.fecha))+
         (c.medido_por?campo('Medido por', escapeHtml(c.medido_por)):'')+
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
@@ -3784,6 +3790,22 @@ function partirObs(txt){
     else if(l.trim()) obs.push(l.trim());
   });
   return { obs: obs.join('\n'), reaperturas: reap };
+}
+
+/* Versión de la línea base vigente de cada presupuesto usado. Si el
+   certificado toca uno solo, queda el número; si mezcla varios, queda el
+   detalle en texto. Así el comparativo sabe contra qué foto se midió. */
+async function versionesBase(presus){
+  const L = (presus||[]).filter(Boolean);
+  if(!L.length) return { version:null, detalle:null };
+  try{
+    const { data, error } = await sb.from('presupuesto_cab').select('codigo,base_version').in('codigo', L);
+    if(error) throw error;
+    const con = (data||[]).filter(function(x){ return x.base_version != null; });
+    if(!con.length) return { version:null, detalle:null };
+    const detalle = con.map(function(x){ return x.codigo+' v'+x.base_version; }).join('; ');
+    return { version: con.length === 1 ? Number(con[0].base_version) : null, detalle: detalle };
+  }catch(e){ console.warn('base_version', e); return { version:null, detalle:null }; }
 }
 
 function saldoCert(c){
