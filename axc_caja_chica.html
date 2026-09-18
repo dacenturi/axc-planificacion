@@ -1035,6 +1035,18 @@ const gs=(id)=>document.getElementById(id);
 const fmt=(n)=> (n==null||isNaN(n))?'—':Number(n).toLocaleString('es-PY',{maximumFractionDigits:0});
 const onlyDigits=(s)=>(s||'').replace(/[^\d]/g,'');
 function toast(m,k){const t=gs('toast');t.textContent=m;t.className='toast show '+(k||'');setTimeout(()=>{t.className='toast '+(k||'');},2800);}
+/* v7.42: los reportes arrancan con la semana en curso: lunes → hoy */
+function lunesISO(){
+  const d=new Date(); const dow=(d.getDay()+6)%7;   // 0 = lunes
+  d.setDate(d.getDate()-dow);
+  const z=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;
+}
+function fechasPorDefecto(forzar){
+  const d=gs('r-desde'), h=gs('r-hasta');
+  if(d && (forzar || !d.value)) d.value=lunesISO();
+  if(h && (forzar || !h.value)) h.value=todayISO();
+}
 function todayISO(){const d=new Date();const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;}
 // ----- Quién / cuándo (para "Últimas acreditaciones") -----
 // Devuelve el nombre visible del usuario a partir del email; si no lo encuentra, muestra el email.
@@ -1073,7 +1085,7 @@ async function switchTab(t){
     else if(t==='misacr'){ await loadMisAcreditaciones(); }
     else if(t==='tablero'){ await loadTablero(); }
     else if(t==='config'){ await loadConfig(); await loadSaldos(); renderTopes(); await loadAcreditaciones(); }
-    else if(t==='reporte'){ await loadSaldos(); if(typeof onResReporte==='function' && rTipo()!=='consolidado') onResReporte(); }
+    else if(t==='reporte'){ fechasPorDefecto(false); await loadSaldos(); if(typeof onResReporte==='function' && rTipo()!=='consolidado') onResReporte(); }
   }catch(e){ /* refresco silencioso; si falla, queda lo que ya estaba */ }
 }
 
@@ -1093,6 +1105,7 @@ async function switchTab(t){
   }
   IS_RESIDENTE = !esSuper;
   MI_RESIDENTE = IS_RESIDENTE ? perf.residente : null;
+  fechasPorDefecto(false);
   gs('u-name').textContent = (perf&&perf.nombre)?perf.nombre:CURRENT_USER.email;
   gs('u-role').textContent = esSuper ? (ROL==='admin'?'Administrador':'Supervisor de caja') : ('Residente · '+MI_RESIDENTE);
   // Configuración: acceso en el header, según permiso (configurar topes y/o acreditar)
@@ -2707,6 +2720,7 @@ function _dateFilter(q, col){
 
 function rTipo(){ const el=document.querySelector('input[name="r-tipo"]:checked'); return el?el.value:'cuenta'; }
 function onTipoReporte(){
+  fechasPorDefecto(false);
   const t=rTipo();
   const esComb=(t==='combustible');
   if(esComb){
@@ -2784,12 +2798,17 @@ async function generarReporte(){
    Responde tres preguntas: cuánto, cada cuánto y qué cargas mirar. */
 let COMB_DET={};
 
-/* Detalle de las cargas de un residente: se abre tocando el total */
+/* Detalle de las cargas de un residente. Viene abierto y se puede cerrar
+   tocando el total, para achicar el reporte cuando hay muchos residentes. */
 function cmbToggle(i){
+  const tr=gs('cmb-det-'+i), ar=gs('cmb-ar-'+i);
+  if(!tr) return;
+  if(tr.style.display!=='none'){ tr.style.display='none'; if(ar) ar.textContent='▸'; return; }
+  cmbPintar(i);
+}
+function cmbPintar(i){
   const tr=gs('cmb-det-'+i), ar=gs('cmb-ar-'+i), f=COMB_DET[i];
   if(!tr || !f) return;
-  const abierto = tr.style.display!=='none';
-  if(abierto){ tr.style.display='none'; if(ar) ar.textContent='▸'; return; }
   if(ar) ar.textContent='▾';
   const L=(f.movs||[]).slice().sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
   const filas=L.map((m,k)=>{
@@ -2886,17 +2905,20 @@ async function reporteCombustible(){
     '<thead><tr><th>Residente</th><th class="num">Cargas</th><th class="num">Total ₲</th><th class="num">Prom. ₲</th>'+
     '<th class="num">Días entre cargas</th><th>Última carga</th><th>Obra</th><th>Proveedor habitual</th></tr></thead><tbody>'+
     filas.map((f,i)=>'<tr class="cmb-row" onclick="cmbToggle('+i+')"><td><b>'+_esc(f.res)+'</b></td><td class="num">'+f.n+'</td>'+
-      '<td class="num cmb-tot"><span class="cmb-ar" id="cmb-ar-'+i+'">▸</span> '+fmt(f.tot)+'</td>'+
+      '<td class="num cmb-tot"><span class="cmb-ar" id="cmb-ar-'+i+'">▾</span> '+fmt(f.tot)+'</td>'+
       '<td class="num">'+fmt(Math.round(f.prom))+'</td>'+
       '<td class="num">'+(f.promDias!=null?f.promDias.toFixed(1):'—')+'</td>'+
       '<td>'+_esc(f.ultima)+'</td>'+
       '<td>'+_esc(f.obra)+(f.obras>1?(' <span style="color:var(--text3)">(+'+(f.obras-1)+')</span>'):'')+'</td>'+
       '<td>'+_esc(f.hab)+(f.provs>1?(' <span style="color:var(--text3)">(+'+(f.provs-1)+')</span>'):'')+'</td></tr>'+
-      '<tr class="cmb-det" id="cmb-det-'+i+'" style="display:none"><td colspan="8"></td></tr>').join('')+
+      '<tr class="cmb-det" id="cmb-det-'+i+'"><td colspan="8"></td></tr>').join('')+
     '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+totN+'</td><td class="num">'+fmt(totG)+'</td><td colspan="5"></td></tr></tfoot></table></div>'+
 
     '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Con lo que se carga hoy se mide <b>cuánto</b> y <b>cada cuánto</b>. '+
     'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>';
+
+  // Las cargas ya vienen desplegadas: el reporte se lee completo de una
+  filas.forEach((f,i)=>{ cmbPintar(i); });
 
   gs('rep-info').textContent = filas.length+' residente(s) · '+totN+' carga(s)';
   REPORTE_PDF={ mode:'combustible', filas, totG, totN, promDiasG, adjRows };
