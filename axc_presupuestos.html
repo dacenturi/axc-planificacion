@@ -852,9 +852,9 @@ body{
         <div class="pm-field"><label class="pm-label">Superficie (m²)</label>
           <input id="mgSup" class="pm-input" type="number" step="0.01" placeholder="Ej. 1177.70"></div>
         <div class="pm-field"><label class="pm-label">Margen general %</label>
-          <input id="mgPct" class="pm-input" type="number" step="0.01" min="0" max="95" value="25"></div>
+          <input id="mgPct" class="pm-input" type="number" step="0.01" min="0" max="95" value="31"></div>
         <div class="pm-field"><label class="pm-label">Coeficiente <span style="font-weight:400;color:#8893a5">· costo ÷ coef.</span></label>
-          <input id="mgCoef" class="pm-input" type="number" step="0.0001" min="0.05" max="1" value="0.75"></div>
+          <input id="mgCoef" class="pm-input" type="number" step="0.0001" min="0.05" max="1" value="0.69"></div>
         <div class="pm-field"><label class="pm-label">Validez (días)</label>
           <input id="mgValidez" class="pm-input" type="number" min="1" value="15"></div>
         <div class="pm-field" style="grid-column:1/-1"><label class="pm-label">Condiciones de pago</label>
@@ -864,7 +864,11 @@ body{
       </div>
       <div class="mg-formula" id="mgFormula">—</div>
       <div class="mg-opt-nota">Cliente, atención, referencia, profesional, superficie y alcance son <b>opcionales</b>: si los dejás vacíos, no se imprimen.</div>
-      <div class="pm-sectitle" style="margin-top:18px">MARGEN POR RUBRO <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#8893a5">· dejalo vacío para usar el general</span></div>
+      <div class="pm-sectitle" style="margin-top:18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span>MARGEN POR RUBRO <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#8893a5">· dejalo vacío para usar el general</span></span>
+        <button type="button" id="mgResetAll" class="btn-g" style="margin-left:auto;font-size:12px;padding:5px 10px;text-transform:none;letter-spacing:0">↺ Poner el coeficiente de AXC (0,69) en todos</button>
+        <span id="mgDifCount" style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;color:#8a6d10"></span>
+      </div>
       <div style="overflow-x:auto"><table class="ins-tbl" id="mgTabla"></table></div>
       <div class="mg-tot" id="mgTot"></div>
     </div>
@@ -3775,6 +3779,24 @@ function _mgPctDe(cod){
   return (v===''||v==null||isNaN(v)) ? (Number(document.getElementById('mgPct').value)||0) : Number(v);
 }
 
+/* v8.3: los márgenes de la última propuesta emitida se recuperan al abrir la
+   ventana. Antes arrancaba siempre en el 25 % por defecto y una reimpresión
+   podía salir con precios distintos a los que ya vio el cliente. */
+async function _mgCargarUltima(codigo){
+  try{
+    const { data:cab } = await sb.from('propuesta_cab')
+      .select('id,version,margen_general,emitido_por,creado_en')
+      .eq('presupuesto', codigo).order('version',{ascending:false}).limit(1).maybeSingle();
+    if(!cab) return null;
+    const { data:its } = await sb.from('propuesta_items')
+      .select('rubro_codigo,margen_pct,costo_unit,precio_unit').eq('propuesta_id', cab.id);
+    return { cab:cab, items:its||[] };
+  }catch(e){ console.warn('propuesta previa', e); return null; }
+}
+
+/* Coeficiente de AXC: 0,69 (margen 31 % sobre la venta) */
+const COEF_AXC = 0.69;
+
 function openPropuesta(){
   if(!state.puedeVerMargen){ showToast('No tenés permiso para aplicar márgenes','error','Pedí el permiso a un administrador'); return; }
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
@@ -3799,9 +3821,56 @@ function openPropuesta(){
     (document.getElementById('pmCodigo').value||'') + ' · ' +
     (document.getElementById('pmObra').value||'') + ' · ' + MG.rows.length + ' rubros';
   document.getElementById('mgCliente').value = '';
-  document.getElementById('mgCoef').value = (1-(Number(document.getElementById('mgPct').value)||0)/100).toFixed(4);
+  // Sin propuesta previa se arranca con el coeficiente de la empresa
+  document.getElementById('mgPct').value = Math.round((1-COEF_AXC)*10000)/100;
+  document.getElementById('mgCoef').value = COEF_AXC.toFixed(4);
   document.getElementById('mgOverlay').style.display='flex';
   renderMargen();
+  const _rst=document.getElementById('mgResetAll');
+  if(_rst) _rst.onclick = function(){
+    MG.porRubro = {};
+    document.getElementById('mgPct').value = Math.round((1-COEF_AXC)*10000)/100;
+    document.getElementById('mgCoef').value = COEF_AXC.toFixed(4);
+    renderMargen();
+    showToast('Coeficiente 0,69 en todos los rubros','success','Se borraron los márgenes por rubro');
+  };
+
+  // Recuperar los márgenes de la última propuesta emitida de este presupuesto
+  const _cod = document.getElementById('pmCodigo').value||'';
+  const _avisoId = 'mgPrevio';
+  _mgCargarUltima(_cod).then(function(prev){
+    const cont = document.getElementById('mgSub');
+    if(!prev || !prev.items.length || !cont) return;
+    // Margen general de la propuesta anterior
+    const gen = Number(prev.cab.margen_general);
+    if(!isNaN(gen) && gen > 0){
+      document.getElementById('mgPct').value = gen;
+      document.getElementById('mgCoef').value = (1-gen/100).toFixed(4);
+    }
+    let n = 0;
+    prev.items.forEach(function(it){
+      if(it.rubro_codigo == null) return;
+      const pct = Number(it.margen_pct);
+      if(isNaN(pct)) return;
+      if(!isNaN(gen) && Math.abs(pct-gen) < 0.001) return;   // igual al general: se deja vacío
+      MG.porRubro[it.rubro_codigo] = pct; n++;
+    });
+    renderMargen();
+    const el = document.getElementById(_avisoId);
+    const txt = 'Se cargaron los márgenes de la propuesta v'+prev.cab.version+
+                ' (general '+(isNaN(gen)?'—':gen+' %')+(n?(' · '+n+' rubro(s) con margen propio'):'')+
+                '). Revisalos antes de emitir: emitir crea la versión v'+(Number(prev.cab.version)+1)+'.';
+    if(el){ el.textContent = txt; el.style.display=''; }
+    else{
+      const d=document.createElement('div');
+      d.id=_avisoId;
+      d.style.cssText='margin:10px 0;padding:9px 12px;border:1px solid #f0e2bd;background:#fdf7e8;border-radius:9px;font-size:12.5px;color:#6b5410';
+      d.textContent = txt;
+      const anchor=document.querySelector('#mgOverlay .pm-sectitle');
+      if(anchor && anchor.parentNode) anchor.parentNode.insertBefore(d, anchor);
+    }
+    showToast('Márgenes de la v'+prev.cab.version+' recuperados','info', n?(n+' rubro(s) con margen propio'):'');
+  });
 }
 
 /* Insumos y mano de obra que componen el costo de un rubro, tal como
@@ -3823,6 +3892,22 @@ function _mgDetalle(codigo){
     });
   });
   return out.sort(function(a,b){ return (a.mo?1:0) - (b.mo?1:0) || b.sub - a.sub; });
+}
+
+function _mgDifer(){
+  const gen = Number(document.getElementById('mgPct').value)||0;
+  return (MG.rows||[]).filter(function(r){
+    const v = MG.porRubro[r.codigo];
+    return v!=null && v!=='' && !isNaN(v) && Math.abs(Number(v)-gen) > 0.001;
+  });
+}
+function _mgPintarDif(){
+  const el=document.getElementById('mgDifCount'); if(!el) return;
+  const d=_mgDifer();
+  el.textContent = d.length
+    ? (d.length+' rubro(s) con coeficiente propio: '+d.slice(0,4).map(function(r){
+        return r.codigo+' ('+(1-Number(MG.porRubro[r.codigo])/100).toFixed(4)+')'; }).join(', ')+(d.length>4?'…':''))
+    : 'Todos con el coeficiente general';
 }
 
 function renderMargen(){
@@ -3896,6 +3981,7 @@ function renderMargen(){
   // El IVA cierra el numero: es lo que el cliente va a pagar de verdad
   const ivaP = Number(ivaGet())||0;
   const ivaM = Math.round(ventaT * ivaP / 100);
+  _mgPintarDif();
   document.getElementById('mgTot').innerHTML =
     '<div class="c"><span>Costo total</span><b>₲ '+fmtGs(costoT)+'</b></div>'+
     '<div class="c util"><span>Utilidad</span><b>₲ '+fmtGs(util)+' · '+real.toFixed(1)+'%</b></div>'+
