@@ -439,6 +439,10 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .firma-box{border:1.5px dashed #c3cad6;border-radius:var(--radius-lg);background:#fff;overflow:hidden;position:relative}
 .firma-box canvas{display:block;width:100%;height:180px;touch-action:none;cursor:crosshair}
 .firma-box::after{content:'';position:absolute;left:8%;right:8%;bottom:34px;border-bottom:1px solid #dde2ea;pointer-events:none}
+.cta-ic{background:none;border:1px solid transparent;border-radius:7px;color:#8893a5;font-size:13px;
+  padding:3px 7px;cursor:pointer;margin-left:2px;line-height:1.2}
+.cta-ic:hover{background:#EDF3FB;border-color:#d6dce8;color:#1f3864}
+.cta-n{font-size:10.5px;font-weight:700;color:#1f3864;margin-left:3px}
 .firma-ok{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:#1B5524;
   background:#eaf6ee;border:1px solid #bfe0c7;border-radius:var(--radius-pill);padding:4px 11px}
 /* Liquidación del certificado aprobado */
@@ -2937,15 +2941,21 @@ async function pxBaja(id){
    El anticipo se otorga una vez y se descuenta de a poco. Cada
    descuento queda atado a su certificado, así no se descuenta dos
    veces lo mismo y siempre se sabe cuánto falta devolver. */
-var CTA = { mov: [], cargado: false };
+var CTA = { mov: [], cargado: false, adj: {} };
 
 async function ctaCargar(){
   try{
     const { data, error } = await sb.from('contratista_cuenta')
-      .select('id,contratista,tipo,movimiento,monto,obra,fecha,certificado_id,concepto')
+      .select('id,contratista,tipo,movimiento,monto,obra,fecha,certificado_id,concepto,observacion')
       .eq('activo', true).limit(5000);
     if(error) throw error;
     CTA.mov = data || []; CTA.cargado = true;
+    // Cuántos comprobantes tiene cada movimiento (recibo, transferencia, nota)
+    CTA.adj = {};
+    try{
+      const { data:ad } = await sb.from('cuenta_adjuntos').select('movimiento_id').limit(20000);
+      (ad||[]).forEach(function(x){ CTA.adj[x.movimiento_id] = (CTA.adj[x.movimiento_id]||0) + 1; });
+    }catch(e){ /* tabla de adjuntos ausente: la cuenta funciona igual */ }
     return true;
   }catch(e){ console.warn('cuenta', e); CTA.mov = []; CTA.cargado = false; return false; }
 }
@@ -3282,13 +3292,151 @@ function renderCuenta(){
         '<div class="liq-r"><span>Anticipo · entregado '+gs(a.otorgado)+' · descontado '+gs(a.descontado)+'</span><b>'+gs(a.saldo)+' pendiente</b></div>'+
         '<div class="liq-r"><span>Préstamo · entregado '+gs(p.otorgado)+' · descontado '+gs(p.descontado)+'</span><b>'+gs(p.saldo)+' pendiente</b></div>'+
       '</div>'+
-      '<table class="det-tab"><thead><tr><th>Fecha</th><th>Tipo</th><th>Movimiento</th><th>Obra / concepto</th><th class="r">Monto</th></tr></thead><tbody>'+
+      '<table class="det-tab"><thead><tr><th>Fecha</th><th>Tipo</th><th>Movimiento</th><th>Obra / concepto</th><th class="r">Monto</th><th></th></tr></thead><tbody>'+
       movs.map(m=>'<tr><td>'+fmtFecha(m.fecha)+'</td><td>'+escapeHtml(m.tipo)+'</td>'+
         '<td style="color:'+(m.movimiento==='otorgado'?'#8a6d10':'#1B5524')+'">'+(m.movimiento==='otorgado'?'entregado':'descontado')+'</td>'+
-        '<td>'+escapeHtml(m.obra||'—')+(m.concepto?('<div class="det-obs">'+escapeHtml(m.concepto)+'</div>'):'')+'</td>'+
-        '<td class="r"><b>'+(m.movimiento==='otorgado'?'':'− ')+gs(m.monto)+'</b></td></tr>').join('')+
+        '<td>'+escapeHtml(m.obra||'—')+
+          (m.concepto?('<div class="det-obs">'+escapeHtml(m.concepto)+'</div>'):'')+
+          (m.observacion?('<div class="det-obs" style="font-style:italic">'+escapeHtml(m.observacion)+'</div>'):'')+'</td>'+
+        '<td class="r"><b>'+(m.movimiento==='otorgado'?'':'− ')+gs(m.monto)+'</b></td>'+
+        '<td class="r" style="white-space:nowrap">'+
+          '<button type="button" class="cta-ic" data-ctaobs="'+m.id+'" title="Observación">✎</button>'+
+          '<button type="button" class="cta-ic" data-ctaadj="'+m.id+'" title="Comprobantes">📎'+
+            ((CTA.adj[m.id]||0) ? '<span class="cta-n">'+CTA.adj[m.id]+'</span>' : '')+'</button>'+
+        '</td></tr>').join('')+
       '</tbody></table>';
   }).join('');
+
+  cont.querySelectorAll('button[data-ctaobs]').forEach(function(b){
+    b.onclick = function(){ ctaObservacion(Number(b.getAttribute('data-ctaobs'))); };
+  });
+  cont.querySelectorAll('button[data-ctaadj]').forEach(function(b){
+    b.onclick = function(){ ctaAdjuntos(Number(b.getAttribute('data-ctaadj'))); };
+  });
+}
+
+/* Observación del movimiento: para qué se entregó, cómo se pagó, quién retiró */
+async function ctaObservacion(id){
+  const m = CTA.mov.filter(function(x){ return x.id === id; })[0];
+  if(!m) return;
+  const r = await axcDialog({
+    tono:'', icono:'✎', titulo:'Observación del movimiento',
+    subtitulo: m.tipo+' · '+gs(m.monto)+' · '+fmtFecha(m.fecha),
+    mensaje:'Queda visible en la cuenta del contratista. Sirve para dejar anotado cómo se entregó, quién retiró o a qué corresponde.',
+    campo:{ label:'Observación', placeholder:'Ej. transferencia Itaú, retiró el encargado', valor: m.observacion||'' },
+    ok:'Guardar', cancelar:'Cancelar'
+  });
+  if(!r.ok) return;
+  try{
+    const { error } = await sb.from('contratista_cuenta')
+      .update({ observacion: (r.valor||'').trim() || null, updated_at: new Date().toISOString() }).eq('id', id);
+    if(error) throw error;
+    m.observacion = (r.valor||'').trim() || null;
+    renderCuenta();
+    showToast('Observación guardada','success');
+  }catch(e){
+    showToast('No se pudo guardar','error',
+      /observacion/i.test(e.message||'') ? 'Falta correr el script de la cuenta de contratistas' : (e.message||''));
+  }
+}
+
+/* Comprobantes del movimiento: recibo, transferencia, nota firmada */
+async function ctaAdjuntos(id){
+  const m = CTA.mov.filter(function(x){ return x.id === id; })[0];
+  if(!m) return;
+  let lista = [];
+  const cargar = async function(){
+    try{
+      const { data, error } = await sb.from('cuenta_adjuntos')
+        .select('*').eq('movimiento_id', id).order('created_at');
+      if(error) throw error;
+      lista = data || [];
+      for(const a of lista){
+        try{
+          const { data:sg } = await sb.storage.from('oc-adjuntos').createSignedUrl(a.url_storage, 3600);
+          a._url = (sg && sg.signedUrl) || '';
+        }catch(e){ a._url = ''; }
+        a._esImg = /^image\//i.test(a.tipo||'');
+      }
+      CTA.adj[id] = lista.length;
+    }catch(e){
+      lista = [];
+      showToast('No se pudieron leer los comprobantes','error',
+        /cuenta_adjuntos/i.test(e.message||'') ? 'Falta correr el script de la cuenta de contratistas' : (e.message||''));
+    }
+  };
+  await cargar();
+
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(640px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+      '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+        '<div style="font-weight:800;font-size:16px">📎 Comprobantes</div>'+
+        '<div style="font-size:12px;opacity:.85">'+escapeHtml(m.contratista||'')+' · '+escapeHtml(m.tipo||'')+' '+gs(m.monto)+' · '+fmtFecha(m.fecha)+'</div></div>'+
+      '<div style="padding:12px 18px;border-bottom:1px solid #e2e6ee">'+
+        '<input type="file" id="ctaFile" multiple accept="image/*,application/pdf" style="width:100%;font-size:13px">'+
+        '<div style="font-size:11.5px;color:#64748b;margin-top:6px">Recibo firmado, comprobante de transferencia o nota. Hasta 15 MB por archivo.</div>'+
+        '<div id="ctaEstado" style="font-size:12px;color:#1f3864;margin-top:6px"></div></div>'+
+      '<div id="ctaLista" style="overflow:auto;padding:8px 18px;flex:1;min-height:100px"></div>'+
+      '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end">'+
+        '<button type="button" class="btn-g" id="ctaCerrar">Cerrar</button></div>'+
+    '</div>';
+  document.body.appendChild(ov);
+
+  const pintar = function(){
+    ov.querySelector('#ctaLista').innerHTML = lista.length
+      ? lista.map(function(a,i){
+          return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #eef1f6">'+
+            '<div style="font-size:17px">'+(a._esImg?'🖼️':'📄')+'</div>'+
+            '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;word-break:break-word">'+escapeHtml(a.nombre||'')+'</div>'+
+              '<div style="font-size:11.5px;color:#64748b">'+escapeHtml(a.subido_por||'')+(a.created_at?' · '+fmtFecha(a.created_at):'')+'</div></div>'+
+            (a._url?'<a href="'+escapeHtml(a._url)+'" target="_blank" rel="noopener" class="btn-g" style="text-decoration:none">Abrir</a>':'')+
+            '<button type="button" class="btn-g" data-ctadel="'+i+'" title="Quitar">✕</button></div>';
+        }).join('')
+      : '<div style="padding:20px;text-align:center;color:#8893a5;font-size:13px">Sin comprobantes cargados.</div>';
+  };
+  pintar();
+
+  ov.querySelector('#ctaFile').onchange = async function(ev){
+    const files = Array.from(ev.target.files||[]); if(!files.length) return;
+    const est = ov.querySelector('#ctaEstado');
+    const quien = (state.profile && (state.profile.residente||state.profile.nombre)) || (state.user&&state.user.email) || null;
+    let ok = 0;
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      est.textContent = 'Subiendo '+(i+1)+' de '+files.length+'…';
+      if(f.size > 15*1024*1024){ showToast('«'+f.name+'» pesa más de 15 MB','error'); continue; }
+      try{
+        const path = 'cuenta/'+id+'/'+Date.now()+'_'+f.name.replace(/[^\w.\-]+/g,'_');
+        const up = await sb.storage.from('oc-adjuntos').upload(path, f, { contentType:f.type||'application/octet-stream', upsert:true });
+        if(up.error) throw up.error;
+        const ins = await sb.from('cuenta_adjuntos').insert({ movimiento_id:id, nombre:f.name, tipo:f.type||'', url_storage:path, subido_por:quien });
+        if(ins.error) throw ins.error;
+        ok++;
+      }catch(e){ showToast('No se pudo subir «'+f.name+'»','error', e.message||''); }
+    }
+    ev.target.value = ''; est.textContent = '';
+    if(ok){ await cargar(); pintar(); renderCuenta(); showToast(ok+' comprobante(s) cargado(s)','success'); }
+  };
+
+  ov.addEventListener('click', async function(ev){
+    if(ev.target === ov) return ov.remove();
+    const t = ev.target.closest('button'); if(!t) return;
+    if(t.id === 'ctaCerrar') return ov.remove();
+    if(t.dataset.ctadel != null){
+      const a = lista[Number(t.dataset.ctadel)]; if(!a) return;
+      const r = await axcDialog({ tono:'danger', icono:'✕', titulo:'Quitar el comprobante',
+        mensaje:'Se va a quitar «'+escapeHtml(a.nombre||'')+'». No se puede deshacer.', ok:'Quitar', cancelar:'Volver' });
+      if(!r.ok) return;
+      try{
+        const del = await sb.from('cuenta_adjuntos').delete().eq('id', a.id);
+        if(del.error) throw del.error;
+        try{ await sb.storage.from('oc-adjuntos').remove([a.url_storage]); }catch(e){}
+        await cargar(); pintar(); renderCuenta();
+      }catch(e){ showToast('No se pudo quitar','error', e.message||''); }
+    }
+  });
 }
 
 
