@@ -2792,11 +2792,11 @@ function cmbToggle(i){
   if(abierto){ tr.style.display='none'; if(ar) ar.textContent='▸'; return; }
   if(ar) ar.textContent='▾';
   const L=(f.movs||[]).slice().sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
-  let prev=null;
   const filas=L.map((m,k)=>{
     const sig=L[k+1];
     const dias = sig ? Math.round((new Date(m.fecha)-new Date(sig.fecha))/86400000) : null;
-    return '<tr><td class="nw">'+_esc(m.fecha||'')+'</td><td>'+_esc(m.nro_factura||'—')+'</td>'+
+    return '<tr><td class="num" style="font-weight:700;color:#7A5600">'+(m._item||'')+'</td>'+
+      '<td class="nw">'+_esc(m.fecha||'')+'</td><td>'+_esc(m.nro_factura||'—')+'</td>'+
       '<td>'+_esc(m.proveedor||'—')+'</td><td>'+_esc(m.obra||'—')+'</td>'+
       '<td class="num">'+fmt(m.total)+'</td>'+
       '<td class="num">'+(dias!=null?(dias+' d'):'—')+'</td>'+
@@ -2804,7 +2804,7 @@ function cmbToggle(i){
   }).join('');
   tr.firstElementChild.innerHTML =
     '<div class="cmb-detbox"><table class="plan-table mix-tbl">'+
-    '<thead><tr><th>Fecha</th><th>Factura</th><th>Proveedor</th><th>Obra</th><th class="num">Monto ₲</th><th class="num">Desde la anterior</th><th>Comentario</th></tr></thead>'+
+    '<thead><tr><th class="num">N.º</th><th>Fecha</th><th>Factura</th><th>Proveedor</th><th>Obra</th><th class="num">Monto ₲</th><th class="num">Desde la anterior</th><th>Comentario</th></tr></thead>'+
     '<tbody>'+filas+'</tbody></table></div>';
   tr.style.display='';
 }
@@ -2812,7 +2812,7 @@ function cmbToggle(i){
 async function reporteCombustible(){
   const cont=gs('rep-result');
   let q=_SB.from('caja_chica_movimientos')
-    .select('id,fecha,residente,proveedor,obra,rubro,total,estado,comentario,nro_factura')
+    .select('id,fecha,residente,proveedor,obra,rubro,total,estado,comentario,nro_factura,caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
     .in('estado',['solicitado','observado','aprobado'])
     .ilike('rubro','%combustible%');
   q=_dateFilter(q,'fecha');
@@ -2862,7 +2862,18 @@ async function reporteCombustible(){
   const k=(l,v,s)=>'<div class="cc-kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';
 
   COMB_DET={};
-  filas.forEach((f,i)=>{ COMB_DET[i]=f; });
+  // N.º de carga en el orden en que se imprime: es la referencia del anexo
+  let _cn=0; const adjRows=[];
+  filas.forEach((f,i)=>{
+    COMB_DET[i]=f;
+    f.movs.sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+    f.movs.forEach(m=>{
+      m._item=++_cn;
+      adjRows.push({ kind:'deb', _item:m._item, fecha:m.fecha||'', factura:m.nro_factura||'',
+        proveedor:m.proveedor||'', debitado:Number(m.total||0), total:Number(m.total||0),
+        adj:m.caja_chica_adjuntos||[] });
+    });
+  });
 
   cont.innerHTML =
     '<div class="cc-kpis">'+
@@ -2888,7 +2899,7 @@ async function reporteCombustible(){
     'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>';
 
   gs('rep-info').textContent = filas.length+' residente(s) · '+totN+' carga(s)';
-  REPORTE_PDF={ mode:'combustible', filas, totG, totN, promDiasG };
+  REPORTE_PDF={ mode:'combustible', filas, totG, totN, promDiasG, adjRows };
   gs('r-export-pdf').disabled=false;
   gs('r-export').disabled=true;
 }
@@ -3412,19 +3423,19 @@ function exportCombustiblePDF(){
       doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(31,56,100);
       doc.text(san(f.res)+'  ·  '+f.n+' carga(s)  ·  Gs '+fmt(f.tot), M, sy);
       doc.autoTable({
-        head:[['Fecha','Factura','Proveedor','Obra','Monto Gs','Desde la anterior','Comentario']],
+        head:[['N.º','Fecha','Factura','Proveedor','Obra','Monto Gs','Desde la anterior','Comentario']],
         body:L.map((m,k)=>{
           const sig=L[k+1];
           const d=sig?Math.round((new Date(m.fecha)-new Date(sig.fecha))/86400000):null;
-          return [m.fecha||'-', san(m.nro_factura||'-'), san(m.proveedor||'-'), san(m.obra||'-'),
+          return [String(m._item||''), m.fecha||'-', san(m.nro_factura||'-'), san(m.proveedor||'-'), san(m.obra||'-'),
                   fmt(m.total), d!=null?(d+' d'):'-', san((m.comentario||'').slice(0,70))];
-        }).concat([[{content:'Subtotal',styles:{fontStyle:'bold'}},{content:''},{content:''},{content:''},
+        }).concat([[{content:'Subtotal',styles:{fontStyle:'bold'}},{content:''},{content:''},{content:''},{content:''},
                     {content:fmt(f.tot),styles:{fontStyle:'bold',halign:'right'}},{content:''},{content:''}]]),
         startY:sy+3, margin:{left:M,right:M},
         styles:{font:'helvetica',fontSize:7.5,cellPadding:1.5,textColor:[40,40,40],lineColor:[228,228,228],lineWidth:0.1},
         headStyles:{fillColor:[236,232,220],textColor:[70,60,30],fontStyle:'bold',fontSize:7.5,halign:'center'},
-        columnStyles:{0:{cellWidth:24},1:{cellWidth:34},2:{cellWidth:44},3:{cellWidth:44},
-                      4:{cellWidth:26,halign:'right'},5:{cellWidth:28,halign:'right'},6:{cellWidth:'auto'}},
+        columnStyles:{0:{cellWidth:10,halign:'center',fontStyle:'bold'},1:{cellWidth:23},2:{cellWidth:32},3:{cellWidth:42},4:{cellWidth:42},
+                      5:{cellWidth:25,halign:'right'},6:{cellWidth:27,halign:'right'},7:{cellWidth:'auto'}},
         didDrawPage:()=>{
           const ph=doc.internal.pageSize.getHeight();
           doc.setFontSize(7.5); doc.setTextColor(150,150,150); doc.setFont('helvetica','normal');
@@ -3438,8 +3449,15 @@ function exportCombustiblePDF(){
   doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(130,130,130);
   doc.text('Mide cuanto y cada cuanto se carga. Para saber si el consumo corresponde hacen falta litros y kilometraje.',
     M, doc.lastAutoTable.finalY+6);
-  doc.save('caja_chica_combustible_'+todayISO()+'.pdf');
-  toast('Reporte de combustible generado','ok');
+  const _fn='caja_chica_combustible_'+todayISO()+'.pdf';
+  const _adjChk=gs('r-pdf-adjuntos');
+  if(_adjChk && _adjChk.checked && (P.adjRows||[]).some(r=>r.adj && r.adj.length)){
+    const _i=gs('rep-info'); if(_i) _i.dataset.titulo='Combustible  ·  '+(desde||'inicio')+' a '+(hasta||'hoy');
+    _exportarConAdjuntos(doc, P.adjRows, _fn);
+  } else {
+    doc.save(_fn);
+    toast('Reporte de combustible generado','ok');
+  }
 }
 
 function exportarReportePDF(P0, doc0){
