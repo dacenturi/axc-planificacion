@@ -379,6 +379,11 @@ tr:last-child td{border-bottom:none}
 .cat-empty{padding:10px 11px;color:var(--text3);font-size:12px}
 .rdet-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;max-width:1360px;width:97vw;max-height:94vh;display:flex;flex-direction:column}
 .rdet-body .plan-table{font-size:13.5px}
+.cmb-row{cursor:pointer}
+.cmb-row:hover{background:rgba(138,109,16,.07)}
+.cmb-tot{font-weight:700;color:#7A5600}
+.cmb-ar{font-size:10px;color:#8a6d10;margin-right:2px}
+.cmb-detbox{background:rgba(0,0,0,.02);border-radius:10px;padding:8px 10px;margin:4px 0}
 .cc-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
 .cc-kpi{border:1px solid var(--border);border-radius:12px;padding:11px 13px;background:var(--bg)}
 .cc-kpi .l{font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700}
@@ -2706,12 +2711,17 @@ function onTipoReporte(){
   const esComb=(t==='combustible');
   if(esComb){
     gs('f-res').style.display='none'; gs('f-res-cons').style.display='none'; gs('f-rnd').style.display='none';
+    // El rubro ya está fijo en Combustible: el filtro solo confunde
+    const _fr=document.querySelector('.fld.f-cat select#r-rubro');
+    if(_fr && _fr.parentElement) _fr.parentElement.style.display='none';
     const pdfSel=gs('r-pdf-detalle'); if(pdfSel) pdfSel.style.display='none';
     gs('r-export').disabled=true; gs('r-export-pdf').disabled=true;
     REPORTE_DATA=null; REPORTE_PDF=null; gs('rep-info').textContent='';
     gs('rep-result').innerHTML='<div class="empty">Frecuencia y gasto de combustible por residente. Elegí el período y tocá Generar.</div>';
     return;
   }
+  { const _fr=document.querySelector('.fld.f-cat select#r-rubro');
+    if(_fr && _fr.parentElement) _fr.parentElement.style.display=''; }
   const esCons=(t==='consolidado');
   gs('f-res').style.display = esCons?'none':'';
   gs('f-res-cons').style.display = esCons?'':'none';   // v7.28: filtro de residente para el consolidado
@@ -2768,6 +2778,32 @@ async function generarReporte(){
    Con lo que ya se carga hoy: fecha, residente, proveedor, obra y monto.
    Responde tres preguntas: cuánto, cada cuánto y qué cargas mirar. */
 const COMB_ALERTA={ DIAS_SEGUIDAS:2, EXCESO_PCT:40 };
+let COMB_DET={};
+
+/* Detalle de las cargas de un residente: se abre tocando el total */
+function cmbToggle(i){
+  const tr=gs('cmb-det-'+i), ar=gs('cmb-ar-'+i), f=COMB_DET[i];
+  if(!tr || !f) return;
+  const abierto = tr.style.display!=='none';
+  if(abierto){ tr.style.display='none'; if(ar) ar.textContent='▸'; return; }
+  if(ar) ar.textContent='▾';
+  const L=(f.movs||[]).slice().sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+  let prev=null;
+  const filas=L.map((m,k)=>{
+    const sig=L[k+1];
+    const dias = sig ? Math.round((new Date(m.fecha)-new Date(sig.fecha))/86400000) : null;
+    return '<tr><td class="nw">'+_esc(m.fecha||'')+'</td><td>'+_esc(m.nro_factura||'—')+'</td>'+
+      '<td>'+_esc(m.proveedor||'—')+'</td><td>'+_esc(m.obra||'—')+'</td>'+
+      '<td class="num">'+fmt(m.total)+'</td>'+
+      '<td class="num">'+(dias!=null?(dias+' d'):'—')+'</td>'+
+      '<td>'+_esc((m.comentario||'').slice(0,60))+'</td></tr>';
+  }).join('');
+  tr.firstElementChild.innerHTML =
+    '<div class="cmb-detbox"><table class="plan-table mix-tbl">'+
+    '<thead><tr><th>Fecha</th><th>Factura</th><th>Proveedor</th><th>Obra</th><th class="num">Monto ₲</th><th class="num">Desde la anterior</th><th>Comentario</th></tr></thead>'+
+    '<tbody>'+filas+'</tbody></table></div>';
+  tr.style.display='';
+}
 
 async function reporteCombustible(){
   const cont=gs('rep-result');
@@ -2805,8 +2841,12 @@ async function reporteCombustible(){
     // Proveedor habitual
     const pc={}; L.forEach(x=>{ const p=x.proveedor||'—'; pc[p]=(pc[p]||0)+1; });
     const hab=Object.keys(pc).sort((a,b)=>pc[b]-pc[a])[0]||'—';
+    // Obra con más cargas (y cuántas otras aparecen)
+    const oc={}; L.forEach(x=>{ const o=(x.obra||'—'); oc[o]=(oc[o]||0)+1; });
+    const obraHab=Object.keys(oc).sort((a,b)=>oc[b]-oc[a])[0]||'—';
     filas.push({ res:r, n:L.length, tot:tot, prom:prom, promDias:promDias,
-                 ultima:L[L.length-1].fecha, hab:hab, provs:Object.keys(pc).length });
+                 ultima:L[L.length-1].fecha, hab:hab, provs:Object.keys(pc).length,
+                 obra:obraHab, obras:Object.keys(oc).length, movs:L });
     // Alertas
     for(let i=1;i<L.length;i++){
       const d=dif(L[i-1].fecha, L[i].fecha);
@@ -2837,6 +2877,9 @@ async function reporteCombustible(){
   const promDiasG=gapsAll.length?(gapsAll.reduce((a,x)=>a+x.promDias,0)/gapsAll.length):null;
   const k=(l,v,s)=>'<div class="cc-kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';
 
+  COMB_DET={};
+  filas.forEach((f,i)=>{ COMB_DET[i]=f; });
+
   cont.innerHTML =
     '<div class="cc-kpis">'+
       k('Total combustible','₲ '+fmt(totG), filas.length+' residente(s)')+
@@ -2845,14 +2888,17 @@ async function reporteCombustible(){
       k('Días entre cargas', promDiasG!=null?promDiasG.toFixed(1):'—','promedio general')+
       k('Alertas', String(alertas.length), alertas.length?'para revisar':'sin novedades')+
     '</div>'+
-    '<div class="mix-box"><div class="mix-t">Por residente</div><table class="plan-table mix-tbl">'+
+    '<div class="mix-box"><div class="mix-t">Por residente · tocá el total para ver las cargas</div><table class="plan-table mix-tbl">'+
     '<thead><tr><th>Residente</th><th class="num">Cargas</th><th class="num">Total ₲</th><th class="num">Prom. ₲</th>'+
-    '<th class="num">Días entre cargas</th><th>Última carga</th><th>Proveedor habitual</th><th class="num">% del total</th></tr></thead><tbody>'+
-    filas.map(f=>'<tr><td><b>'+_esc(f.res)+'</b></td><td class="num">'+f.n+'</td><td class="num">'+fmt(f.tot)+'</td>'+
+    '<th class="num">Días entre cargas</th><th>Última carga</th><th>Obra</th><th>Proveedor habitual</th></tr></thead><tbody>'+
+    filas.map((f,i)=>'<tr class="cmb-row" onclick="cmbToggle('+i+')"><td><b>'+_esc(f.res)+'</b></td><td class="num">'+f.n+'</td>'+
+      '<td class="num cmb-tot"><span class="cmb-ar" id="cmb-ar-'+i+'">▸</span> '+fmt(f.tot)+'</td>'+
       '<td class="num">'+fmt(Math.round(f.prom))+'</td>'+
       '<td class="num">'+(f.promDias!=null?f.promDias.toFixed(1):'—')+'</td>'+
-      '<td>'+_esc(f.ultima)+'</td><td>'+_esc(f.hab)+(f.provs>1?(' <span style="color:var(--text3)">(+'+(f.provs-1)+')</span>'):'')+'</td>'+
-      '<td class="num"><b>'+(totG>0?(f.tot/totG*100).toFixed(1):'0')+'%</b></td></tr>').join('')+
+      '<td>'+_esc(f.ultima)+'</td>'+
+      '<td>'+_esc(f.obra)+(f.obras>1?(' <span style="color:var(--text3)">(+'+(f.obras-1)+')</span>'):'')+'</td>'+
+      '<td>'+_esc(f.hab)+(f.provs>1?(' <span style="color:var(--text3)">(+'+(f.provs-1)+')</span>'):'')+'</td></tr>'+
+      '<tr class="cmb-det" id="cmb-det-'+i+'" style="display:none"><td colspan="8"></td></tr>').join('')+
     '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+totN+'</td><td class="num">'+fmt(totG)+'</td><td colspan="5"></td></tr></tfoot></table></div>'+
     (alertas.length
       ? '<div class="mix-box" style="margin-top:12px"><div class="mix-t">Cargas para revisar</div><table class="plan-table mix-tbl">'+
@@ -3365,18 +3411,16 @@ function exportCombustiblePDF(){
            '     Alertas: '+P.alertas.length, M, 30);
 
   doc.autoTable({
-    head:[['Residente','Cargas','Total Gs','Prom. Gs','Dias entre cargas','Ultima carga','Proveedor habitual','% del total']],
+    head:[['Residente','Cargas','Total Gs','Prom. Gs','Dias entre cargas','Ultima carga','Obra','Proveedor habitual']],
     body:P.filas.map(f=>[san(f.res), String(f.n), fmt(f.tot), fmt(Math.round(f.prom)),
-      f.promDias!=null?f.promDias.toFixed(1):'-', f.ultima||'-', san(f.hab),
-      (P.totG>0?(f.tot/P.totG*100).toFixed(1):'0')+'%'])
+      f.promDias!=null?f.promDias.toFixed(1):'-', f.ultima||'-', san(f.obra||'-'), san(f.hab)])
       .concat([[{content:'TOTAL',styles:{fontStyle:'bold'}},{content:String(P.totN),styles:{fontStyle:'bold',halign:'right'}},
-                {content:fmt(P.totG),styles:{fontStyle:'bold',halign:'right'}},{content:''},{content:''},{content:''},{content:''},
-                {content:'100%',styles:{fontStyle:'bold',halign:'right'}}]]),
+                {content:fmt(P.totG),styles:{fontStyle:'bold',halign:'right'}},{content:''},{content:''},{content:''},{content:''},{content:''}]]),
     startY:35, margin:{left:M,right:M},
     styles:{font:'helvetica',fontSize:8,cellPadding:1.8,textColor:[40,40,40],lineColor:[225,225,225],lineWidth:0.1},
     headStyles:{fillColor:[31,56,100],textColor:[255,255,255],fontStyle:'bold',fontSize:8,halign:'center'},
-    columnStyles:{0:{cellWidth:'auto'},1:{cellWidth:18,halign:'right'},2:{cellWidth:28,halign:'right'},3:{cellWidth:26,halign:'right'},
-      4:{cellWidth:30,halign:'right'},5:{cellWidth:26,halign:'center'},6:{cellWidth:46},7:{cellWidth:22,halign:'right'}}
+    columnStyles:{0:{cellWidth:'auto'},1:{cellWidth:17,halign:'right'},2:{cellWidth:27,halign:'right'},3:{cellWidth:25,halign:'right'},
+      4:{cellWidth:29,halign:'right'},5:{cellWidth:25,halign:'center'},6:{cellWidth:40},7:{cellWidth:42}}
   });
 
   if(P.alertas.length){
