@@ -981,6 +981,9 @@ async function loadProfileAndApp(){
   const _perm = profile.permisos || {};
   state.puedeAprobar = state.isAdmin || _perm.cert_aprobar === true;
   state.puedeReabrir = state.isAdmin || _perm.cert_editar  === true;
+  // Ver precios de venta y emitir el avance al cliente: mismo permiso que la
+  // propuesta comercial en Presupuestos
+  state.puedeVerVenta = state.isAdmin || _perm.pres_margen === true;
   state.puedeAnular  = state.isAdmin || _perm.cert_anular  === true;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
@@ -4534,6 +4537,9 @@ async function pedirReportes(c, its){
         '<div style="padding:14px 18px">'+
           bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false, true)+
           bloque('rpOp','💰','Orden de pago','Liquidación con descuentos, firma del residente y aprobación.', aprobado, !aprobado, false)+
+          (state.puedeVerVenta
+            ? bloque('rpCl','🧾','Avance al cliente','Mismo formato, valorizado a los precios de la propuesta aceptada. Uso restringido.', false, false, true)
+            : '')+
           (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px;margin-bottom:10px">La orden de pago sale recién cuando el certificado está aprobado.</div>' : '')+
           '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1.5px dashed #d6dce8;border-radius:10px;cursor:pointer">'+
             '<input type="checkbox" id="rpUnico" checked style="margin-top:3px;width:17px;height:17px">'+
@@ -4551,13 +4557,28 @@ async function pedirReportes(c, its){
     ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#rpOk').onclick = ()=> cerrar({
       unico:    val('rpUnico'),
+      cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA') },
       planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA') },
       orden:    val('rpOp'), ordenOps:{ fotos:false, adjuntos:false }
     });
     ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
   });
   if(!r) return;
-  if(!r.planilla && !r.orden){ showToast('Elegí al menos un documento','error'); return; }
+  if(!r.planilla && !r.orden && !r.cliente){ showToast('Elegí al menos un documento','error'); return; }
+
+  // Avance al cliente: sale siempre como archivo propio, nunca mezclado
+  if(r.cliente){
+    const va = await ventaAceptada(ed && ed.presus && ed.presus.length ? ed.presus : String(c.presupuesto||'').split(',').map(x=>x.trim()));
+    if(!va){
+      showToast('No hay propuesta aceptada para este presupuesto','error',
+        'Marcala en Presupuestos → Propuestas antes de emitir el avance al cliente');
+    }else{
+      await generarPlanillaPDF(c, its, Object.assign({}, r.clienteOps, {
+        cliente:true, venta:va.venta, propVersion:va.cab.version,
+        clienteNombre:va.cab.cliente || '', ivaPct:Number(va.cab.iva_pct)||0 }));
+    }
+    if(!r.planilla && !r.orden) return;
+  }
 
   // Un archivo por documento
   if(!r.unico || !(r.planilla && r.orden)){
@@ -4720,6 +4741,29 @@ async function anexoAdjuntos(doc, c, W, H, M){
   if(fallidas) showToast(fallidas+' adjunto(s) no se pudieron imprimir','info','Quedan listados por su nombre.');
 }
 
+/* Propuesta económica aceptada del presupuesto: es la que manda para
+   facturarle al cliente. Devuelve el precio de venta por rubro. */
+async function ventaAceptada(presus){
+  const L = (presus||[]).filter(Boolean);
+  if(!L.length) return null;
+  try{
+    const { data:cab, error } = await sb.from('propuesta_cab')
+      .select('id,presupuesto,version,cliente,iva_pct,venta_total')
+      .in('presupuesto', L).eq('aceptada', true).limit(1).maybeSingle();
+    if(error) throw error;
+    if(!cab) return null;
+    const { data:its } = await sb.from('propuesta_items')
+      .select('rubro_codigo,descripcion,unidad,cantidad,precio_unit,precio_total')
+      .eq('propuesta_id', cab.id);
+    const venta = {};
+    (its||[]).forEach(function(x){
+      if(!x.rubro_codigo) return;
+      venta[x.rubro_codigo] = { cantidad:Number(x.cantidad)||0, precio_unit:Number(x.precio_unit)||0 };
+    });
+    return { cab:cab, venta:venta };
+  }catch(e){ console.warn('venta aceptada', e); return null; }
+}
+
 /* ── Planilla de avance (formato de la planilla Excel de obra) ───────
    Por sector: presupuesto (unidad, cantidad, precio, total, N° de
    presupuesto), cantidad ejecutada y montos (acumulado anterior, medición
@@ -4793,20 +4837,23 @@ async function generarPlanillaPDF(c, its, opts){
     doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+2.5, 6.2, 35, 11.5);
     tx = M + 46;
   }catch(e){}
+  const sub = op.cliente ? 'Avance certificado para facturacion al cliente' : 'Certificacion de trabajos por sector';
   doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(14);
-  doc.text('PLANILLA DE AVANCE DE OBRA', tx, 11.5);
+  doc.text(op.cliente ? 'CERTIFICADO DE AVANCE AL CLIENTE' : 'PLANILLA DE AVANCE DE OBRA', tx, 11.5);
   doc.setFont('helvetica','normal').setFontSize(8.5);
-  doc.text('Certificacion de trabajos por sector', tx, 17);
+  doc.text(sub, tx, 17);
   // Documento de circulación interna: residente, supervisión y gerencia
   {
-    const et = 'USO INTERNO';
-    doc.setFont('helvetica','bold').setFontSize(6.6);
-    const ew = doc.getTextWidth(et) + 7;
-    const ex = tx + doc.getTextWidth('Certificacion de trabajos por sector') + 7;
+    const et = op.cliente ? 'PARA EL CLIENTE' : 'USO INTERNO';
+    doc.setFont('helvetica','normal').setFontSize(8.5);
+    const subW = doc.getTextWidth(sub);
+    doc.setFont('helvetica','bold').setFontSize(6.4);
+    const ew = doc.getTextWidth(et) + 9;
+    const ex = tx + subW + 9;
     doc.setDrawColor(150,168,196).setLineWidth(.35);
-    doc.roundedRect(ex, 13.4, ew, 5.2, 1.6, 1.6, 'S');
-    doc.setTextColor(178,196,222);
-    doc.text(et, ex + ew/2, 17, {align:'center'});
+    doc.roundedRect(ex, 12.2, ew, 6.4, 2.2, 2.2, 'S');
+    doc.setTextColor(186,203,227);
+    doc.text(et, ex + ew/2, 16.7, { align:'center', baseline:'middle' });
   }
   doc.setFont('helvetica','bold').setFontSize(13).setTextColor(229,198,88);
   doc.text(pdfSafe(c.numero||('#'+c.id)), W-M, 11.5, {align:'right'});
@@ -4818,9 +4865,13 @@ async function generarPlanillaPDF(c, its, opts){
   const _sec = [];
   (its||[]).forEach(function(x){ const v=(x.sector||'').trim(); if(v && _sec.indexOf(v)<0) _sec.push(v); });
   const sectorTxt = _sec.length ? _sec.join(', ') : (c.sector || '-');
-  const info = [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
-                ['PRESUPUESTOS', c.presupuesto||'-'],
-                ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]];
+  const info = op.cliente
+    ? [['CLIENTE', op.clienteNombre||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
+       ['PROPUESTA', (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
+       ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]]
+    : [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
+       ['PRESUPUESTOS', c.presupuesto||'-'],
+       ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]];
   const cw = (W-M*2)/info.length;
   info.forEach((it,i)=>{
     doc.setFontSize(6.3).setTextColor(139,147,167).setFont('helvetica','bold');
@@ -4852,12 +4903,17 @@ async function generarPlanillaPDF(c, its, opts){
       n++;
       const k  = _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector);
       const a  = ant[k] || { cant:0, monto:0 };
-      const cp = Number(x.cant_presup)||0;
-      const pu = Number(x.precio_unit)||0;
+      const cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
+                            : (Number(x.cant_presup)||0);
+      const pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
+                            : (Number(x.precio_unit)||0);
       const libre = !x.rubro_codigo || !(cp > 0);
       const G = libre ? 0 : cp*pu;
       const A = a.cant, B = Number(x.cantidad)||0, F = A+B;
-      const C = a.monto, D = Number(x.subtotal)||0, E = C+D;
+      // Al cliente se le factura al precio de la propuesta aceptada
+      const C = op.cliente ? Math.round(A*pu) : a.monto;
+      const D = op.cliente ? Math.round(B*pu) : (Number(x.subtotal)||0);
+      const E = C+D;
       const pct = G > 0 ? (E/G*100) : null;
       const S = G > 0 ? G-E : null;
       st.G += G; st.C += C; st.D += D; st.E += E; if(S != null) st.S += S;
@@ -4871,7 +4927,7 @@ async function generarPlanillaPDF(c, its, opts){
         libre ? '-' : q2(cp),
         g0(pu),
         libre ? '-' : g0(G),
-        pdfSafe(x.presupuesto||'-'),
+        pdfSafe(op.cliente ? ((x.presupuesto||'-')+' v'+(op.propVersion||'')) : (x.presupuesto||'-')),
         q2(A),
         { content:q2(B), styles:{ fillColor:GRIS, fontStyle:'bold' } },
         q2(F),
@@ -4887,7 +4943,7 @@ async function generarPlanillaPDF(c, its, opts){
     const sty = { fontStyle:'bold', fillColor:[240,243,248], textColor:NAV };
     // Con un solo sector, el subtotal sería igual al total: se muestra solo el total
     if(grupos.length > 1) rows.push([
-      { content:'TOTAL TRABAJO TERMINADO - '+pdfSafe(sc), colSpan:5, styles:Object.assign({halign:'left'}, sty) },
+      { content:(op.cliente ? 'TOTAL CERTIFICADO - ' : 'TOTAL TRABAJO TERMINADO - ')+pdfSafe(sc), colSpan:5, styles:Object.assign({halign:'left'}, sty) },
       { content:g0(st.G), styles:Object.assign({halign:'right'}, sty) },
       { content:'', colSpan:4, styles:sty },
       { content:g0(st.C), styles:Object.assign({halign:'right'}, sty) },
@@ -4903,15 +4959,15 @@ async function generarPlanillaPDF(c, its, opts){
   const head = [
     [ { content:'#', rowSpan:3, styles:hS },
       { content:'Detalle de trabajos realizados', rowSpan:3, styles:hS },
-      { content:'PRESUPUESTO', colSpan:5, styles:hS },
+      { content: op.cliente ? 'PROPUESTA ACEPTADA' : 'PRESUPUESTO', colSpan:5, styles:hS },
       { content:'PRODUCCION', colSpan:6, styles:hS },
       { content:'% AVANCE', rowSpan:2, styles:hS },
       { content:'SALDO Gs.', rowSpan:2, styles:hS } ],
     [ { content:'Unid.', rowSpan:2, styles:hS },
       { content:'Cant.', rowSpan:2, styles:hS },
       { content:'Precio unit. Gs.', rowSpan:2, styles:hS },
-      { content:'Total pres. (G)', rowSpan:2, styles:hS },
-      { content:'N. de pres.', rowSpan:2, styles:hS },
+      { content: op.cliente ? 'Total contratado (G)' : 'Total pres. (G)', rowSpan:2, styles:hS },
+      { content: op.cliente ? 'N. de prop.' : 'N. de pres.', rowSpan:2, styles:hS },
       { content:'CANTIDAD EJECUTADA', colSpan:3, styles:hS },
       { content:'MONTOS EN GUARANIES', colSpan:3, styles:hS } ],
     [ { content:'Acum. anterior (A)', styles:hS },
@@ -4962,12 +5018,43 @@ async function generarPlanillaPDF(c, its, opts){
     doc.text(to, M, y); y += to.length*3.4 + 3;
   }
   doc.setFont('helvetica','normal').setFontSize(6.8).setTextColor(90,99,119);
-  const nota = 'Documento de uso interno: residente, supervision y gerencia. '+
-               'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
-               'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
-               'Los trabajos fuera de presupuesto no tienen % ni saldo.';
+  const nota = op.cliente
+    ? 'Avance certificado valorizado a los precios de la propuesta economica aceptada'+
+      (op.propVersion?(' (version '+op.propVersion+')'):'')+'. '+
+      'Total contratado (G) = cantidad de la propuesta x precio unitario. '+
+      'Acumulado anterior: avance reconocido en certificados aprobados anteriores. '+
+      'Los trabajos fuera de la propuesta no tienen % ni saldo.'
+    : 'Documento de uso interno: residente, supervision y gerencia. '+
+      'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
+      'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
+      'Los trabajos fuera de presupuesto no tienen % ni saldo.';
   doc.text(doc.splitTextToSize(nota, W-M*2), M, y);
   y += 10;
+
+  // Cierre económico para el cliente: neto, IVA y total a facturar
+  if(op.cliente){
+    if(y > H-46){ doc.addPage(); y = 22; }
+    const ivaP = Number(op.ivaPct)||0;
+    const neto = tot.D, ivaM = Math.round(neto*ivaP/100);
+    const bx = W - M - 92, bw2 = 92;
+    const fila = (t, v, i)=>{
+      const yy = y + i*7.5;
+      doc.setFillColor(i%2 ? 248 : 255, i%2 ? 249 : 255, i%2 ? 251 : 255);
+      doc.rect(bx, yy-5, bw2, 7.5, 'F');
+      doc.setFont('helvetica','normal').setFontSize(8.5).setTextColor(40,40,40);
+      doc.text(t, bx+3, yy);
+      doc.setFont('helvetica','bold');
+      doc.text(v, bx+bw2-3, yy, {align:'right'});
+    };
+    fila('Avance del periodo', 'Gs '+g0(neto), 0);
+    fila('IVA '+ivaP+' %', 'Gs '+g0(ivaM), 1);
+    doc.setFillColor(31,56,100); doc.rect(bx, y+10, bw2, 8.5, 'F');
+    doc.setFont('helvetica','bold').setFontSize(9).setTextColor(255,255,255);
+    doc.text('TOTAL A FACTURAR', bx+3, y+15.6);
+    doc.setTextColor(229,198,88);
+    doc.text('Gs '+g0(neto+ivaM), bx+bw2-3, y+15.6, {align:'right'});
+    y += 26;
+  }
 
   // Firmas
   if(y > H-40){ doc.addPage(); y = 20; }
@@ -4988,17 +5075,23 @@ async function generarPlanillaPDF(c, its, opts){
   doc.setFont('helvetica','normal').setFontSize(8.5).setTextColor(26,34,54);
   doc.text('Fecha: ____ / ____ / ________', M, y+4);
   y += 4;
-  firma(M,              'CONTRATISTA', c.contratista);
-  firma(M+bw+8,         'RESIDENTE DE OBRA', c.firma_residente_nombre||c.medido_por, c.firma_residente);
-  firma(M+(bw+8)*2,     'APROBACION', APROBADOR_DOC);
+  if(op.cliente){
+    firma(M,          'CONFORME CLIENTE', op.clienteNombre||'');
+    firma(M+bw+8,     'RESIDENTE DE OBRA', c.firma_residente_nombre||c.medido_por, c.firma_residente);
+    firma(M+(bw+8)*2, 'POR AXC CONSTRUCTORA', APROBADOR_DOC);
+  } else {
+    firma(M,          'CONTRATISTA', c.contratista);
+    firma(M+bw+8,     'RESIDENTE DE OBRA', c.firma_residente_nombre||c.medido_por, c.firma_residente);
+    firma(M+(bw+8)*2, 'APROBACION', APROBADOR_DOC);
+  }
 
   if(!op.sinAnexos){
     if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
     if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
-  pdfPiePaginas(doc, c, W, H, M, 'Planilla de avance', desdePag);
+  pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : 'Planilla de avance', desdePag);
   if(op.noSave) return doc;
-  doc.save(nombreArchivo(c, 'planilla-de-avance'));
+  doc.save(nombreArchivo(c, op.cliente ? 'avance-cliente' : 'planilla-de-avance'));
 }
 
 /* ── Ordenar los ítems de un certificado ──────────────────────────────
