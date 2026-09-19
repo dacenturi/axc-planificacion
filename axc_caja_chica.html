@@ -815,6 +815,12 @@ tr:last-child td{border-bottom:none}
             <label id="r-pdf-adj-wrap" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none" title="Adjunta las fotos/PDF de los comprobantes al final del reporte, en orden">
               <input type="checkbox" id="r-pdf-adjuntos" style="width:16px;height:16px;cursor:pointer"> Anexar comprobantes
             </label>
+            <select id="r-adj-x" class="fld-sel" title="Cuántos comprobantes entran en cada hoja del anexo"
+              style="font-size:12.5px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text2)">
+              <option value="2" selected>2 por hoja (más grandes)</option>
+              <option value="4">4 por hoja</option>
+              <option value="6">6 por hoja (compacto)</option>
+            </select>
             <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none" title="Muestra el comentario del comprobante (ej.: vehículo que cargó combustible). Solo aparece en los comprobantes que tengan comentario cargado.">
               <input type="checkbox" id="r-inc-coment" checked onchange="toggleComentReporte()" style="width:16px;height:16px;cursor:pointer"> Incluir comentarios
             </label>
@@ -955,6 +961,12 @@ tr:last-child td{border-bottom:none}
       <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text2);cursor:pointer;user-select:none">
         <input type="checkbox" id="rdet-adjuntos" style="width:16px;height:16px;cursor:pointer"> Anexar comprobantes
       </label>
+      <select id="rdet-adj-x" title="Cuántos comprobantes entran en cada hoja del anexo"
+        style="font-size:12.5px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text2)">
+        <option value="2" selected>2 por hoja (más grandes)</option>
+        <option value="4">4 por hoja</option>
+        <option value="6">6 por hoja (compacto)</option>
+      </select>
       <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text2);cursor:pointer;user-select:none" title="Incluye el comentario de cada comprobante que lo tenga cargado">
         <input type="checkbox" id="rdet-coment" checked style="width:16px;height:16px;cursor:pointer"> Incluir comentarios
       </label>
@@ -3624,12 +3636,29 @@ function _descargarBlob(bytes, filename, type){ const blob=new Blob([bytes],{typ
 const ADJ_PG={W:595.28,H:841.89,MAR:36,TOP:754}; // TOP = techo del area util del comprobante
 // v7.40: grilla compacta — 2 columnas x 3 filas = 6 comprobantes por hoja
 const ADJ_G={ W:595.28, H:841.89, M:26, COLS:2, ROWS:3, GAP:12, TOPY:788, CAP:21 };
+/* Cuántos comprobantes por hoja: 2 (por defecto, se leen mejor), 4 o 6.
+   Las facturas chicas de estacionamiento no se leen a 6 por hoja. */
+function adjPorHoja(){
+  const el = gs('rdet-adj-x') && gs('rdet-adj-x').offsetParent !== null ? gs('rdet-adj-x')
+           : (gs('r-adj-x') || gs('rdet-adj-x'));
+  const n = Number(el && el.value) || 2;
+  return (n===4 || n===6) ? n : 2;
+}
+function adjGrid(){
+  const n = adjPorHoja();
+  const g = Object.assign({}, ADJ_G);
+  if(n===2){ g.COLS=1; g.ROWS=2; g.GAP=14; g.CAP=23; }
+  else if(n===4){ g.COLS=2; g.ROWS=2; g.GAP=13; g.CAP=22; }
+  else { g.COLS=2; g.ROWS=3; g.GAP=12; g.CAP=21; }
+  return g;
+}
 function _adjGridCeldas(){
-  const cw=(ADJ_G.W-ADJ_G.M*2-ADJ_G.GAP*(ADJ_G.COLS-1))/ADJ_G.COLS;
-  const ch=(ADJ_G.TOPY-ADJ_G.M-ADJ_G.GAP*(ADJ_G.ROWS-1))/ADJ_G.ROWS;
+  const G=adjGrid();
+  const cw=(G.W-G.M*2-G.GAP*(G.COLS-1))/G.COLS;
+  const ch=(G.TOPY-G.M-G.GAP*(G.ROWS-1))/G.ROWS;
   const out=[];
-  for(let r=0;r<ADJ_G.ROWS;r++) for(let c=0;c<ADJ_G.COLS;c++){
-    out.push({ x:ADJ_G.M+c*(cw+ADJ_G.GAP), yTop:ADJ_G.TOPY-r*(ch+ADJ_G.GAP), w:cw, h:ch });
+  for(let r=0;r<G.ROWS;r++) for(let c=0;c<G.COLS;c++){
+    out.push({ x:G.M+c*(cw+G.GAP), yTop:G.TOPY-r*(ch+G.GAP), w:cw, h:ch, cap:G.CAP });
   }
   return out;
 }
@@ -3638,6 +3667,7 @@ function _adjGridHoja(pdf,font,fontB,titulo,sub){
   const page=pdf.addPage([ADJ_G.W,ADJ_G.H]);
   page.drawText('COMPROBANTES ANEXOS',{x:ADJ_G.M,y:ADJ_G.H-30,size:9,font:fontB,color:rgb(0.12,0.22,0.39)});
   if(titulo) page.drawText(titulo,{x:ADJ_G.M,y:ADJ_G.H-42,size:8,font,color:rgb(0.45,0.45,0.45)});
+  sub = (adjPorHoja())+' comprobante(s) por hoja';
   if(sub){ const sw=font.widthOfTextAtSize(sub,8);
     page.drawText(sub,{x:ADJ_G.W-ADJ_G.M-sw,y:ADJ_G.H-42,size:8,font,color:rgb(0.55,0.55,0.55)}); }
   page.drawLine({start:{x:ADJ_G.M,y:ADJ_G.TOPY+8},end:{x:ADJ_G.W-ADJ_G.M,y:ADJ_G.TOPY+8},thickness:.6,color:rgb(0.80,0.83,0.88)});
@@ -3648,17 +3678,20 @@ function _adjGridCaja(page,font,fontB,celda,item,label,sub,extra){
   const { rgb }=PDFLib;
   page.drawRectangle({ x:celda.x, y:celda.yTop-celda.h, width:celda.w, height:celda.h,
     borderColor:rgb(0.85,0.87,0.91), borderWidth:.7, color:rgb(1,1,1) });
-  const ty=celda.yTop-12;
+  const gran = celda.w > 300;                 // 2 por hoja: etiquetas más legibles
+  const fs1 = gran ? 9.5 : 7.6, fs2 = gran ? 8 : 6.6, fs3 = gran ? 7 : 6;
+  const bw = gran ? 21 : 17, bh = gran ? 15 : 13;
+  const ty=celda.yTop-(gran?14:12);
   if(item!=null){
-    page.drawRectangle({ x:celda.x+5, y:ty-4.5, width:17, height:13, color:rgb(0.12,0.22,0.39) });
-    const t=String(item), tw=fontB.widthOfTextAtSize(t,8.5);
-    page.drawText(t,{ x:celda.x+5+(17-tw)/2, y:ty-1, size:8.5, font:fontB, color:rgb(1,1,1) });
+    page.drawRectangle({ x:celda.x+5, y:ty-4.5, width:bw, height:bh, color:rgb(0.12,0.22,0.39) });
+    const t=String(item), tw=fontB.widthOfTextAtSize(t,gran?10.5:8.5);
+    page.drawText(t,{ x:celda.x+5+(bw-tw)/2, y:ty-0.5, size:gran?10.5:8.5, font:fontB, color:rgb(1,1,1) });
   }
-  page.drawText(String(label||'').slice(0,34),{x:celda.x+26,y:ty,size:7.6,font:fontB,color:rgb(0.12,0.22,0.39)});
-  page.drawText(String(sub||'').slice(0,52),{x:celda.x+5,y:ty-11,size:6.6,font,color:rgb(0.45,0.45,0.45)});
-  if(extra) page.drawText(String(extra).slice(0,52),{x:celda.x+5,y:ty-19,size:6,font,color:rgb(0.62,0.62,0.62)});
+  page.drawText(String(label||'').slice(0, gran?70:34),{x:celda.x+bw+9,y:ty,size:fs1,font:fontB,color:rgb(0.12,0.22,0.39)});
+  page.drawText(String(sub||'').slice(0, gran?110:52),{x:celda.x+5,y:ty-(gran?13:11),size:fs2,font,color:rgb(0.45,0.45,0.45)});
+  if(extra) page.drawText(String(extra).slice(0, gran?110:52),{x:celda.x+5,y:ty-(gran?22:19),size:fs3,font,color:rgb(0.62,0.62,0.62)});
   // Area util para la imagen o la pagina del PDF
-  const pad=5, capH=ADJ_G.CAP+(extra?8:0);
+  const pad=5, capH=(celda.cap||ADJ_G.CAP)+(gran?6:0)+(extra?8:0);
   return { x:celda.x+pad, y:celda.yTop-celda.h+pad, w:celda.w-pad*2, h:celda.h-capH-pad*2 };
 }
 function _adjEncabezado(page,font,fontB,label,sub,nombre,pg,tot){
@@ -3714,7 +3747,7 @@ async function _exportarConAdjuntos(jsDoc, rows, filename){
     let gPage=null, gIdx=0;
     const _tituloAnexo = (info && info.dataset && info.dataset.titulo) || '';
     const _sigCelda=()=>{
-      if(!gPage || gIdx>=celdas.length){ gPage=_adjGridHoja(merged,font,fontB,_tituloAnexo,'6 comprobantes por hoja'); gIdx=0; }
+      if(!gPage || gIdx>=celdas.length){ gPage=_adjGridHoja(merged,font,fontB,_tituloAnexo,''); gIdx=0; }
       return celdas[gIdx++];
     };
 
