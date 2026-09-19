@@ -4568,10 +4568,11 @@ async function pedirReportes(c, its){
 
   // Avance al cliente: sale siempre como archivo propio, nunca mezclado
   if(r.cliente){
-    const va = await ventaAceptada(ed && ed.presus && ed.presus.length ? ed.presus : String(c.presupuesto||'').split(',').map(x=>x.trim()));
+    const _pl = String(c.presupuesto||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const va = await ventaAceptada(_pl);
     if(!va){
       showToast('No hay propuesta aceptada para este presupuesto','error',
-        'Marcala en Presupuestos → Propuestas antes de emitir el avance al cliente');
+        'Presupuesto(s): '+(_pl.join(', ')||'—')+' · marcala en Presupuestos → Propuestas');
     }else{
       await generarPlanillaPDF(c, its, Object.assign({}, r.clienteOps, {
         cliente:true, venta:va.venta, propVersion:va.cab.version,
@@ -4747,11 +4748,18 @@ async function ventaAceptada(presus){
   const L = (presus||[]).filter(Boolean);
   if(!L.length) return null;
   try{
-    const { data:cab, error } = await sb.from('propuesta_cab')
-      .select('id,presupuesto,version,cliente,iva_pct,venta_total')
-      .in('presupuesto', L).eq('aceptada', true).limit(1).maybeSingle();
+    const { data:cabs, error } = await sb.from('propuesta_cab')
+      .select('id,presupuesto,version,cliente,venta_total')
+      .in('presupuesto', L).eq('aceptada', true).limit(1);
     if(error) throw error;
+    const cab = (cabs||[])[0];
     if(!cab) return null;
+    // El IVA vive en la cabecera del presupuesto
+    try{
+      const { data:pc } = await sb.from('presupuesto_cab')
+        .select('iva_pct').eq('codigo', cab.presupuesto).limit(1);
+      cab.iva_pct = (pc && pc[0] && pc[0].iva_pct) || 0;
+    }catch(e){ cab.iva_pct = 0; }
     const { data:its } = await sb.from('propuesta_items')
       .select('rubro_codigo,descripcion,unidad,cantidad,precio_unit,precio_total')
       .eq('propuesta_id', cab.id);
