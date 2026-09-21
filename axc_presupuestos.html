@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v8.4 · mano de obra sin duplicar (ajustar receta / adicional con motivo / servicio por columna) · detalle para el contratista y reporte propio · tabla de rubros compacta · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v8.7 · hoja del contratista rediseñada · aviso «sin M.O.» corregido (lectura completa de composiciones) · reporte para contratista con formato Presupuesto N° y contrato de construcción · mano de obra sin duplicar (ajustar receta / adicional con motivo / servicio por columna) · detalle para el contratista y reporte propio · tabla de rubros compacta · propuesta compacta · obra unificada con orden de compra y planificación · uso interno · pantalla completa · reordenar rubros · insumos por nombre · atajo a composiciones · coeficiente editable por rubro · totales con y sin IVA · costo por rubro (material + mano de obra) como la planilla</p>
   </div>
 </div>
 
@@ -809,7 +809,7 @@ body{
       <button class="pm-toggle" id="pmPropBtn" type="button" style="background:#1F3864;color:#fff;border-color:#1F3864" title="Propuesta económica con margen, para el cliente">💼 Propuesta económica</button>
       <button class="pm-toggle" id="pmPropListBtn" type="button" title="Versiones emitidas de la propuesta: cuál se aceptó, con qué coeficiente y por cuánto">📑 Propuestas</button>
       <button class="pm-toggle" id="pmReporteBtn" type="button" style="background:#0E7C86;color:#fff;border-color:#0E7C86" title="Reporte interno de costos">🔎 Análisis de costos</button>
-      <button class="pm-toggle" id="pmContraBtn" type="button" style="background:#5b4a14;color:#fff;border-color:#5b4a14" title="Especificación de trabajos para entregar al contratista (sin costos de material ni márgenes)">👷 Reporte contratista</button>
+      <button class="pm-toggle" id="pmContraBtn" type="button" style="background:#5b4a14;color:#fff;border-color:#5b4a14" title="Presupuesto para el contratista (unidad, cantidad, precio y parcial de mano de obra) con el contrato de construcción en la última hoja">👷 Reporte contratista</button>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
       <button class="pm-save" id="pmSaveBtn" type="button">Guardar presupuesto</button>
     </div>
@@ -1505,6 +1505,21 @@ function showToast(msg, type='info', detalle){
 }
 function initialsFrom(name){ if(!name)return '?'; const p=String(name).trim().split(/\s+/); if(p.length===1)return p[0].slice(0,2).toUpperCase(); return (p[0][0]+p[p.length-1][0]).toUpperCase(); }
 function nfmt(n){ return (Number(n)||0).toLocaleString('es-PY'); }
+
+/* v8.6 · Lectura completa: PostgREST corta cada consulta en 1000 filas.
+   receta_items ya superó ese número, y lo que quedaba afuera hacía que
+   composiciones CON mano de obra figuraran «sin M.O.». Pagina de a 1000. */
+async function _sbTodo(mk){
+  const out = [];
+  for(let off = 0; off < 200000; off += 1000){
+    const r = await mk().range(off, off + 999);
+    if(r.error) return { data: out.length ? out : null, error: r.error };
+    const d = r.data || [];
+    Array.prototype.push.apply(out, d);
+    if(d.length < 1000) break;
+  }
+  return { data: out, error: null };
+}
 function fmtGs(n){ return Math.round(Number(n)||0).toLocaleString('es-PY'); }
 function parseGs(s){ return Number(String(s==null?'':s).replace(/[^\d-]/g,'')) || 0; }
 function round2(n){ return Math.round((Number(n)||0)*100)/100; }
@@ -1697,8 +1712,10 @@ async function loadArbol(){
     const { data } = await sb.from('rubros').select('codigo,nombre,unidad,tiene_receta,capitulo').eq('activo', true).order('codigo');
     ed.arbol = data || [];
     try{
-      let rq = await sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion').eq('activo', true);
-      if(rq.error) rq = await sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true);
+      // Orden por fecha: si un rubro tiene más de una receta activa se toma la
+      // más antigua, la misma que abre el editor de composiciones.
+      let rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion').eq('activo', true).order('created_at').order('id'); });
+      if(rq.error) rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true).order('id'); });
       const recs = rq.data;
       const om={}, rid={}, recMeta={};
       (recs||[]).forEach(function(x){
@@ -1717,8 +1734,11 @@ async function loadArbol(){
       const moSinPrecio = {};
       const recPorId = {}; Object.keys(rid).forEach(function(rc){ recPorId[rid[rc]] = rc; });
       if(ids.length){
-        const { data:its } = await sb.from('receta_items').select('receta_id,tipo_componente,precio_unit,codigo_catalogo,material,coef1,coef2,merma_pct').eq('activo', true).in('receta_id', ids);
-        (its||[]).forEach(function(x){
+        // Todos los items activos, paginados; se filtra acá por las recetas elegidas
+        // (un .in() con cientos de ids arma una URL demasiado larga).
+        const { data:itsAll } = await _sbTodo(function(){ return sb.from('receta_items').select('id,receta_id,tipo_componente,precio_unit,codigo_catalogo,material,coef1,coef2,merma_pct').eq('activo', true).order('id'); });
+        const its = (itsAll||[]).filter(function(x){ return recPorId[x.receta_id] !== undefined; });
+        its.forEach(function(x){
           // Antes exigia precio_unit > 0: una linea de mano de obra sin precio
           // cargado hacia que el rubro figurara «sin M.O.» aunque la tuviera.
           if(x.tipo_componente==='mano_obra'){
@@ -5402,11 +5422,11 @@ async function calcInsumosFromRecetas(silent){
   btn.disabled = true; if(txt) txt.textContent = 'Calculando…';
   try{
     const codes = Array.from(new Set(conCodigo.map(function(r){ return r.rubro_codigo; })));
-    const { data:recs } = await sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes);
+    const { data:recs } = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes).order('created_at').order('id'); });
     const recByRubro = {}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo] = r.id; });
     const recetaIds = Array.from(new Set(Object.values(recByRubro)));
     if(!recetaIds.length){ if(!silent) showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
-    const { data:items } = await sb.from('receta_items').select('receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo,precio_unit').eq('activo', true).in('receta_id', recetaIds);
+    const { data:items } = await _sbTodo(function(){ return sb.from('receta_items').select('id,receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo,precio_unit').eq('activo', true).in('receta_id', recetaIds).order('orden').order('id'); });
     const itemsByRec = {}; (items||[]).forEach(function(it){ (itemsByRec[it.receta_id] = itemsByRec[it.receta_id] || []).push(it); });
     const recetaRubros = {}; conCodigo.forEach(function(r){ if(recByRubro[r.rubro_codigo]) recetaRubros[r.rubro_codigo]=1; });
     // preservar insumos que NO pertenecen a rubros con receta recalculados (manuales / General / de rubros sin receta)
@@ -5645,125 +5665,343 @@ document.getElementById('detGuia').addEventListener('click', function(){
   _detCount(); t.focus();
 });
 
-// ── Reporte para el contratista ───────────────────────────────
-function buildReporteContratista(){
+// ── Reporte para el contratista · formato «Presupuesto N°» + contrato (v8.5) ──
+async function buildReporteContratista(){
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
   if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+  // La ventana se abre antes de cualquier await: si no, el navegador la bloquea
+  const w = window.open('', '_blank');
+  if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
+  w.document.write('<p style="font-family:sans-serif;padding:30px;color:#5a6677">Armando el reporte…</p>');
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
   const obra   = (document.getElementById('pmObra').value||'').trim();
   const desc   = (document.getElementById('pmDescripcion').value||'').trim();
-  const hoy = new Date().toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'});
-  const nf = function(v){ return (Number(v)||0).toLocaleString('es-PY',{maximumFractionDigits:2}); };
+  let contratistas = [];
+  try{
+    const { data } = await sb.from('listas').select('valor,activo').eq('tipo','contratistas');
+    contratistas = (data||[]).filter(function(x){ return x.activo!==false; }).map(function(x){ return x.valor; }).sort();
+  }catch(e){}
   const moUnit = function(r){
     if(r.tiene_receta){ const c=_costosDeReceta(r); return c.mo||0; }
     return Number(r.mano_obra_unit)||0;
   };
-  // sector → capítulo → rubros (el orden de carga se respeta dentro del capítulo)
+  const nf = function(v){ return (Number(v)||0).toLocaleString('es-PY',{maximumFractionDigits:2}); };
+  // sector → capítulo → rubros
   const porSec = {}, ordSec = [];
-  ed.rubros.forEach(function(r){
+  ed.rubros.forEach(function(r, idx){
     const s = r.sector || '(Sin sector)';
     if(!porSec[s]){ porSec[s] = {}; ordSec.push(s); }
     const cap = (typeof _capituloDe === 'function' ? _capituloDe(r) : r.capitulo) || '(Sin capítulo)';
-    (porSec[s][cap] = porSec[s][cap] || []).push(r);
+    (porSec[s][cap] = porSec[s][cap] || []).push({ r:r, idx:idx });
   });
   ordSec.sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); });
-  let cuerpo = '', nTot = 0, nDet = 0, totMO = 0;
-  ordSec.forEach(function(sec, si){
-    let secMO = 0, secHtml = '', nCap = 0;
+  let filas = '', n = 0, nDet = 0;
+  ordSec.forEach(function(sec){
+    filas += '<tbody class="secblk" data-sec="'+escapeHtml(sec)+'"><tr class="sec"><td colspan="6"><span class="sk">SECTOR</span>'+escapeHtml(sec)+(obra?'<span class="so"> · '+escapeHtml(obra)+'</span>':'')+'</td></tr>';
     Object.keys(porSec[sec]).sort(function(a,b){ return String(a).localeCompare(String(b),undefined,{numeric:true}); })
     .forEach(function(cap){
-      nCap++;
-      const codCap = (String(cap).match(/^\d+/)||[''])[0];
-      secHtml += '<tr class="cap"><td class="ref">'+nCap+'</td><td colspan="3">'+
-        (codCap?'<span class="capcod">'+escapeHtml(codCap)+'</span> ':'')+escapeHtml(String(cap).replace(/^\d+\s*/,'').toUpperCase())+
-        '</td><td class="pr"></td><td class="pr"></td></tr>';
-      porSec[sec][cap].forEach(function(r, k){
-        nTot++;
+      const _cc = (String(cap).match(/^\d+/)||[''])[0];
+      filas += '<tr class="cap"><td colspan="6">'+(_cc?'<span class="cc">'+escapeHtml(_cc)+'</span>':'')+escapeHtml(String(cap).replace(/^\d+\s*/,'').toUpperCase())+'</td></tr>';
+      porSec[sec][cap].forEach(function(o){
+        const r = o.r; n++;
         const d = String(r.detalle_contratista||'').trim(); if(d) nDet++;
-        const mu = moUnit(r), mt = Math.round(mu*(Number(r.cantidad)||0));
-        if(!r.opcional){ secMO += mt; }
-        secHtml += '<tr class="it'+(d?' condet':'')+'">'+
-          '<td class="ref">'+nCap+'.'+(k+1)+'</td>'+
-          '<td class="desc"><b>'+escapeHtml(r.descripcion||'')+'</b>'+(r.opcional?' <span class="opc">OPCIONAL</span>':'')+
-            '<span class="cod">'+escapeHtml(r.rubro_codigo||'')+'</span></td>'+
+        const key = (r.rubro_codigo||'x')+'|'+(r.sector||'')+'|'+o.idx;
+        filas += '<tr class="it'+(d?' condet':'')+(r.opcional?' opc':'')+'" data-key="'+escapeHtml(key)+'" data-q="'+(Number(r.cantidad)||0)+'" data-base="'+Math.round(moUnit(r))+'">'+
+          '<td class="nro">'+n+'</td>'+
+          '<td class="det"><div class="tt">'+escapeHtml(r.descripcion||'')+(r.opcional?' <span class="opct">OPCIONAL · no suma</span>':'')+'</div>'+
+            '<div class="cod">Cód. '+escapeHtml(r.rubro_codigo||'—')+'</div>'+
+            (d ? '<div class="dx">'+escapeHtml(d).replace(/\n/g,'<br>')+'</div>' : '')+'</td>'+
           '<td class="c">'+escapeHtml(r.unidad||'')+'</td>'+
           '<td class="c">'+nf(r.cantidad)+'</td>'+
-          '<td class="n pr">'+(mu?fmtGs(mu):'—')+'</td>'+
-          '<td class="n pr">'+(mt?fmtGs(mt):'—')+'</td></tr>';
-        secHtml += '<tr class="det"><td></td><td colspan="5">'+
-          (d ? '<div class="dbox">'+escapeHtml(d).replace(/\n/g,'<br>')+'</div>'
-             : '<div class="dnone">Sin detalle cargado para este trabajo.</div>')+'</td></tr>';
+          '<td class="n pr"><input class="pu" inputmode="numeric" value="'+fmtGs(moUnit(r))+'" title="Precio pactado con el contratista. Se puede corregir acá."></td>'+
+          '<td class="n pr sub">0</td></tr>';
       });
     });
-    totMO += secMO;
-    cuerpo += '<tbody class="secblk" data-sec="'+escapeHtml(sec)+'">'+
-      '<tr class="sec"><td colspan="4">'+escapeHtml((obra?obra+' — ':'')+sec)+'</td>'+
-      '<td class="lbl pr">M.O. SECTOR</td><td class="n pr">'+fmtGs(secMO)+'</td></tr>'+secHtml+'</tbody>';
+    filas += '<tr class="ssub"><td colspan="5">Subtotal '+escapeHtml(sec)+'</td><td class="n pr ssv">0</td></tr></tbody>';
   });
   const opts = ordSec.map(function(s){ return '<option value="'+escapeHtml(s)+'">'+escapeHtml(s)+'</option>'; }).join('');
+  const RC = { codigo:codigo, obra:obra, desc:desc, contratistas:contratistas };
+  const F = function(k){ return '<span class="fl" data-f="'+k+'"></span>'; };   // campo del contrato
   const _fArch = new Date().toISOString().slice(0,10).split('-').reverse().join('-');
   const titulo = ['Contratista '+codigo, obra, desc, _fArch].filter(Boolean).join(' · ');
-  const w = window.open('', '_blank');
-  if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
-  w.document.write(
-'<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+escapeHtml(titulo)+'</title><style>'+
-'@page{size:A4 portrait;margin:12mm 11mm 14mm}*{box-sizing:border-box}'+
-'body{font-family:Segoe UI,Arial,sans-serif;background:#eef1f5;margin:0;color:#1a1f2b;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
-'.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:10px 20px;display:flex;gap:14px;align-items:center;font-size:13px;z-index:5;flex-wrap:wrap}'+
-'.bar select{padding:5px 8px;border-radius:6px;border:0;font-size:13px}.bar label{display:flex;gap:6px;align-items:center;cursor:pointer}'+
-'.bar button{margin-left:auto;background:#C9A961;color:#1c2430;border:0;padding:9px 18px;border-radius:7px;font-weight:700;cursor:pointer;font-size:13px}'+
-'.page{width:200mm;margin:16px auto;background:#fff;padding:0 0 18px;box-shadow:0 2px 14px rgba(0,0,0,.12)}'+
-'.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 20px 12px;border-bottom:3px solid #1F3864}'+
-'.hdr img{height:42px}.ti{font-size:18px;font-weight:800;color:#1F3864}.ts{font-size:12.5px;color:#5a6677;margin-top:3px}'+
-'.meta{text-align:right;font-size:11px;color:#5a6677;line-height:1.7}.meta b{color:#1a1f2b}'+
-'.ficha{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;padding:12px 20px;font-size:12px}'+
-'.ficha div{border-bottom:1px solid #ccd2dd;padding:4px 0}.ficha span{color:#5a6677;margin-right:6px}'+
-'.nota{margin:0 20px 10px;font-size:11px;color:#5a6677;background:#f5f7fb;border-left:3px solid #C8A028;padding:7px 10px}'+
-'.wrap{padding:0 20px}table{width:100%;border-collapse:collapse;font-size:11.5px;table-layout:fixed;border:1.5px solid #1F3864}'+
-'thead th{background:#1F3864;color:#fff;padding:7px 6px;font-size:11px;border:1px solid #1F3864}'+
-'td{border:1px solid #ccd2dd;padding:5px 7px;vertical-align:top}'+
-'tr.sec td{background:#CFDDEF;font-weight:800;color:#14284d;border-top:2.5px solid #1F3864}'+
-'tr.cap td{background:#EDF3FB;font-weight:700;color:#1F3864}'+
-'.capcod{display:inline-block;background:#1F3864;color:#fff;border-radius:3px;padding:0 6px;font-size:10px;margin-right:6px;font-family:ui-monospace,Consolas,monospace}'+
-'td.ref{text-align:center;color:#5a6677;font-weight:700}td.c{text-align:center}td.n{text-align:right;font-variant-numeric:tabular-nums}td.lbl{text-align:right;font-size:10px}'+
-'.cod{display:block;font-family:ui-monospace,Consolas,monospace;font-size:10px;color:#8893a5;margin-top:1px}'+
-'.opc{font-size:9px;font-weight:800;background:#fdf3d8;color:#8a6d10;border-radius:3px;padding:0 5px}'+
-'tr.it td{border-bottom:0}tr.det td{border-top:0;padding-top:0}'+
-'.dbox{background:#fffaf0;border:1px solid #eadcb2;border-left:3px solid #C8A028;border-radius:4px;padding:7px 10px;font-size:11.5px;line-height:1.5;white-space:normal}'+
-'.dnone{font-size:10.5px;color:#a0a8b6;font-style:italic;padding:2px 0 4px}'+
-'tr.it,tr.det{break-inside:avoid;page-break-inside:avoid}'+
-'body.sinpr .pr{display:none}body.sinpr thead th:nth-child(2){width:75%!important}body.sinvac tr.it:not(.condet),body.sinvac tr.it:not(.condet)+tr.det{display:none}'+
-'.firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;padding:34px 40px 6px}.firmas div{border-top:1px solid #1a1f2b;text-align:center;font-size:11px;padding-top:5px;color:#5a6677}'+
-'.pie{padding:10px 20px 0;font-size:10px;color:#8893a5;display:flex;justify-content:space-between}'+
-'@media print{body{background:#fff}.bar{display:none}.page{box-shadow:none;margin:0;width:auto}}'+
-'</style></head><body class="sinpr">'+
+
+  const css =
+'@page{size:A4 portrait;margin:10mm 10mm 12mm}*{box-sizing:border-box}'+
+'body{font-family:Arial,Helvetica,sans-serif;background:#e9ecf1;margin:0;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+'.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 18px;display:flex;gap:14px;align-items:center;font-size:13px;z-index:9;flex-wrap:wrap}'+
+'.bar select{padding:4px 8px;border-radius:6px;border:0}.bar label{display:flex;gap:6px;align-items:center;cursor:pointer}'+
+'.bar .sp{flex:1}.bar button{background:#C9A961;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer}'+
+'.bar button.gh{background:transparent;color:#fff;border:1px solid #8ea3c7}'+
+'#panel{background:#fff;border-bottom:3px solid #C8A028;padding:12px 18px 14px;font-size:12.5px}'+
+'#panel h3{margin:0 0 4px;font-size:14px;color:#1F3864}#panel .ay{color:#5a6677;font-size:11.5px;margin-bottom:10px}'+
+'.g{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 12px}.g label{display:flex;flex-direction:column;gap:3px;font-weight:700;color:#42506a;font-size:11px}'+
+'.g input,.g select,.g textarea{font:inherit;font-weight:400;padding:5px 7px;border:1px solid #cdd4df;border-radius:6px;color:#111}'+
+'.g .w2{grid-column:span 2}.g .w4{grid-column:1/-1}.g textarea{min-height:44px;resize:vertical}'+
+'.hoja{width:190mm;margin:14px auto;background:#fff;padding:9mm 10mm 8mm;box-shadow:0 2px 12px rgba(0,0,0,.12)}'+
+'.top{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px;padding-bottom:9px;border-bottom:3px solid #1F3864}'+
+'.top img{height:40px}.top .k{font-size:9.5px;font-weight:800;letter-spacing:2px;color:#C8A028}'+
+'.top .t{font-size:17px;font-weight:800;color:#1F3864;line-height:1.15}.top .s{font-size:10.5px;color:#5a6677;margin-top:2px}'+
+'.nbox{border:1.5px solid #1F3864;border-radius:4px;overflow:hidden;text-align:center;min-width:40mm}'+
+'.nbox .h{background:#1F3864;color:#fff;font-size:9px;font-weight:800;letter-spacing:1.5px;padding:3px 8px}'+
+'.nbox .v{font-size:17px;font-weight:800;color:#1F3864;padding:3px 8px 1px}.nbox .f{font-size:10px;color:#5a6677;padding:0 8px 4px}'+
+'.gold{height:2px;background:#C8A028;margin-top:2px}'+
+'.ficha{display:grid;grid-template-columns:2.2fr 1fr 1fr;border:1px solid #C9CFD9;border-top:0;margin:8px 0 10px;font-size:11px}'+
+'.ficha div{padding:5px 8px;border-top:1px solid #C9CFD9;border-right:1px solid #C9CFD9;min-height:9mm}'+
+'.ficha div:nth-child(3n){border-right:0}.ficha i{display:block;font-style:normal;font-size:8.5px;font-weight:800;letter-spacing:.8px;color:#8893a5;text-transform:uppercase;margin-bottom:1px}'+
+'.ficha .fl{font-weight:700;color:#111}'+
+'table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10.5px}'+
+'thead th{padding:5px 5px;font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;color:#fff;background:#1F3864;border:1px solid #1F3864}'+
+'thead .grp{background:#16294a;color:#E5C658;border-bottom:1px solid #3a5585}thead .sh{background:#233f6e;color:#E5C658}'+
+'td{border-bottom:1px solid #dde2ea;padding:4px 6px;vertical-align:top}'+
+'td.nro{text-align:center;color:#5a6677;font-weight:700}td.c{text-align:center}td.n{text-align:right;font-variant-numeric:tabular-nums}'+
+'tr.sec td{background:#EAF0F8;color:#1F3864;font-weight:800;font-size:11px;border-top:1.5px solid #1F3864;border-bottom:1px solid #c4d2e6;padding:5px 6px}'+
+'tr.sec .sk{display:inline-block;font-size:8px;letter-spacing:1.2px;background:#1F3864;color:#fff;border-radius:2px;padding:1px 5px;margin-right:7px;vertical-align:1px}'+
+'tr.sec .so{font-weight:400;color:#5a6677}'+
+'tr.cap td{background:#fff;color:#8a6d10;font-weight:800;font-size:9.5px;letter-spacing:.5px;border-bottom:1px solid #eadcb2;padding:5px 6px 3px}'+
+'tr.cap .cc{display:inline-block;background:#C8A028;color:#fff;border-radius:2px;padding:0 5px;margin-right:6px;font-family:Consolas,monospace}'+
+'tr.it td{background:#fff}tr.it:nth-of-type(even) td{background:#fafbfd}'+
+'.tt{font-weight:700;color:#111}.cod{font-size:8.5px;color:#8893a5;font-family:Consolas,monospace;margin-top:1px}'+
+'.dx{font-size:9.8px;line-height:1.42;margin-top:4px;color:#2b3340;border-left:2px solid #C8A028;padding:1px 0 1px 7px}'+
+'.opct{font-size:8px;font-weight:800;background:#fde7c7;color:#9a5b00;padding:0 4px;border-radius:2px}tr.opc td{color:#8893a5}'+
+'tr.ssub td{background:#f3f5f9;font-weight:700;color:#1F3864;text-align:right;border-bottom:1px solid #c4d2e6;font-size:10px}'+
+'input.pu{width:100%;border:1px dashed #c9b27a;background:#fffaf0;text-align:right;font:inherit;padding:1px 3px}'+
+'.totbox{display:flex;justify-content:flex-end;margin-top:8px}'+
+'.totbox table{width:auto;min-width:95mm;border:1.5px solid #1F3864}.totbox td{border:0;padding:6px 10px;font-size:11px}'+
+'.totbox .l{background:#1F3864;color:#fff;font-weight:800;letter-spacing:.8px}.totbox .v{background:#C8A028;color:#fff;font-weight:800;font-size:13.5px;text-align:right;min-width:36mm}'+
+'.son{text-align:right;font-size:10px;color:#2b3340;margin-top:4px}.son b{text-transform:uppercase}'+
+'.cond{margin-top:12px;border:1px solid #C9CFD9;border-left:3px solid #C8A028;background:#fbfaf6;padding:7px 10px;font-size:9.5px;line-height:1.5;color:#2b3340}'+
+'.cond h5{margin:0 0 3px;font-size:9px;letter-spacing:1.2px;color:#1F3864}.cond ol{margin:0;padding-left:15px}'+
+'.fir{display:grid;grid-template-columns:1fr 1fr;gap:18mm;margin-top:20mm;font-size:10px;break-inside:avoid;page-break-inside:avoid}'+
+'.fir .ln{border-top:1px solid #111;padding-top:4px;text-align:center}.fir .ln b{display:block;font-size:10.5px;color:#111}'+
+'.fir .ln span{color:#5a6677}'+
+'.pie{margin-top:9mm;border-top:1px solid #dde2ea;padding-top:4px;font-size:8.5px;color:#8893a5;display:flex;justify-content:space-between}'+
+'tr.it{break-inside:avoid;page-break-inside:avoid}thead{display:table-header-group}'+
+'body.sinpr .pr{visibility:hidden}body.sinvac tr.it:not(.condet){display:none}'+
+'.salto{break-before:page;page-break-before:always}'+
+'.ct{font-size:11px;line-height:1.42;text-align:justify}.ct h1{text-align:center;letter-spacing:4px;font-size:15px;margin:2px 0 10px}'+
+'.ct h4{margin:7px 0 0;font-size:11px;break-after:avoid;page-break-after:avoid}.ct p{margin:0}.ct ul{margin:1px 0 0 18px;padding:0}'+
+'.fl{font-weight:700}.fl.vacio{display:inline-block;min-width:32mm;border-bottom:1px dotted #111;height:1em;vertical-align:baseline}'+
+'.firmas{display:grid;grid-template-columns:1fr 1fr;gap:26mm;margin-top:20mm;text-align:center;font-size:11px;break-inside:avoid;page-break-inside:avoid}'+
+'@media print{.cx{display:none}}'+
+'.firmas div{border-top:1px solid #111;padding-top:4px}'+
+'.cx{font-size:9px;color:#888;text-align:right;margin-top:6mm}'+
+'@media print{body{background:#fff}.bar,#panel{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}'+
+'input.pu{border:0;background:transparent}}';
+
+  const hoja1 =
+'<div class="hoja">'+
+'<div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
+  '<div><div class="k">PRESUPUESTO DE TRABAJOS</div><div class="t">Mano de obra para contratista</div>'+
+  '<div class="s">'+escapeHtml([obra, desc].filter(Boolean).join(' · '))+'</div></div>'+
+  '<div class="nbox"><div class="h">PRESUPUESTO N°</div><div class="v">'+escapeHtml(codigo)+'</div><div class="f">Fecha: '+F('fecha_txt')+'</div></div>'+
+'</div><div class="gold"></div>'+
+'<div class="ficha">'+
+  '<div><i>Contratista</i>'+F('contratista')+'</div><div><i>C.I. N°</i>'+F('ci')+'</div><div><i>Plazo</i>'+F('plazo_txt')+'</div>'+
+  '<div><i>Obra</i><b>'+escapeHtml(obra||'—')+'</b></div><div><i>Localidad</i>'+F('localidad')+'</div><div><i>Inicio previsto</i>'+F('inicio_txt')+'</div>'+
+'</div>'+
+'<table><thead>'+
+  '<tr><th rowspan="2" style="width:6%">N°</th><th rowspan="2" style="width:46%;text-align:left">Detalle del trabajo a realizar</th>'+
+  '<th colspan="4" class="grp">Detalle cantidad a ejecutar</th></tr>'+
+  '<tr><th class="sh" style="width:8%">Unid.</th><th class="sh" style="width:9%">Cant.</th><th class="sh pr" style="width:14%">Precio unit. (Gs)</th><th class="sh pr" style="width:17%">Subtotal (Gs)</th></tr>'+
+'</thead>'+filas+'</table>'+
+'<div class="totbox pr"><table><tr><td class="l">TOTAL PRESUPUESTO GS.</td><td class="v" id="totPres">0</td></tr></table></div>'+
+'<div class="son pr">Son guaraníes: <b id="totLet"></b></div>'+
+'<div class="cond"><h5>CONDICIONES GENERALES</h5><ol>'+
+  '<li>Este presupuesto y su contenido es de uso oficial, exclusivo y confidencial entre el Contratista y la firma AXC Constructora.</li>'+
+  '<li>El CONTRATADO asume la responsabilidad del buen desarrollo y ejecución de las obras, siguiendo las especificaciones técnicas de construcción y también la aplicación de las normas de Seguridad Laboral.</li>'+
+  '<li>El CONTRATADO asume total y completamente la responsabilidad de los hechos y omisiones de sus empleados, así como las obligaciones emergentes de las leyes laborales, leyes previsionales de seguridad social y/o accidentes de trabajo.</li>'+
+  '<li>Las cantidades son las del presupuesto; se paga lo efectivamente ejecutado y certificado en obra.</li>'+
+'</ol></div>'+
+'<div class="fir">'+
+  '<div class="ln"><b>'+F('contratista')+'</b><span>Contratista · Firma y aclaración</span><br><span>C.I. N° </span>'+F('ci')+'</div>'+
+  '<div class="ln"><b>'+F('representante')+'</b><span>Por AXC Constructora</span><br><span>RUC '+'</span>'+F('ruc')+'</div>'+
+'</div>'+
+'<div class="pie"><span>AXC Constructora · Presupuesto '+escapeHtml(codigo)+'</span><span>Documento de uso exclusivo entre las partes</span></div>'+
+'</div>';
+
+  const contrato =
+'<div class="hoja salto ct"><h1>CONTRATO DE CONSTRUCCIÓN</h1>'+
+'<p>En '+F('lugar')+', a los '+F('dia')+' días del mes de '+F('mes')+' de '+F('anio')+' se reúnen por una parte el '+F('representante')+
+' en representación de la empresa AXC Constructora con RUC N.° '+F('ruc')+', ahora en más denominado <b>CONTRATANTE</b>, por otra parte, el señor '+
+F('contratista')+' con CI N.° '+F('ci')+', mayor de edad, de profesión '+F('profesion')+', ahora en más denominado <b>CONTRATADO</b>; convienen celebrar el presente Contrato de Construcción, que se regirá por las siguientes cláusulas y condiciones.</p>'+
+'<h4>Cláusula 01, OBJETO:</h4><p>El presente tiene como objeto establecer el alcance de los servicios contratados, así también los derechos y obligaciones de ambas partes y las formas de aplicación de las cláusulas que rigen el mismo.</p>'+
+'<h4>Cláusula 02, SERVICIO:</h4><p>El CONTRATADO asume el servicio de construcción encomendado por el CONTRATANTE según presupuesto anexo (Presupuesto N° <b>'+escapeHtml(codigo)+'</b>, obra <b>'+escapeHtml(obra||'—')+'</b>'+
+'<span data-opt="localidad">, localidad '+F('localidad')+'</span>), debiendo realizar las tareas según el detalle del mismo.</p>'+
+'<h4>Cláusula 03, MODIFICACIONES:</h4><p>Cualquier modificación en el proyecto original o ampliación de las órdenes de trabajo, así como cualquier servicio fuera del perímetro de la OBRA, deberán ser comunicados por escrito, formando parte de este acuerdo como ANEXO I.</p>'+
+'<h4>Cláusula 04, PLAZO:</h4><p>La obra tendrá inicio en la fecha '+F('inicio_txt')+' y la misma tendrá un plazo de entrega de '+F('plazo')+' días hábiles. Para las obras cuya realización estuviere condicionada a factores climáticos, los plazos serán analizados y prorrogados según la incidencia de los factores.</p>'+
+'<h4>Cláusula 05, PRECIO y PAGOS:</h4><p>05.1 El precio de los servicios de construcción contratados es de '+F('precio_txt')+' guaraníes'+
+'<span data-opt="precio_let"> ('+F('precio_let')+')</span>, según presupuesto adjunto. El pago de los servicios ejecutados será realizado de la siguiente forma: '+F('forma_pago')+'</p>'+
+'<p data-opt="anticipo">05.2 El CONTRATANTE entregará al CONTRATADO un anticipo de '+F('anticipo')+', que será descontado de los pagos siguientes conforme a las certificaciones de obra.</p>'+
+'<h4>Cláusula 06, RELACIÓN Y RESPONSABILIDAD LABORAL:</h4><p>El CONTRATANTE y el CONTRATADO son partes absolutamente independientes; por lo tanto, el vínculo jurídico que nace del presente contrato es de carácter civil y en ningún momento podrá ser interpretado como relación laboral. El CONTRATADO asume total y completamente la responsabilidad por los hechos y omisiones de sus empleados, así como las obligaciones emergentes de las leyes laborales, leyes previsionales, de seguridad social y/o accidentes de trabajo.</p>'+
+'<h4>Cláusula 07, MATERIALES:</h4><p id="clMat"></p>'+
+'<h4>Cláusula 08, RESPONSABILIDAD:</h4><p>El CONTRATADO asume la responsabilidad del buen desarrollo y ejecución de los servicios encomendados, siguiendo las especificaciones técnicas de construcción y también la aplicación de las normas de seguridad en el trabajo, así como la inscripción de los funcionarios en el Instituto de Previsión Social (IPS).</p>'+
+'<h4>Cláusula 09, CONTROL:</h4><p>El CONTRATANTE certificará la entrega de la obra en forma parcial o total mediante fiscalizaciones; a tal efecto designará un encargado que tendrá la facultad de controlar los servicios ejecutados.<span data-opt="encargado"> Para esta obra se designa como encargado a '+F('encargado')+'.</span></p>'+
+'<h4>Cláusula 10, RESCISIÓN:</h4><p>Ambas partes podrán rescindir el presente contrato, previa comunicación escrita a la otra parte con un mínimo de 8 días de antelación, debiendo responder por daños y perjuicios, por las siguientes causas:</p>'+
+'<ul><li>Atraso en la entrega de materiales, ocasionando atraso en la entrega de los servicios.</li><li>Violación de cualquier cláusula del presente contrato.</li><li>Negligencia y puesta de vidas en peligro.</li></ul>'+
+'<div data-opt="garantia"><h4>Cláusula 11, GARANTÍA:</h4><p>El CONTRATADO garantiza los trabajos ejecutados por un plazo de '+F('garantia')+', contado desde la entrega, y se obliga a reparar sin costo para el CONTRATANTE los defectos atribuibles a su ejecución.</p></div>'+
+'<h4>Cláusula <span id="nJur">11</span>, JURISDICCIÓN:</h4><p>Todos los conflictos suscitados entre las partes, derivados de la interpretación o ejecución de este contrato, serán sometidos a arbitraje de los tribunales de Ciudad del Este.</p>'+
+'<p style="margin-top:6px">En prueba de conformidad y aceptación, las partes firman al pie del presente en dos ejemplares de un mismo tenor y a un solo efecto.</p>'+
+'<div class="firmas"><div><b>'+F('representante_may')+'</b><br>RUC Nro. '+F('ruc')+'<br>CONTRATANTE</div><div><b>'+F('contratista_may')+'</b><br>CI N° '+F('ci')+'<br>CONTRATISTA</div></div>'+
+'</div>';
+
+  const panel =
+'<div id="panel"><h3>Datos del contrato</h3><div class="ay">Completá lo que tengas; lo que quede vacío sale como línea punteada para llenar a mano. Se guarda en este equipo para este presupuesto.</div>'+
+'<div class="g">'+
+ '<label class="w2">Contratista<input id="f_contratista" list="dlCon" placeholder="Nombre y apellido"></label>'+
+ '<label>C.I. N°<input id="f_ci"></label>'+
+ '<label>Profesión<input id="f_profesion" placeholder="Constructor"></label>'+
+ '<label>Fecha del contrato<input id="f_fecha" type="date"></label>'+
+ '<label>Lugar de firma<input id="f_lugar" placeholder="Ciudad del Este"></label>'+
+ '<label>Localidad de la obra<input id="f_localidad"></label>'+
+ '<label>Encargado de control (cl. 09)<input id="f_encargado" placeholder="Residente de obra"></label>'+
+ '<label>Fecha de inicio<input id="f_inicio" type="date"></label>'+
+ '<label>Plazo (días hábiles)<input id="f_plazo" type="number" min="0"></label>'+
+ '<label>Precio del contrato (Gs)<input id="f_precio" inputmode="numeric" placeholder="= total del presupuesto"></label>'+
+ '<label>Anticipo (cl. 05.2)<input id="f_anticipo" placeholder="Ej. 50 % · Gs 10.000.000"></label>'+
+ '<label class="w4">Forma de pago (cl. 05.1)<textarea id="f_forma_pago" placeholder="Ej. Contra certificación de avance de obra, previa autorización de pago firmada por el residente y aprobada por la dirección."></textarea></label>'+
+ '<label>Materiales (cl. 07)<select id="f_materiales"><option value="contratado">Los provee el contratado</option><option value="axc">Los provee AXC</option><option value="mixto">Mixto (detallar)</option></select></label>'+
+ '<label class="w2">Materiales que provee AXC (si es mixto)<input id="f_mat_det" placeholder="Ej. revestimientos cerámicos y griferías"></label>'+
+ '<label>Garantía (cl. 11, opcional)<input id="f_garantia" placeholder="Ej. 5 años"></label>'+
+ '<label class="w2">Representante AXC<input id="f_representante" placeholder="Arq. Vladimir Denis Acuña"></label>'+
+ '<label>RUC AXC<input id="f_ruc" placeholder="1.355.252-0"></label>'+
+ '<label style="justify-content:flex-end"><button type="button" id="bBorrar" style="padding:6px;border:1px solid #cdd4df;background:#fff;border-radius:6px;cursor:pointer">Borrar datos cargados</button></label>'+
+'</div><datalist id="dlCon"></datalist></div>';
+
+  w.document.open();
+  w.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+escapeHtml(titulo)+'</title><style>'+css+'</style></head><body>'+
 '<div class="bar"><b>Reporte para contratista</b>'+
 '<label>Sector <select id="fSec"><option value="">Todos</option>'+opts+'</select></label>'+
-'<label><input type="checkbox" id="fPr"> Mostrar precio de mano de obra</label>'+
 '<label><input type="checkbox" id="fVac"> Solo trabajos con detalle</label>'+
-'<button onclick="window.print()">Imprimir / PDF</button></div>'+
-'<div class="page"><div class="hdr"><div><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC"><div class="ti">Especificación de trabajos para contratista</div>'+
-'<div class="ts">'+escapeHtml([obra, desc].filter(Boolean).join(' · '))+'</div></div>'+
-'<div class="meta">Presupuesto <b>'+escapeHtml(codigo)+'</b><br>Fecha <b>'+hoy+'</b><br><span id="cntTxt">'+nTot+' trabajos · '+nDet+' con detalle</span></div></div>'+
-'<div class="ficha"><div><span>Contratista:</span></div><div><span>Residente:</span></div><div><span>Inicio previsto:</span></div><div><span>Fin previsto:</span></div></div>'+
-'<div class="nota">Este documento describe el alcance de los trabajos, las cantidades y las condiciones de ejecución. Las cantidades son las del presupuesto; lo que se paga es lo que se certifique en obra.</div>'+
-'<div class="wrap"><table>'+
-'<thead><tr><th style="width:7%">Ítem</th><th style="width:47%">Trabajo</th><th style="width:8%">Unid.</th><th style="width:10%">Cantidad</th><th class="pr" style="width:13%">M.O. Gs/u</th><th class="pr" style="width:15%">M.O. total</th></tr></thead>'+
-cuerpo+
-'<tbody class="pr"><tr class="sec"><td colspan="4">TOTAL MANO DE OBRA (según presupuesto)</td><td></td><td class="n">'+fmtGs(totMO)+'</td></tr></tbody>'+
-'</table></div>'+
-'<div class="firmas"><div>Residente de obra · AXC Constructora</div><div>Contratista · conformidad</div></div>'+
-'<div class="pie"><span>AXC Constructora · '+escapeHtml(codigo)+'</span><span>Desarrollado por Conexdata</span></div></div>'+
-'<scr'+'ipt>'+
-'var b=document.body;'+
-'document.getElementById("fPr").onchange=function(){b.classList.toggle("sinpr",!this.checked);};'+
-'document.getElementById("fVac").onchange=function(){b.classList.toggle("sinvac",this.checked);};'+
-'document.getElementById("fSec").onchange=function(){var v=this.value;document.querySelectorAll("tbody.secblk").forEach(function(t){t.style.display=(!v||t.getAttribute("data-sec")===v)?"":"none";});'+
-'document.querySelectorAll("tbody.pr").forEach(function(t){t.style.visibility=v?"hidden":"";});};'+
-'</scr'+'ipt></body></html>');
+'<label><input type="checkbox" id="fPr"> Ocultar precios</label>'+
+'<span class="sp"></span><button class="gh" id="bPanel">Datos del contrato</button><button onclick="window.print()">Imprimir / PDF</button></div>'+
+panel + hoja1 + contrato +
+'<div class="cx" style="width:190mm;margin:0 auto 20px">'+n+' trabajos · '+nDet+' con detalle · Desarrollado por Conexdata</div>'+
+'<scr'+'ipt>var RC='+JSON.stringify(RC).replace(/</g,'\\u003c')+';('+_rcPopup.toString()+')();</scr'+'ipt></body></html>');
   w.document.close();
-  if(!nDet) showToast('Ningún rubro tiene detalle todavía','info','Cargalo con el botón 📋 Detalle de cada rubro');
 }
+
+/* Script que corre DENTRO de la ventana del reporte (se inyecta con toString). */
+function _rcPopup(){
+  var RC = window.RC, KEY = 'axc_contrato_' + RC.codigo;
+  function $(id){ return document.getElementById(id); }
+  function fmt(n){ return Math.round(Number(n)||0).toLocaleString('es-PY'); }
+  function num(s){ return Number(String(s==null?'':s).replace(/\./g,'').replace(/,/g,'.').replace(/[^\d.\-]/g,''))||0; }
+  var MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  function letras(n){
+    n = Math.floor(Math.abs(Number(n)||0));
+    if(!n) return 'cero';
+    var U=['','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce','trece','catorce','quince','dieciséis','diecisiete','dieciocho','diecinueve','veinte','veintiuno','veintidós','veintitrés','veinticuatro','veinticinco','veintiséis','veintisiete','veintiocho','veintinueve'];
+    var D=['','','','treinta','cuarenta','cincuenta','sesenta','setenta','ochenta','noventa'];
+    var C=['','ciento','doscientos','trescientos','cuatrocientos','quinientos','seiscientos','setecientos','ochocientos','novecientos'];
+    function h(x){ // 0..999
+      if(x===100) return 'cien';
+      var c=Math.floor(x/100), r=x%100, t='';
+      if(c) t=C[c];
+      if(r){ var s = r<30 ? U[r] : (D[Math.floor(r/10)] + (r%10 ? ' y '+U[r%10] : '')); t += (t?' ':'') + s; }
+      return t;
+    }
+    function mil(x){ // 0..999999
+      var m=Math.floor(x/1000), r=x%1000, t='';
+      if(m) t = (m===1 ? 'mil' : h(m).replace(/veintiuno$/,'veintiún').replace(/uno$/,'un')+' mil');
+      if(r) t += (t?' ':'') + h(r);
+      return t;
+    }
+    var mm=Math.floor(n/1000000), r=n%1000000, t='';
+    if(mm) t = (mm===1 ? 'un millón' : mil(mm).replace(/veintiuno$/,'veintiún').replace(/uno$/,'un')+' millones');
+    if(r) t += (t?' ':'') + mil(r);
+    return t;
+  }
+  var CAMPOS = ['contratista','ci','profesion','fecha','lugar','localidad','encargado','inicio','plazo','precio','anticipo','forma_pago','materiales','mat_det','garantia','representante','ruc'];
+  var DEF = { profesion:'Constructor', lugar:'Ciudad del Este', representante:'Arq. Vladimir Denis Acuña', ruc:'1.355.252-0',
+              fecha:new Date().toISOString().slice(0,10), materiales:'contratado' };
+  var st = {}; try{ st = JSON.parse(localStorage.getItem(KEY)||'{}')||{}; }catch(e){ st = {}; }
+  st.datos = st.datos || {}; st.precios = st.precios || {};
+  CAMPOS.forEach(function(k){ var el=$('f_'+k); if(!el) return; var v = st.datos[k]; el.value = (v!=null && v!=='') ? v : (DEF[k]||''); });
+  $('dlCon').innerHTML = (RC.contratistas||[]).map(function(c){ return '<option value="'+String(c).replace(/"/g,'&quot;')+'">'; }).join('');
+  document.querySelectorAll('tr.it').forEach(function(tr){
+    var k = tr.getAttribute('data-key'), inp = tr.querySelector('input.pu');
+    if(st.precios[k]!=null) inp.value = fmt(st.precios[k]);
+  });
+  function guardar(){
+    CAMPOS.forEach(function(k){ var el=$('f_'+k); if(el) st.datos[k] = el.value; });
+    try{ localStorage.setItem(KEY, JSON.stringify(st)); }catch(e){}
+  }
+  function fechaTxt(iso){ if(!iso) return ''; var p=iso.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; }
+  function total(){
+    var t = 0, sec = $('fSec').value;
+    document.querySelectorAll('tr.it').forEach(function(tr){
+      var q = Number(tr.getAttribute('data-q'))||0, pu = num(tr.querySelector('input.pu').value);
+      var sub = Math.round(q*pu); tr.querySelector('td.sub').textContent = sub ? fmt(sub) : '—';
+      var vis = tr.parentNode.style.display !== 'none' && getComputedStyle(tr).display !== 'none';
+      if(!tr.classList.contains('opc') && vis && (!sec || tr.parentNode.getAttribute('data-sec')===sec)) t += sub;
+    });
+    $('totPres').textContent = fmt(t);
+    document.querySelectorAll('tbody.secblk').forEach(function(tb){
+      var st2 = 0;
+      tb.querySelectorAll('tr.it').forEach(function(tr){
+        if(tr.classList.contains('opc') || getComputedStyle(tr).display==='none') return;
+        st2 += Math.round((Number(tr.getAttribute('data-q'))||0) * num(tr.querySelector('input.pu').value));
+      });
+      var c = tb.querySelector('td.ssv'); if(c) c.textContent = fmt(st2);
+    });
+    $('totLet').textContent = t ? letras(t) : 'cero';
+    return t;
+  }
+  function pintar(){
+    var v = {}; CAMPOS.forEach(function(k){ var el=$('f_'+k); v[k] = el ? String(el.value||'').trim() : ''; });
+    var tot = total();
+    var precio = v.precio ? num(v.precio) : tot;
+    var f = v.fecha ? v.fecha.split('-') : null;
+    var val = {
+      contratista:v.contratista, ci:v.ci, profesion:v.profesion, lugar:v.lugar, localidad:v.localidad,
+      representante:v.representante, ruc:v.ruc, encargado:v.encargado, plazo:v.plazo, anticipo:v.anticipo,
+      forma_pago:v.forma_pago, garantia:v.garantia,
+      fecha_txt:fechaTxt(v.fecha), inicio_txt:fechaTxt(v.inicio), plazo_txt: v.plazo ? (v.plazo+' días hábiles') : '',
+      dia: f ? String(Number(f[2])) : '', mes: f ? MESES[Number(f[1])-1] : '', anio: f ? f[0] : '',
+      precio_txt: precio ? fmt(precio) : '', precio_let: precio ? letras(precio)+' guaraníes' : '',
+      representante_may:(v.representante||'').toUpperCase(), contratista_may:(v.contratista||'').toUpperCase()
+    };
+    document.querySelectorAll('.fl').forEach(function(s){
+      var x = val[s.getAttribute('data-f')] || '';
+      s.textContent = x; s.classList.toggle('vacio', !x);
+    });
+    // Tramos opcionales: solo si hay dato
+    document.querySelectorAll('[data-opt]').forEach(function(el){
+      var k = el.getAttribute('data-opt'); el.style.display = val[k] ? '' : 'none';
+    });
+    $('nJur').textContent = val.garantia ? '12' : '11';
+    var mat = v.materiales || 'contratado', txt;
+    if(mat==='axc') txt = 'Los materiales serán provistos por el CONTRATANTE. El CONTRATADO deberá solicitarlos con la anticipación necesaria, cuidar su correcto uso y almacenamiento, y responder por pérdidas o desperdicios injustificados.';
+    else if(mat==='mixto') txt = 'El CONTRATADO deberá proveer todos los materiales y accesorios, conforme cantidad y calidad necesarios para la realización de la OBRA, con excepción de los siguientes, que serán provistos por el CONTRATANTE: <span class="fl'+(v.mat_det?'':' vacio')+'">'+(v.mat_det||'').replace(/</g,'&lt;')+'</span>. El CONTRATANTE podrá rechazar los materiales que no cumplan con las especificaciones requeridas para cada servicio.';
+    else txt = 'El CONTRATADO deberá proveer todos los materiales y accesorios, conforme cantidad y calidad necesarios para la realización de la OBRA, pudiendo el CONTRATANTE rechazarlos si no cumplen con las especificaciones requeridas para cada servicio.';
+    $('clMat').innerHTML = txt;
+  }
+  document.querySelectorAll('#panel input, #panel select, #panel textarea').forEach(function(el){
+    el.addEventListener('input', function(){ guardar(); pintar(); });
+    el.addEventListener('change', function(){ guardar(); pintar(); });
+  });
+  document.querySelectorAll('input.pu').forEach(function(inp){
+    inp.addEventListener('input', function(){
+      var tr = inp.closest('tr'); st.precios[tr.getAttribute('data-key')] = num(inp.value); guardar(); pintar();
+    });
+    inp.addEventListener('blur', function(){ inp.value = fmt(num(inp.value)); });
+  });
+  $('fSec').addEventListener('change', function(){
+    var s = this.value;
+    document.querySelectorAll('tbody.secblk').forEach(function(t){ t.style.display = (!s || t.getAttribute('data-sec')===s) ? '' : 'none'; });
+    pintar();
+  });
+  $('fVac').addEventListener('change', function(){ document.body.classList.toggle('sinvac', this.checked); pintar(); });
+  $('fPr').addEventListener('change', function(){ document.body.classList.toggle('sinpr', this.checked); });
+  $('bPanel').addEventListener('click', function(){ var p=$('panel'); p.style.display = p.style.display==='none' ? '' : 'none'; });
+  $('bBorrar').addEventListener('click', function(){
+    if(!confirm('¿Borrar los datos del contrato y los precios corregidos de este presupuesto?')) return;
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    location.reload();
+  });
+  pintar();
+}
+
 document.getElementById('pmContraBtn').addEventListener('click', buildReporteContratista);
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
@@ -7629,9 +7867,9 @@ async function exportArbol(){
     // Recetas + items (composiciones)
     let recs=[], items=[];
     try{
-      const r1=await sb.from('recetas').select('id,rubro_codigo').eq('activo',true);
+      const r1=await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo').eq('activo',true).order('created_at').order('id'); });
       recs=r1.data||[];
-      const r2=await sb.from('receta_items').select('*').eq('activo',true).order('orden');
+      const r2=await _sbTodo(function(){ return sb.from('receta_items').select('*').eq('activo',true).order('orden').order('id'); });
       items=r2.data||[];
     }catch(e){ console.warn('export recetas',e); }
     const recRubro={}; recs.forEach(function(x){ recRubro[x.id]=x.rubro_codigo; });
@@ -7749,8 +7987,8 @@ async function exportArbol(){
 async function _cargarComps(){
   let recs=[], items=[];
   try{
-    const r1=await sb.from('recetas').select('id,rubro_codigo').eq('activo',true); recs=r1.data||[];
-    const r2=await sb.from('receta_items').select('*').eq('activo',true).order('orden'); items=r2.data||[];
+    const r1=await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo').eq('activo',true).order('created_at').order('id'); }); recs=r1.data||[];
+    const r2=await _sbTodo(function(){ return sb.from('receta_items').select('*').eq('activo',true).order('orden').order('id'); }); items=r2.data||[];
   }catch(e){ console.warn('cargarComps',e); }
   const recRubro={}; recs.forEach(function(x){ recRubro[x.id]=x.rubro_codigo; });
   const byRubro={}; items.forEach(function(it){ const rc=recRubro[it.receta_id]; if(rc==null) return; (byRubro[rc]=byRubro[rc]||[]).push(it); });
