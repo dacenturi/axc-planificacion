@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.8 · la propuesta recupera los datos y el coeficiente exacto de cada rubro; el presupuesto avisa las líneas en cero</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.9 · detecta y corrige de una vez todas las líneas que quedaron en cero</p>
   </div>
 </div>
 
@@ -692,7 +692,7 @@ body{
       </div>
 
       <!-- RUBROS -->
-      <div class="pm-sectitle" style="display:flex;align-items:center;gap:12px"><span>Rubros (Obra → Sector → Rubro)</span><span class="pm-ordnota">Los capítulos se ordenan solos · dentro de cada uno, ordenalos con ▲▼</span><span style="margin-left:auto;display:flex;gap:6px"><button type="button" class="dg-all" id="dgAbrirTodo">Desplegar todo</button><button type="button" class="dg-all" id="dgCerrarTodo">Plegar todo</button></span></div>
+      <div class="pm-sectitle" style="display:flex;align-items:center;gap:12px"><span>Rubros (Obra → Sector → Rubro)</span><span class="pm-ordnota">Los capítulos se ordenan solos · dentro de cada uno, ordenalos con ▲▼</span><span style="margin-left:auto;display:flex;gap:6px"><button type="button" class="dg-all" id="pmCerosBtn" style="display:none;border-color:#EAA3A3;background:#FCE6E6;color:#9B2226">⚠ Líneas en 0</button><button type="button" class="dg-all" id="dgAbrirTodo">Desplegar todo</button><button type="button" class="dg-all" id="dgCerrarTodo">Plegar todo</button></span></div>
       <div class="pm-tablewrap">
         <table class="pm-table">
           <thead><tr><th style="width:92px">Sector</th><th>Rubro · descripción</th><th>Unid.</th><th class="pm-num" style="width:86px">Cantidad</th><th style="width:40px" title="Rubros que el cliente puede elegir o descartar">Opc.</th><th class="pm-num">Material Gs/u</th><th class="pm-num">M. obra Gs/u</th><th class="pm-num">CC. unitario</th><th class="pm-num">C. parcial (Gs)</th><th></th></tr></thead>
@@ -2869,6 +2869,7 @@ async function borrarAdjunto(id){
 
 function renderRubros(){
   setTimeout(function(){ try{ _pintarDesfasaje(); }catch(e){} }, 0);
+  setTimeout(function(){ try{ _pintarCerosBtn(); }catch(e){} }, 0);
   setTimeout(function(){ try{ pmTotales(); }catch(e){} }, 0);
   const tb = document.getElementById('pmRubTbody');
   if(!ed.rubros.length){ tb.innerHTML = '<tr><td colspan="10" class="pm-emptyr">Sin rubros todavía. Agregá abajo.</td></tr>'; return; }
@@ -6232,6 +6233,7 @@ document.getElementById('pmContratarBtn').addEventListener('click', function(){
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('mgCancel').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
+document.getElementById('pmCerosBtn').addEventListener('click', revisarLineasEnCero);
 document.getElementById('mgRedondeo').addEventListener('change', function(){
   const D = _reporteCompute();
   MG.rows = MG.rows.map(function(r){
@@ -7109,6 +7111,89 @@ async function _detectarCompNuevas(autoAbrir){
   }catch(e){ /* columnas de v9.2 aún no creadas */ }
 }
 /* v9.8 · Rubro con alguna línea en cero: el costo sale incompleto */
+/* v9.9 · Todas las líneas del presupuesto que quedaron en cero */
+function _lineasEnCero(){
+  const out = [];
+  (ed.rubros||[]).forEach(function(r){
+    if(!r.rubro_codigo || !r.tiene_receta) return;
+    (ed.insumos||[]).forEach(function(x, j){
+      if((x.rubro_codigo||'') !== r.rubro_codigo) return;
+      const pu = (x.precio_unitario!=null && x.precio_unitario!=='') ? (Number(x.precio_unitario)||0) : Number((ed.precioByIns||{})[x.codigo_insumo])||0;
+      if(pu > 0) return;
+      out.push({ j:j, it:x, rubro:r });
+    });
+  });
+  return out;
+}
+function _pintarCerosBtn(){
+  const b = document.getElementById('pmCerosBtn'); if(!b) return;
+  const n = _lineasEnCero().length;
+  b.style.display = n ? '' : 'none';
+  b.textContent = '⚠ '+n+' línea(s) en 0 · revisar';
+}
+/* Trae el precio de la composición para las líneas en cero */
+async function revisarLineasEnCero(){
+  const L = _lineasEnCero();
+  if(!L.length){ showToast('No hay líneas en cero','success','Todos los rubros tienen precio'); return; }
+  const cods = Array.from(new Set(L.map(function(x){ return _codBase(x.rubro.rubro_codigo); })));
+  let itemsPorCod = {};
+  try{
+    const rq = await sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', cods).order('created_at');
+    const idPor = {}; (rq.data||[]).forEach(function(r){ if(!idPor[r.rubro_codigo]) idPor[r.rubro_codigo] = r.id; });
+    const ids = Object.keys(idPor).map(function(k){ return idPor[k]; });
+    if(ids.length){
+      const iq = await sb.from('receta_items').select('receta_id,material,unidad,codigo_catalogo,tipo_componente,precio_unit').eq('activo', true).in('receta_id', ids);
+      const porRec = {}; (iq.data||[]).forEach(function(it){ (porRec[it.receta_id] = porRec[it.receta_id] || []).push(it); });
+      Object.keys(idPor).forEach(function(c){ itemsPorCod[c] = porRec[idPor[c]] || []; });
+    }
+  }catch(e){ showToast('No se pudo leer las composiciones','error', e.message||''); return; }
+  const filas = L.map(function(x){
+    const its = itemsPorCod[_codBase(x.rubro.rubro_codigo)] || [];
+    const esMO = _isMO(x.it);
+    const base = esMO
+      ? its.find(function(c){ return (c.tipo_componente==='mano_obra') && _dgNorm(c.material||'') === _dgNorm(x.it.material||''); })
+      : its.find(function(c){ return (c.tipo_componente||'insumo')!=='mano_obra' && String(c.codigo_catalogo||'') === String(x.it.codigo_insumo||''); });
+    const cat = esMO ? 0 : (Number((ed.precioByIns||{})[x.it.codigo_insumo])||0);
+    const nuevo = cat > 0 ? cat : Math.round(Number(base && base.precio_unit)||0);
+    return Object.assign({}, x, { nuevo:nuevo, deCatalogo: cat>0, hayBase: !!base });
+  });
+  const conPrecio = filas.filter(function(f){ return f.nuevo > 0; });
+  const ov = document.createElement('div'); ov.className='imp-ov';
+  ov.innerHTML = '<div class="imp-box" role="dialog" aria-modal="true">'+
+    '<div class="imp-h"><b>'+filas.length+' línea(s) en cero</b><span>'+escapeHtml((document.getElementById("pmCodigo")||{}).value||"")+' · se traen los precios de la composición y del catálogo</span></div>'+
+    '<div class="imp-b">'+
+      (ed.bloqueado ? '<div class="imp-note imp-note-w">El presupuesto está aprobado: primero reabrilo para poder corregirlo.</div>' : '')+
+      '<div class="imp-tw"><table class="imp-t"><thead><tr><th>Rubro</th><th>Línea</th><th>Tipo</th><th class="n">Cantidad</th><th class="n">Precio actual</th><th class="n">Precio a aplicar</th><th>Origen</th></tr></thead><tbody>'+
+      filas.map(function(f){
+        return '<tr><td><b style="font-family:monospace;color:#1F3864">'+escapeHtml(f.rubro.rubro_codigo)+'</b><div class="s">'+escapeHtml(f.rubro.descripcion||'')+'</div></td>'+
+          '<td>'+escapeHtml(f.it.material||f.it.codigo_insumo||'')+'</td>'+
+          '<td>'+(_isMO(f.it)?'Mano de obra':(_isLG(f.it)?'Logística':'Material'))+'</td>'+
+          '<td class="n">'+_qty(f.it.cantidad)+' '+escapeHtml(f.it.unidad||'')+'</td>'+
+          '<td class="n" style="color:#B42B2B">0</td>'+
+          '<td class="n"><b>'+(f.nuevo>0?fmtGs(f.nuevo):'—')+'</b></td>'+
+          '<td>'+(f.nuevo>0 ? (f.deCatalogo?'catálogo de insumos':'composición') : (f.hayBase?'la composición también está en 0':'no está en la composición'))+'</td></tr>';
+      }).join('')+'</tbody></table></div>'+
+      '<ul class="imp-l"><li>Se corrigen solo las líneas que tienen precio en la composición o en el catálogo: <b>'+conPrecio.length+'</b> de '+filas.length+'.</li>'+
+      '<li>Las que quedan en 0 hay que resolverlas en la composición (cargarles el precio) o a mano en el desglose.</li>'+
+      '<li>El cambio queda registrado recién cuando guardes el presupuesto.</li></ul>'+
+    '</div>'+
+    '<div class="imp-f"><button type="button" class="imp-no">Cerrar</button>'+
+      (conPrecio.length && !ed.bloqueado ? '<button type="button" class="imp-si">Traer los precios ('+conPrecio.length+')</button>' : '')+'</div></div>';
+  document.body.appendChild(ov);
+  const cerrar = function(){ document.removeEventListener('keydown', tecla); ov.remove(); };
+  function tecla(e){ if(e.key==='Escape') cerrar(); }
+  document.addEventListener('keydown', tecla);
+  ov.querySelector('.imp-no').onclick = cerrar;
+  const si = ov.querySelector('.imp-si');
+  if(si) si.onclick = function(){
+    conPrecio.forEach(function(f){
+      if(f.deCatalogo){ f.it.precio_unitario = null; f.it.precio_origen = 'catalogo'; }
+      else { f.it.precio_unitario = f.nuevo; f.it.precio_origen = 'manual'; }
+    });
+    ed.tocado = true; cerrar(); renderRubros(); renderInsumos();
+    showToast(conPrecio.length+' línea(s) corregida(s)','success','Revisá los costos y guardá el presupuesto');
+  };
+}
 function _ceroChip(r){
   const cod = r.rubro_codigo; if(!cod || !r.tiene_receta) return '';
   const n = (ed.insumos||[]).filter(function(x){
@@ -7117,7 +7202,7 @@ function _ceroChip(r){
     return !(pu > 0);
   }).length;
   if(!n) return '';
-  return '<span class="rub-cero" title="'+n+' línea(s) de este rubro están en cero: el costo sale incompleto. Abrí el desglose (▶) y traé el precio de la composición.">⚠ '+n+' línea(s) en 0</span>';
+  return '<button type="button" class="rub-cero" data-cero="1" title="'+n+' línea(s) de este rubro están en cero: el costo sale incompleto. Tocá para traer el precio de la composición.">⚠ '+n+' línea(s) en 0</button>';
 }
 function _compNuevaChip(r){
   const c = r.rubro_codigo; if(!c) return '';
@@ -7139,6 +7224,8 @@ function _compObsLinea(r){
     ' <span>· '+escapeHtml(_nombreCorto(d.usuario))+' · '+escapeHtml(_fmtF(d.fecha,false))+(d.consumo?' · consumo: '+escapeHtml(d.consumo):'')+'</span></div>';
 }
 document.addEventListener('click', function(e){
+  const z = e.target.closest && e.target.closest('[data-cero]');
+  if(z){ e.preventDefault(); e.stopPropagation(); revisarLineasEnCero(); return; }
   const b = e.target.closest && e.target.closest('[data-cnew]'); if(!b) return;
   e.preventDefault(); e.stopPropagation();
   _revisarComposiciones([b.getAttribute('data-cnew')]);
