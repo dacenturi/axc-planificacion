@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.1 · guardar, publicar y salir avisan qué se cambia y qué se arriesga, con los controles del presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.2 · los adjuntos en imagen se optimizan antes de subir y la subida muestra avance</p>
   </div>
 </div>
 
@@ -1521,6 +1521,10 @@ body{
   .pm-foot{flex-wrap:wrap;align-items:center;row-gap:8px}
   .pm-foot .pm-toggle{margin-right:0}
   .pm-foot #pmToggleBtn{margin-left:auto}
+  .adj-prog{border:1px solid #C9D6EA;background:#F4F7FC;border-radius:10px;padding:9px 12px;margin-top:8px}
+  .adj-prog-t{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:#1F3864}
+  .adj-prog-b{height:7px;background:#DCE5F2;border-radius:4px;overflow:hidden;margin-top:6px}
+  .adj-prog-b>i{display:block;height:100%;background:linear-gradient(90deg,#1F4E78,#1F3864);border-radius:4px;transition:width .2s}
   .pm-save.sucio{box-shadow:0 0 0 3px rgba(200,160,40,.35),0 4px 14px rgba(200,160,40,.35)}
   .ck-list{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
   .ck-list li{display:flex;gap:9px;align-items:flex-start;border:1px solid #E1E5ED;border-radius:9px;padding:7px 11px;font-size:13px}
@@ -2871,17 +2875,78 @@ function renderAdjuntos(){
   });
 }
 
+/* v10.2 · Adjuntos más rápidos
+   · Las fotos y los planos en imagen se reducen en la propia computadora antes
+     de subir: una foto de 8 MB queda en menos de 1 MB sin perder legibilidad.
+   · La subida muestra porcentaje y velocidad, así se ve que está avanzando. */
+const ADJ_IMG_MAX_PX = 2200;     // lado más largo
+const ADJ_IMG_CALIDAD = 0.82;
+function _mb(n){ return (Number(n)/1048576).toFixed(1).replace('.',',')+' MB'; }
+async function _comprimirImagen(f){
+  if(!/^image\/(jpe?g|png|webp)$/i.test(f.type||'')) return null;
+  if(f.size < 900*1024) return null;                     // ya es liviana
+  try{
+    const bmp = await createImageBitmap(f);
+    const esc = Math.min(1, ADJ_IMG_MAX_PX/Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width*esc), h = Math.round(bmp.height*esc);
+    const c = document.createElement('canvas'); c.width=w; c.height=h;
+    const ctx = c.getContext('2d'); ctx.drawImage(bmp, 0, 0, w, h); bmp.close && bmp.close();
+    const blob = await new Promise(function(res){ c.toBlob(res, 'image/jpeg', ADJ_IMG_CALIDAD); });
+    if(!blob || blob.size >= f.size) return null;
+    const nom = f.name.replace(/\.[^.]+$/,'') + '.jpg';
+    return new File([blob], nom, { type:'image/jpeg' });
+  }catch(e){ return null; }
+}
+/* Subida con barra de progreso (la librería no informa avance; se usa XHR) */
+function _subirConProgreso(path, file, onProg){
+  return new Promise(async function(resolve){
+    let token = '';
+    try{ const { data } = await sb.auth.getSession(); token = (data && data.session && data.session.access_token) || ''; }catch(e){}
+    if(!token){
+      const up = await sb.storage.from(ADJ_BUCKET).upload(path, file, { upsert:false, contentType:file.type||undefined });
+      return resolve(up.error ? { error:up.error } : { ok:true });
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', SUPABASE_URL+'/storage/v1/object/'+ADJ_BUCKET+'/'+path.split('/').map(encodeURIComponent).join('/'));
+    xhr.setRequestHeader('Authorization', 'Bearer '+token);
+    xhr.setRequestHeader('apikey', SUPABASE_KEY);
+    xhr.setRequestHeader('x-upsert', 'false');
+    if(file.type) xhr.setRequestHeader('Content-Type', file.type);
+    xhr.upload.onprogress = function(ev){ if(ev.lengthComputable && onProg) onProg(ev.loaded, ev.total); };
+    xhr.onload = function(){ resolve(xhr.status>=200 && xhr.status<300 ? { ok:true } : { error:{ message:'Storage '+xhr.status+': '+(xhr.responseText||'').slice(0,160) } }); };
+    xhr.onerror = function(){ resolve({ error:{ message:'Se cortó la conexión durante la subida' } }); };
+    xhr.send(file);
+  });
+}
+function _adjProgreso(nom, pct, vel){
+  const cont = document.getElementById('pmAdjLista'); if(!cont) return;
+  let el = document.getElementById('adjProg');
+  if(!el){ el = document.createElement('div'); el.id='adjProg'; el.className='adj-prog'; cont.prepend(el); }
+  if(pct == null){ el.remove(); return; }
+  el.innerHTML = '<div class="adj-prog-t"><b>Subiendo '+escapeHtml(nom)+'</b><span>'+pct+' %'+(vel?' · '+vel:'')+'</span></div>'+
+                 '<div class="adj-prog-b"><i style="width:'+pct+'%"></i></div>';
+}
 async function subirAdjuntos(files){
   const codigo = (document.getElementById('pmCodigo').value||'').trim().toUpperCase();
   if(!codigo){ showToast('Poné primero el código del presupuesto','error'); return; }
   if(ed.bloqueado){ showToast('Este presupuesto es de sólo lectura','error'); return; }
-  for(const f of Array.from(files||[])){
+  for(let f of Array.from(files||[])){
+    const original = f.size;
+    const liviana = await _comprimirImagen(f);
+    if(liviana){ f = liviana; showToast('Imagen optimizada','success', _mb(original)+' → '+_mb(f.size)+' · sube mucho más rápido'); }
     if(f.size > ADJ_MAX){ showToast('«'+f.name+'» pesa más de 10 MB','error','Comprimilo o subilo en partes'); continue; }
     try{
-      showToast('Subiendo '+f.name+'…','info');
       const limpio = f.name.replace(/[^a-zA-Z0-9._-]/g,'_');
       const path = 'presu/'+codigo+'/'+Date.now()+'_'+limpio;
-      const up = await sb.storage.from(ADJ_BUCKET).upload(path, f, { upsert:false, contentType:f.type||undefined });
+      const t0 = Date.now();
+      _adjProgreso(f.name, 0, '');
+      const up = await _subirConProgreso(path, f, function(cargado, total){
+        const pct = Math.round(cargado/total*100);
+        const seg = (Date.now()-t0)/1000;
+        const vel = seg > 0.7 ? ((cargado/1048576)/seg).toFixed(1).replace('.',',')+' MB/s' : '';
+        _adjProgreso(f.name, pct, vel);
+      });
+      _adjProgreso(null);
       if(up.error) throw up.error;
       const url = sb.storage.from(ADJ_BUCKET).getPublicUrl(path).data.publicUrl;
       const ins = await sb.from('presupuesto_adjuntos').insert({
@@ -2891,8 +2956,9 @@ async function subirAdjuntos(files){
       if(ins.error) throw ins.error;
       ed.adjuntos.push(ins.data);
       renderAdjuntos();
-      showToast('Adjunto agregado','success', f.name);
+      showToast('Adjunto agregado','success', f.name+' · '+_mb(f.size));
     }catch(e){
+      _adjProgreso(null);
       console.warn('subir adjunto', e);
       showToast('No se pudo subir '+f.name,'error', e.message||String(e));
     }
