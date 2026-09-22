@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.3 · reabre quien elaboró el presupuesto, con observación; al abrir se revisan las composiciones cambiadas con su consumo</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.4 · cada composición registra quién la cambió, cuándo y qué cambió</p>
   </div>
 </div>
 
@@ -1501,6 +1501,22 @@ body{
   .imp-txt{width:100%;min-height:70px;border:1px solid #C9D0DC;border-radius:9px;padding:9px 11px;font:inherit;font-size:13.5px;resize:vertical}
   .imp-txt:focus{outline:none;border-color:#1F4E78;box-shadow:0 0 0 3px rgba(31,78,120,.12)}
   .imp-err{color:#B42B2B;font-size:12px;margin-top:4px;min-height:1em}
+  /* v9.4 · Historial de composiciones */
+  .comp-meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin:0 0 12px;padding:8px 12px;border:1px solid #E1E5ED;border-radius:10px;background:#F7F9FC;font-size:12px;color:#566077}
+  .comp-meta b{color:#1F3864}
+  .comp-histbtn{margin-left:auto;border:1px solid #C9D0DC;background:#fff;color:#1F3864;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer}
+  .comp-histbtn:hover{background:#EEF2F8}
+  .autor-badge.mod{background:#EEF2F8;color:#15427A}
+  .hs-g{border:1px solid #E1E5ED;border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .hs-h{display:flex;justify-content:space-between;gap:10px;background:#F0F3F8;padding:7px 12px;font-size:12.5px;color:#1F3864}
+  .hs-h span{color:#566077;font-weight:600}
+  .hs-g ul{list-style:none;margin:0;padding:6px 12px 8px}
+  .hs-g li{padding:4px 0;font-size:12.5px;line-height:1.5;border-bottom:1px dashed #ECEFF4}
+  .hs-g li:last-child{border-bottom:0}
+  .hs-g li em{font-style:normal;color:#6B7A92;font-size:11.5px}
+  .hs-g li code{font-size:11px;color:#8893a5}
+  .hs-ch{display:inline-block;margin:0 8px 0 4px;white-space:nowrap}.hs-ch s{color:#9AA3B2}
+  .hs-add{color:#1B5524}.hs-del{color:#9B2226}.hs-sum{color:#1F3864;font-weight:600}
   /* v9.1 · Rubro contratado (solo lectura, viene del módulo Contratos) */
   .rub-ct{display:inline-flex;align-items:center;gap:4px;border:1px solid #9BD3A9;background:#E3F4E7;color:#1B6B34;border-radius:5px;padding:0 6px;height:17px;font-size:10px;font-weight:700;max-width:300px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:help}
   .rub-ct.rub-ct-full{border-color:#7AB1E3;background:#D7E8FA;color:#0F3B73}
@@ -1784,14 +1800,15 @@ async function loadArbol(){
     try{
       // Orden por fecha: si un rubro tiene más de una receta activa se toma la
       // más antigua, la misma que abre el editor de composiciones.
-      let rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion').eq('activo', true).order('created_at').order('id'); });
+      let rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion,actualizado_en,actualizado_por').eq('activo', true).order('created_at').order('id'); });
+      if(rq.error) rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen,creado_por,created_at,observacion').eq('activo', true).order('created_at').order('id'); });
       if(rq.error) rq = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo,origen').eq('activo', true).order('id'); });
       const recs = rq.data;
       const om={}, rid={}, recMeta={};
       (recs||[]).forEach(function(x){
         if(!(x.rubro_codigo in om)){
           om[x.rubro_codigo]=x.origen||''; rid[x.rubro_codigo]=x.id;
-          recMeta[x.rubro_codigo] = { creado_por:x.creado_por||'', created_at:x.created_at||'', observacion:x.observacion||'' };
+          recMeta[x.rubro_codigo] = { creado_por:x.creado_por||'', created_at:x.created_at||'', observacion:x.observacion||'', mod_por:x.actualizado_por||'', mod_en:x.actualizado_en||'' };
         }
       });
       // rubros cuya composición no tiene mano de obra con importe
@@ -1831,6 +1848,8 @@ async function loadArbol(){
         r.receta_creado_por = rm.creado_por || '';
         r.receta_creada_en  = rm.created_at || '';
         r.receta_obs        = rm.observacion || '';
+        r.receta_mod_por    = rm.mod_por || '';
+        r.receta_mod_en     = rm.mod_en || '';
         r.sin_mo = !!rid[r.codigo] && !conMO[rid[r.codigo]];
         r.mo_sin_precio = !!rid[r.codigo] && !!moSinPrecio[rid[r.codigo]];
       });
@@ -7067,6 +7086,86 @@ async function _revisarComposiciones(codes, forzar){
   } finally { ed._revisando = false; }
 }
 
+/* ═══ v9.4 · Historial de composiciones ═══════════════════════════════
+   La base registra cada cambio (triggers de receta_items y recetas).
+   Acá se muestra: quién la elaboró, quién hizo el último cambio y el
+   historial completo agrupado por guardado.                            */
+const _HIST_CAMPOS = { rend:'Rend.', div:'Div.', merma:'Merma %', precio:'Precio', unidad:'Unidad', descripcion:'Descripción',
+                       insumo:'Insumo', tipo:'Tipo', activo:'Activo', observacion:'Observación', origen:'Origen', nombre:'Nombre' };
+function _histVal(k, v){
+  if(v == null || v === '') return '—';
+  if(k === 'precio') return 'Gs '+fmtGs(Number(v)||0);
+  if(k === 'merma') return String(Math.round((Number(v)||0)*10000)/100).replace('.',',')+' %';   // se guarda como fracción: 0,13 = 13 %
+  if(k === 'rend' || k === 'div') return String(Math.round(Number(v)*10000)/10000).replace('.',',');
+  if(k === 'tipo') return v === 'mano_obra' ? 'Mano de obra' : 'Material';
+  if(k === 'activo') return v ? 'sí' : 'no';
+  if(k === 'origen') return (typeof _origenTexto === 'function') ? _origenTexto(v) : String(v);
+  return String(v);
+}
+function _compMetaBar(){
+  const right = document.getElementById('compRight'); if(!right || !comp || !comp.rubro) return;
+  const m = comp.meta || {};
+  if(!comp.recetaId){ return; }
+  const cre = m.creado_por ? _nombreCorto(m.creado_por) : '';
+  const mod = m.actualizado_por ? _nombreCorto(m.actualizado_por) : '';
+  const html = '<div class="comp-meta">'+
+    '<span>✎ Elaborada por <b>'+escapeHtml(cre||'sin dato')+'</b>'+(m.created_at?' · '+escapeHtml(_fmtF(m.created_at,false)):'')+'</span>'+
+    (m.actualizado_en ? '<span>✏️ Último cambio: <b>'+escapeHtml(mod||'sin dato')+'</b> · '+escapeHtml(_fmtF(m.actualizado_en,true))+'</span>' : '')+
+    '<button type="button" id="compHistBtn" class="comp-histbtn">🕘 Ver historial</button></div>';
+  right.insertAdjacentHTML('afterbegin', html);
+  const b = document.getElementById('compHistBtn'); if(b){ b.disabled = false; b.onclick = function(){ _verHistorialComp(comp.rubro.codigo); }; }
+}
+async function _verHistorialComp(cod){
+  const r = ed.arbolByCod[String(cod)] || { codigo:cod };
+  let data = [], err = null;
+  try{
+    const q = await sb.from('receta_historial').select('*').eq('rubro_codigo', cod).order('fecha', { ascending:false }).limit(500);
+    if(q.error) err = q.error; else data = q.data || [];
+  }catch(e){ err = e; }
+  // Agrupar por guardado: mismo usuario dentro del mismo minuto
+  const grupos = [];
+  data.forEach(function(h){
+    const k = String(h.usuario||'')+'|'+String(h.fecha||'').slice(0,16);
+    let g = grupos.length ? grupos[grupos.length-1] : null;
+    if(!g || g.k !== k){ g = { k:k, usuario:h.usuario, fecha:h.fecha, items:[] }; grupos.push(g); }
+    g.items.push(h);
+  });
+  const linea = function(h){
+    const c = h.cambios || {};
+    if(h.accion === 'guardar') return '<li class="hs-sum">💾 '+escapeHtml(h.resumen||'Composición guardada')+'</li>';
+    if(h.accion === 'crear') return '<li class="hs-add">🆕 Composición creada</li>';
+    if(h.accion === 'baja') return '<li class="hs-del">⛔ Composición dada de baja</li>';
+    const det = Object.keys(c).filter(function(k){ return Array.isArray(c[k]); }).map(function(k){
+      return '<span class="hs-ch">'+escapeHtml(_HIST_CAMPOS[k]||k)+': <s>'+escapeHtml(_histVal(k,c[k][0]))+'</s> → <b>'+escapeHtml(_histVal(k,c[k][1]))+'</b></span>';
+    }).join('');
+    const snap = function(){ return ['rend','div','merma','precio'].filter(function(k){ return c[k]!=null; })
+      .map(function(k){ return escapeHtml(_HIST_CAMPOS[k])+' '+escapeHtml(_histVal(k,c[k])); }).join(' · '); };
+    if(h.accion === 'agregar_componente') return '<li class="hs-add">＋ Agregó <b>'+escapeHtml(h.componente||'')+'</b>'+(c.insumo?' <code>'+escapeHtml(c.insumo)+'</code>':'')+' <em>'+snap()+'</em></li>';
+    if(h.accion === 'quitar_componente') return '<li class="hs-del">− Quitó <b>'+escapeHtml(h.componente||'')+'</b>'+(c.insumo&&!Array.isArray(c.insumo)?' <code>'+escapeHtml(c.insumo)+'</code>':'')+(snap()?' <em>'+snap()+'</em>':'')+(det?' '+det:'')+'</li>';
+    if(h.accion === 'modificar_datos') return '<li class="hs-mod">✎ Datos de la composición '+det+'</li>';
+    return '<li class="hs-mod">✎ <b>'+escapeHtml(h.componente||'')+'</b> '+det+'</li>';
+  };
+  const cuerpo = err
+    ? '<div class="imp-note imp-note-w">'+(/does not exist|schema cache/i.test(err.message||'') ? 'Falta correr el SQL de la v9.4 para empezar a registrar el historial.' : escapeHtml(err.message||'No se pudo leer el historial'))+'</div>'
+    : (!grupos.length
+        ? '<div class="imp-note imp-note-i">Todavía no hay cambios registrados para esta composición. El historial se registra desde la v9.4.'+
+            (r.receta_creado_por ? ' La elaboró <b>'+escapeHtml(_nombreCorto(r.receta_creado_por))+'</b>'+(r.receta_creada_en?' el '+escapeHtml(_fmtF(r.receta_creada_en,false)):'')+'.' : '')+'</div>'
+        : grupos.map(function(g){
+            return '<div class="hs-g"><div class="hs-h"><b>'+escapeHtml(_fmtF(g.fecha,true))+'</b><span>'+escapeHtml(_nombreCorto(g.usuario))+'</span></div><ul>'+g.items.map(linea).join('')+'</ul></div>';
+          }).join(''));
+  const ov = document.createElement('div'); ov.className = 'imp-ov';
+  ov.innerHTML = '<div class="imp-box" style="width:min(860px,100%)" role="dialog" aria-modal="true">'+
+    '<div class="imp-h"><b>Historial de la composición '+escapeHtml(cod)+'</b><span>'+escapeHtml(r.nombre||'')+(grupos.length?' · '+grupos.length+' guardado(s) registrados':'')+'</span></div>'+
+    '<div class="imp-b">'+cuerpo+'</div>'+
+    '<div class="imp-f"><button type="button" class="imp-si">Cerrar</button></div></div>';
+  document.body.appendChild(ov);
+  function fin(){ document.removeEventListener('keydown', tecla); ov.remove(); }
+  function tecla(e){ if(e.key === 'Escape') fin(); }
+  document.addEventListener('keydown', tecla);
+  ov.querySelector('.imp-si').onclick = fin;
+  ov.addEventListener('click', function(e){ if(e.target === ov) fin(); });
+}
+
 function _numCoef(v){ const n = Number(String(v==null?'':v).trim().replace(',','.')); return isFinite(n)?n:0; }
 function _numInt(v){ const n = Number(String(v==null?'':v).replace(/[^\d.-]/g,'')); return isFinite(n)?n:0; }
 
@@ -7178,8 +7277,11 @@ async function selectCompRubro(codigo){
   const right=document.getElementById('compRight');
   right.innerHTML='<div class="comp-empty-r">Cargando composición…</div>';
   try{
-    let rq0 = await sb.from('recetas').select('id,origen,observacion').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    comp.meta = {}; comp._costoOrig = null;
+    let rq0 = await sb.from('recetas').select('id,origen,observacion,creado_por,created_at,actualizado_en,actualizado_por').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    if(rq0.error) rq0 = await sb.from('recetas').select('id,origen,observacion').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
     if(rq0.error) rq0 = await sb.from('recetas').select('id,origen').eq('rubro_codigo', r.codigo).eq('activo', true).order('created_at').limit(1);
+    if(rq0.data && rq0.data[0]) comp.meta = { creado_por:rq0.data[0].creado_por||'', created_at:rq0.data[0].created_at||'', actualizado_en:rq0.data[0].actualizado_en||'', actualizado_por:rq0.data[0].actualizado_por||'' };
     const recs = rq0.data;
     if(recs && recs.length){
       comp.recetaId=recs[0].id; comp.origen=recs[0].origen||''; comp.observacion=recs[0].observacion||'';
@@ -7192,6 +7294,7 @@ async function selectCompRubro(codigo){
       }; });
     }
   }catch(e){ console.warn('selectCompRubro', e); }
+  try{ comp._costoOrig = (comp.items||[]).length ? Math.round(_unitTotal()) : 0; }catch(e){ comp._costoOrig = 0; }
   renderCompTree();
   renderCompEditor();
 }
@@ -7235,8 +7338,13 @@ function _autorComp(r){
   const cuando = r.receta_creada_en || r.created_at || '';
   if(!quien && !cuando) return '';
   const nom = String(quien).split('@')[0];
+  // v9.4 · último cambio, si es posterior a la creación
+  const mp = r.receta_mod_por || '', me = r.receta_mod_en || '';
+  const hayMod = me && (!cuando || new Date(me).getTime() - new Date(cuando).getTime() > 60000);
   return '<span class="autor-badge" title="Quién elaboró esta composición">✎ '+
-    escapeHtml(nom || 'sin autor')+(cuando ? (' · '+_fechaCorta(cuando)) : '')+'</span>';
+    escapeHtml(nom || 'sin autor')+(cuando ? (' · '+_fechaCorta(cuando)) : '')+'</span>'+
+    (hayMod ? '<span class="autor-badge mod" title="Último cambio: '+escapeHtml(mp||'sin dato')+' · '+escapeHtml(_fmtF(me,true))+'">✏️ '+
+      escapeHtml(String(mp||'').split('@')[0] || 'modificada')+' · '+_fechaCorta(me)+'</span>' : '');
 }
 // Texto completo del origen, siempre visible en la ficha
 function _origenTexto(o){
@@ -7452,6 +7560,7 @@ function renderCompEditor(){
     right.insertAdjacentHTML('afterbegin','<div class="comp-robar">🔒 <b>Solo lectura.</b> Esta composición es del catálogo común a todas las obras y la edita administración. '+
       'Si en tu obra el rendimiento o el precio es distinto, ajustalo <b>dentro de tu presupuesto</b>: lo que cargás a mano ahí se respeta.</div>');
   }
+  _compMetaBar();   // v9.4 · elaborada por / último cambio / historial
 }
 
 function _recalcRow(i){
@@ -7587,6 +7696,9 @@ async function saveComposicion(){
     await sb.from('rubros').update({ tiene_receta:has }).eq('codigo', r.codigo);
     const savedCod=r.codigo;
     comp._guardados = comp._guardados || {}; comp._guardados[savedCod] = 1;
+    const _costoAnt = comp._costoOrig, _nuevaComp = !comp.meta || !comp.meta.created_at;
+    comp.meta = Object.assign({}, comp.meta||{}, { actualizado_por:_userTag(), actualizado_en:new Date().toISOString() });
+    if(_nuevaComp){ comp.meta.creado_por = comp.meta.creado_por || _userTag(); comp.meta.created_at = comp.meta.created_at || comp.meta.actualizado_en; }
     await _reloadArbolForce();
     comp.rubro=ed.arbolByCod[savedCod]||r;
     renderCompTree();
@@ -7598,6 +7710,16 @@ async function saveComposicion(){
       ' · Gs '+fmtGs(_unitTotal())+' / '+(comp.rubro.unidad||'unidad')+
       ' · la usan los presupuestos nuevos; los ya cargados no cambian solos');
     _audit('composicion', r.codigo, 'guardar', {componentes: comp.items.length, costo_unit: Math.round(_unitTotal())});
+    // v9.4 · resumen del guardado en el historial (los detalles los registra la base)
+    try{
+      const _cn = Math.round(_unitTotal());
+      const _res = (_costoAnt!=null && _costoAnt!==_cn)
+        ? 'Costo unitario Gs '+fmtGs(_costoAnt)+' → Gs '+fmtGs(_cn)+' / '+(comp.rubro.unidad||'unidad')
+        : 'Guardada sin cambio de costo · Gs '+fmtGs(_cn)+' / '+(comp.rubro.unidad||'unidad');
+      await sb.from('receta_historial').insert({ receta_id:String(recetaId), rubro_codigo:r.codigo, accion:'guardar', resumen:_res+' · '+comp.items.length+' componente(s)',
+        cambios:{ costo:[_costoAnt, _cn], componentes:comp.items.length }, usuario:_userTag(), origen:'app' });
+      comp._costoOrig = _cn;
+    }catch(e){ /* historial aún no instalado */ }
   }catch(e){ console.warn('saveComposicion', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
