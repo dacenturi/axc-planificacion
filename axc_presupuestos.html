@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.5 · los cambios de rendimiento, divisor y merma de la composición llegan al presupuesto; se respeta solo lo ajustado a mano</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.6 · la propuesta muestra el coeficiente aplicado a cada rubro y tiene su anexo de control interno</p>
   </div>
 </div>
 
@@ -877,6 +877,7 @@ body{
     </div>
     <div class="pm-foot">
       <button class="pm-cancel" id="mgCancel" type="button">Cancelar</button>
+      <button class="pm-btn" id="mgCoefPdf" type="button" style="background:#fff;color:#1F3864;border:1px solid #C9D0DC" title="Planilla de uso interno: costo, margen, coeficiente y precio de cada rubro">🔎 Coeficientes (uso interno)</button>
       <button class="pm-btn" id="mgEmitir" type="button" style="background:#1F3864;color:#fff">💼 Emitir propuesta</button>
     </div>
   </div>
@@ -1501,6 +1502,9 @@ body{
   .imp-txt{width:100%;min-height:70px;border:1px solid #C9D0DC;border-radius:9px;padding:9px 11px;font:inherit;font-size:13.5px;resize:vertical}
   .imp-txt:focus{outline:none;border-color:#1F4E78;box-shadow:0 0 0 3px rgba(31,78,120,.12)}
   .imp-err{color:#B42B2B;font-size:12px;margin-top:4px;min-height:1em}
+  /* v9.6 · Coeficiente aplicado por rubro */
+  .mg-src{font-size:10.5px;color:#8893a5;font-weight:600}
+  .mg-coefap{font-size:13px;color:#1F3864}
   /* v9.4 · Historial de composiciones */
   .comp-meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin:0 0 12px;padding:8px 12px;border:1px solid #E1E5ED;border-radius:10px;background:#F7F9FC;font-size:12px;color:#566077}
   .comp-meta b{color:#1F3864}
@@ -4514,6 +4518,7 @@ function renderMargen(){
         '<th class="n">Costo unit.<br><small style="font-weight:600;color:#9aa4b2">real, interno</small></th>'+
         '<th class="n" style="width:96px">Margen %</th>'+
         '<th class="n" style="width:96px">Coeficiente</th>'+
+        '<th class="n" style="width:104px">Coef. aplicado<br><small style="font-weight:600;color:#9aa4b2">al precio de este rubro</small></th>'+
         '<th class="n">Precio unit.<br><small style="font-weight:600;color:#9aa4b2">comercial</small></th>'+
         '<th class="n">Precio total</th></tr></thead><tbody>';
   let costoT=0, ventaT=0;
@@ -4538,9 +4543,11 @@ function renderMargen(){
          '<td class="n"><input class="pm-input mg-coef" data-i="'+i+'" type="number" step="0.0001" min="0.05" max="1" '+
            'placeholder="'+((1-gen/100).toFixed(4))+'" value="'+(val===''?'':((1-Number(val)/100).toFixed(4)))+'" '+
            'style="width:82px;text-align:right;padding:4px 7px"></td>'+
+         '<td class="n"><b class="mg-coefap">'+((1-pct/100).toFixed(4)).replace('.',',')+'</b>'+
+           '<div class="mg-src">'+(val===''?'general':'propio')+' · margen '+String(pct).replace('.',',')+' %</div></td>'+
          '<td class="n"><b>'+fmtGs(pu)+'</b></td><td class="n"><b>'+fmtGs(pt)+'</b></td></tr>';
     if(det.length){
-      h += '<tr class="mg-det" data-detrow="'+escapeHtml(r.codigo)+'" hidden><td colspan="8">'+
+      h += '<tr class="mg-det" data-detrow="'+escapeHtml(r.codigo)+'" hidden><td colspan="9">'+
         '<div class="mg-det-box"><div class="mg-det-tit">Composición de '+escapeHtml(r.codigo)+
           ' <span>· costo por '+escapeHtml(r.unidad||'unidad')+'</span></div>'+
         '<table class="mg-det-tab"><thead><tr><th>Tipo</th><th>Insumo</th><th class="n">Cant.</th>'+
@@ -4679,6 +4686,99 @@ async function emitirPropuesta(anexos){
   }catch(e){
     showToast('No se pudo emitir','error', e.message||String(e));
   }finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+/* v9.6 · Anexo interno: qué coeficiente se aplicó a cada rubro y cómo se
+   formó el precio. NO va al cliente: lleva el costo. */
+function imprimirCoeficientes(){
+  const gen = Number(document.getElementById('mgPct').value)||0;
+  const presu = (document.getElementById('pmCodigo').value||'').trim();
+  const obra  = (document.getElementById('pmObra').value||'').trim();
+  const desc  = (document.getElementById('pmDescripcion').value||'').trim();
+  const cli   = (document.getElementById('mgCliente')||{}).value || '';
+  if(!(MG.rows||[]).length){ showToast('No hay rubros para listar','error'); return; }
+  const w = window.open('', '_blank');
+  if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes'); return; }
+  const n4 = function(v){ return (Number(v)||0).toFixed(4).replace('.',','); };
+  const n1 = function(v){ return (Number(v)||0).toFixed(1).replace('.',','); };
+  const porSec = {}, ord = [];
+  MG.rows.forEach(function(r){ const k = r.sector || '(Sin sector)'; if(!porSec[k]){ porSec[k]=[]; ord.push(k); } porSec[k].push(r); });
+  ord.sort(function(a,b){ return String(a).localeCompare(String(b),'es',{numeric:true}); });
+  let filas='', costoT=0, ventaT=0, nProp=0;
+  ord.forEach(function(sec){
+    filas += '<tr class="sec"><td colspan="10">SECTOR '+escapeHtml(sec)+'</td></tr>';
+    let cS=0, vS=0;
+    porSec[sec].forEach(function(r){
+      const propio = !(MG.porRubro[r.codigo]==null || MG.porRubro[r.codigo]==='');
+      const pct = _mgPctDe(r.codigo), coef = 1-pct/100;
+      const cu = r.cantidad>0 ? Math.round(r.costo/r.cantidad) : r.costo;
+      const pu = _mgPrecio(cu, pct), pt = Math.round(pu*r.cantidad);
+      if(propio) nProp++;
+      if(!r.opcional){ costoT += r.costo; ventaT += pt; cS += r.costo; vS += pt; }
+      filas += '<tr'+(r.opcional?' class="opc"':'')+'><td class="c">'+escapeHtml(r.codigo)+'</td>'+
+        '<td>'+escapeHtml(r.descripcion||'')+(r.opcional?' <span class="tg">OPCIONAL</span>':'')+'</td>'+
+        '<td class="c">'+escapeHtml(r.unidad||'')+'</td><td class="n">'+_qty(r.cantidad)+'</td>'+
+        '<td class="n">'+fmtGs(cu)+'</td><td class="n">'+fmtGs(r.costo)+'</td>'+
+        '<td class="c">'+n1(pct)+' %</td>'+
+        '<td class="c coef'+(propio?' pr':'')+'">'+n4(coef)+(propio?'<div class="pr-t">propio</div>':'')+'</td>'+
+        '<td class="n">'+fmtGs(pu)+'</td><td class="n"><b>'+fmtGs(pt)+'</b></td></tr>';
+    });
+    filas += '<tr class="sub"><td colspan="5">Subtotal '+escapeHtml(sec)+'</td><td class="n">'+fmtGs(cS)+'</td>'+
+             '<td colspan="2" class="c">'+(vS>0?n4(cS/vS):'—')+'</td><td></td><td class="n">'+fmtGs(vS)+'</td></tr>';
+  });
+  const util = ventaT-costoT, real = ventaT>0 ? util/ventaT*100 : 0, coefReal = ventaT>0 ? costoT/ventaT : 0;
+  const css =
+   '@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}'+
+   'body{font-family:Arial,Helvetica,sans-serif;margin:0;color:#111;background:#e9ecf1;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+   '.bar{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 18px;display:flex;gap:14px;align-items:center;font-size:13px;z-index:9}'+
+   '.bar .sp{flex:1}.bar button{background:#C9A961;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer}'+
+   '.hoja{width:277mm;margin:14px auto;background:#fff;padding:8mm 9mm;box-shadow:0 2px 12px rgba(0,0,0,.12)}'+
+   '.top{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;padding-bottom:8px;border-bottom:3px solid #1F3864}'+
+   '.top img{height:38px}.top .k{font-size:9px;letter-spacing:2px;font-weight:800;color:#C8A028}'+
+   '.top .t{font-size:16px;font-weight:800;color:#1F3864}.top .s{font-size:10px;color:#5a6677;margin-top:2px}'+
+   '.uso{background:#FDECEC;border:1px solid #F2C9C9;color:#8B1F1F;border-radius:5px;padding:4px 9px;font-size:9.5px;font-weight:700}'+
+   '.gold{height:2px;background:#C8A028;margin-top:2px}'+
+   '.ficha{display:flex;flex-wrap:wrap;gap:16px;font-size:10px;color:#42506a;margin:8px 0 6px}.ficha b{color:#111}'+
+   'table{width:100%;border-collapse:collapse;font-size:9.6px;table-layout:fixed}'+
+   'thead th{background:#1F3864;color:#fff;padding:5px;font-size:8.6px;text-transform:uppercase;letter-spacing:.3px;border:1px solid #1F3864}'+
+   'td{border-bottom:1px solid #dde2ea;padding:3px 6px;vertical-align:top}'+
+   'td.c{text-align:center}td.n{text-align:right;font-variant-numeric:tabular-nums}'+
+   'tr.sec td{background:#EAF0F8;color:#1F3864;font-weight:800;font-size:9.6px;border-top:1.5px solid #1F3864}'+
+   'tr.sub td{background:#f3f5f9;font-weight:700;color:#1F3864;text-align:right}'+
+   'tr.opc td{color:#8893a5}.tg{font-size:7.5px;font-weight:800;background:#fde7c7;color:#9a5b00;padding:0 4px;border-radius:2px}'+
+   'td.coef{font-weight:800;color:#1F3864}td.coef.pr{background:#FFF4DC}.pr-t{font-size:7.5px;font-weight:700;color:#8a6d10}'+
+   '.tot{display:flex;justify-content:flex-end;gap:0;margin-top:8px}'+
+   '.tot div{border:1px solid #1F3864;padding:6px 12px;font-size:10.5px;text-align:right}'+
+   '.tot div small{display:block;font-size:8.5px;color:#5a6677}.tot div b{font-size:12.5px}'+
+   '.tot .v{background:#1F3864;color:#fff}.tot .v small{color:#cfd9ea}'+
+   '.nota{margin-top:8px;border:1px solid #C9CFD9;border-left:3px solid #C8A028;background:#fbfaf6;padding:6px 10px;font-size:9px;line-height:1.5}'+
+   '.pie{margin-top:7mm;border-top:1px solid #dde2ea;padding-top:4px;font-size:8.3px;color:#8893a5;display:flex;justify-content:space-between}'+
+   '@media print{body{background:#fff}.bar{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}}';
+  w.document.open();
+  w.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Coeficientes por rubro · '+escapeHtml(presu)+'</title><style>'+css+'</style></head><body>'+
+    '<div class="bar"><b>Coeficientes por rubro · uso interno</b><span class="sp"></span><button onclick="window.print()">Imprimir / PDF</button></div>'+
+    '<div class="hoja"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
+      '<div><div class="k">ANEXO DE CONTROL · NO ENTREGAR AL CLIENTE</div><div class="t">Coeficientes aplicados por rubro</div>'+
+      '<div class="s">'+escapeHtml([presu, obra, desc].filter(Boolean).join(" · "))+'</div></div>'+
+      '<div class="uso">USO INTERNO</div></div><div class="gold"></div>'+
+    '<div class="ficha"><span>Cliente: <b>'+escapeHtml(cli||"—")+'</b></span><span>Margen general: <b>'+n1(gen)+' %</b></span>'+
+      '<span>Coeficiente general: <b>'+n4(1-gen/100)+'</b></span><span>Rubros con coeficiente propio: <b>'+nProp+'</b></span>'+
+      '<span>Emitido: <b>'+escapeHtml(new Date().toLocaleString("es-PY"))+'</b> por <b>'+escapeHtml(String(_userTag()).split("@")[0])+'</b></span></div>'+
+    '<table><thead><tr><th style="width:8%">Código</th><th style="width:30%;text-align:left">Descripción</th><th style="width:5%">Unid.</th>'+
+      '<th style="width:7%">Cant.</th><th style="width:9%">Costo unit.</th><th style="width:10%">Costo total</th>'+
+      '<th style="width:7%">Margen</th><th style="width:7%">Coef.</th><th style="width:9%">Precio unit.</th><th style="width:10%">Precio total</th></tr></thead>'+
+      '<tbody>'+filas+'</tbody></table>'+
+    '<div class="tot"><div><small>Costo total</small><b>Gs '+fmtGs(costoT)+'</b></div>'+
+      '<div><small>Utilidad · '+n1(real)+' %</small><b>Gs '+fmtGs(util)+'</b></div>'+
+      '<div><small>Coeficiente real (costo ÷ venta)</small><b>'+n4(coefReal)+'</b></div>'+
+      '<div class="v"><small>Precio de venta · sin IVA</small><b>Gs '+fmtGs(ventaT)+'</b></div></div>'+
+    '<div class="nota"><b>Cómo se calcula:</b> precio unitario = costo unitario ÷ coeficiente, con coeficiente = 1 − margen. '+
+      'Ejemplo con el coeficiente general '+n4(1-gen/100)+': un costo de Gs 65.504 se vende a Gs '+fmtGs(_mgPrecio(65504, gen))+'. '+
+      'El precio unitario se redondea a guaraníes y el precio total es precio unitario × cantidad, por eso puede haber diferencias de algunos guaraníes contra el cálculo directo. '+
+      'Los rubros marcados en amarillo tienen coeficiente propio, distinto del general. El coeficiente real de la propuesta es costo total ÷ venta total.</div>'+
+    '<div class="pie"><span>AXC Constructora · '+escapeHtml(presu)+' · anexo de control de coeficientes</span><span>Documento de uso interno</span></div>'+
+    '</div></body></html>');
+  w.document.close();
 }
 
 function imprimirPropuesta(P){
@@ -6075,6 +6175,7 @@ document.getElementById('pmContratarBtn').addEventListener('click', function(){
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('mgCancel').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
+document.getElementById('mgCoefPdf').addEventListener('click', imprimirCoeficientes);
 document.getElementById('mgEmitir').addEventListener('click', function(){
   elegirAnexos('Propuesta económica · adjuntos', emitirPropuesta);
 });
