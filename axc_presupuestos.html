@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.7 · la propuesta comercial toma el costo exacto del presupuesto; el redondeo de materiales es opcional y hacia arriba</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.8 · la propuesta recupera los datos y el coeficiente exacto de cada rubro; el presupuesto avisa las líneas en cero</p>
   </div>
 </div>
 
@@ -1470,6 +1470,7 @@ body{
   /* v9.2 · Composición actualizada / impacto / solo lectura */
   .rub-cnew{display:inline-flex;align-items:center;border:1px solid #F2CD7A;background:#FFF4DC;color:#8A5A00;border-radius:5px;padding:0 6px;height:17px;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap}
   .rub-cnew:hover{background:#FDE9B8}
+  .rub-cero{display:inline-flex;align-items:center;border:1px solid #EAA3A3;background:#FCE6E6;color:#9B2226;border-radius:5px;padding:0 6px;height:17px;font-size:10px;font-weight:700;white-space:nowrap;cursor:help}
   .imp-ov{position:fixed;inset:0;background:rgba(12,20,38,.6);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px}
   .imp-box{background:#fff;border-radius:14px;width:min(1100px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;font-family:Inter,system-ui,sans-serif}
   .imp-h{background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:14px 20px}
@@ -1506,6 +1507,8 @@ body{
   .imp-txt{width:100%;min-height:70px;border:1px solid #C9D0DC;border-radius:9px;padding:9px 11px;font:inherit;font-size:13.5px;resize:vertical}
   .imp-txt:focus{outline:none;border-color:#1F4E78;box-shadow:0 0 0 3px rgba(31,78,120,.12)}
   .imp-err{color:#B42B2B;font-size:12px;margin-top:4px;min-height:1em}
+  /* v9.8 · Línea del desglose sin precio */
+  .dg-cero{border-color:#D94A4A!important;background:#FFF3F3!important;color:#B42B2B!important;font-weight:700}
   /* v9.6 · Coeficiente aplicado por rubro */
   .mg-src{font-size:10.5px;color:#8893a5;font-weight:600}
   .mg-coefap{font-size:13px;color:#1F3864}
@@ -2927,7 +2930,7 @@ function renderRubros(){
           '<span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+tag+
           (_dgOk ? _dgChip(r.rubro_codigo, _dgAb) : '')+
         ((_cat && _cat.receta_obs) ? '<button type="button" class="rub-obs" data-obs="'+escapeHtml(r.rubro_codigo||'')+'" title="Esta composición tiene una observación">📝</button>' : '')+
-        _ctChip(r)+_compNuevaChip(r)+
+        _ctChip(r)+_compNuevaChip(r)+_ceroChip(r)+
         '</div>'+
         '<span class="pm-rubname">'+escapeHtml(r.descripcion||'')+'</span>'+_compObsLinea(r)+'</div></td>' +
       '<td>'+escapeHtml(r.unidad)+'</td>' +
@@ -4230,9 +4233,11 @@ function _mgPctDe(cod){
    podía salir con precios distintos a los que ya vio el cliente. */
 async function _mgCargarUltima(codigo){
   try{
-    const { data:cab } = await sb.from('propuesta_cab')
-      .select('id,version,margen_general,emitido_por,creado_en')
+    let q = await sb.from('propuesta_cab').select('*')
       .eq('presupuesto', codigo).order('version',{ascending:false}).limit(1).maybeSingle();
+    if(q.error) q = await sb.from('propuesta_cab').select('id,version,margen_general,emitido_por,creado_en')
+      .eq('presupuesto', codigo).order('version',{ascending:false}).limit(1).maybeSingle();
+    const cab = q.data;
     if(!cab) return null;
     const { data:its } = await sb.from('propuesta_items')
       .select('rubro_codigo,margen_pct,costo_unit,precio_unit').eq('propuesta_id', cab.id);
@@ -4477,19 +4482,28 @@ function openPropuesta(){
       document.getElementById('mgPct').value = gen;
       document.getElementById('mgCoef').value = (1-gen/100).toFixed(4);
     }
-    let n = 0;
+    // v9.8 · Datos de la propuesta anterior: no hay que volver a cargarlos
+    const _set = function(id, v){ const e=document.getElementById(id); if(e && (v!=null && String(v).trim()!=='')) e.value = v; };
+    _set('mgCliente', prev.cab.cliente); _set('mgAtencion', prev.cab.atencion); _set('mgRef', prev.cab.referencia);
+    _set('mgProf', prev.cab.profesional); _set('mgSup', prev.cab.superficie); _set('mgAlcance', prev.cab.alcance);
+    _set('mgCond', prev.cab.condiciones); _set('mgValidez', prev.cab.validez_dias);
+    // v9.8 · Coeficiente exacto de cada rubro, tal como se emitió
+    let n = 0, nuevos = 0;
+    const _enPrev = {};
     prev.items.forEach(function(it){
       if(it.rubro_codigo == null) return;
       const pct = Number(it.margen_pct);
       if(isNaN(pct)) return;
-      if(!isNaN(gen) && Math.abs(pct-gen) < 0.001) return;   // igual al general: se deja vacío
-      MG.porRubro[it.rubro_codigo] = pct; n++;
+      MG.porRubro[it.rubro_codigo] = pct; _enPrev[it.rubro_codigo] = 1;
+      if(isNaN(gen) || Math.abs(pct-gen) > 0.001) n++;
     });
+    (MG.rows||[]).forEach(function(r){ if(!_enPrev[r.codigo]) nuevos++; });
     renderMargen();
     const el = document.getElementById(_avisoId);
-    const txt = 'Se cargaron los márgenes de la propuesta v'+prev.cab.version+
-                ' (general '+(isNaN(gen)?'—':gen+' %')+(n?(' · '+n+' rubro(s) con margen propio'):'')+
-                '). Revisalos antes de emitir: emitir crea la versión v'+(Number(prev.cab.version)+1)+'.';
+    const txt = 'Se recuperó la propuesta v'+prev.cab.version+': datos del cliente, condiciones y el coeficiente exacto de cada rubro'+
+                ' (general '+(isNaN(gen)?'—':gen+' %')+(n?(' · '+n+' rubro(s) con coeficiente propio'):'')+
+                (nuevos?(' · '+nuevos+' rubro(s) nuevo(s) del presupuesto toman el general)'):')')+
+                '. Revisalos antes de emitir: emitir crea la versión v'+(Number(prev.cab.version)+1)+'.';
     if(el){ el.textContent = txt; el.style.display=''; }
     else{
       const d=document.createElement('div');
@@ -4572,7 +4586,7 @@ function renderMargen(){
            'placeholder="'+((1-gen/100).toFixed(4))+'" value="'+(val===''?'':((1-Number(val)/100).toFixed(4)))+'" '+
            'style="width:82px;text-align:right;padding:4px 7px"></td>'+
          '<td class="n"><b class="mg-coefap">'+((1-pct/100).toFixed(4)).replace('.',',')+'</b>'+
-           '<div class="mg-src">'+(val===''?'general':'propio')+' · margen '+String(pct).replace('.',',')+' %</div></td>'+
+           '<div class="mg-src">'+((val===''||Math.abs(Number(val)-gen)<0.001)?'general':'propio')+' · margen '+String(pct).replace('.',',')+' %</div></td>'+
          '<td class="n"><b>'+fmtGs(pu)+'</b></td><td class="n"><b>'+fmtGs(pt)+'</b></td></tr>';
     if(det.length){
       h += '<tr class="mg-det" data-detrow="'+escapeHtml(r.codigo)+'" hidden><td colspan="9">'+
@@ -5813,7 +5827,9 @@ function _dgHtml(r){
         : '<td class="n" style="color:#9aa3b2">—</td><td class="n" style="color:#9aa3b2">—</td><td class="n" style="color:#9aa3b2">—</td>';
       h += '<tr class="'+(lg?'dg-lg':(mo?'dg-mo':''))+'" data-dgj="'+j+'">'+
         '<td>'+tipo+'</td><td class="dg-ins">'+ins+'</td><td>'+uni+'</td>'+coefs+
-        '<td><input class="n'+c('precio')+'" inputmode="numeric" data-dgf="precio" data-j="'+j+'" value="'+fmtGs(_dgPrecio(it))+'"><span class="dg-org">'+escapeHtml(_dgOrigen(it, est))+'</span></td>'+
+        '<td><input class="n'+c('precio')+(_dgPrecio(it)>0?'':' dg-cero')+'" inputmode="numeric" data-dgf="precio" data-j="'+j+'" value="'+fmtGs(_dgPrecio(it))+'"'+
+          (_dgPrecio(it)>0?'':' title="Esta línea está en cero: se cargó cuando la composición todavía no tenía precio. Usá «Restaurar desde composición» o el aviso de composición actualizada para traer el precio vigente."')+
+          '><span class="dg-org">'+escapeHtml(_dgOrigen(it, est))+'</span></td>'+
         (der ? '<td class="n" data-dv="q">'+_dgFmtQ(_dgQty(it, r))+' '+escapeHtml(it.unidad||'')+'</td>'
              : '<td><input class="n'+(nueva?' dg-ch':'')+'" inputmode="decimal" data-dgf="cantidad" data-j="'+j+'" value="'+_dgNumIn(it.cantidad)+'" title="Cantidad total (no depende de la cantidad del rubro)"></td>')+
         '<td class="n" data-dv="u">'+fmtGs(cant>0 ? _dgQty(it, r)*_dgPrecio(it)/cant : 0)+'</td>'+
@@ -7091,6 +7107,17 @@ async function _detectarCompNuevas(autoAbrir){
     const pend = Object.keys(ed.compPend);
     if(autoAbrir && pend.length) setTimeout(function(){ _revisarComposiciones(pend); }, 250);
   }catch(e){ /* columnas de v9.2 aún no creadas */ }
+}
+/* v9.8 · Rubro con alguna línea en cero: el costo sale incompleto */
+function _ceroChip(r){
+  const cod = r.rubro_codigo; if(!cod || !r.tiene_receta) return '';
+  const n = (ed.insumos||[]).filter(function(x){
+    if((x.rubro_codigo||'') !== cod) return false;
+    const pu = (x.precio_unitario!=null && x.precio_unitario!=='') ? (Number(x.precio_unitario)||0) : Number((ed.precioByIns||{})[x.codigo_insumo])||0;
+    return !(pu > 0);
+  }).length;
+  if(!n) return '';
+  return '<span class="rub-cero" title="'+n+' línea(s) de este rubro están en cero: el costo sale incompleto. Abrí el desglose (▶) y traé el precio de la composición.">⚠ '+n+' línea(s) en 0</span>';
 }
 function _compNuevaChip(r){
   const c = r.rubro_codigo; if(!c) return '';
