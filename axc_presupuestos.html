@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.4 · cada composición registra quién la cambió, cuándo y qué cambió</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v9.5 · los cambios de rendimiento, divisor y merma de la composición llegan al presupuesto; se respeta solo lo ajustado a mano</p>
   </div>
 </div>
 
@@ -2431,7 +2431,7 @@ async function openEdit(codigo){
     ed.rubros.forEach(function(r){ if(r.rubro_codigo) ed.cantOrig[r.rubro_codigo] = Number(r.cantidad)||0; });
     _cargarContratado(codigo);
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
-    ed.insumos = (ins||[]).map(function(i){ return { codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
+    ed.insumos = (ins||[]).map(function(i){ return { editado_manual:!!i.editado_manual, codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
       tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
     renderRubros(); renderInsumos();
     _detectarCompNuevas(true);
@@ -2706,6 +2706,10 @@ function _rubrosCodigoRepetido(lista){
 }
 
 /* Siguiente código libre con sufijo: 01.039 → 01.039-B, -C… */
+/* v9.5 · Código del catálogo de un rubro del presupuesto. Los rubros repetidos
+   en varios sectores llevan sufijo (07.003-B, 07.003-C): su composición es la
+   de 07.003. */
+function _codBase(c){ return String(c||'').replace(/-[A-Z]$/i,'').replace(/-[0-9A-Z]{6,}$/i,''); }
 function _codigoLibre(base, usados){
   const b = String(base).replace(/-[A-Z]$/i,'');
   for(let n=1; n<26; n++){
@@ -3369,6 +3373,7 @@ function renderInsumos(){
       const idx = Number(inp.dataset.idx), f = inp.dataset.f;
       const numF = {cantidad:1, coef1:1, coef2:1, merma_pct:1, precio_unitario:1};
       ed.insumos[idx][f] = numF[f] ? (inp.value===''?'':(Number(inp.value)||0)) : inp.value;
+      ed.insumos[idx].editado_manual = true;   // v9.5 · se respeta al actualizar desde la composición
       if(f==='precio_unitario'){ ed.insumos[idx].precio_origen='manual'; renderInsumos(); return; }
       if(f==='coef1'||f==='coef2'||f==='merma_pct'){
         const rub = rubByCod[inp.dataset.rubrok||''];
@@ -4084,6 +4089,7 @@ async function saveBudget(){
         if(_hayCoef){ row.coef1 = (i.coef1!=null && i.coef1!=='') ? Number(i.coef1) : null; row.coef2 = (i.coef2!=null && i.coef2!=='') ? Number(i.coef2) : null; row.merma_pct = (i.merma_pct!=null && i.merma_pct!=='') ? Number(i.merma_pct) : null; }
         row.precio_ref = (i.precio_ref!=null && i.precio_ref!=='') ? (Number(i.precio_ref)||null) : null;
         row.tipo = _kindOf(i);
+        if(state.editManualOk) row.editado_manual = !!i.editado_manual;   // v9.5
         if(row.tipo!=='insumo'){ row.producto_id = null; row.precio_origen = 'manual'; row.subtipo = i.subtipo || null; }
         return row;
       });
@@ -5754,7 +5760,7 @@ function _dgBind(tb){
       else if(f==='unidad') it.unidad = v;
       else if(f==='motivo'){ const t = v.trim(); it.subtipo = t ? ('Adicional · '+t) : ''; el.classList.toggle('dg-ch', !t); }
       else if(f==='subtipo') it.subtipo = v;
-      if(f!=='ins'){ sync(); ed.tocado = true; _dgLive(cod); }
+      if(f!=='ins'){ sync(); ed.tocado = true; it.editado_manual = true; _dgLive(cod); }
       if(['coef1','coef2','merma','precio'].indexOf(f)>=0){
         const est = _dgEstado(it), k = f==='merma' ? 'merma_pct' : f;
         el.classList.toggle('dg-ch', est.e==='agregada' || !!est.ch[k]);
@@ -5803,6 +5809,7 @@ function _dgBind(tb){
       else if(k==='logistica') it = { codigo_insumo:_nextCode(ed.insumos,'LG'), material:'', unidad:'gl', cantidad:1, rubro_codigo:cod, tipo:'logistica', subtipo:(typeof LOGISTICA_TIPOS!=='undefined'?LOGISTICA_TIPOS[0]:''), precio_unitario:0, precio_origen:'manual', coef1:0, coef2:0, merma_pct:0 };
       else it = { codigo_insumo:'', material:'', unidad:'', cantidad:0, rubro_codigo:cod, tipo:'insumo', precio_unitario:null, precio_origen:'catalogo', coef1:1, coef2:1, merma_pct:0 };
       if(k!=='logistica' && r) it.cantidad = Math.round(_recipeQtyRaw(it, Number(r.cantidad)||0)*1000)/1000;
+      it.editado_manual = true;   // v9.5 · línea agregada a mano
       ed.insumos.push(it); ed.tocado = true;
       renderRubros(); renderInsumos();
       const box = document.querySelector('tr[data-dgrow="'+CSS.escape(cod)+'"]');
@@ -5847,15 +5854,17 @@ async function calcInsumosFromRecetas(silent, soloCodigos, opts){
   // v9.0: se puede recalcular solo algunos rubros (al agregar uno, al restaurarlo)
   if(soloCodigos && soloCodigos.length) conCodigo = conCodigo.filter(function(r){ return soloCodigos.indexOf(r.rubro_codigo) >= 0; });
   if(!conCodigo.length){ if(!silent) showToast('Cargá rubros con código y cantidad primero', 'error'); return; }
-  if(!silent && ed.insumos.some(function(x){ return x.rubro_codigo && x.rubro_codigo!==''; }) && !confirm('Se recalculan las líneas de los rubros con receta que siguen igual a su composición.\n\nLo que cambiaste o agregaste a mano en el desglose se respeta. ¿Continuar?')) return;
+  if(!silent && ed.insumos.some(function(x){ return x.rubro_codigo && x.rubro_codigo!==''; }) && !confirm('Se recalculan los rubros con receta usando la composición vigente (rendimientos, divisores, mermas, materiales y mano de obra).\n\nSe respetan las líneas que ajustaste a mano en este presupuesto, la logística y los adicionales.')) return;
   const btn = document.getElementById('pmInsCalc');
   const txt = document.getElementById('pmInsCalcTxt');
   const old = txt ? txt.textContent : 'Recalcular desde recetas';
   btn.disabled = true; if(txt) txt.textContent = 'Calculando…';
   try{
-    const codes = Array.from(new Set(conCodigo.map(function(r){ return r.rubro_codigo; })));
+    const codes = Array.from(new Set(conCodigo.map(function(r){ return r.rubro_codigo; }).concat(conCodigo.map(function(r){ return _codBase(r.rubro_codigo); }))));
     const { data:recs } = await _sbTodo(function(){ return sb.from('recetas').select('id,rubro_codigo').eq('activo', true).in('rubro_codigo', codes).order('created_at').order('id'); });
-    const recByRubro = {}; (recs||[]).forEach(function(r){ if(!recByRubro[r.rubro_codigo]) recByRubro[r.rubro_codigo] = r.id; });
+    // v9.5: cada rubro toma la composición de su código, o la del código base si tiene sufijo de sector
+    const recByCat = {}; (recs||[]).forEach(function(r){ if(!recByCat[r.rubro_codigo]) recByCat[r.rubro_codigo] = r.id; });
+    const recByRubro = {}; conCodigo.forEach(function(r){ const id = recByCat[r.rubro_codigo] || recByCat[_codBase(r.rubro_codigo)]; if(id) recByRubro[r.rubro_codigo] = id; });
     const recetaIds = Array.from(new Set(Object.values(recByRubro)));
     if(!recetaIds.length){ if(!silent) showToast('Ninguno de esos rubros tiene receta cargada en el árbol', 'error'); btn.disabled=false; if(txt) txt.textContent=old; return; }
     const { data:items } = await _sbTodo(function(){ return sb.from('receta_items').select('id,receta_id,material,unidad,coef1,coef2,merma_pct,tipo_componente,codigo_catalogo,precio_unit').eq('activo', true).in('receta_id', recetaIds).order('orden').order('id'); });
@@ -5869,10 +5878,14 @@ async function calcInsumosFromRecetas(silent, soloCodigos, opts){
       const rc = x.rubro_codigo||'';
       if(!recetaRubros[rc]) return true;
       if(opts.restaurar) return false;
-      const est = _dgEstado(x, itemsByRec[recByRubro[rc]] || []);
-      if(est.e === 'receta') return false;
-      if(est.e === 'modificada'){ (saltar[rc] = saltar[rc] || {})[_dgKey(x)] = 1; }
-      return true;
+      // v9.5 · Se respeta SOLO lo que se tocó a mano en este presupuesto. Antes se
+      // comparaba contra la composición nueva y todo lo calculado con la versión
+      // anterior parecía «modificado»: los cambios de rendimiento no llegaban.
+      if(x.editado_manual || (!_isMO(x) && !_isLG(x) && x.precio_origen === 'manual')){
+        (saltar[rc] = saltar[rc] || {})[_dgKey(x)] = 1; return true;
+      }
+      if(_isLG(x) || /^Adicional/i.test(x.subtipo||'')) return true;   // logística y adicionales: nunca vienen de la composición
+      return false;                                                      // el resto se vuelve a generar con la composición vigente
     });
     Object.keys(recByRubro).forEach(function(rc){ ed.recetaItems = ed.recetaItems || {}; ed.recetaItems[rc] = itemsByRec[recByRubro[rc]] || []; });
     const nuevos = []; let sinReceta = 0; let moSeq = 0; let moCount = 0;
@@ -6807,8 +6820,9 @@ async function _audit(entidad, referencia, accion, detalle){
    · Editar composiciones existentes: permiso comp_editar.            */
 const EDICION_COMPOSICIONES = 'todos';     // 'todos' (por ahora las residentes editan) | 'permiso' (solo admin y comp_editar)
 async function _probarRecetaSync(){
-  state.recetaSyncOk = false;
+  state.recetaSyncOk = false; state.editManualOk = false;
   try{ const r = await sb.from('presupuesto_rubros').select('receta_sync').limit(1); state.recetaSyncOk = !r.error; }catch(e){}
+  try{ const r2 = await sb.from('presupuesto_insumos').select('editado_manual').limit(1); state.editManualOk = !r2.error; }catch(e){}
 }
 function _compBloqueada(){
   if(state.puedeEditarComp) return false;
@@ -6901,7 +6915,8 @@ async function pedirDesbloqueo(motivoDirecto){
 /* ── Composiciones cambiadas ─────────────────────────────── */
 async function _detectarCompNuevas(autoAbrir){
   ed.recetaNueva = {}; ed.compPend = {}; ed.compDec = {};
-  const cods = Array.from(new Set((ed.rubros||[]).filter(function(r){ return r.tiene_receta && r.rubro_codigo; }).map(function(r){ return r.rubro_codigo; })));
+  const _rr = (ed.rubros||[]).filter(function(r){ return r.tiene_receta && r.rubro_codigo; });
+  const cods = Array.from(new Set(_rr.map(function(r){ return r.rubro_codigo; }).concat(_rr.map(function(r){ return _codBase(r.rubro_codigo); }))));
   if(!cods.length) return;
   try{
     const q = await sb.from('recetas').select('rubro_codigo,actualizado_en').in('rubro_codigo', cods).eq('activo', true);
@@ -6913,7 +6928,7 @@ async function _detectarCompNuevas(autoAbrir){
       (d.data||[]).forEach(function(x){ if(!ed.compDec[x.rubro_codigo]) ed.compDec[x.rubro_codigo] = x; });
     }catch(e){ state.compDecOk = false; }
     (ed.rubros||[]).forEach(function(r){
-      const a = act[r.rubro_codigo]; if(!a) return;
+      const a = act[r.rubro_codigo] || act[_codBase(r.rubro_codigo)]; if(!a) return;
       const ref = r.receta_sync || ed.abiertoCon || null;
       if(!(ref && new Date(a).getTime() > new Date(ref).getTime() + 1000)) return;
       ed.recetaNueva[r.rubro_codigo] = a;
@@ -6957,7 +6972,7 @@ async function _aplicarCompNueva(cods){
   const manuales = (ed.insumos||[]).filter(function(x){
     return cods.indexOf(x.rubro_codigo||'') >= 0 && (_isLG(x) || /^Adicional/i.test(x.subtipo||''));
   }).map(function(x){ return JSON.parse(JSON.stringify(x)); });
-  await calcInsumosFromRecetas(true, cods, { restaurar:true, sinToast:true });
+  await calcInsumosFromRecetas(true, cods, { sinToast:true });
   const ya = {}; (ed.insumos||[]).forEach(function(x){ ya[JSON.stringify([x.rubro_codigo,x.codigo_insumo,x.material,x.subtipo||''])] = 1; });
   manuales.forEach(function(x){ if(!ya[JSON.stringify([x.rubro_codigo,x.codigo_insumo,x.material,x.subtipo||''])]) ed.insumos.push(x); });
   return manuales.length;
@@ -7033,7 +7048,7 @@ async function _revisarComposiciones(codes, forzar){
           '<label class="imp-lbl">Observación '+(pub?'<em>*</em>':'<span style="font-weight:400;color:#8893a5">(opcional en borrador)</span>')+'</label>'+
           '<textarea class="imp-txt" maxlength="800" placeholder="'+(pub?'Ej. se mantiene: el material ya se compró con la composición anterior · se actualiza: todavía no se compró ni certificó':'Ej. se actualiza por cambio de rendimiento del cemento')+'"></textarea>'+
           '<div class="imp-err"></div>')+
-        '<ul class="imp-l"><li>La composición nueva se toma completa (rendimientos, mermas, materiales y mano de obra). Se conservan la logística y los adicionales cargados a mano.</li>'+
+        '<ul class="imp-l"><li>Se toma la composición nueva: rendimientos, divisores, mermas, materiales y mano de obra. Se respetan las líneas que ajustaste a mano en este presupuesto, la logística y los adicionales.</li>'+
         '<li>Las órdenes de compra, certificados y contratos ya emitidos no se modifican.</li></ul>'+
       '</div>'+
       '<div class="imp-f">'+(soloVer
@@ -7195,7 +7210,7 @@ async function closeComposiciones(){
       //  · Borrador: se muestra el impacto y se decide.
       const guardados = Object.keys(comp._guardados || {});
       const afectados = (ed.rubros||[]).filter(function(r){
-        return r.rubro_codigo && r.tiene_receta && (Number(r.cantidad)||0) > 0 && guardados.indexOf(r.rubro_codigo) >= 0;
+        return r.rubro_codigo && r.tiene_receta && (Number(r.cantidad)||0) > 0 && (guardados.indexOf(r.rubro_codigo) >= 0 || guardados.indexOf(_codBase(r.rubro_codigo)) >= 0);
       });
       if(afectados.length && ed.bloqueado){
         showToast('Composición guardada en el catálogo','info',
