@@ -538,7 +538,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.2 · el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.4 · el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1227,6 +1227,7 @@ async function abrirEditor(id){
           }
         }
       }catch(eF){ console.warn('fotos previas', eF); }
+      ctPreciosPorDefecto(c.estado);
       renderLineas();
     }
   }
@@ -1978,11 +1979,14 @@ function renderLineas(){
       ? '<div class="grp-sub" style="border-color:var(--navy);background:#EDF3FB"><span>Subtotal '+escapeHtml(pp)+'</span><b>'+gs(subPP)+'</b></div>' : '');
   }).join('') +
   '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'+
-    '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'+
-    '<button type="button" class="btn-g" id="btnLibre">➕ Agregar un trabajo que no está en el presupuesto</button></div>';
+    (CT.contratos.length
+      ? '<button type="button" class="btn-g" id="btnAlContrato" style="border-color:#1B5524;color:#1B5524;font-weight:700">➕ Agregar un trabajo al contrato</button>'
+      : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'+
+        '<button type="button" class="btn-g" id="btnLibre">➕ Agregar un trabajo que no está en el presupuesto</button>')+'</div>';
 
   const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
   const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
+  const bac=document.getElementById('btnAlContrato'); if(bac) bac.onclick = ctAgregarTrabajo;
   enganchesLineas();
   actualizarTotales();
 }
@@ -2346,6 +2350,112 @@ function ctDeLinea(l, sec){
          CT.porRub[ctKey(pp, l.rubro_codigo, '')] ||
          CT.porSolo[String(l.rubro_codigo).toUpperCase()] || null;
 }
+/* v6.3 · Los precios del certificado se ponen al día con el contrato: si una
+   línea está contratada y quedó con otro precio, toma el pactado. En los
+   certificados ya aprobados no se toca nada: ese precio ya se pagó. */
+function ctPreciosPorDefecto(estado){
+  if(estado === 'Aprobado' || estado === 'Anulado') return 0;
+  let n = 0, det = [];
+  (ed.lineas||[]).forEach(function(l){
+    const ctr = Number(l.precio_contrato)||0;
+    if(!l.contrato_item_id || !ctr) return;
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const m = ed.med[k]; if(!m) return;
+    const ant = Number(m.precio)||0;
+    if(Math.abs(ant - ctr) < 0.5) return;
+    m.precio = ctr; n++;
+    if(det.length < 3) det.push((l.rubro_codigo||l.descripcion)+': '+gs(ant)+' → '+gs(ctr));
+  });
+  if(n) showToast(n+' precio(s) actualizados con el contrato','info',
+                  det.join(' · ')+(n>3?' · y '+(n-3)+' más':'')+' · revisá y guardá');
+  return n;
+}
+/* v6.4 · Un trabajo que no estaba contratado se agrega AL CONTRATO como
+   adenda en borrador, y queda listo para medir en este certificado. La
+   dirección la aprueba después, desde el módulo Contratos. */
+function ctFormulario(o){
+  return new Promise(function(resolve){
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1600;display:flex;align-items:center;justify-content:center;padding:16px';
+    const opc = (o.contratos||[]).map(function(c){ return '<option value="'+c.id+'">'+escapeHtml(c.numero||'')+' · '+escapeHtml(c.presupuesto||'sin presupuesto')+'</option>'; }).join('');
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(720px,100%);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
+        '<div style="background:#1B5524;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
+          '<div style="font-weight:800;font-size:16px">➕ Agregar un trabajo al contrato</div>'+
+          '<div style="font-size:12px;opacity:.9">Se carga como adenda del contrato y queda para aprobar</div></div>'+
+        '<div style="padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">'+
+          '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Contrato</label>'+
+            '<select id="ctfCon" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+opc+'</select></div>'+
+          '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Trabajo a realizar *</label>'+
+            '<input id="ctfDesc" placeholder="Ej. Picado de pared para cañería del Nivel 3" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div><label style="font-weight:700;font-size:12px">Unidad *</label>'+
+            '<input id="ctfUni" placeholder="m2 · ml · gb" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div><label style="font-weight:700;font-size:12px">Sector</label>'+
+            '<input id="ctfSec" list="edSectoresDl" value="'+escapeHtml(o.sector||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div><label style="font-weight:700;font-size:12px">Cantidad contratada *</label>'+
+            '<input id="ctfCant" type="number" min="0" step="any" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div><label style="font-weight:700;font-size:12px">Precio pactado ₲ *</label>'+
+            '<input id="ctfPre" type="number" min="0" step="any" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Detalle del trabajo</label>'+
+            '<textarea id="ctfDet" rows="3" placeholder="Qué hay que hacer, con qué materiales, cómo se mide y se paga…" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></textarea></div>'+
+          '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Motivo de la adenda *</label>'+
+            '<input id="ctfMot" placeholder="Ej. trabajo pedido en obra, no estaba en el contrato" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
+          '<div id="ctfErr" style="grid-column:1/-1;color:#b42b2b;font-size:12px;min-height:1em"></div>'+
+        '</div>'+
+        '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
+          '<button type="button" class="btn-g" id="ctfNo">Cancelar</button>'+
+          '<button type="button" class="btn-ok" id="ctfSi">Agregar al contrato</button></div></div>';
+    document.body.appendChild(ov);
+    const cerrar = function(v){ ov.remove(); resolve(v); };
+    ov.querySelector('#ctfNo').onclick = function(){ cerrar(null); };
+    ov.querySelector('#ctfSi').onclick = function(){
+      const g = function(id){ return (ov.querySelector('#'+id).value||'').trim(); };
+      const d = { contrato_id:Number(g('ctfCon')), descripcion:g('ctfDesc'), unidad:g('ctfUni'), sector:g('ctfSec'),
+                  cantidad:Number(g('ctfCant'))||0, precio:Number(g('ctfPre'))||0, detalle:g('ctfDet'), motivo:g('ctfMot') };
+      if(!d.descripcion || !d.unidad){ ov.querySelector('#ctfErr').textContent = 'Poné el trabajo y la unidad.'; return; }
+      if(!(d.cantidad > 0) || !(d.precio > 0)){ ov.querySelector('#ctfErr').textContent = 'Cargá la cantidad contratada y el precio pactado.'; return; }
+      if(d.motivo.length < 5){ ov.querySelector('#ctfErr').textContent = 'Escribí el motivo de la adenda.'; return; }
+      cerrar(d);
+    };
+    setTimeout(function(){ ov.querySelector('#ctfDesc').focus(); }, 40);
+  });
+}
+async function ctAgregarTrabajo(){
+  if(!CT.contratos.length){ showToast('Este contratista no tiene contratos vigentes','error'); return; }
+  const d = await ctFormulario({ contratos:CT.contratos, sector:(document.getElementById('edSector')||{}).value || '' });
+  if(!d) return;
+  const c = CT.contratos.filter(function(x){ return x.id === d.contrato_id; })[0];
+  try{
+    const quien = (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || '';
+    const { data:ads } = await sb.from('contrato_adendas').select('numero').eq('contrato_id', d.contrato_id);
+    const n = ((ads||[]).reduce(function(m,a){ return Math.max(m, Number(a.numero)||0); }, 0)) + 1;
+    const ra = await sb.from('contrato_adendas').insert({ contrato_id:d.contrato_id, numero:n,
+      motivo:d.motivo, estado:'Borrador', origen:'certificado', creado_por:quien }).select('id').single();
+    if(ra.error) throw ra.error;
+    const ri = await sb.from('contrato_items').insert({ contrato_id:d.contrato_id, adenda:n, orden:1,
+      presupuesto:c.presupuesto||null, sector:d.sector||null, rubro_codigo:null, descripcion:d.descripcion,
+      unidad:d.unidad, cantidad:d.cantidad, precio_pactado:Math.round(d.precio), detalle:d.detalle||null,
+      es_adicional:true, creado_por:quien }).select('*').single();
+    if(ri.error) throw ri.error;
+    const it = ri.data;
+    it._numero = c.numero; it._obra = c.obra; it._estado = c.estado; it._pp = c.presupuesto || '';
+    CT.items.push(it); CT.porId[it.id] = it;
+    const l = { presupuesto: it._pp || null, obra: c.obra || '', rubro_codigo:'', rubro_desc: d.descripcion,
+      sector: d.sector || '(sin sector)', codigo_insumo:'CT'+it.id, descripcion: d.descripcion, unidad: d.unidad,
+      cant_presup: d.cantidad, precio_presup: 0, contrato_item_id: it.id, contrato_numero: c.numero,
+      contrato_estado: c.estado, precio_contrato: Math.round(d.precio), cant_contratada: d.cantidad,
+      contrato_detalle: d.detalle || '', esContrato:true, esAdicional:true, libre:false };
+    ed.lineas.push(l);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    ed.sel[k] = true; ed.med[k] = ed.med[k] || {}; ed.med[k].precio = l.precio_contrato; ed.med[k].sector = d.sector || '';
+    renderLineas(); actualizarTotales();
+    showToast('Agregado al contrato '+(c.numero||'')+' como adenda A'+n,'success',
+      'Queda en borrador: la dirección la aprueba desde Contratos. Ya lo podés medir acá.');
+  }catch(e){
+    console.warn('adenda desde certificado', e);
+    showToast('No se pudo agregar al contrato','error', e.message||'');
+  }
+}
 function ctUsado(id){ const o = CT.cert[id] || { aprob:0, tramite:0 }; return o.aprob + o.tramite; }
 function ctVincular(){
   const usados = {};
@@ -2371,7 +2481,7 @@ function ctVincular(){
       rubro_codigo: i.rubro_codigo || '',
       rubro_desc: i.descripcion || '',
       sector: (i.sector||'').trim() || '(sin sector)',
-      codigo_insumo: 'CONTRATO',
+      codigo_insumo: 'CT'+i.id,          // clave propia: dos adicionales sin rubro no se pisan
       descripcion: i.descripcion || i.rubro_codigo || 'Trabajo contratado',
       unidad: i.unidad || '',
       cant_presup: Number(i.cantidad)||0,
