@@ -538,7 +538,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.6 · el trabajo al contrato se elige del presupuesto o del catálogo; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.7 · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1649,15 +1649,22 @@ function ctAviso(){
              ' · '+n+' trabajo(s) · '+gs(m)+(c.estado==='Emitido'?' · <i>a firmar</i>':'')+
              ' <button type="button" class="ct-traer" data-ct="'+c.id+'">Traer los trabajos</button></span>';
     }).join('')+'</div>'+
+    (CT.contratos.length > 1 ? '<div style="margin:2px 0 6px"><button type="button" class="ct-traer" id="ctTraerTodos">Traer los trabajos de los '+CT.contratos.length+' contratos</button></div>' : '')+
     '<small>Los precios y el saldo salen del contrato. Lo que no esté contratado se certifica igual y queda marcado como <b>fuera de contrato</b>.</small>';
   box.querySelectorAll('[data-ct]').forEach(function(b){
     b.onclick = function(){ ctTraer(Number(b.getAttribute('data-ct'))); };
   });
+  const bt = document.getElementById('ctTraerTodos');
+  if(bt) bt.onclick = async function(){
+    for(const c of CT.contratos){ await ctTraer(c.id, true); }
+    renderLineas(); actualizarTotales();
+    showToast('Trabajos de '+CT.contratos.length+' contratos listos para medir','success','Cargá la cantidad ejecutada en cada uno');
+  };
 }
 /* Trae al certificado todos los trabajos de un contrato, con su precio
    pactado y su saldo. Si el contrato tiene presupuesto, lo agrega también
    para que el consumo del presupuesto madre siga cuadrando. */
-async function ctTraer(contratoId){
+async function ctTraer(contratoId, silencioso){
   const c = CT.contratos.filter(function(x){ return x.id === contratoId; })[0];
   if(!c) return;
   if(c.presupuesto && ed.presus.indexOf(c.presupuesto) < 0){
@@ -1675,6 +1682,7 @@ async function ctTraer(contratoId){
     if(saldo == null || saldo > 0){ ed.sel[k] = true; conSaldo++; }
   });
   renderLineas(); actualizarTotales();
+  if(silencioso) return;
   showToast(conSaldo+' trabajo(s) del contrato '+(c.numero||'')+' listos para medir','success',
     n > conSaldo ? (n-conSaldo)+' ya están certificados por completo y no se agregaron' : 'Cargá la cantidad ejecutada en cada uno');
 }
@@ -2387,9 +2395,7 @@ function ctFormulario(o){
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1600;display:flex;align-items:center;justify-content:center;padding:16px';
     const opc = (o.contratos||[]).map(function(c){ return '<option value="'+c.id+'">'+escapeHtml(c.numero||'')+' · '+escapeHtml(c.presupuesto||'sin presupuesto')+'</option>'; }).join('');
-    const rub = (o.rubros||[]).map(function(r){
-      return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml(r.codigo+' · '+(r.nombre||'')+(r.sector?(' · '+r.sector):'')+(r.mo?(' · M.O. '+gs(r.mo)):''))+'</option>';
-    }).join('');
+    const _rub = o.rubros || [];   // solo los del presupuesto: la lista es corta
     ov.innerHTML =
       '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
         '<div style="background:#1B5524;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
@@ -2399,8 +2405,8 @@ function ctFormulario(o){
           '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Contrato</label>'+
             '<select id="ctfCon" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+opc+'</select></div>'+
           '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Rubro <span style="font-weight:400;color:#64748b">· opcional: elegilo del presupuesto o del catálogo y se completa solo</span></label>'+
-            '<input id="ctfRub" list="ctfRubDl" placeholder="Escribí el código o el nombre del rubro…" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+
-            '<datalist id="ctfRubDl">'+rub+'</datalist>'+
+            '<div style="position:relative"><input id="ctfRub" autocomplete="off" placeholder="Escribí el código o el nombre del rubro…" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+
+            '<div id="ctfRubPop" hidden style="position:absolute;left:0;right:0;top:100%;z-index:5;background:#fff;border:1px solid #d6dce8;border-radius:9px;box-shadow:0 12px 30px rgba(0,0,0,.18);max-height:240px;overflow:auto"></div></div>'+
             '<div id="ctfRubInfo" style="font-size:11.5px;color:#1B5524;margin-top:3px;min-height:1em"></div></div>'+
           '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Trabajo a realizar *</label>'+
             '<input id="ctfDesc" placeholder="Ej. Picado de pared para cañería del Nivel 3" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
@@ -2422,23 +2428,56 @@ function ctFormulario(o){
           '<button type="button" class="btn-g" id="ctfNo">Cancelar</button>'+
           '<button type="button" class="btn-ok" id="ctfSi">Agregar al contrato</button></div></div>';
     document.body.appendChild(ov);
-    // Al elegir un rubro se completan descripción, unidad, sector y el precio
-    // de referencia de la mano de obra del presupuesto.
-    ov.querySelector('#ctfRub').addEventListener('change', function(){
-      const cod = (this.value||'').trim().toUpperCase();
-      const r = (o.rubros||[]).filter(function(x){ return String(x.codigo).toUpperCase() === cod; })[0];
-      const info = ov.querySelector('#ctfRubInfo');
-      if(!r){ info.textContent = cod ? 'Ese código no está en el presupuesto ni en el catálogo: podés dejarlo y escribir el trabajo a mano.' : ''; return; }
+    // Buscador liviano: primero los rubros del presupuesto del contrato y,
+    // si hace falta, el catálogo (se consulta al servidor, de a 15).
+    const inp = ov.querySelector('#ctfRub'), pop = ov.querySelector('#ctfRubPop'), info = ov.querySelector('#ctfRubInfo');
+    let _t = null, _res = [];
+    const elegir = function(r){
       const g = function(id){ return ov.querySelector('#'+id); };
+      inp.value = r.codigo; pop.hidden = true;
       if(!g('ctfDesc').value.trim()) g('ctfDesc').value = r.nombre || '';
       if(!g('ctfUni').value.trim())  g('ctfUni').value  = r.unidad || '';
       if(!g('ctfSec').value.trim() && r.sector) g('ctfSec').value = r.sector;
       if(!Number(g('ctfPre').value) && r.mo) g('ctfPre').value = Math.round(r.mo);
       if(!g('ctfDet').value.trim() && r.detalle) g('ctfDet').value = r.detalle;
       info.innerHTML = r.origen === 'presupuesto'
-        ? 'Del presupuesto '+escapeHtml(r.presupuesto||'')+(r.mo?(' · M.O. presupuestada '+gs(r.mo)+' por '+escapeHtml(r.unidad||'unidad')):' · sin mano de obra presupuestada')
-        : 'Del catálogo de rubros';
-    });
+        ? 'Del presupuesto <b>'+escapeHtml(r.presupuesto||'')+'</b>'+(r.mo?(' · M.O. presupuestada '+gs(r.mo)+' por '+escapeHtml(r.unidad||'unidad')):' · sin mano de obra presupuestada')
+        : 'Del catálogo de rubros · poné vos el precio pactado';
+      g('ctfDesc').focus();
+    };
+    const pintar = function(L){
+      _res = L;
+      if(!L.length){ pop.hidden = true; return; }
+      pop.innerHTML = L.map(function(r,i){
+        return '<div data-i="'+i+'" style="padding:8px 10px;border-bottom:1px solid #eef1f6;cursor:pointer;font-size:12.5px">'+
+          '<b>'+escapeHtml(r.codigo)+'</b> · '+escapeHtml(r.nombre||'')+
+          '<div style="font-size:11px;color:#64748b">'+(r.origen==='presupuesto'
+             ? ('presupuesto '+escapeHtml(r.presupuesto||'')+(r.sector?(' · '+escapeHtml(r.sector)):'')+(r.mo?(' · M.O. '+gs(r.mo)):' · sin M.O.'))
+             : 'catálogo')+(r.unidad?(' · '+escapeHtml(r.unidad)):'')+'</div></div>';
+      }).join('');
+      pop.hidden = false;
+      pop.querySelectorAll('[data-i]').forEach(function(d){
+        d.onmousedown = function(ev){ ev.preventDefault(); elegir(_res[Number(d.getAttribute('data-i'))]); };
+      });
+    };
+    const buscar = async function(){
+      const q = norm(inp.value);
+      if(q.length < 2){ pop.hidden = true; return; }
+      const locales = _rub.filter(function(r){ return norm(r.codigo+' '+(r.nombre||'')).indexOf(q) >= 0; }).slice(0, 12);
+      pintar(locales);
+      if(locales.length >= 8) return;
+      try{
+        const cq = await sb.from('rubros').select('codigo,nombre,unidad')
+          .eq('activo', true).or('codigo.ilike.%'+inp.value.trim()+'%,nombre.ilike.%'+inp.value.trim()+'%').limit(12);
+        const vistos = {}; locales.forEach(function(r){ vistos[String(r.codigo).toUpperCase()] = 1; });
+        const extra = (cq.data||[]).filter(function(r){ return !vistos[String(r.codigo).toUpperCase()]; })
+          .map(function(r){ return { codigo:r.codigo, nombre:r.nombre||'', unidad:r.unidad||'', sector:'', mo:0, origen:'catalogo' }; });
+        if(norm(inp.value) === q) pintar(locales.concat(extra));
+      }catch(e){}
+    };
+    inp.addEventListener('input', function(){ clearTimeout(_t); _t = setTimeout(buscar, 220); });
+    inp.addEventListener('focus', buscar);
+    inp.addEventListener('blur', function(){ setTimeout(function(){ pop.hidden = true; }, 150); });
     const cerrar = function(v){ ov.remove(); resolve(v); };
     ov.querySelector('#ctfNo').onclick = function(){ cerrar(null); };
     ov.querySelector('#ctfSi').onclick = function(){
@@ -2480,12 +2519,7 @@ async function ctRubrosParaAdenda(){
                    mo: q > 0 ? Math.round(tot/q) : 0, presupuesto:r.presupuesto, detalle:r.detalle_contratista||'', origen:'presupuesto' });
       });
     }
-    const cq = await sb.from('rubros').select('codigo,nombre,unidad').eq('activo', true).order('codigo').limit(3000);
-    (cq.data||[]).forEach(function(r){
-      const k = String(r.codigo||'').toUpperCase(); if(!k || vistos[k]) return;
-      vistos[k] = 1;
-      out.push({ codigo:r.codigo, nombre:r.nombre||'', unidad:r.unidad||'', sector:'', mo:0, origen:'catalogo' });
-    });
+    // El catálogo general no se precarga: se busca en el servidor al escribir.
   }catch(e){ console.warn('rubros adenda', e); }
   return out;
 }
