@@ -177,9 +177,14 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.sr{background:#fdf3d6;color:#8a6d10;border:1px solid #e6d29a}
 .lin-tag.rb{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+.lin-det{white-space:pre-wrap;border-left:3px solid #C8A028;background:#FCFAF3;border-radius:0 8px 8px 0;padding:8px 12px;margin:8px 0 2px;font-size:12.8px;line-height:1.55;color:#1A2236}
+.lin-det span{display:block;font-size:9.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#8a6d10;margin-bottom:3px}
+.lin-nom small{color:#8893a5}
 .ct-aviso{border:1px solid #9BD3A9;background:#F1FAF3;color:#1B5524;border-radius:10px;padding:10px 13px;margin-bottom:12px;font-size:13px}
 .ct-aviso .ct-lista{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px}
-.ct-aviso .ct-lista span{background:#fff;border:1px solid #9BD3A9;border-radius:7px;padding:3px 9px;font-size:12px}
+.ct-aviso .ct-lista span{background:#fff;border:1px solid #9BD3A9;border-radius:7px;padding:3px 9px;font-size:12px;display:inline-flex;align-items:center;gap:8px}
+.ct-traer{background:#1B5524;color:#fff;border:0;border-radius:6px;padding:3px 9px;font-size:11.5px;font-weight:700;cursor:pointer}
+.ct-traer:hover{filter:brightness(1.15)}
 .ct-aviso small{color:#42506a;font-size:11.5px}
 .lin-tag.fc{background:#fff4dc;color:#8a5a00;border:1px solid #f2cd7a}
 .lin-tag.ad{background:#fde7c7;color:#9a5b00}
@@ -533,7 +538,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.0 · consume el contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.2 · el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1631,9 +1636,37 @@ function ctAviso(){
       const n = CT.items.filter(function(i){ return i.contrato_id === c.id; }).length;
       const m = CT.items.filter(function(i){ return i.contrato_id === c.id; }).reduce(function(a,i){ return a + Math.round((Number(i.cantidad)||0)*(Number(i.precio_pactado)||0)); }, 0);
       return '<span title="'+escapeHtml((c.alcance||'').slice(0,300))+'"><b>'+escapeHtml(c.numero||'')+'</b> · '+escapeHtml(c.presupuesto||'sin presupuesto')+
-             ' · '+n+' trabajo(s) · '+gs(m)+(c.estado==='Emitido'?' · <i>a firmar</i>':'')+'</span>';
+             ' · '+n+' trabajo(s) · '+gs(m)+(c.estado==='Emitido'?' · <i>a firmar</i>':'')+
+             ' <button type="button" class="ct-traer" data-ct="'+c.id+'">Traer los trabajos</button></span>';
     }).join('')+'</div>'+
     '<small>Los precios y el saldo salen del contrato. Lo que no esté contratado se certifica igual y queda marcado como <b>fuera de contrato</b>.</small>';
+  box.querySelectorAll('[data-ct]').forEach(function(b){
+    b.onclick = function(){ ctTraer(Number(b.getAttribute('data-ct'))); };
+  });
+}
+/* Trae al certificado todos los trabajos de un contrato, con su precio
+   pactado y su saldo. Si el contrato tiene presupuesto, lo agrega también
+   para que el consumo del presupuesto madre siga cuadrando. */
+async function ctTraer(contratoId){
+  const c = CT.contratos.filter(function(x){ return x.id === contratoId; })[0];
+  if(!c) return;
+  if(c.presupuesto && ed.presus.indexOf(c.presupuesto) < 0){
+    await agregarPresu(c.presupuesto);       // agregarPresu ya recarga las líneas
+  }else{
+    await cargarLineas();
+  }
+  let n = 0, conSaldo = 0;
+  (ed.lineas||[]).forEach(function(l){
+    const ci = l.contrato_item_id ? CT.porId[l.contrato_item_id] : null;
+    if(!ci || ci.contrato_id !== contratoId) return;
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const saldo = saldoLinea(l, ed.hist[k]);
+    n++;
+    if(saldo == null || saldo > 0){ ed.sel[k] = true; conSaldo++; }
+  });
+  renderLineas(); actualizarTotales();
+  showToast(conSaldo+' trabajo(s) del contrato '+(c.numero||'')+' listos para medir','success',
+    n > conSaldo ? (n-conSaldo)+' ya están certificados por completo y no se agregaron' : 'Cargá la cantidad ejecutada en cada uno');
 }
 /* El paso 2 se habilita recién con el contratista elegido: así cada línea
    nace con el precio pactado y no con el del presupuesto. */
@@ -2092,6 +2125,7 @@ function lineaHTML(l, contratista){
         '<div class="px-orig '+origen+'" title="'+escapeHtml(origenTxt+(P.alcance?(' · '+P.alcance):''))+'">'+(pnum?gs(pnum):'—')+
           '<i>'+(origen==='pact' ? ('pactado'+(P.alcance?(' · '+escapeHtml(P.alcance)):'')) : origenTxt)+'</i></div></div>'+
     '</div>'+
+    (l.contrato_detalle ? '<div class="lin-det"><span>Detalle del trabajo · '+escapeHtml(l.contrato_numero||'contrato')+'</span>'+escapeHtml(l.contrato_detalle)+'</div>' : '')+
     cpRefHTML(l, k, precio, pact, Number(cant)||0) + acum + pctBox + ultLinea +
     (cargada ? '<div class="lin-body">'+
       (faltaSector ? '<div class="fld falta"><label>Sector / nivel *</label><input type="text" list="edSectoresDl" data-s="'+escapeHtml(k)+'" value="'+escapeHtml(m.sector||'')+'" placeholder="Ej. Nivel 3, NP2, Subsuelo" autocomplete="off"><div class="hint">Este trabajo no trae sector del presupuesto. Sin sector no se puede diferenciar el precio por nivel ni cruzarlo después.</div></div>' : '')+
@@ -3810,12 +3844,14 @@ async function guardar(estado){
       excedente: x.excedente,
       contrato_item_id: x.contrato_item_id,          // v6.0 · consumo del contrato
       fuera_contrato: x.fuera_contrato,
+      detalle: x.linea.contrato_detalle || null,     // v6.2 · qué hay que hacer
+
       orden: x.orden
     }));
     let { data:itsIns, error:e2 } = await sb.from('certificado_items').insert(items).select('id,orden');
-    if(e2 && /\b(contrato_item_id|fuera_contrato)\b/i.test(e2.message||'')){
+    if(e2 && /\b(contrato_item_id|fuera_contrato|detalle)\b/i.test(e2.message||'')){
       // Falta el script de contratos: se guarda igual, sin el vínculo
-      const sinCtr = items.map(function(r){ const c=Object.assign({},r); delete c.contrato_item_id; delete c.fuera_contrato; return c; });
+      const sinCtr = items.map(function(r){ const c=Object.assign({},r); delete c.contrato_item_id; delete c.fuera_contrato; delete c.detalle; return c; });
       const rC = await sb.from('certificado_items').insert(sinCtr).select('id,orden');
       itsIns = rC.data; e2 = rC.error;
       if(!e2) showToast('Falta el SQL de Contratos','info','El certificado se guardó, pero no queda vinculado al contrato.');
@@ -4560,6 +4596,12 @@ async function pedirPDF(c, its){
    cursiva, pegada debajo del trabajo, para que no compitan con los números. */
 function pdfNotaLinea(x){
   const p = [];
+  // v6.2 · Con detalle cargado, el codigo y el nombre del rubro pasan acá
+  if(String(x.detalle||'').trim()){
+    const cod = String(x.rubro_codigo||'').trim();
+    const ref = (cod ? cod+' - ' : '') + String(x.descripcion||'').trim();
+    if(ref.trim()) p.push(pdfSafe(ref.trim()));
+  }
   if(String(x.ubicacion||'').trim())   p.push('Ubicacion: '+pdfSafe(String(x.ubicacion).trim()));
   if(String(x.observacion||'').trim()) p.push('Obs.: '+pdfSafe(String(x.observacion).trim()));
   return p.join('   |   ');
@@ -5124,7 +5166,9 @@ async function generarPlanillaPDF(c, its, opts){
       const nota = pdfNotaLinea(x);
       rows.push([
         { content:String(n), rowSpan: nota ? 2 : 1 },
-        pdfSafe((cod ? cod+'  ' : '') + (x.descripcion||'')),
+        String(x.detalle||'').trim()
+          ? { content: pdfSafe(String(x.detalle).trim()), styles:{ fontStyle:'bold' } }
+          : pdfSafe((cod ? cod+'  ' : '') + (x.descripcion||'')),
         pdfSafe(x.unidad||''),
         libre ? '-' : q2(cp),
         g0(pu),
@@ -5447,8 +5491,10 @@ async function generarPDF(c, its, conFotos){
       const nota = pdfNotaLinea(x);
       rows.push([
         { content:String(n), rowSpan: nota ? 2 : 1 },
-        pdfSafe((cod ? cod+'  ' : '') + desc) +
-          (rdesc && norm(rdesc) !== norm(desc) && norm(rdesc) !== 'fuera de presupuesto' ? ('\nRubro: '+pdfSafe(rdesc)) : ''),
+        String(x.detalle||'').trim()
+          ? { content: pdfSafe(String(x.detalle).trim()), styles:{ fontStyle:'bold' } }
+          : (pdfSafe((cod ? cod+'  ' : '') + desc) +
+             (rdesc && norm(rdesc) !== norm(desc) && norm(rdesc) !== 'fuera de presupuesto' ? ('\nRubro: '+pdfSafe(rdesc)) : '')),
         pdfSafe(x.presupuesto||'-'),
         pdfSafe(x.unidad||'-'),
         (x.cant_presup!=null? String(x.cant_presup).replace('.',',') : '-'),
