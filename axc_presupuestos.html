@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.3 · las notas internas no salen en la propuesta al cliente</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.4 · la propuesta puede mostrar qué parte del precio es mano de obra y qué parte material, con resumen gráfico</p>
   </div>
 </div>
 
@@ -884,6 +884,9 @@ body{
                title="Los materiales se compran por unidad entera (bolsas, unidades). Si lo activás, la cantidad se redondea hacia arriba y el costo sube.">
           <input type="checkbox" id="mgRedondeo"> Redondear las cantidades de materiales a unidades enteras (hacia arriba)
           <span id="mgRedNota" style="color:#8a6d10"></span></label>
+        <label style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;color:#42506a;display:flex;align-items:center;gap:6px;width:100%"
+               title="En el PDF, cada rubro muestra qué parte del precio es mano de obra y qué parte material, y al final un resumen con gráfico.">
+          <input type="checkbox" id="mgComp"> Mostrar en el PDF la composición de cada rubro: % mano de obra y % material</label>
       </div>
       <div style="overflow-x:auto"><table class="ins-tbl" id="mgTabla"></table></div>
       <div class="mg-tot" id="mgTot"></div>
@@ -4601,6 +4604,25 @@ function openPropuesta(){
              costo:costo, opcional:!!r.opcional };
   });
   MG.porRubro = {}; MG.exacto = {}; D.rows.forEach(function(r){ MG.exacto[r.codigo] = r.costo; });
+  // v10.4 · Cuánto de cada rubro es mano de obra y cuánto material
+  MG.split = {};
+  D.rows.forEach(function(r){
+    let mo = 0, mat = 0;
+    if(r.tiene_receta){
+      ((D.insByRubro||{})[r.codigo]||[]).forEach(function(x){
+        if(x.mo || x.lg) mo += Number(x.sub)||0; else mat += Number(x.sub)||0;
+      });
+    }else{
+      const rb = (ed.rubros||[]).filter(function(y){ return y.rubro_codigo === r.codigo; })[0] || {};
+      const q  = Number(r.cantidad)||0;
+      const mu = (Number(rb.mano_obra_unit)||0) * q;
+      const xu = (Number(rb.material_unit)||0) * q;
+      if(mu || xu){ mo = mu; mat = xu; } else { mo = r.costo; mat = 0; }   // servicios: todo mano de obra
+    }
+    const t = mo + mat;
+    MG.split[r.codigo] = { mo:Math.round(mo), mat:Math.round(mat),
+                           pmo: t > 0 ? mo/t : 0, pmat: t > 0 ? mat/t : 0 };
+  });
   document.getElementById('mgSub').textContent =
     (document.getElementById('pmCodigo').value||'') + ' · ' +
     (document.getElementById('pmObra').value||'') + ' · ' + MG.rows.length + ' rubros';
@@ -4848,7 +4870,7 @@ async function emitirPropuesta(anexos){
       return { orden:i+1, sector:r.sector, capitulo:r.capitulo, rubro_codigo:r.codigo,
                descripcion:r.descripcion, unidad:r.unidad, cantidad:r.cantidad,
                costo_unit:cu, margen_pct:pct, precio_unit:pu, precio_total:pt,
-               opcional:!!r.opcional };
+               comp:(MG.split||{})[r.codigo] || null, opcional:!!r.opcional };
     });
 
     const _vv = function(id){ const e=document.getElementById(id); return e ? (e.value||'').trim() : ''; };
@@ -4881,7 +4903,8 @@ async function emitirPropuesta(anexos){
     document.getElementById('mgOverlay').style.display='none';
     showToast('Propuesta emitida','success', codigo+' v'+version+' · Gs '+fmtGs(ventaT)+' · utilidad '+((ventaT-costoT)/ventaT*100).toFixed(1)+'%');
     const _v = function(id){ const e=document.getElementById(id); return e ? (e.value||'').trim() : ''; };
-    imprimirPropuesta({ codigo:codigo, version:version, obra:obra, cliente:cliente, descripcion:desc,
+    imprimirPropuesta({ comp: !!(document.getElementById('mgComp')||{}).checked,
+      codigo:codigo, version:version, obra:obra, cliente:cliente, descripcion:desc,
       validez:validez, condiciones:cond, observaciones:obs, items:items, venta:ventaT,
       atencion:_v('mgAtencion'), referencia:_v('mgRef'), profesional:_v('mgProf'),
       superficie:_v('mgSup'), alcance:_v('mgAlcance'),
@@ -4992,6 +5015,38 @@ function _obsCliente(t){
     return !/^\s*\[\d{1,2}\/\d{1,2}\/\d{2,4}\]\s*(Composición actualizada|Reabierto por)/i.test(l);
   }).join('\n').trim();
 }
+/* v10.4 · Resumen de composición del precio: cuánto es mano de obra y cuánto
+   material, con una torta simple dibujada en SVG (sin librerías). */
+function _compResumen(P, items){
+  if(!P.comp) return '';
+  let mo = 0, mat = 0;
+  (items||[]).forEach(function(r){
+    const c = r.comp; if(!c) return;
+    mo  += (Number(r.precio_total)||0) * (Number(c.pmo)||0);
+    mat += (Number(r.precio_total)||0) * (Number(c.pmat)||0);
+  });
+  const t = mo + mat; if(!(t > 0)) return '';
+  const pmo = mo/t, pmat = mat/t;
+  // Torta: un círculo con el borde en dos tramos
+  const R = 54, C = 2*Math.PI*R, seg = C*pmo;
+  const svg = '<svg viewBox="0 0 140 140" width="118" height="118" role="img" aria-label="Composición del precio">'+
+    '<circle cx="70" cy="70" r="'+R+'" fill="none" stroke="#C8A028" stroke-width="30"></circle>'+
+    '<circle cx="70" cy="70" r="'+R+'" fill="none" stroke="#1F3864" stroke-width="30" '+
+      'stroke-dasharray="'+seg.toFixed(1)+' '+(C-seg).toFixed(1)+'" transform="rotate(-90 70 70)"></circle>'+
+    '<circle cx="70" cy="70" r="38" fill="#fff"></circle>'+
+    '<text x="70" y="66" text-anchor="middle" font-size="15" font-weight="700" fill="#1F3864">'+Math.round(pmo*100)+' %</text>'+
+    '<text x="70" y="82" text-anchor="middle" font-size="8.5" fill="#5a6677">mano de obra</text></svg>';
+  return '<div class="compbox">'+
+    '<div class="cb-t">COMPOSICIÓN DEL PRECIO</div>'+
+    '<div class="cb-b">'+svg+
+      '<table class="cb-tab"><tbody>'+
+      '<tr><td><span class="pt mo"></span>Mano de obra</td><td class="n">'+fmtGs(mo)+'</td><td class="n">'+Math.round(pmo*100)+' %</td></tr>'+
+      '<tr><td><span class="pt ma"></span>Materiales</td><td class="n">'+fmtGs(mat)+'</td><td class="n">'+Math.round(pmat*100)+' %</td></tr>'+
+      '<tr class="tot"><td>Total de la propuesta</td><td class="n">'+fmtGs(t)+'</td><td class="n">100 %</td></tr>'+
+      '</tbody></table>'+
+      '<div class="cb-n">Proporción calculada sobre las composiciones de cada rubro. La mano de obra incluye la logística asociada al trabajo.</div>'+
+    '</div></div>';
+}
 function imprimirPropuesta(P){
   const hoy = new Date();
   const vto = new Date(hoy.getTime() + (Number(P.validez)||15)*86400000);
@@ -5018,7 +5073,10 @@ function imprimirPropuesta(P){
         escapeHtml(String(cap).replace(/^\d+\s*/,'').toUpperCase())+'</td>'+
         '<td class="n capsub">'+fmtGs(subCap)+'</td></tr>';
       porCap[cap].forEach(function(r,i){
-        cuerpo+='<tr><td class="ref">'+nCap+'.'+(i+1)+'</td><td>'+escapeHtml(r.descripcion)+'</td>'+
+        const _c = P.comp && r.comp && (r.comp.mo || r.comp.mat)
+          ? '<div class="mm"><i class="mo" style="width:'+Math.round(r.comp.pmo*100)+'%"></i><i class="ma" style="width:'+Math.round(r.comp.pmat*100)+'%"></i>'+
+            '<span>Mano de obra '+Math.round(r.comp.pmo*100)+' % · Materiales '+Math.round(r.comp.pmat*100)+' %</span></div>' : '';
+        cuerpo+='<tr><td class="ref">'+nCap+'.'+(i+1)+'</td><td>'+escapeHtml(r.descripcion)+_c+'</td>'+
           '<td class="c">'+escapeHtml(r.unidad||'')+'</td><td class="c">'+nf2(r.cantidad)+'</td>'+
           '<td class="n">'+fmtGs(r.precio_unit)+'</td><td class="n">'+fmtGs(r.precio_total)+'</td></tr>';
       });
@@ -5119,6 +5177,20 @@ function imprimirPropuesta(P){
 'tr.tot td[colspan]:not(.lbl){background:#fff !important;border:none !important}'+
 '.cond{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin:22px 24px 0;font-size:12px;line-height:1.65;color:#33405c}'+
 '.cond h4{margin:0 0 6px;font-size:12px;letter-spacing:.8px;color:#1F3864}'+
+'.mm{margin-top:3px;display:flex;flex-wrap:wrap;align-items:center;gap:0}'+
+'.mm i{display:block;height:4px;border-radius:2px}'+
+'.mm i.mo{background:#1F3864}.mm i.ma{background:#C8A028}'+
+'.mm span{width:100%;font-size:7.6px;color:#5a6677;margin-top:2px}'+
+'.compbox{margin:14px 24px 0;border:1px solid #C9CFD9;border-radius:6px;overflow:hidden;page-break-inside:avoid}'+
+'.compbox .cb-t{background:#1F3864;color:#fff;font-size:9px;font-weight:800;letter-spacing:1.2px;padding:5px 12px}'+
+'.compbox .cb-b{display:flex;align-items:center;gap:22px;padding:12px 14px}'+
+'.cb-tab{border-collapse:collapse;font-size:11px;min-width:78mm}'+
+'.cb-tab td{padding:5px 10px;border-bottom:1px solid #eceff4}'+
+'.cb-tab .n{text-align:right;font-variant-numeric:tabular-nums}'+
+'.cb-tab .tot td{font-weight:800;color:#1F3864;border-top:1.5px solid #1F3864;border-bottom:0}'+
+'.cb-tab .pt{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px}'+
+'.cb-tab .pt.mo{background:#1F3864}.cb-tab .pt.ma{background:#C8A028}'+
+'.cb-n{font-size:9px;color:#8893a5;max-width:62mm;line-height:1.45}'+
 '.firmas{display:flex;justify-content:space-around;margin-top:36px;padding:0 20px;page-break-inside:avoid}'+
 '.firmas div{border-top:.5px solid #8893a5;padding-top:4px;width:210px;text-align:center;font-weight:700;font-size:9px}'+
 '.pie{margin-top:14px;padding:5px 16px 0;border-top:.5px solid #e6e9ee;font-size:7.5px;color:#9aa4b2;display:flex;justify-content:space-between}'+
@@ -5160,6 +5232,7 @@ ivaFilas(P.venta, P.iva_pct, 4, '17px', 3)+'</tbody></table>'+
   '<div class="obs-cond">Oferta válida por '+(Number(P.validez)||15)+' días.</div>'+
 '</div>'+
 // Hoja aparte con los trabajos opcionales
+_compResumen(P, itemsBase)+
 '<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>'+
 // Hoja aparte con los opcionales, con su propio cierre y sus firmas
 (cuerpoOpc
