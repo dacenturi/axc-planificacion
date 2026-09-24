@@ -176,6 +176,14 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.mo{background:#EAF3DE;color:#3B6D11;border-color:#C0DD97}
 .lin-tag.sr{background:#fdf3d6;color:#8a6d10;border:1px solid #e6d29a}
 .lin-tag.rb{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
+.lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+.ct-aviso{border:1px solid #9BD3A9;background:#F1FAF3;color:#1B5524;border-radius:10px;padding:10px 13px;margin-bottom:12px;font-size:13px}
+.ct-aviso .ct-lista{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px}
+.ct-aviso .ct-lista span{background:#fff;border:1px solid #9BD3A9;border-radius:7px;padding:3px 9px;font-size:12px}
+.ct-aviso small{color:#42506a;font-size:11.5px}
+.lin-tag.fc{background:#fff4dc;color:#8a5a00;border:1px solid #f2cd7a}
+.lin-tag.ad{background:#fde7c7;color:#9a5b00}
+.px-orig.ctr,.lin-in.px.ctr .px-orig{color:#1B6B34}
 .lin-num{text-align:right;font-size:13px;font-variant-numeric:tabular-nums;padding-top:16px}
 .lin-num b{display:block;font-size:15px;color:var(--navy)}
 .lin-num small{display:block;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-top:2px}
@@ -525,7 +533,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v5.3 · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.0 · consume el contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1602,11 +1610,31 @@ document.getElementById('edPresuLibre').onclick = function(){
 document.getElementById('edContra').onchange = async function(){
   actualizarPaso2();
   await cpCargar(this.value);
+  await ctCargar(this.value, ed.id);
+  ctAviso();
+  if(ed.presus.length || CT.items.length) await cargarLineas();
   reaplicarPrecios();
   renderLineas();
   cargarAntecedentes();
 };
 
+/* v6.0 · Franja con los contratos vigentes del contratista */
+function ctAviso(){
+  let box = document.getElementById('ctAviso');
+  const anchor = document.getElementById('edPresuBox');
+  if(!anchor) return;
+  if(!box){ box = document.createElement('div'); box.id = 'ctAviso'; box.className = 'ct-aviso'; anchor.parentNode.insertBefore(box, anchor); }
+  if(!CT.contratos.length){ box.style.display = 'none'; return; }
+  box.style.display = '';
+  box.innerHTML = '<b>🤝 '+CT.contratos.length+' contrato(s) vigente(s) de este contratista</b>'+
+    '<div class="ct-lista">'+CT.contratos.map(function(c){
+      const n = CT.items.filter(function(i){ return i.contrato_id === c.id; }).length;
+      const m = CT.items.filter(function(i){ return i.contrato_id === c.id; }).reduce(function(a,i){ return a + Math.round((Number(i.cantidad)||0)*(Number(i.precio_pactado)||0)); }, 0);
+      return '<span title="'+escapeHtml((c.alcance||'').slice(0,300))+'"><b>'+escapeHtml(c.numero||'')+'</b> · '+escapeHtml(c.presupuesto||'sin presupuesto')+
+             ' · '+n+' trabajo(s) · '+gs(m)+(c.estado==='Emitido'?' · <i>a firmar</i>':'')+'</span>';
+    }).join('')+'</div>'+
+    '<small>Los precios y el saldo salen del contrato. Lo que no esté contratado se certifica igual y queda marcado como <b>fuera de contrato</b>.</small>';
+}
 /* El paso 2 se habilita recién con el contratista elegido: así cada línea
    nace con el precio pactado y no con el del presupuesto. */
 function actualizarPaso2(){
@@ -1638,6 +1666,17 @@ async function cargarLineas(){
   const libres = ed.lineas.filter(l=>l.libre);   // se conservan al recargar
   ed.lineas = []; ed.hist = {};
 
+  // v6.0 · Contratos vigentes del contratista: precios y saldos
+  await ctCargar((document.getElementById('edContra')||{}).value, ed.id);
+  if(!ed.presus.length && CT.items.length){
+    ed.lineas = [];
+    ctVincular();
+    ed.lineas = ed.lineas.concat(libres);
+    await ctHistorial();
+    ctSectores();
+    renderLineas();
+    return;
+  }
   if(!ed.presus.length){
     ed.lineas = libres;
     if(!ed.libre && !libres.length){
@@ -1722,6 +1761,7 @@ async function cargarLineas(){
         });
       });
     }
+    ctVincular();                       // v6.0 · lo contratado, sobre lo presupuestado
     ed.lineas = ed.lineas.concat(libres);
 
     // Consumo previo de cada línea, en cualquier certificado de estos presupuestos
@@ -1928,11 +1968,14 @@ function precioDeLinea(l, m){
   m = m || {};
   const sec = sectorLinea(l, m);
   const pact = cpPrecio(l.rubro_codigo, l.obra || (ed.obras && ed.obras[0]) || '', sec);
+  const ctr = Number(l.precio_contrato)||0;      // v6.0 · lo pactado en el contrato manda
   const precio = (m.precio != null && m.precio !== '') ? m.precio
-               : (pact ? pact.precio : (l.precio_presup || ''));
+               : (ctr ? ctr : (pact ? pact.precio : (l.precio_presup || '')));
   const pnum = Number(precio) || 0;
   let origen = 'sin', origenTxt = 'sin precio de referencia', alcance = '';
-  if(pact && pnum && Math.abs(pnum - pact.precio) < 0.5){
+  if(ctr && pnum && Math.abs(pnum - ctr) < 0.5){
+    origen = 'ctr'; origenTxt = 'precio del contrato '+(l.contrato_numero||''); alcance = l.contrato_numero||'';
+  }else if(pact && pnum && Math.abs(pnum - pact.precio) < 0.5){
     origen = 'pact'; origenTxt = 'pactado con el contratista'; alcance = pact.alcance;
   }else if(l.precio_presup > 0 && pnum && Math.abs(pnum - l.precio_presup) < 0.5){
     origen = 'presu'; origenTxt = 'precio del presupuesto';
@@ -1947,7 +1990,7 @@ function lineaHTML(l, contratista){
   const m = ed.med[k] || {};
   const h = ed.hist[k] || { aprob:0, tramite:0, quien:[] };
   const usado = h.aprob + h.tramite;
-  const disp = l.libre ? null : Math.max(0, l.cant_presup - usado);
+  const disp = l.libre ? null : saldoLinea(l, h);
   const cant = (m.cant != null && m.cant !== '') ? m.cant : '';
   const P = precioDeLinea(l, m);
   const pact = P.pact, precio = P.precio, pnum = P.pnum, origen = P.origen, origenTxt = P.origenTxt;
@@ -2017,7 +2060,7 @@ function lineaHTML(l, contratista){
     }
   }
 
-  const excedida = !l.libre && l.cant_presup > 0 && (Number(cant)||0) > Math.max(0, l.cant_presup - usado);
+  const excedida = !l.libre && (l.contrato_item_id ? ((Number(cant)||0) > saldoLinea(l, h)) : (l.cant_presup > 0 && (Number(cant)||0) > Math.max(0, l.cant_presup - usado)));
   // El presupuesto cambió después de que se certificó contra él
   const cpCert = h.cantPresupCert;
   const cantCambiada = !l.libre && cpCert != null && l.cant_presup > 0 && Math.abs(cpCert - l.cant_presup) > 0.001;
@@ -2028,13 +2071,16 @@ function lineaHTML(l, contratista){
           (l.libre?'fuera de presupuesto':(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr">sin precio presupuestado</span>' : '')+
         (l.moDeclarada ? '<span class="lin-tag mo" title="El presupuesto declara cuánto de este rubro es mano de obra. El precio de referencia es sólo esa parte.">sólo mano de obra</span>' : '')+((l.conReceta || (l.esRubro && !l.moDeclarada)) ? '<span class="lin-tag sr" title="El precio del rubro incluye materiales porque el presupuesto no declara la mano de obra por separado. Verificá antes de pagar.">incluye materiales</span>' : '')+
-        (excedida ? '<span class="lin-tag ex">fuera de lo presupuestado</span>' : '')+
+        (excedida ? '<span class="lin-tag ex">'+(l.contrato_item_id?'supera lo contratado':'fuera de lo presupuestado')+'</span>' : '')+
+        (l.contrato_item_id ? '<span class="lin-tag ct" title="Contratado con '+escapeHtml(contratista||'')+' · cantidad '+qty(l.cant_contratada)+' '+escapeHtml(l.unidad||'')+' a '+gs(l.precio_contrato)+'">'+escapeHtml(l.contrato_numero||'contrato')+'</span>' : '')+
+        (CT.items.length && !l.contrato_item_id && !l.libre ? '<span class="lin-tag fc" title="Este trabajo no está en el contrato del contratista: se certifica igual y queda marcado como fuera de contrato.">fuera de contrato</span>' : '')+
+        (l.esAdicional ? '<span class="lin-tag ad">adicional del contrato</span>' : '')+
       '</b>'+
         '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc)) : 'trabajo libre')+
         (l.esRubro ? ' · se certifica el rubro completo' : (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : ''))+'</small></div>'+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>presupuestado</small></div>'
-        : '<div class="lin-num"><b>'+qty(l.cant_presup)+' '+escapeHtml(l.unidad)+'</b><small>presupuestado</small></div>')+
+        : '<div class="lin-num"><b>'+qty(l.contrato_item_id ? l.cant_contratada : l.cant_presup)+' '+escapeHtml(l.unidad)+'</b><small>'+(l.contrato_item_id?'contratado':'presupuestado')+'</small></div>')+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>disponible</small></div>'
         : '<div class="lin-num disp'+(disp<=0?' sin':'')+'"><b>'+qty(disp)+'</b><small>disponible</small></div>')+
@@ -2183,6 +2229,134 @@ var CP = { lista: [], hist: {}, cargado: '' };
 
 function cpNorm(x){ return String(x||'').trim().toLowerCase(); }
 
+/* ═══ v6.0 · Contratos del contratista ═══════════════════════════════
+   Lo contratado manda: precio pactado, cantidad contratada y saldo salen
+   del contrato (módulo Contratos). El presupuesto madre sigue siendo la
+   referencia de fondo y se consume igual.                             */
+const CT = { cargado:null, contratos:[], items:[], porKey:{}, porRub:{}, porSolo:{}, porId:{}, cert:{}, ok:true };
+function ctKey(pp, rub, sec){ return String(pp||'').toUpperCase()+'|'+String(rub||'').toUpperCase()+'|'+norm(sec||''); }
+async function ctCargar(nombre, excluirCert){
+  const n = String(nombre||'').trim();
+  CT.cargado = n; CT.contratos=[]; CT.items=[]; CT.porKey={}; CT.porRub={}; CT.porSolo={}; CT.porId={}; CT.cert={}; CT.ok = true;
+  if(!n) return;
+  try{
+    const c = await sb.from('contratos').select('id,numero,estado,obra,presupuesto,contratista_id,tipo,anticipo,alcance')
+                      .in('estado', ['Emitido','Vigente']);
+    if(c.error){ CT.ok = false; return; }
+    const ids = Array.from(new Set((c.data||[]).map(function(x){ return x.contratista_id; })));
+    const k = ids.length ? await sb.from('contratistas').select('id,nombre').in('id', ids) : { data:[] };
+    const nom = {}; (k.data||[]).forEach(function(x){ nom[x.id] = x.nombre; });
+    CT.contratos = (c.data||[]).filter(function(x){ return norm(nom[x.contratista_id]||'') === norm(n); })
+                               .map(function(x){ return Object.assign({}, x, { contratista: nom[x.contratista_id]||'' }); });
+    if(!CT.contratos.length) return;
+    const cids = CT.contratos.map(function(x){ return x.id; });
+    const [it, ad, ce] = await Promise.all([
+      sb.from('contrato_items').select('*').in('contrato_id', cids),
+      sb.from('contrato_adendas').select('contrato_id,numero,estado').in('contrato_id', cids),
+      sb.from('certificado_items').select('contrato_item_id,cantidad,certificado_id,certificados!inner(estado)').not('contrato_item_id','is',null)
+    ]);
+    const adOk = {}; (ad.data||[]).forEach(function(a){ if(a.estado==='Aprobada') adOk[a.contrato_id+'|'+a.numero] = 1; });
+    CT.items = (it.data||[]).filter(function(i){ return !i.anulado && (!i.adenda || adOk[i.contrato_id+'|'+i.adenda]); });
+    CT.items.forEach(function(i){
+      const c2 = CT.contratos.filter(function(x){ return x.id === i.contrato_id; })[0] || {};
+      i._numero = c2.numero; i._obra = c2.obra; i._estado = c2.estado; i._pp = i.presupuesto || c2.presupuesto || '';
+      CT.porId[i.id] = i;
+      if(!i.rubro_codigo) return;
+      const kk = ctKey(i._pp, i.rubro_codigo, i.sector);
+      if(!CT.porKey[kk]) CT.porKey[kk] = i;
+      const kr = ctKey(i._pp, i.rubro_codigo, '');
+      if(!CT.porRub[kr]) CT.porRub[kr] = i;
+      const ks = String(i.rubro_codigo).toUpperCase();
+      if(!CT.porSolo[ks]) CT.porSolo[ks] = i;
+    });
+    (ce.data||[]).forEach(function(x){
+      if(excluirCert && x.certificado_id === excluirCert) return;   // lo propio no cuenta al editar
+      const e = (x.certificados && x.certificados.estado) || '';
+      if(e === 'Anulado') return;
+      const o = CT.cert[x.contrato_item_id] || (CT.cert[x.contrato_item_id] = { aprob:0, tramite:0 });
+      if(e === 'Aprobado') o.aprob += Number(x.cantidad)||0; else o.tramite += Number(x.cantidad)||0;
+    });
+  }catch(e){ CT.ok = false; console.warn('contratos', e); }
+}
+async function ctHistorial(){
+  ed.hist = ed.hist || {};
+  try{
+    const pps = Array.from(new Set((ed.lineas||[]).map(function(l){ return l.presupuesto; }).filter(Boolean)));
+    if(!pps.length) return;
+    const { data } = await sb.from('certificado_items')
+      .select('presupuesto,rubro_codigo,codigo_insumo,descripcion,cantidad,certificado_id,certificados!inner(estado,contratista,numero,fecha)')
+      .in('presupuesto', pps);
+    (data||[]).forEach(function(it){
+      if(ed.id && it.certificado_id === ed.id) return;
+      const est = (it.certificados && it.certificados.estado) || '';
+      if(est === 'Anulado') return;
+      const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+      if(!ed.hist[k]) ed.hist[k] = { aprob:0, tramite:0, quien:[] };
+      const c = Number(it.cantidad)||0;
+      if(est === 'Aprobado') ed.hist[k].aprob += c; else ed.hist[k].tramite += c;
+    });
+  }catch(e){}
+}
+function ctSectores(){
+  const secs = []; (ed.lineas||[]).forEach(function(l){ if(secs.indexOf(l.sector) < 0) secs.push(l.sector); });
+  secs.sort(function(a,b){ return a.localeCompare(b,'es'); });
+  const ss = document.getElementById('edSector'); if(!ss) return;
+  const prev = ss.value;
+  ss.innerHTML = '<option value="">Todos los sectores</option>' + secs.map(function(x){ return '<option>'+escapeHtml(x)+'</option>'; }).join('');
+  if(secs.indexOf(prev) >= 0) ss.value = prev;
+}
+function ctDeLinea(l, sec){
+  if(!CT.items.length || !l || !l.rubro_codigo) return null;
+  const pp = l.presupuesto || '';
+  return CT.porKey[ctKey(pp, l.rubro_codigo, sec || l.sector || '')] ||
+         CT.porRub[ctKey(pp, l.rubro_codigo, '')] ||
+         CT.porSolo[String(l.rubro_codigo).toUpperCase()] || null;
+}
+function ctUsado(id){ const o = CT.cert[id] || { aprob:0, tramite:0 }; return o.aprob + o.tramite; }
+function ctVincular(){
+  const usados = {};
+  (ed.lineas||[]).forEach(function(l){
+    const ci = ctDeLinea(l);
+    if(!ci){ l.contrato_item_id = null; l.contrato_numero = ''; l.precio_contrato = 0; l.cant_contratada = 0; return; }
+    l.contrato_item_id = ci.id; l.contrato_numero = ci._numero; l.contrato_estado = ci._estado;
+    l.precio_contrato = Number(ci.precio_pactado)||0;
+    l.cant_contratada = Number(ci.cantidad)||0;
+    l.contrato_detalle = ci.detalle || '';
+    usados[ci.id] = 1;
+  });
+  // Líneas del contrato que no están en el presupuesto elegido: adicionales,
+  // trabajos urgentes y contratos sin presupuesto. Se ofrecen igual.
+  const obrasAct = (typeof obrasDePresus === 'function') ? obrasDePresus() : [];
+  CT.items.forEach(function(i){
+    if(usados[i.id]) return;
+    if(ed.presus.length && i._pp && ed.presus.indexOf(i._pp) >= 0){ /* del presupuesto elegido: se agrega igual */ }
+    else if(obrasAct.length && i._obra && !obrasAct.some(function(o){ return norm(o) === norm(i._obra); })) return;
+    ed.lineas.push({
+      presupuesto: i._pp || null,
+      obra: i._obra || '',
+      rubro_codigo: i.rubro_codigo || '',
+      rubro_desc: i.descripcion || '',
+      sector: (i.sector||'').trim() || '(sin sector)',
+      codigo_insumo: 'CONTRATO',
+      descripcion: i.descripcion || i.rubro_codigo || 'Trabajo contratado',
+      unidad: i.unidad || '',
+      cant_presup: Number(i.cantidad)||0,
+      precio_presup: 0,
+      contrato_item_id: i.id, contrato_numero: i._numero, contrato_estado: i._estado,
+      precio_contrato: Number(i.precio_pactado)||0, cant_contratada: Number(i.cantidad)||0,
+      contrato_detalle: i.detalle || '',
+      esContrato: true, esAdicional: !!i.es_adicional, libre: false
+    });
+  });
+}
+/* Cuánto queda por certificar de una línea: contra el contrato si la línea
+   está contratada; si no, contra el presupuesto. */
+function saldoLinea(l, h){
+  h = h || { aprob:0, tramite:0 };
+  if(l.contrato_item_id) return Math.max(0, (Number(l.cant_contratada)||0) - ctUsado(l.contrato_item_id));
+  if(l.libre) return null;
+  return Math.max(0, (Number(l.cant_presup)||0) - h.aprob - h.tramite);
+}
 async function cpCargar(contratista){
   const c = String(contratista||'').trim();
   if(!c){ CP.lista = []; CP.hist = {}; CP.cargado = ''; return; }
@@ -2757,14 +2931,17 @@ function medidas(){
     const m = ed.med[k];
     if(!m || !(Number(m.cant) > 0)) return;
     const h = ed.hist[k] || { aprob:0, tramite:0 };
-    const disp = l.libre ? Infinity : Math.max(0, l.cant_presup - h.aprob - h.tramite);
-    const cant = Number(m.cant), precio = Number(m.precio)||0;
+    const disp = l.libre ? Infinity : (saldoLinea(l, h) == null ? Infinity : saldoLinea(l, h));
+    const cant = Number(m.cant);
     const P = precioDeLinea(l, m);
+    const precio = (m.precio != null && m.precio !== '') ? (Number(m.precio)||0) : (P.pnum || 0);
     out.push({
       linea:l, key:k, orden:i, cantidad:cant, precio_unit:precio,
+      contrato_item_id: l.contrato_item_id || null,
+      fuera_contrato: !!(CT.items.length && !l.contrato_item_id),
       subtotal: Math.round(cant*precio*100)/100,
       sector: P.sector,
-      precio_origen: P.origen === 'pact' ? 'pactado' : (P.origen === 'presu' ? 'presupuesto' : (P.origen === 'man' ? 'manual' : null)),
+      precio_origen: P.origen === 'ctr' ? 'contrato' : (P.origen === 'pact' ? 'pactado' : (P.origen === 'presu' ? 'presupuesto' : (P.origen === 'man' ? 'manual' : null))),
       precio_alcance: P.alcance || null,
       // Diferencia contra el presupuesto (referencia interna) sobre lo medido
       desvio: (l.precio_presup > 0 && !globalMalMedido(l.unidad, cant, l.cant_presup))
@@ -3571,6 +3748,12 @@ async function guardar(estado){
       updated_at: new Date().toISOString()
     };
     cab.medido_por = quien; cab.medido_en = new Date().toISOString();
+    // v6.0 · Si todo lo medido pertenece a un mismo contrato, queda registrado
+    const _ctr = Array.from(new Set(M.map(function(x){ return x.linea.contrato_numero || ''; }).filter(Boolean)));
+    if(_ctr.length === 1){
+      const _c = CT.contratos.filter(function(c){ return c.numero === _ctr[0]; })[0];
+      if(_c) cab.contrato_id = _c.id;
+    }
     // Reabrir un certificado aprobado lo devuelve a borrador: la aprobación
     // anterior ya no vale para los montos nuevos y hay que aprobarlo de nuevo.
     if(ed.estadoPrevio === 'Aprobado'){
@@ -3580,13 +3763,15 @@ async function guardar(estado){
 
     let certId = ed.id;
     if(certId){
-      const { error } = await sb.from('certificados').update(cab).eq('id', certId);
+      let { error } = await sb.from('certificados').update(cab).eq('id', certId);
+      if(error && /contrato_id/i.test(error.message||'')){ const c2=Object.assign({},cab); delete c2.contrato_id; const r2=await sb.from('certificados').update(c2).eq('id',certId); error=r2.error; }
       if(error) throw error;
       await sb.from('certificado_items').delete().eq('certificado_id', certId);
     }else{
       cab.creado_por = quien;
       cab.numero = await proximoNumero();
-      const { data, error } = await sb.from('certificados').insert(cab).select('id,numero').single();
+      let { data, error } = await sb.from('certificados').insert(cab).select('id,numero').single();
+      if(error && /contrato_id/i.test(error.message||'')){ const c2=Object.assign({},cab); delete c2.contrato_id; const r2=await sb.from('certificados').insert(c2).select('id,numero').single(); data=r2.data; error=r2.error; }
       if(error) throw error;
       certId = data.id;
       ed.id = certId;
@@ -3623,9 +3808,18 @@ async function guardar(estado){
       observacion: x.observacion || null,
       sin_referencia: x.sin_referencia,
       excedente: x.excedente,
+      contrato_item_id: x.contrato_item_id,          // v6.0 · consumo del contrato
+      fuera_contrato: x.fuera_contrato,
       orden: x.orden
     }));
     let { data:itsIns, error:e2 } = await sb.from('certificado_items').insert(items).select('id,orden');
+    if(e2 && /\b(contrato_item_id|fuera_contrato)\b/i.test(e2.message||'')){
+      // Falta el script de contratos: se guarda igual, sin el vínculo
+      const sinCtr = items.map(function(r){ const c=Object.assign({},r); delete c.contrato_item_id; delete c.fuera_contrato; return c; });
+      const rC = await sb.from('certificado_items').insert(sinCtr).select('id,orden');
+      itsIns = rC.data; e2 = rC.error;
+      if(!e2) showToast('Falta el SQL de Contratos','info','El certificado se guardó, pero no queda vinculado al contrato.');
+    }
     if(e2 && /\b(precio_origen|precio_alcance)\b/i.test(e2.message||'')){
       // Todavía no se corrió el ALTER del origen del precio: se guarda igual
       const sinPx = items.map(r=>{ const c={...r}; delete c.precio_origen; delete c.precio_alcance; return c; });
