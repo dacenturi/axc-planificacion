@@ -538,7 +538,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.5 · al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v6.6 · el trabajo al contrato se elige del presupuesto o del catálogo; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -2387,14 +2387,21 @@ function ctFormulario(o){
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1600;display:flex;align-items:center;justify-content:center;padding:16px';
     const opc = (o.contratos||[]).map(function(c){ return '<option value="'+c.id+'">'+escapeHtml(c.numero||'')+' · '+escapeHtml(c.presupuesto||'sin presupuesto')+'</option>'; }).join('');
+    const rub = (o.rubros||[]).map(function(r){
+      return '<option value="'+escapeHtml(r.codigo)+'">'+escapeHtml(r.codigo+' · '+(r.nombre||'')+(r.sector?(' · '+r.sector):'')+(r.mo?(' · M.O. '+gs(r.mo)):''))+'</option>';
+    }).join('');
     ov.innerHTML =
-      '<div style="background:#fff;border-radius:14px;width:min(720px,100%);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
+      '<div style="background:#fff;border-radius:14px;width:min(760px,100%);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
         '<div style="background:#1B5524;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
           '<div style="font-weight:800;font-size:16px">➕ Agregar un trabajo al contrato</div>'+
           '<div style="font-size:12px;opacity:.9">Se carga como adenda del contrato y queda para aprobar</div></div>'+
         '<div style="padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">'+
           '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Contrato</label>'+
             '<select id="ctfCon" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+opc+'</select></div>'+
+          '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Rubro <span style="font-weight:400;color:#64748b">· opcional: elegilo del presupuesto o del catálogo y se completa solo</span></label>'+
+            '<input id="ctfRub" list="ctfRubDl" placeholder="Escribí el código o el nombre del rubro…" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px">'+
+            '<datalist id="ctfRubDl">'+rub+'</datalist>'+
+            '<div id="ctfRubInfo" style="font-size:11.5px;color:#1B5524;margin-top:3px;min-height:1em"></div></div>'+
           '<div style="grid-column:1/-1"><label style="font-weight:700;font-size:12px">Trabajo a realizar *</label>'+
             '<input id="ctfDesc" placeholder="Ej. Picado de pared para cañería del Nivel 3" style="width:100%;padding:9px 11px;border:1.5px solid #d6dce8;border-radius:9px"></div>'+
           '<div><label style="font-weight:700;font-size:12px">Unidad *</label>'+
@@ -2415,23 +2422,77 @@ function ctFormulario(o){
           '<button type="button" class="btn-g" id="ctfNo">Cancelar</button>'+
           '<button type="button" class="btn-ok" id="ctfSi">Agregar al contrato</button></div></div>';
     document.body.appendChild(ov);
+    // Al elegir un rubro se completan descripción, unidad, sector y el precio
+    // de referencia de la mano de obra del presupuesto.
+    ov.querySelector('#ctfRub').addEventListener('change', function(){
+      const cod = (this.value||'').trim().toUpperCase();
+      const r = (o.rubros||[]).filter(function(x){ return String(x.codigo).toUpperCase() === cod; })[0];
+      const info = ov.querySelector('#ctfRubInfo');
+      if(!r){ info.textContent = cod ? 'Ese código no está en el presupuesto ni en el catálogo: podés dejarlo y escribir el trabajo a mano.' : ''; return; }
+      const g = function(id){ return ov.querySelector('#'+id); };
+      if(!g('ctfDesc').value.trim()) g('ctfDesc').value = r.nombre || '';
+      if(!g('ctfUni').value.trim())  g('ctfUni').value  = r.unidad || '';
+      if(!g('ctfSec').value.trim() && r.sector) g('ctfSec').value = r.sector;
+      if(!Number(g('ctfPre').value) && r.mo) g('ctfPre').value = Math.round(r.mo);
+      if(!g('ctfDet').value.trim() && r.detalle) g('ctfDet').value = r.detalle;
+      info.innerHTML = r.origen === 'presupuesto'
+        ? 'Del presupuesto '+escapeHtml(r.presupuesto||'')+(r.mo?(' · M.O. presupuestada '+gs(r.mo)+' por '+escapeHtml(r.unidad||'unidad')):' · sin mano de obra presupuestada')
+        : 'Del catálogo de rubros';
+    });
     const cerrar = function(v){ ov.remove(); resolve(v); };
     ov.querySelector('#ctfNo').onclick = function(){ cerrar(null); };
     ov.querySelector('#ctfSi').onclick = function(){
       const g = function(id){ return (ov.querySelector('#'+id).value||'').trim(); };
-      const d = { contrato_id:Number(g('ctfCon')), descripcion:g('ctfDesc'), unidad:g('ctfUni'), sector:g('ctfSec'),
+      const d = { contrato_id:Number(g('ctfCon')), rubro_codigo:g('ctfRub').toUpperCase(), descripcion:g('ctfDesc'), unidad:g('ctfUni'), sector:g('ctfSec'),
                   cantidad:Number(g('ctfCant'))||0, precio:Number(g('ctfPre'))||0, detalle:g('ctfDet'), motivo:g('ctfMot') };
       if(!d.descripcion || !d.unidad){ ov.querySelector('#ctfErr').textContent = 'Poné el trabajo y la unidad.'; return; }
       if(!(d.cantidad > 0) || !(d.precio > 0)){ ov.querySelector('#ctfErr').textContent = 'Cargá la cantidad contratada y el precio pactado.'; return; }
       if(d.motivo.length < 5){ ov.querySelector('#ctfErr').textContent = 'Escribí el motivo de la adenda.'; return; }
       cerrar(d);
     };
-    setTimeout(function(){ ov.querySelector('#ctfDesc').focus(); }, 40);
+    setTimeout(function(){ ov.querySelector('#ctfRub').focus(); }, 40);
   });
+}
+/* Rubros que se pueden elegir: primero los del presupuesto de los contratos
+   (con su mano de obra presupuestada), después el catálogo general. */
+async function ctRubrosParaAdenda(){
+  const out = [], vistos = {};
+  const pps = Array.from(new Set(CT.contratos.map(function(c){ return c.presupuesto; }).filter(Boolean)));
+  try{
+    if(pps.length){
+      const [rq, iq] = await Promise.all([
+        sb.from('presupuesto_rubros').select('presupuesto,rubro_codigo,descripcion,unidad,sector,cantidad,mano_obra_total,detalle_contratista').in('presupuesto', pps),
+        sb.from('presupuesto_insumos').select('presupuesto,rubro_codigo,codigo_insumo,cantidad,precio_unitario,tipo').in('presupuesto', pps)
+      ]);
+      const mo = {};
+      (iq.data||[]).forEach(function(x){
+        const esMO = (x.tipo === 'mano_obra') || /^MO-/i.test(String(x.codigo_insumo||''));
+        if(!esMO) return;
+        const k = x.presupuesto+'|'+x.rubro_codigo;
+        mo[k] = (mo[k]||0) + (Number(x.cantidad)||0)*(Number(x.precio_unitario)||0);
+      });
+      (rq.data||[]).forEach(function(r){
+        const k = String(r.rubro_codigo||'').toUpperCase(); if(!k || vistos[k]) return;
+        vistos[k] = 1;
+        const q = Number(r.cantidad)||0;
+        const tot = mo[r.presupuesto+'|'+r.rubro_codigo] != null ? mo[r.presupuesto+'|'+r.rubro_codigo] : (Number(r.mano_obra_total)||0);
+        out.push({ codigo:r.rubro_codigo, nombre:r.descripcion||'', unidad:r.unidad||'', sector:r.sector||'',
+                   mo: q > 0 ? Math.round(tot/q) : 0, presupuesto:r.presupuesto, detalle:r.detalle_contratista||'', origen:'presupuesto' });
+      });
+    }
+    const cq = await sb.from('rubros').select('codigo,nombre,unidad').eq('activo', true).order('codigo').limit(3000);
+    (cq.data||[]).forEach(function(r){
+      const k = String(r.codigo||'').toUpperCase(); if(!k || vistos[k]) return;
+      vistos[k] = 1;
+      out.push({ codigo:r.codigo, nombre:r.nombre||'', unidad:r.unidad||'', sector:'', mo:0, origen:'catalogo' });
+    });
+  }catch(e){ console.warn('rubros adenda', e); }
+  return out;
 }
 async function ctAgregarTrabajo(){
   if(!CT.contratos.length){ showToast('Este contratista no tiene contratos vigentes','error'); return; }
-  const d = await ctFormulario({ contratos:CT.contratos, sector:(document.getElementById('edSector')||{}).value || '' });
+  const rubros = await ctRubrosParaAdenda();
+  const d = await ctFormulario({ contratos:CT.contratos, rubros:rubros, sector:(document.getElementById('edSector')||{}).value || '' });
   if(!d) return;
   const c = CT.contratos.filter(function(x){ return x.id === d.contrato_id; })[0];
   try{
@@ -2442,14 +2503,14 @@ async function ctAgregarTrabajo(){
       motivo:d.motivo, estado:'Borrador', origen:'certificado', creado_por:quien }).select('id').single();
     if(ra.error) throw ra.error;
     const ri = await sb.from('contrato_items').insert({ contrato_id:d.contrato_id, adenda:n, orden:1,
-      presupuesto:c.presupuesto||null, sector:d.sector||null, rubro_codigo:null, descripcion:d.descripcion,
+      presupuesto:c.presupuesto||null, sector:d.sector||null, rubro_codigo:d.rubro_codigo||null, descripcion:d.descripcion,
       unidad:d.unidad, cantidad:d.cantidad, precio_pactado:Math.round(d.precio), detalle:d.detalle||null,
       es_adicional:true, creado_por:quien }).select('*').single();
     if(ri.error) throw ri.error;
     const it = ri.data;
     it._numero = c.numero; it._obra = c.obra; it._estado = c.estado; it._pp = c.presupuesto || '';
     CT.items.push(it); CT.porId[it.id] = it;
-    const l = { presupuesto: it._pp || null, obra: c.obra || '', rubro_codigo:'', rubro_desc: d.descripcion,
+    const l = { presupuesto: it._pp || null, obra: c.obra || '', rubro_codigo: d.rubro_codigo || '', rubro_desc: d.descripcion,
       sector: d.sector || '(sin sector)', codigo_insumo:'CT'+it.id, descripcion: d.descripcion, unidad: d.unidad,
       cant_presup: d.cantidad, precio_presup: 0, contrato_item_id: it.id, contrato_numero: c.numero,
       contrato_estado: c.estado, precio_contrato: Math.round(d.precio), cant_contratada: d.cantidad,
