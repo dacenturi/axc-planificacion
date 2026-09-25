@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.19 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.20 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -646,6 +646,7 @@ body{
         <div class="pm-sub" id="pmSub">Completá la ficha, los rubros y (si tiene) los insumos</div>
       </div>
       <div style="display:flex;gap:10px;align-items:center">
+        <button type="button" class="pm-head-btn" id="pmVistaBtn" title="Cargar todo en una sola planilla">🧮 Planilla</button>
         <button type="button" class="pm-head-btn" id="pmCompBtn" title="Crear o editar composiciones sin salir del presupuesto">🧩 Composiciones</button>
         <button class="pm-close" id="pmCloseBtn" type="button" title="Cancelar">×</button>
       </div>
@@ -1703,6 +1704,12 @@ async function loadProfileAndApp(){
     b.innerHTML = com
       ? '<b>Planilla integral</b><small>Costo de obra, coeficiente y precio al cliente en una sola pantalla</small>'
       : '<b>Planilla de carga</b><small>Rubros, cantidades y desglose · el presupuesto de costos se imprime desde acá</small>';
+    const t = document.getElementById('pmVistaBtn');
+    if(t){
+      t.textContent = com ? '🧮 Planilla integral' : '🧮 Planilla de carga';
+      t.title = com ? 'Cargar rubros, costo, coeficiente y precio al cliente en una sola planilla'
+                    : 'Cargar rubros, cantidades y desglose en una sola planilla';
+    }
   }, 0);
   // Reabrir un presupuesto congelado: administradores y quien tenga el permiso
   state.puedeReabrirPres = state.isAdmin || _perm.pres_reabrir === true;
@@ -2504,6 +2511,12 @@ async function openEdit(codigo){
       tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
     renderRubros(); renderInsumos();
     _detectarCompNuevas(true);
+    // v10.20 · Vista preferida: si la última vez trabajó en la planilla, se abre sola
+    try{
+      if(localStorage.getItem('axc_vista') === 'planilla'){
+        setTimeout(function(){ if(ed.open && !document.getElementById('piOv')) abrirPlanillaIntegral(); }, 400);
+      }
+    }catch(e){}
     const _rep = _rubrosCodigoRepetido(ed.rubros);
     if(_rep.length){
       showToast('Hay códigos de rubro repetidos en el mismo sector', 'error',
@@ -6543,6 +6556,7 @@ document.getElementById('pmCotBtn').addEventListener('click', function(){
    desde el módulo Contratos, que ya permite elegir el presupuesto. */
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
 document.getElementById('pmIntegralDocBtn').addEventListener('click', abrirPlanillaIntegral);
+document.getElementById('pmVistaBtn').addEventListener('click', abrirPlanillaIntegral);
 
 /* ═══ v10.8 · Planilla integral (en prueba) ═══════════════════════════
    Una sola pantalla con el costo del presupuesto y el precio comercial:
@@ -6830,6 +6844,8 @@ async function abrirPlanillaIntegral(){
           (verCom?'<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
             '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:94px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
           '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>':'')+
+          '<label style="font-size:11.5px;display:flex;align-items:center;gap:6px;opacity:.9" title="Al abrir un presupuesto se muestra primero esta planilla">'+
+            '<input type="checkbox" id="piPref" checked> Abrir siempre esta vista</label>'+
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
         '</div></div>'+
       '<div id="piBody" style="flex:1;overflow:auto"></div>'+
@@ -6841,6 +6857,7 @@ async function abrirPlanillaIntegral(){
       '<div id="piPie" style="border-top:1px solid #e2e6ee;padding:6px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#f4f6fa"></div>'+
     '</div>';
   document.body.appendChild(ov);
+  try{ localStorage.setItem('axc_vista', 'planilla'); }catch(e){}
 
   /* v10.10 · La barra de carga de rubros y la de totales son LAS MISMAS del
      presupuesto: se mueven acá mientras la planilla está abierta y vuelven a
@@ -7112,6 +7129,14 @@ async function abrirPlanillaIntegral(){
     showToast('Coeficiente '+co.toFixed(4)+' aplicado a todos','success','Los rubros con coeficiente propio se limpiaron');
     pintar();
   };
+  (function(){
+    const pf = document.getElementById('piPref');
+    try{ pf.checked = localStorage.getItem('axc_vista') !== 'tabla'; }catch(e){}
+    pf.addEventListener('change', function(){
+      try{ localStorage.setItem('axc_vista', pf.checked ? 'planilla' : 'tabla'); }catch(e){}
+      showToast(pf.checked ? 'Al abrir un presupuesto se muestra esta planilla' : 'Al abrir un presupuesto se muestra la tabla de siempre','info');
+    });
+  })();
   document.getElementById('piCerrar').onclick = _cerrar;
   document.addEventListener('keydown', function _esc(e){
     if(e.key === 'Escape' && document.body.contains(ov)){ _cerrar(); document.removeEventListener('keydown', _esc); }
