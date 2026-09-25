@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.9 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.10 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -717,7 +717,7 @@ body{
           <b id="pmTotGral">₲ 0</b>
         </div>
       </div>
-      <div class="pm-addbar">
+      <div class="pm-addbar" id="pmAddBar">
         <div class="pm-f">
           <label>Sector</label>
           <div class="pm-withadd">
@@ -6515,6 +6515,31 @@ document.getElementById('pmIntegralBtn').addEventListener('click', abrirPlanilla
    unitario y parcial que ve el cliente. El coeficiente se comparte con la
    propuesta económica, así que lo que se ajusta acá sale en la CP.
    No reemplaza nada: es una vista más para probar.                      */
+const PI_ABIERTO = {};
+/* Desglose de insumos del rubro, igual que en el presupuesto. Acá se ve
+   completo; para editarlo se usa el desglose del presupuesto. */
+function _piDesglose(r){
+  const det = _mgDetalle(r.rubro_codigo) || [];
+  if(!det.length) return '<tr><td colspan="13" style="background:#fbfcfe;color:#8893a5;font-size:12px;padding:8px 14px">Este rubro no tiene insumos cargados.</td></tr>';
+  let mat = 0, mo = 0;
+  det.forEach(function(d){ if(d.mo) mo += d.sub; else mat += d.sub; });
+  return '<tr><td colspan="13" style="background:#fbfcfe;padding:8px 14px">'+
+    '<div style="font-size:11.5px;font-weight:800;color:#1F3864;letter-spacing:.4px;margin-bottom:5px">DESGLOSE DE '+escapeHtml(r.rubro_codigo||'')+
+      ' <span style="font-weight:600;color:#8893a5">· costo por '+escapeHtml(r.unidad||'unidad')+'</span>'+
+      ' <button type="button" class="pi-dgedit" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" style="margin-left:8px;border:1px solid #C9D0DC;background:#fff;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer">Editar en el presupuesto</button></div>'+
+    '<table class="ins-tbl" style="width:auto;min-width:640px"><thead><tr><th style="width:92px">Tipo</th><th>Insumo</th>'+
+      '<th class="n" style="width:120px">Cantidad</th><th class="n" style="width:110px">Precio</th><th class="n" style="width:120px">Costo</th></tr></thead><tbody>'+
+    det.map(function(d){
+      return '<tr><td><span style="font-size:10px;font-weight:800;border-radius:4px;padding:1px 6px;'+
+        (d.mo?'background:#E6F4EA;color:#1B5524">M. obra':'background:#EDF3FB;color:#1F3864">Material')+'</span></td>'+
+        '<td>'+escapeHtml(d.nombre)+(d.codigo?' <small style="color:#8893a5">'+escapeHtml(d.codigo)+'</small>':'')+'</td>'+
+        '<td class="n">'+_qty(d.cant)+' '+escapeHtml(d.unidad||'')+'</td>'+
+        '<td class="n">'+fmtGs(d.precio)+'</td><td class="n"><b>'+fmtGs(d.sub)+'</b></td></tr>';
+    }).join('')+
+    '<tr><td colspan="4" style="text-align:right;font-weight:700;color:#1F3864">Material</td><td class="n"><b>'+fmtGs(mat)+'</b></td></tr>'+
+    '<tr><td colspan="4" style="text-align:right;font-weight:700;color:#1B5524">Mano de obra</td><td class="n"><b>'+fmtGs(mo)+'</b></td></tr>'+
+    '</tbody></table></div></td></tr>';
+}
 function _piCoefDe(cod, gen){
   const v = MG.porRubro[cod];
   const pct = (v == null || v === '') ? gen : Number(v);
@@ -6543,9 +6568,29 @@ async function abrirPlanillaIntegral(){
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
         '</div></div>'+
       '<div id="piBody" style="flex:1;overflow:auto"></div>'+
+      '<div id="piMont" style="border-top:1px solid #e2e6ee;padding:8px 16px 0"></div>'+
+      '<div id="piAdd" style="padding:4px 16px 8px"></div>'+
       '<div id="piPie" style="border-top:1px solid #e2e6ee;padding:10px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:#fafbfd"></div>'+
     '</div>';
   document.body.appendChild(ov);
+
+  /* v10.10 · La barra de carga de rubros y la de totales son LAS MISMAS del
+     presupuesto: se mueven acá mientras la planilla está abierta y vuelven a
+     su lugar al cerrarla. Así funcionan igual, sin duplicar nada. */
+  const _prestados = [];
+  const _traer = function(id, destino){
+    const el = document.getElementById(id); if(!el) return;
+    _prestados.push({ el:el, padre:el.parentNode, sig:el.nextSibling });
+    document.getElementById(destino).appendChild(el);
+  };
+  const _devolver = function(){
+    _prestados.forEach(function(o){ o.padre.insertBefore(o.el, o.sig); });
+    _prestados.length = 0;
+  };
+  _traer('pmTotBox', 'piMont');
+  _traer('pmAddBar', 'piAdd');
+  _traer('pmRubHintLive', 'piAdd');
+  const _cerrar = function(){ _devolver(); ov.remove(); renderRubros(); renderInsumos(); };
 
   // Sectores ya usados en este presupuesto, para el desplegable
   const _secs = Array.from(new Set((ed.rubros||[]).map(function(r){ return String(r.sector||'').trim(); }).filter(Boolean))).sort();
@@ -6594,7 +6639,9 @@ async function abrirPlanillaIntegral(){
           (r.tiene_receta ? 'background:#FDE7E7;color:#B42B2B">RECETA' : 'background:#FFF4DC;color:#8a5a00">SERVICIO')+'</span>';
         return '<tr'+(r.opcional?' style="opacity:.62"':'')+'>'+
           '<td><input class="pm-input pi-f" data-i="'+i+'" data-f="sector" list="piSecDl" value="'+escapeHtml(r.sector||'')+'" style="width:88px;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
-          '<td><div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864;font-weight:700">'+escapeHtml(r.rubro_codigo||'')+chips+'</div>'+
+          '<td><div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864;font-weight:700">'+
+              (r.tiene_receta?'<button type="button" class="pi-dg" data-i="'+i+'" title="Ver el desglose de insumos" style="border:0;background:none;cursor:pointer;color:#1F3864;font-weight:800;padding:0 4px 0 0">'+(PI_ABIERTO[r.rubro_codigo]?'▾':'▸')+'</button>':'')+
+              escapeHtml(r.rubro_codigo||'')+chips+'</div>'+
               '<div style="font-size:12px;color:#33405c">'+escapeHtml(r.descripcion||'')+'</div></td>'+
           '<td style="font-size:12px">'+escapeHtml(r.unidad||'')+'</td>'+
           '<td class="n"><input class="pm-input pi-cant" data-i="'+i+'" type="number" step="0.01" min="0" value="'+(Number(r.cantidad)||0)+'" style="width:78px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
@@ -6612,7 +6659,8 @@ async function abrirPlanillaIntegral(){
           '<td style="white-space:nowrap">'+
             '<button class="pm-mv pi-up" data-i="'+i+'" type="button" title="Subir"'+(pos===0||bloq?' disabled':'')+'>▲</button>'+
             '<button class="pm-mv pi-dn" data-i="'+i+'" type="button" title="Bajar"'+(pos===idxs.length-1||bloq?' disabled':'')+'>▼</button>'+
-            '<button class="pm-delx pi-del" data-i="'+i+'" type="button" title="Quitar el rubro"'+(bloq?' disabled':'')+'>×</button></td></tr>';
+            '<button class="pm-delx pi-del" data-i="'+i+'" type="button" title="Quitar el rubro"'+(bloq?' disabled':'')+'>×</button></td></tr>'+
+          (PI_ABIERTO[r.rubro_codigo] ? _piDesglose(r) : '');
       }).join('');
       h += '<tr><td colspan="8" style="background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px">'+escapeHtml(cap)+
            ' <span style="font-weight:400;color:#6b7a92">'+idxs.length+' rubro(s)</span></td>'+
@@ -6632,7 +6680,7 @@ async function abrirPlanillaIntegral(){
       d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' % de la venta' : '')+
       d('Coeficiente real', coefR?coefR.toFixed(4):'—','costo ÷ venta')+
       '<div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">'+
-        '<button type="button" id="piAddRub" class="pm-toggle" style="border:1px solid #C9D0DC"'+(bloq?' disabled':'')+'>＋ Agregar rubro</button>'+
+
         '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
         '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>'+
         '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0"'+(ed.activo?' disabled':'')+'>🚀 Publicar</button>'+
@@ -6643,6 +6691,16 @@ async function abrirPlanillaIntegral(){
 
     const body = document.getElementById('piBody');
     const refrescar = function(){ _mgPreparar(); renderRubros(); renderInsumos(); setTimeout(pintar, 0); };
+    body.querySelectorAll('.pi-dg').forEach(function(b){
+      b.onclick = function(){
+        const cod = ed.rubros[Number(b.dataset.i)].rubro_codigo;
+        if(PI_ABIERTO[cod]) delete PI_ABIERTO[cod]; else PI_ABIERTO[cod] = 1;
+        pintar();
+      };
+    });
+    body.querySelectorAll('.pi-dgedit').forEach(function(b){
+      b.onclick = function(){ _cerrar(); showToast('Abrí el desglose del rubro con ▶ en la tabla','info', b.dataset.cod); };
+    });
     body.querySelectorAll('.pi-coef').forEach(function(inp){
       inp.addEventListener('change', function(){
         const cod = inp.dataset.cod, v = inp.value.trim();
@@ -6689,18 +6747,11 @@ async function abrirPlanillaIntegral(){
         ed.tocado = true; refrescar();
       };
     });
-    document.getElementById('piGuardar').onclick = async function(){ ov.remove(); await saveBudget(); };
-    document.getElementById('piIrProp').onclick = function(){ ov.remove(); openPropuesta(true); };
-    document.getElementById('piDocs').onclick   = function(){ ov.remove(); document.getElementById('pmCotBtn').click(); };
+    document.getElementById('piGuardar').onclick = async function(){ _cerrar(); await saveBudget(); };
+    document.getElementById('piIrProp').onclick = function(){ _cerrar(); openPropuesta(true); };
+    document.getElementById('piDocs').onclick   = function(){ _cerrar(); document.getElementById('pmCotBtn').click(); };
     const pub = document.getElementById('piPublicar');
-    if(pub) pub.onclick = function(){ ov.remove(); document.getElementById('pmToggleBtn').click(); };
-    const add = document.getElementById('piAddRub');
-    if(add) add.onclick = function(){
-      ov.remove();
-      const bus = document.getElementById('pmRubAdd');
-      if(bus){ bus.scrollIntoView({block:'center'}); const f = bus.closest('.pm-row') || bus.parentElement; const inp = f && f.parentElement ? f.parentElement.querySelector('input:not([type=hidden])') : null; (inp||bus).focus(); }
-      showToast('Agregá el rubro desde el buscador del presupuesto','info','Después volvé a la planilla integral: los datos siguen ahí');
-    };
+    if(pub) pub.onclick = function(){ _cerrar(); document.getElementById('pmToggleBtn').click(); };
   };
   document.getElementById('piGen').addEventListener('change', pintar);
   document.getElementById('piAplicar').onclick = function(){
@@ -6711,7 +6762,13 @@ async function abrirPlanillaIntegral(){
     showToast('Coeficiente '+co.toFixed(4)+' aplicado a todos','success','Los rubros con coeficiente propio se limpiaron');
     pintar();
   };
-  document.getElementById('piCerrar').onclick = function(){ ov.remove(); };
+  document.getElementById('piCerrar').onclick = _cerrar;
+  document.addEventListener('keydown', function _esc(e){
+    if(e.key === 'Escape' && document.body.contains(ov)){ _cerrar(); document.removeEventListener('keydown', _esc); }
+  });
+  // Cuando se agrega un rubro con la barra prestada, la planilla se redibuja
+  const _add = document.getElementById('pmRubAdd');
+  if(_add) _add.addEventListener('click', function(){ setTimeout(function(){ if(document.body.contains(ov)){ _mgPreparar(); pintar(); } }, 350); });
   pintar();
 }
 
