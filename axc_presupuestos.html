@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.11 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.12 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -6515,6 +6515,223 @@ document.getElementById('pmIntegralBtn').addEventListener('click', abrirPlanilla
    unitario y parcial que ve el cliente. El coeficiente se comparte con la
    propuesta económica, así que lo que se ajusta acá sale en la CP.
    No reemplaza nada: es una vista más para probar.                      */
+
+/* ═══ v10.12 · PDF de la planilla integral, con opciones por check ═══
+   El residente elige qué columnas salen: costos internos, coeficiente o
+   margen, precios comerciales y la composición de mano de obra y material.
+   Si se incluye el costo, el documento sale marcado como USO INTERNO.     */
+function _piOpcionesPDF(presu){
+  const guardado = (function(){ try{ return JSON.parse(localStorage.getItem('axc_pi_pdf')||'{}'); }catch(e){ return {}; } })();
+  const def = Object.assign({ sector:true, codigo:true, cant:true, costoU:false, costoP:false,
+    coef:false, margen:false, precioU:true, precioP:true, comp:false, iva:true, opcionales:true, resumen:true }, guardado);
+  const chk = function(id, txt, sub){
+    return '<label style="display:flex;gap:9px;align-items:flex-start;padding:7px 9px;border:1px solid #e2e6ee;border-radius:9px;cursor:pointer;background:#fff">'+
+      '<input type="checkbox" id="pio_'+id+'"'+(def[id]?' checked':'')+' style="width:16px;height:16px;margin-top:1px;accent-color:#1F3864">'+
+      '<span><b style="font-size:12.5px">'+txt+'</b>'+(sub?'<div style="font-size:11px;color:#8893a5;line-height:1.35">'+sub+'</div>':'')+'</span></label>';
+  };
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:12700;display:flex;align-items:center;justify-content:center;padding:14px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(860px,100%);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
+      '<div style="background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:13px 18px;border-radius:14px 14px 0 0">'+
+        '<div style="font-weight:800;font-size:16px">🖨 Generar PDF · '+escapeHtml(presu)+'</div>'+
+        '<div style="font-size:12px;opacity:.85">Elegí qué columnas salen. Lo que marques se recuerda para la próxima.</div></div>'+
+      '<div style="padding:14px 18px;overflow:auto">'+
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#8a6d10;margin-bottom:6px">PARA EL CLIENTE</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+          chk('precioU','Precio unitario','El precio de venta por unidad')+
+          chk('precioP','Precio parcial','Cantidad × precio unitario')+
+          chk('cant','Cantidad y unidad')+
+          chk('iva','IVA y total general', 'Usa el IVA cargado en el presupuesto')+
+          chk('sector','Columna Sector')+
+          chk('codigo','Código del rubro')+
+          chk('opcionales','Incluir los rubros opcionales','Salen marcados como OPCIONAL y fuera del total')+
+        '</div>'+
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#B42B2B;margin:14px 0 6px">USO INTERNO · no entregar al cliente</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+          chk('costoU','Costo unitario')+
+          chk('costoP','Costo parcial')+
+          chk('coef','Coeficiente aplicado')+
+          chk('margen','Margen %')+
+        '</div>'+
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#1B5524;margin:14px 0 6px">COMPOSICIÓN</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+          chk('comp','% de mano de obra y material por rubro','Sale al lado de la descripción, en gris')+
+          chk('resumen','Resumen con gráfico al final','Mano de obra y material sobre el total')+
+        '</div>'+
+        '<div id="pioAviso" style="margin-top:12px"></div>'+
+      '</div>'+
+      '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
+        '<button type="button" class="pm-toggle" id="pioNo" style="border:1px solid #C9D0DC">Cancelar</button>'+
+        '<button type="button" class="pm-save" id="pioSi" style="padding:9px 18px">Generar PDF</button></div></div>';
+  document.body.appendChild(ov);
+  const leer = function(){
+    const o = {};
+    ['sector','codigo','cant','costoU','costoP','coef','margen','precioU','precioP','comp','iva','opcionales','resumen']
+      .forEach(function(k){ o[k] = ov.querySelector('#pio_'+k).checked; });
+    return o;
+  };
+  const avisar = function(){
+    const o = leer(), interno = o.costoU || o.costoP || o.coef || o.margen;
+    ov.querySelector('#pioAviso').innerHTML = interno
+      ? '<div style="background:#FDECEC;border:1px solid #F2C9C9;color:#8B1F1F;border-radius:9px;padding:9px 12px;font-size:12.5px">'+
+        '<b>Sale marcado como USO INTERNO.</b> Lleva costos o márgenes: no es un documento para mandar al cliente.</div>'
+      : '<div style="background:#F1FAF3;border:1px solid #BFE0C4;color:#1B5524;border-radius:9px;padding:9px 12px;font-size:12.5px">'+
+        '<b>Documento para el cliente.</b> Solo precios de venta, sin costos ni márgenes.</div>';
+  };
+  ov.querySelectorAll('input[type=checkbox]').forEach(function(c){ c.addEventListener('change', avisar); });
+  avisar();
+  ov.querySelector('#pioNo').onclick = function(){ ov.remove(); };
+  ov.querySelector('#pioSi').onclick = function(){
+    const o = leer();
+    try{ localStorage.setItem('axc_pi_pdf', JSON.stringify(o)); }catch(e){}
+    ov.remove();
+    _piPDF(presu, o);
+  };
+}
+function _piPDF(presu, o){
+  const w = window.open('', '_blank');
+  if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes'); return; }
+  const gen = Number(document.getElementById('mgPct').value) || 31;
+  const interno = o.costoU || o.costoP || o.coef || o.margen;
+  const obra = (document.getElementById('pmObra').value||'');
+  const desc = (document.getElementById('pmDescripcion').value||'');
+  const ivaP = Number(ivaGet())||0;
+  // Agrupado por capítulo, igual que en pantalla
+  const capDe = function(r){ const c = String(r.capitulo || (typeof _capituloDe==='function' ? (_capituloDe(r.rubro_codigo)||'') : '')).trim(); return c || '(sin capítulo)'; };
+  const porCap = {}, orden = [];
+  ed.rubros.forEach(function(r){ if(r.opcional && !o.opcionales) return; const c = capDe(r); if(!porCap[c]){ porCap[c]=[]; orden.push(c); } porCap[c].push(r); });
+  const cols = []; // [encabezado, ancho, alineación]
+  if(o.sector) cols.push(['Sector','8%','']);
+  if(o.codigo) cols.push(['Código','9%','c']);
+  cols.push(['Descripción','', '']);
+  if(o.cant){ cols.push(['Unid.','6%','c']); cols.push(['Cant.','8%','n']); }
+  if(o.costoU) cols.push(['Costo unit.','11%','n']);
+  if(o.costoP) cols.push(['Costo parcial','12%','n']);
+  if(o.coef)   cols.push(['Coef.','7%','c']);
+  if(o.margen) cols.push(['Margen','7%','c']);
+  if(o.precioU) cols.push(['Precio unit.','12%','n']);
+  if(o.precioP) cols.push(['Precio total','13%','n']);
+  let filas = '', costoT = 0, ventaT = 0, moT = 0, matT = 0, n = 0;
+  orden.forEach(function(cap){
+    let cC = 0, vC = 0;
+    const cuerpo = porCap[cap].map(function(r){
+      n++;
+      const cst = r.tiene_receta ? _costosDeReceta(r) : null;
+      const cu  = cst && cst.hay ? (cst.mat+cst.mo) : (Number(r.cantidad)>0 ? Math.round((Number(r.precio_total)||0)/Number(r.cantidad)) : 0);
+      const cp  = cst && cst.hay ? (cst.matTot+cst.moTot) : (Number(r.precio_total)||0);
+      const c   = _piCoefDe(r.rubro_codigo, gen);
+      const pu  = _mgPrecio(cu, c.pct), pt = Math.round(pu*(Number(r.cantidad)||0));
+      if(!r.opcional){ costoT += cp; ventaT += pt; cC += cp; vC += pt; }
+      const sp = (MG.split||{})[r.rubro_codigo];
+      if(sp && !r.opcional){ moT += pt*(sp.pmo||0); matT += pt*(sp.pmat||0); }
+      let t = '<tr>';
+      if(o.sector) t += '<td>'+escapeHtml(r.sector||'')+'</td>';
+      if(o.codigo) t += '<td class="c cod">'+escapeHtml(r.rubro_codigo||'')+'</td>';
+      t += '<td>'+escapeHtml(r.descripcion||'')+(r.opcional?' <span class="tg">OPCIONAL</span>':'')+
+           (o.comp && sp && (sp.mo||sp.mat) ? '<span class="mm">M.O. '+Math.round(sp.pmo*100)+' % · Mat. '+Math.round(sp.pmat*100)+' %</span>' : '')+'</td>';
+      if(o.cant){ t += '<td class="c">'+escapeHtml(r.unidad||'')+'</td><td class="n">'+_qty(r.cantidad)+'</td>'; }
+      if(o.costoU) t += '<td class="n">'+fmtGs(cu)+'</td>';
+      if(o.costoP) t += '<td class="n">'+fmtGs(cp)+'</td>';
+      if(o.coef)   t += '<td class="c">'+c.coef.toFixed(4).replace('.',',')+'</td>';
+      if(o.margen) t += '<td class="c">'+String(Math.round(c.pct*10)/10).replace('.',',')+' %</td>';
+      if(o.precioU) t += '<td class="n">'+fmtGs(pu)+'</td>';
+      if(o.precioP) t += '<td class="n"><b>'+fmtGs(pt)+'</b></td>';
+      return t + '</tr>';
+    }).join('');
+    const sub = '<tr class="sub"><td colspan="'+(cols.length-1)+'">Subtotal '+escapeHtml(cap)+'</td>'+
+      '<td class="n">'+fmtGs(o.precioP ? vC : cC)+'</td></tr>';
+    filas += '<tr class="cap"><td colspan="'+cols.length+'">'+escapeHtml(cap)+'</td></tr>' + cuerpo + sub;
+  });
+  const iva = Math.round(ventaT * ivaP / 100);
+  const tot = ventaT + iva;
+  const base = o.precioP ? ventaT : costoT;
+  const resumen = (o.resumen && (moT+matT) > 0) ? (function(){
+    const t = moT + matT, pmo = moT/t, pmat = matT/t;
+    const R = 46, C = 2*Math.PI*R, gapv = 2.2, sMO = Math.max(0, C*pmo-gapv), sMA = Math.max(0, C*pmat-gapv);
+    return '<div class="cbox"><div class="cbt">COMPOSICIÓN DEL PRECIO</div><div class="cbb">'+
+      '<svg viewBox="0 0 120 120" width="108" height="108">'+
+       '<circle cx="60" cy="60" r="'+R+'" fill="none" stroke="#EDEFF4" stroke-width="20"></circle>'+
+       '<circle cx="60" cy="60" r="'+R+'" fill="none" stroke="#1F3864" stroke-width="20" stroke-dasharray="'+sMO.toFixed(1)+' '+(C-sMO).toFixed(1)+'" transform="rotate(-90 60 60)"></circle>'+
+       '<circle cx="60" cy="60" r="'+R+'" fill="none" stroke="#C8A028" stroke-width="20" stroke-dasharray="'+sMA.toFixed(1)+' '+(C-sMA).toFixed(1)+'" transform="rotate('+(-90+pmo*360+(gapv/C)*180).toFixed(2)+' 60 60)"></circle>'+
+       '<text x="60" y="58" text-anchor="middle" font-size="17" font-weight="800" fill="#1F3864">'+Math.round(pmo*100)+'%</text>'+
+       '<text x="60" y="70" text-anchor="middle" font-size="6.6" fill="#8893a5" letter-spacing="1">MANO DE OBRA</text></svg>'+
+      '<table class="cbt2"><tr><td><span class="pt mo"></span>Mano de obra</td><td class="n">'+fmtGs(moT)+'</td><td class="n pc">'+Math.round(pmo*100)+' %</td></tr>'+
+      '<tr><td><span class="pt ma"></span>Materiales</td><td class="n">'+fmtGs(matT)+'</td><td class="n pc">'+Math.round(pmat*100)+' %</td></tr>'+
+      '<tr class="tt"><td>Total</td><td class="n">'+fmtGs(t)+'</td><td class="n pc">100 %</td></tr></table></div>'+
+      '<div class="cbn">Proporción calculada sobre la composición de cada rubro. La mano de obra incluye la logística asociada.</div></div>';
+  })() : '';
+  const css =
+   '@page{size:A4 portrait;margin:11mm 10mm 13mm}*{box-sizing:border-box}'+
+   'body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#e9ecf1;color:#141A26;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+   '.tb{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 18px;display:flex;gap:12px;align-items:center;font-size:13px;z-index:9}'+
+   '.tb .sp{flex:1}.tb button{background:#C8A028;color:#1c2430;border:0;padding:8px 16px;border-radius:7px;font-weight:700;cursor:pointer}'+
+   '.tb .gh{background:#fff;color:#1F3864;border:1px solid #d6dce8}'+
+   '.hoja{width:190mm;margin:14px auto;background:#fff;padding:9mm 10mm 8mm;box-shadow:0 2px 12px rgba(0,0,0,.12)}'+
+   '.top{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;padding-bottom:8px;border-bottom:3px solid #1F3864}'+
+   '.top img{height:38px}.top .k{font-size:9px;letter-spacing:2px;font-weight:800;color:#A8841C}'+
+   '.top .t{font-size:16.5px;font-weight:800;color:#1F3864}.top .s{font-size:10.5px;color:#5a6677;margin-top:2px}'+
+   '.uso{background:#FDECEC;border:1px solid #F2C9C9;color:#8B1F1F;border-radius:5px;padding:4px 9px;font-size:9.5px;font-weight:800}'+
+   '.gold{height:2px;background:#C8A028;margin-top:2px}'+
+   '.ficha{display:flex;flex-wrap:wrap;gap:16px;font-size:10.3px;color:#42506a;margin:8px 0 8px}.ficha b{color:#111}'+
+   'table.pl{width:100%;border-collapse:collapse;font-size:10.2px;table-layout:fixed}'+
+   'table.pl thead th{background:#1F3864;color:#fff;padding:5px 6px;font-size:8.8px;text-transform:uppercase;letter-spacing:.3px;border:1px solid #1F3864}'+
+   'table.pl td{border-bottom:1px solid #dfe4ec;padding:4px 6px;vertical-align:top;word-wrap:break-word}'+
+   'table.pl td.c{text-align:center}table.pl td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}'+
+   'table.pl td.cod{font-family:Consolas,monospace;font-size:9.4px;color:#5a6677}'+
+   'tr.cap td{background:#EAF0F8;color:#1F3864;font-weight:800;font-size:10.4px;border-top:1.5px solid #1F3864}'+
+   'tr.sub td{background:#f4f6fa;font-weight:700;color:#1F3864;text-align:right}'+
+   '.tg{font-size:7.6px;font-weight:800;background:#FDE7C7;color:#9a5b00;border-radius:3px;padding:0 4px}'+
+   '.mm{float:right;margin-left:10px;font-size:8.4px;color:#8893a5;white-space:nowrap}'+
+   '.tot{display:flex;justify-content:flex-end;margin-top:9px}.tot table{border-collapse:collapse;min-width:96mm}'+
+   '.tot td{padding:6px 12px;font-size:11px;border:1px solid #d9dee7}'+
+   '.tot .l{background:#f4f6fa;font-weight:700;color:#1F3864;text-align:right}.tot .v{text-align:right;font-weight:800;font-variant-numeric:tabular-nums}'+
+   '.tot tr.g td{background:#1F3864;color:#fff;border-color:#1F3864;font-size:12.5px}'+
+   '.cbox{margin-top:12px;border:1px solid #d9dee7;border-radius:7px;overflow:hidden;page-break-inside:avoid}'+
+   '.cbt{background:#1F3864;color:#fff;font-size:8.6px;font-weight:800;letter-spacing:1.3px;padding:5px 12px}'+
+   '.cbb{display:flex;align-items:center;gap:26px;padding:12px 14px 8px}'+
+   '.cbt2{border-collapse:collapse;font-size:11px;flex:1}.cbt2 td{padding:5px 4px;border-bottom:1px solid #eef1f6}'+
+   '.cbt2 .n{text-align:right;font-variant-numeric:tabular-nums}.cbt2 .pc{width:60px;font-weight:700;color:#1F3864}'+
+   '.cbt2 tr.tt td{font-weight:800;color:#1F3864;border-top:1.5px solid #1F3864;border-bottom:0}'+
+   '.cbt2 .pt{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}'+
+   '.cbt2 .pt.mo{background:#1F3864}.cbt2 .pt.ma{background:#C8A028}'+
+   '.cbn{font-size:8.4px;color:#9aa4b2;padding:0 14px 10px}'+
+   '.firmas{display:grid;grid-template-columns:1fr 1fr;gap:26mm;margin-top:16mm;text-align:center;font-size:10.5px;page-break-inside:avoid}'+
+   '.firmas div{border-top:1px solid #111;padding-top:4px;color:#5a6677}'+
+   '.pie{margin-top:8mm;border-top:1px solid #dfe4ec;padding-top:4px;font-size:8.4px;color:#8893a5;display:flex;justify-content:space-between}'+
+   '@media print{body{background:#fff}.tb{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}}';
+  const arch = (interno ? 'Planilla_interna_' : 'Propuesta_') + presu.replace(/[^A-Za-z0-9_-]/g,'_');
+  w.document.open();
+  w.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+escapeHtml(arch)+'</title><style>'+css+'</style></head><body>'+
+    '<div class="tb"><b>'+(interno?'Planilla interna':'Propuesta económica')+' · '+escapeHtml(presu)+'</b><span class="sp"></span>'+
+      '<button class="gh" onclick="window.print()">🖨 Imprimir</button>'+
+      '<button onclick="descargarPDF()">⬇ Descargar PDF</button></div>'+
+    '<div class="hoja"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
+      '<div><div class="k">'+(interno?'PLANILLA DE COSTO Y PRECIO':'PROPUESTA ECONÓMICA')+'</div>'+
+        '<div class="t">'+escapeHtml(desc || presu)+'</div>'+
+        '<div class="s">'+escapeHtml([obra, presu].filter(Boolean).join(' · '))+'</div></div>'+
+      (interno?'<div class="uso">USO INTERNO</div>':'<div></div>')+'</div><div class="gold"></div>'+
+    '<div class="ficha"><span>Obra: <b>'+escapeHtml(obra||'—')+'</b></span><span>Presupuesto: <b>'+escapeHtml(presu)+'</b></span>'+
+      '<span>Rubros: <b>'+n+'</b></span><span>Emitido: <b>'+escapeHtml(new Date().toLocaleString('es-PY'))+'</b></span>'+
+      (o.coef||o.margen ? '<span>Coeficiente general: <b>'+((1-gen/100).toFixed(4))+'</b></span>' : '')+'</div>'+
+    '<table class="pl"><colgroup>'+cols.map(function(c){ return '<col'+(c[1]?' style="width:'+c[1]+'"':'')+'>'; }).join('')+'</colgroup>'+
+      '<thead><tr>'+cols.map(function(c){ return '<th>'+c[0]+'</th>'; }).join('')+'</tr></thead><tbody>'+filas+'</tbody></table>'+
+    '<div class="tot"><table>'+
+      (o.costoP&&o.precioP ? '<tr><td class="l">Costo de obra</td><td class="v">₲ '+fmtGs(costoT)+'</td></tr>'+
+        '<tr><td class="l">Utilidad</td><td class="v">₲ '+fmtGs(ventaT-costoT)+' · '+(ventaT>0?((ventaT-costoT)/ventaT*100).toFixed(1):'0')+' %</td></tr>' : '')+
+      '<tr><td class="l">'+(o.precioP?'Total sin IVA':'Costo total')+'</td><td class="v">₲ '+fmtGs(base)+'</td></tr>'+
+      (o.iva && o.precioP && ivaP ? '<tr><td class="l">IVA '+ivaP+' %</td><td class="v">₲ '+fmtGs(iva)+'</td></tr>'+
+        '<tr class="g"><td class="l" style="background:#1F3864;color:#fff">Total general</td><td class="v">₲ '+fmtGs(tot)+'</td></tr>' : '')+
+      '</table></div>'+ resumen +
+    (interno ? '' : '<div class="firmas"><div>POR EL CLIENTE</div><div>POR AXC CONSTRUCTORA</div></div>')+
+    '<div class="pie"><span>AXC Constructora · '+escapeHtml(presu)+(obra?(' · '+escapeHtml(obra)):'')+'</span>'+
+      '<span>'+(interno?'Documento de uso interno · no entregar al cliente':'Precios en guaraníes'+(o.iva&&ivaP?(' · IVA '+ivaP+' % incluido en el total'):' · sin IVA'))+'</span></div>'+
+    '</div>'+
+    '<scr'+'ipt>window.descargarPDF=function(){var p=document.title;document.title='+JSON.stringify(arch)+';window.focus();setTimeout(function(){window.print();setTimeout(function(){document.title=p;},1500);},60);};</scr'+'ipt>'+
+    '</body></html>');
+  w.document.close();
+}
+
 const PI_ABIERTO = {};
 /* Desglose de insumos del rubro, igual que en el presupuesto. Acá se ve
    completo; para editarlo se usa el desglose del presupuesto. */
@@ -6684,8 +6901,8 @@ async function abrirPlanillaIntegral(){
       d('Precio al cliente','₲ '+fmtGs(ventaT),'sin IVA')+
       d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' % de la venta' : '')+
       d('Coeficiente real', coefR?coefR.toFixed(4):'—','costo ÷ venta')+
-      '<div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">'+
-
+      '<div style="margin-left:auto;display:flex;gap:7px;flex-wrap:wrap">'+
+        '<button type="button" id="piPdf" class="pm-toggle" style="border:1px solid #C9D0DC">🖨 Generar PDF</button>'+
         '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
         '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>'+
         '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0"'+(ed.activo?' disabled':'')+'>🚀 Publicar</button>'+
@@ -6755,6 +6972,7 @@ async function abrirPlanillaIntegral(){
     document.getElementById('piGuardar').onclick = async function(){ _cerrar(); await saveBudget(); };
     document.getElementById('piIrProp').onclick = function(){ _cerrar(); openPropuesta(true); };
     document.getElementById('piDocs').onclick   = function(){ _cerrar(); document.getElementById('pmCotBtn').click(); };
+    document.getElementById('piPdf').onclick    = function(){ _piOpcionesPDF(presu); };
     const pub = document.getElementById('piPublicar');
     if(pub) pub.onclick = function(){ _cerrar(); document.getElementById('pmToggleBtn').click(); };
   };
