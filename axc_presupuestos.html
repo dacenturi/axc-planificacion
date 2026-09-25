@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.21 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.22 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -6892,6 +6892,7 @@ async function abrirPlanillaIntegral(){
           (verCom?'<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
             '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:94px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
           '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>':'')+
+          '<button type="button" id="piComp" style="background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:700" title="Crear o editar la composición de un rubro">🧩 Composiciones</button>'+
           '<label style="font-size:11.5px;display:flex;align-items:center;gap:6px;opacity:.9" title="Al abrir un presupuesto se muestra primero esta planilla">'+
             '<input type="checkbox" id="piPref" checked> Abrir siempre esta vista</label>'+
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
@@ -7006,7 +7007,7 @@ async function abrirPlanillaIntegral(){
         // conteo de materiales y mano de obra, observación y avisos del rubro.
         const _cat = (ed.arbolByCod && ed.arbolByCod[String(r.rubro_codigo||'')]) || null;
         const chips = (r.tiene_receta
-            ? '<span class="pm-tag pm-tag-rec">🧱 RECETA</span>' + (_cat ? _origenBadge(_cat.origen) : '')
+            ? '<button type="button" class="pm-tag pm-tag-rec pi-comp" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" title="Abrir la composición de este rubro" style="cursor:pointer;border:0">🧱 RECETA</button>' + (_cat ? _origenBadge(_cat.origen) : '')
             : '<span class="pm-tag pm-tag-serv">💰 SERVICIO</span>')+
           ((r.tiene_receta && r.rubro_codigo) ? _dgChip(r.rubro_codigo, !!PI_ABIERTO[r.rubro_codigo]) : '')+
           ((_cat && _cat.receta_obs) ? '<button type="button" class="rub-obs pi-obs" data-obs="'+escapeHtml(r.rubro_codigo||'')+'" title="Esta composición tiene una observación">📝</button>' : '')+
@@ -7094,6 +7095,9 @@ async function abrirPlanillaIntegral(){
         if(PI_ABIERTO[cod]) delete PI_ABIERTO[cod]; else PI_ABIERTO[cod] = 1;
         pintar();
       };
+    });
+    body.querySelectorAll('.pi-comp').forEach(function(b){
+      b.onclick = function(ev){ ev.preventDefault(); ev.stopPropagation(); document.getElementById('piComp').onclick(b.dataset.cod); };
     });
     body.querySelectorAll('.pi-obs').forEach(function(b){
       b.onclick = async function(){
@@ -7185,6 +7189,19 @@ async function abrirPlanillaIntegral(){
       showToast(pf.checked ? 'Al abrir un presupuesto se muestra esta planilla' : 'Al abrir un presupuesto se muestra la tabla de siempre','info');
     });
   })();
+  /* v10.22 · Composiciones desde la planilla: se cierra la planilla, se edita la
+     composición y al volver la planilla se reabre sola con los datos al día. */
+  document.getElementById('piComp').onclick = async function(cod){
+    const rubro = (typeof cod === 'string') ? cod : '';
+    _cerrar(false);
+    await _abrirCompDesdePresupuesto();
+    if(rubro){
+      const bs = document.getElementById('compSearch');
+      if(bs){ bs.value = rubro; comp.search = rubro; renderCompTree(); }
+    }
+    comp._volverAPlanilla = true;
+    showToast('Composiciones','info','Al cerrar volvés a la planilla');
+  };
   document.getElementById('piCerrar').onclick = _cerrar;
   document.addEventListener('keydown', function _esc(e){
     if(e.key === 'Escape' && document.body.contains(ov)){ _cerrar(); document.removeEventListener('keydown', _esc); }
@@ -8530,6 +8547,10 @@ async function openComposiciones(){
 }
 async function closeComposiciones(){
   document.getElementById('compOverlay').classList.remove('show');
+  if(comp._volverAPlanilla){
+    comp._volverAPlanilla = false;
+    setTimeout(function(){ if(ed.open && !document.getElementById('piOv')) abrirPlanillaIntegral(); }, 350);
+  }
   // Si se entró desde el presupuesto, recargar el árbol para que la
   // composición recién creada aparezca en el desplegable
   if(comp._volverAlPresupuesto){
