@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.13 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.14 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -3973,6 +3973,31 @@ async function saveBudget(){
   }
   if(!obra){ showToast('Elegí la obra antes de guardar', 'error'); document.getElementById('pmObra').focus(); return; }
   if(typeof _dgValidar==='function' && !_dgValidar()) return;
+
+  /* v10.14 · ¿Otro residente guardó este presupuesto mientras lo editabas?
+     Si el «actualizado_en» de la base cambió desde que lo abriste, se avisa
+     antes de pisar su trabajo. */
+  if(!ed.isNew && ed.abiertoCon){
+    try{
+      const { data:cab0 } = await sb.from('presupuesto_cab')
+        .select('actualizado_en,actualizado_por,creado_por').eq('codigo', ed.origCodigo || codigo).maybeSingle();
+      const enBase = cab0 && cab0.actualizado_en;
+      if(enBase && new Date(enBase).getTime() > new Date(ed.abiertoCon).getTime() + 1000){
+        const quien = _nombreCorto((cab0.actualizado_por || cab0.creado_por || 'otro usuario'));
+        const r = await _confirmarAccion({
+          titulo:'Alguien más guardó este presupuesto', sub:(ed.origCodigo||codigo)+' · '+quien, tono:'warn',
+          intro:'Mientras lo tenías abierto, <b>'+escapeHtml(quien)+'</b> guardó cambios el <b>'+escapeHtml(_fmtF(enBase,true))+'</b>.',
+          riesgos:[
+            'Si guardás ahora, <b>tu versión reemplaza la de esa persona</b>: se pierden sus cambios.',
+            'Lo recomendable es <b>cancelar</b>, volver a abrir el presupuesto y rehacer lo tuyo sobre lo último guardado.',
+            'Si estás seguro de que tus datos son los correctos, podés guardar igual.'
+          ],
+          ok:'Guardar igual y reemplazar', cancelar:'Cancelar y revisar'
+        });
+        if(r === null) return;
+      }
+    }catch(e){ console.warn('control de concurrencia', e); }
+  }
   if(!ed.rubros.length){ showToast('Agregá al menos un rubro al presupuesto', 'error'); return; }
   const sinSector = ed.rubros.filter(function(r){ return !r.sector; });
   if(sinSector.length){ showToast('Hay '+sinSector.length+' rubro(s) sin sector. Revisalos.', 'error'); return; }
@@ -6736,26 +6761,9 @@ const PI_ABIERTO = {};
 /* Desglose de insumos del rubro, igual que en el presupuesto. Acá se ve
    completo; para editarlo se usa el desglose del presupuesto. */
 function _piDesglose(r){
-  const det = _mgDetalle(r.rubro_codigo) || [];
-  if(!det.length) return '<tr><td colspan="13" style="background:#fbfcfe;color:#8893a5;font-size:12px;padding:8px 14px">Este rubro no tiene insumos cargados.</td></tr>';
-  let mat = 0, mo = 0;
-  det.forEach(function(d){ if(d.mo) mo += d.sub; else mat += d.sub; });
-  return '<tr><td colspan="13" style="background:#fbfcfe;padding:8px 14px">'+
-    '<div style="font-size:11.5px;font-weight:800;color:#1F3864;letter-spacing:.4px;margin-bottom:5px">DESGLOSE DE '+escapeHtml(r.rubro_codigo||'')+
-      ' <span style="font-weight:600;color:#8893a5">· costo por '+escapeHtml(r.unidad||'unidad')+'</span>'+
-      ' <button type="button" class="pi-dgedit" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" style="margin-left:8px;border:1px solid #C9D0DC;background:#fff;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer">Editar en el presupuesto</button></div>'+
-    '<table class="ins-tbl" style="width:auto;min-width:640px"><thead><tr><th style="width:92px">Tipo</th><th>Insumo</th>'+
-      '<th class="n" style="width:120px">Cantidad</th><th class="n" style="width:110px">Precio</th><th class="n" style="width:120px">Costo</th></tr></thead><tbody>'+
-    det.map(function(d){
-      return '<tr><td><span style="font-size:10px;font-weight:800;border-radius:4px;padding:1px 6px;'+
-        (d.mo?'background:#E6F4EA;color:#1B5524">M. obra':'background:#EDF3FB;color:#1F3864">Material')+'</span></td>'+
-        '<td>'+escapeHtml(d.nombre)+(d.codigo?' <small style="color:#8893a5">'+escapeHtml(d.codigo)+'</small>':'')+'</td>'+
-        '<td class="n">'+_qty(d.cant)+' '+escapeHtml(d.unidad||'')+'</td>'+
-        '<td class="n">'+fmtGs(d.precio)+'</td><td class="n"><b>'+fmtGs(d.sub)+'</b></td></tr>';
-    }).join('')+
-    '<tr><td colspan="4" style="text-align:right;font-weight:700;color:#1F3864">Material</td><td class="n"><b>'+fmtGs(mat)+'</b></td></tr>'+
-    '<tr><td colspan="4" style="text-align:right;font-weight:700;color:#1B5524">Mano de obra</td><td class="n"><b>'+fmtGs(mo)+'</b></td></tr>'+
-    '</tbody></table></div></td></tr>';
+  // v10.14 · Es el MISMO desglose del presupuesto: se edita igual (rendimiento,
+  // divisor, merma, precio, agregar y quitar líneas, restaurar desde la composición).
+  return _dgHtml(r).replace('colspan="10"', 'colspan="13"');
 }
 function _piCoefDe(cod, gen){
   const v = MG.porRubro[cod];
@@ -6817,7 +6825,12 @@ async function abrirPlanillaIntegral(){
     this.innerHTML = (ab?'▾':'＋')+' Agregar rubro <span style="font-weight:400;color:#8893a5">· '+(ab?'cerrar la barra de carga':'abrir la barra de carga')+'</span>';
     if(ab){ const se = document.getElementById('pmRubSector'); if(se) se.focus(); }
   };
-  const _cerrar = function(){ _devolver(); ov.remove(); renderRubros(); renderInsumos(); };
+  const _cerrar = function(avisar){
+    _devolver(); ov.remove(); renderRubros(); renderInsumos();
+    if(avisar !== false && ed.tocado){
+      showToast('Cerraste la planilla con cambios sin guardar','info','Siguen cargados en el presupuesto: guardalos antes de salir');
+    }
+  };
 
   // Sectores ya usados en este presupuesto, para el desplegable
   const _secs = Array.from(new Set((ed.rubros||[]).map(function(r){ return String(r.sector||'').trim(); }).filter(Boolean))).sort();
@@ -6910,6 +6923,11 @@ async function abrirPlanillaIntegral(){
     }
     h += '</tbody></table>';
     document.getElementById('piBody').innerHTML = h;
+    // El desglose usa los mismos controles del presupuesto
+    try{ _dgBind(document.getElementById('piBody')); }catch(e){}
+    document.getElementById('piBody').addEventListener('change', function(ev){
+      if(ev.target.closest && ev.target.closest('.dg-box')){ ed.tocado = true; setTimeout(function(){ _mgPreparar(); pintar(); }, 0); }
+    });
 
     const util = ventaT - costoT, coefR = ventaT > 0 ? costoT/ventaT : 0;
     const d = function(l, v, s2){ return '<div style="display:flex;align-items:baseline;gap:6px">'+
