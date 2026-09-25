@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.7 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.8 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -818,6 +818,7 @@ body{
         <div class="pm-menu-l">
           <button type="button" id="pmPropBtn"><b>Propuesta económica</b><small>Aplicar el coeficiente y emitir el precio al cliente</small></button>
           <button type="button" id="pmPropListBtn"><b>Propuestas emitidas</b><small>Versiones, coeficiente y cuál aceptó el cliente</small></button>
+          <button type="button" id="pmIntegralBtn"><b>Planilla integral <span style="color:#8a6d10">· prueba</span></b><small>Costo y precio comercial en una sola planilla</small></button>
         </div>
       </div>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
@@ -863,7 +864,7 @@ body{
           <input id="mgProf" class="pm-input" placeholder="Ej. Arq. Vladimir Denis A."></div>
         <div class="pm-field"><label class="pm-label">Superficie (m²)</label>
           <input id="mgSup" class="pm-input" type="number" step="0.01" placeholder="Ej. 1177.70"></div>
-        <div class="pm-field"><label class="pm-label">Margen general %</label>
+        <div class="pm-field mg-margen"><label class="pm-label">Margen general %</label>
           <input id="mgPct" class="pm-input" type="number" step="0.01" min="0" max="95" value="31"></div>
         <div class="pm-field"><label class="pm-label">Coeficiente <span style="font-weight:400;color:#8893a5">· costo ÷ coef.</span></label>
           <input id="mgCoef" class="pm-input" type="number" step="0.0001" min="0.05" max="1" value="0.69"></div>
@@ -887,6 +888,9 @@ body{
         <label style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;color:#42506a;display:flex;align-items:center;gap:6px;width:100%"
                title="En el PDF, cada rubro muestra qué parte del precio es mano de obra y qué parte material, y al final un resumen con gráfico.">
           <input type="checkbox" id="mgComp"> Mostrar en el PDF la composición de cada rubro: % mano de obra y % material</label>
+        <label style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;color:#42506a;display:flex;align-items:center;gap:6px;width:100%"
+               title="Por defecto se carga el coeficiente (costo ÷ coeficiente = precio). Activalo solo si preferís cargar el margen en porcentaje.">
+          <input type="checkbox" id="mgPorMargen"> Cargar por margen % en lugar de coeficiente</label>
       </div>
       <div style="overflow-x:auto"><table class="ins-tbl" id="mgTabla"></table></div>
       <div class="mg-tot" id="mgTot"></div>
@@ -1554,6 +1558,7 @@ body{
   /* v9.8 · Línea del desglose sin precio */
   .dg-cero{border-color:#D94A4A!important;background:#FFF3F3!important;color:#B42B2B!important;font-weight:700}
   /* v9.6 · Coeficiente aplicado por rubro */
+  #mgOverlay:not(.con-margen) .mg-margen{display:none!important}
   .mg-src{font-size:10.5px;color:#8893a5;font-weight:600}
   .mg-coefap{font-size:13px;color:#1F3864}
   /* v9.4 · Historial de composiciones */
@@ -4202,9 +4207,9 @@ async function saveBudget(){
         texto:'Son partidas distintas con el mismo código. En Certificación se verían como <b>un solo trabajo</b>: '+
               'al medir una se mide la otra y el total sale duplicado.',
         puntos:_rep.map(_desc).concat([
-          '<b>Diferenciar y guardar</b> deja la primera con su código y a las demás les agrega -B, -C… (ej. 01.039-B).',
-          'Si son el mismo trabajo cargado dos veces, volvé a la lista y eliminá la que sobra.',
-          'Conviene aclarar también la descripción (zona o alcance) para que el residente sepa cuál mide.'
+          '<b>¿Son dos trabajos distintos?</b> Por ejemplo, el mismo ítem en dos baños. Apretá <b>Diferenciar y guardar</b>: la primera queda 13.005 y la segunda pasa a 13.005-B. Después aclará en la descripción a qué zona corresponde cada una: «13.005 · baño masculino», «13.005-B · sala de primeros auxilios».',
+          '<b>¿Es el mismo trabajo cargado dos veces?</b> Apretá <b>Revisar la lista</b>, buscá el código repetido y eliminá con la ✕ roja la fila que sobra. Mirá la cantidad y el precio: la que está en 0 suele ser la carga a medias.',
+          'Regla corta: dos filas nunca pueden tener el mismo código en el mismo sector. O son trabajos distintos y se les cambia el código, o es un duplicado y se borra.'
         ]),
         textoVolver:'Revisar la lista', textoGuardar:'Diferenciar y guardar',
         ocultarSalir:true, onGuardar: async function(){}
@@ -4581,10 +4586,9 @@ async function verPropuestaVersion(id){
   }catch(e){ showToast('No se pudo abrir la propuesta','error', e.message||''); }
 }
 
-function openPropuesta(){
-  if(!state.puedeVerMargen){ showToast('No tenés permiso para aplicar márgenes','error','Pedí el permiso a un administrador'); return; }
-  if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
-  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+/* v10.8 · Arma MG.rows (rubros con su costo) y la composición de cada uno.
+   Lo usan la propuesta económica y la planilla integral. */
+function _mgPreparar(){
   const D = _reporteCompute();
   // v9.7 · El costo de la propuesta es EL MISMO del presupuesto. El redondeo de
   // materiales a unidades enteras (bolsas, unidades) quedó opcional y, si se
@@ -4603,7 +4607,7 @@ function openPropuesta(){
              cantidad:Number(r.cantidad)||0, sector:r.sector||'', capitulo:r.capitulo||'',
              costo:costo, opcional:!!r.opcional };
   });
-  MG.porRubro = {}; MG.exacto = {}; D.rows.forEach(function(r){ MG.exacto[r.codigo] = r.costo; });
+  MG.exacto = {}; D.rows.forEach(function(r){ MG.exacto[r.codigo] = r.costo; });
   // v10.4 · Cuánto de cada rubro es mano de obra y cuánto material
   MG.split = {};
   D.rows.forEach(function(r){
@@ -4623,6 +4627,15 @@ function openPropuesta(){
     MG.split[r.codigo] = { mo:Math.round(mo), mat:Math.round(mat),
                            pmo: t > 0 ? mo/t : 0, pmat: t > 0 ? mat/t : 0 };
   });
+  return MG.rows;
+}
+function openPropuesta(mantenerCoef){
+  if(!state.puedeVerMargen){ showToast('No tenés permiso para aplicar márgenes','error','Pedí el permiso a un administrador'); return; }
+  if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
+  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+  const _coefPrevios = (mantenerCoef === true) ? Object.assign({}, MG.porRubro) : null;
+  _mgPreparar();
+  MG.porRubro = _coefPrevios || {};
   document.getElementById('mgSub').textContent =
     (document.getElementById('pmCodigo').value||'') + ' · ' +
     (document.getElementById('pmObra').value||'') + ' · ' + MG.rows.length + ' rubros';
@@ -4644,7 +4657,7 @@ function openPropuesta(){
   // Recuperar los márgenes de la última propuesta emitida de este presupuesto
   const _cod = document.getElementById('pmCodigo').value||'';
   const _avisoId = 'mgPrevio';
-  _mgCargarUltima(_cod).then(function(prev){
+  if(!mantenerCoef) _mgCargarUltima(_cod).then(function(prev){
     const cont = document.getElementById('mgSub');
     if(!prev || !prev.items.length || !cont) return;
     // Margen general de la propuesta anterior
@@ -4729,7 +4742,7 @@ function renderMargen(){
   const gen = Number(document.getElementById('mgPct').value)||0;
   let h='<thead><tr><th>Rubro</th><th>Descripción</th><th class="n">Cant.</th>'+
         '<th class="n">Costo unit.<br><small style="font-weight:600;color:#9aa4b2">real, interno</small></th>'+
-        '<th class="n" style="width:96px">Margen %</th>'+
+        '<th class="n mg-margen" style="width:96px">Margen %</th>'+
         '<th class="n" style="width:96px">Coeficiente</th>'+
         '<th class="n" style="width:104px">Coef. aplicado<br><small style="font-weight:600;color:#9aa4b2">al precio de este rubro</small></th>'+
         '<th class="n">Precio unit.<br><small style="font-weight:600;color:#9aa4b2">comercial</small></th>'+
@@ -4749,7 +4762,7 @@ function renderMargen(){
          '<td>'+(det.length?'<span class="mg-chev">▸</span>':'')+escapeHtml(r.codigo)+'</td><td>'+escapeHtml(r.descripcion)+'</td>'+
          '<td class="n">'+_qty(r.cantidad)+' '+escapeHtml(r.unidad)+'</td>'+
          '<td class="n">'+fmtGs(cu)+'</td>'+
-         '<td class="n"><input class="pm-input mg-in" data-i="'+i+'" type="number" step="0.01" min="0" max="94.99" '+
+         '<td class="n mg-margen"><input class="pm-input mg-in" data-i="'+i+'" type="number" step="0.01" min="0" max="94.99" '+
            'placeholder="'+gen+'" value="'+val+'" style="width:82px;text-align:right;padding:4px 7px"></td>'+
          // Coeficiente por rubro: es el mismo dato que el margen, visto al reves.
          // Se puede editar cualquiera de los dos; el otro se acomoda.
@@ -6494,6 +6507,141 @@ document.getElementById('pmCotBtn').addEventListener('click', function(){
 /* v10.0 · «Contratar rubros» se sacó del presupuesto: los contratos se cargan
    desde el módulo Contratos, que ya permite elegir el presupuesto. */
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
+document.getElementById('pmIntegralBtn').addEventListener('click', abrirPlanillaIntegral);
+
+/* ═══ v10.8 · Planilla integral (en prueba) ═══════════════════════════
+   Una sola pantalla con el costo del presupuesto y el precio comercial:
+   cantidad, costo unitario y parcial, coeficiente por rubro y el precio
+   unitario y parcial que ve el cliente. El coeficiente se comparte con la
+   propuesta económica, así que lo que se ajusta acá sale en la CP.
+   No reemplaza nada: es una vista más para probar.                      */
+function _piCoefDe(cod, gen){
+  const v = MG.porRubro[cod];
+  const pct = (v == null || v === '') ? gen : Number(v);
+  return { pct:pct, coef:1 - pct/100, propio:!(v == null || v === '') };
+}
+async function abrirPlanillaIntegral(){
+  if(!state.puedeVerMargen && !state.isAdmin){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
+  const presu = (document.getElementById('pmCodigo').value||'').trim();
+  if(!presu){ showToast('Abrí primero un presupuesto','error'); return; }
+  if(!MG.rows || !MG.rows.length) _mgPreparar();          // usa el mismo cálculo de la propuesta
+  const gen0 = Number(document.getElementById('mgPct').value) || 31;
+
+  const ov = document.createElement('div');
+  ov.id = 'piOv';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:12600;display:flex;align-items:center;justify-content:center;padding:10px';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;width:min(1700px,100%);height:calc(100vh - 20px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
+      '<div style="background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:13px 20px;border-radius:14px 14px 0 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'+
+        '<div><div style="font-weight:800;font-size:17px">🧮 Planilla integral · '+escapeHtml(presu)+'</div>'+
+          '<div style="font-size:12px;opacity:.85">Costo de obra y precio comercial en la misma planilla · versión de prueba</div></div>'+
+        '<div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+          '<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
+            '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:96px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
+          '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>'+
+          '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
+        '</div></div>'+
+      '<div id="piBody" style="flex:1;overflow:auto;padding:0 0 4px"></div>'+
+      '<div id="piPie" style="border-top:1px solid #e2e6ee;padding:11px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:#fafbfd"></div>'+
+    '</div>';
+  document.body.appendChild(ov);
+
+  const pintar = function(){
+    const gen = (1 - (Number(document.getElementById('piGen').value)||0)) * 100;
+    let h = '<table class="ins-tbl" style="width:100%"><thead><tr>'+
+      '<th style="width:70px">Sector</th><th style="width:78px">Rubro</th><th>Descripción</th>'+
+      '<th style="width:54px">Unid.</th><th class="n" style="width:92px">Cantidad</th>'+
+      '<th class="n" style="width:104px">Costo unit.</th><th class="n" style="width:118px">Costo parcial</th>'+
+      '<th class="n" style="width:96px;background:#1B5524;color:#fff">Coeficiente</th>'+
+      '<th class="n" style="width:118px;background:#173B63;color:#fff">Precio unit.</th>'+
+      '<th class="n" style="width:130px;background:#173B63;color:#fff">Precio parcial</th></tr></thead><tbody>';
+    let costoT = 0, ventaT = 0, sec = null;
+    MG.rows.forEach(function(r, i){
+      if(r.sector !== sec){
+        sec = r.sector;
+        h += '<tr><td colspan="10" style="background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px">'+escapeHtml(sec || '(sin sector)')+'</td></tr>';
+      }
+      const c  = _piCoefDe(r.codigo, gen);
+      const cu = r.cantidad > 0 ? Math.round(r.costo / r.cantidad) : r.costo;
+      const pu = _mgPrecio(cu, c.pct);
+      const pt = Math.round(pu * r.cantidad);
+      if(!r.opcional){ costoT += r.costo; ventaT += pt; }
+      h += '<tr'+(r.opcional?' style="opacity:.6"':'')+'>'+
+        '<td style="font-size:11.5px;color:#5a6377">'+escapeHtml(r.sector||'')+'</td>'+
+        '<td style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864">'+escapeHtml(r.codigo)+'</td>'+
+        '<td>'+escapeHtml(r.descripcion)+(r.opcional?' <span style="font-size:10px;background:#FDE7C7;color:#9a5b00;border-radius:4px;padding:0 5px;font-weight:700">OPCIONAL</span>':'')+'</td>'+
+        '<td style="font-size:12px">'+escapeHtml(r.unidad||'')+'</td>'+
+        '<td class="n"><input class="pm-input pi-cant" data-i="'+i+'" type="number" step="0.01" min="0" value="'+(Number(r.cantidad)||0)+'" style="width:84px;text-align:right;padding:4px 7px"></td>'+
+        '<td class="n">'+fmtGs(cu)+'</td>'+
+        '<td class="n">'+fmtGs(r.costo)+'</td>'+
+        '<td class="n" style="background:#F2FAF3"><input class="pm-input pi-coef" data-i="'+i+'" type="number" step="0.0001" min="0.05" max="1" '+
+          'placeholder="'+(1-gen/100).toFixed(4)+'" value="'+(c.propio?c.coef.toFixed(4):'')+'" style="width:84px;text-align:right;padding:4px 7px;'+(c.propio?'border-color:#1B5524;font-weight:700':'')+'"></td>'+
+        '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pu)+'</b></td>'+
+        '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pt)+'</b></td></tr>';
+    });
+    h += '</tbody></table>';
+    document.getElementById('piBody').innerHTML = h;
+    const util = ventaT - costoT, coefR = ventaT > 0 ? costoT/ventaT : 0;
+    const d = function(l, v, s){ return '<div><div style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</div>'+
+      '<div style="font-size:16px;font-weight:800;color:#1a2236">'+v+'</div>'+(s?'<div style="font-size:11px;color:#8893a5">'+s+'</div>':'')+'</div>'; };
+    document.getElementById('piPie').innerHTML =
+      d('Costo de obra','₲ '+fmtGs(costoT), MG.rows.length+' rubro(s)')+
+      d('Precio al cliente','₲ '+fmtGs(ventaT),'sin IVA')+
+      d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' % de la venta' : '')+
+      d('Coeficiente real', coefR?coefR.toFixed(4):'—','costo ÷ venta')+
+      '<div style="margin-left:auto;display:flex;gap:10px">'+
+        '<button type="button" id="piGuardar" class="pm-save" style="padding:9px 16px">Guardar cantidades</button>'+
+        '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">Ir a la propuesta</button></div>';
+
+    // Coeficiente por rubro: vacío = usa el general
+    document.getElementById('piBody').querySelectorAll('.pi-coef').forEach(function(inp){
+      inp.addEventListener('change', function(){
+        const r = MG.rows[Number(inp.dataset.i)];
+        const v = inp.value.trim();
+        if(!v){ delete MG.porRubro[r.codigo]; }
+        else {
+          const co = Math.min(1, Math.max(0.05, Number(v)||0));
+          MG.porRubro[r.codigo] = Math.round((1-co)*10000)/100;
+        }
+        inp.blur(); setTimeout(pintar, 0);
+      });
+    });
+    // Cantidad: se toca acá y queda en el presupuesto al guardar
+    document.getElementById('piBody').querySelectorAll('.pi-cant').forEach(function(inp){
+      inp.addEventListener('change', function(){
+        const r  = MG.rows[Number(inp.dataset.i)];
+        const rb = (ed.rubros||[]).filter(function(x){ return x.rubro_codigo === r.codigo; })[0];
+        if(!rb){ showToast('No se encontró el rubro en el presupuesto','error', r.codigo); return; }
+        if(ed.bloqueado){ showToast('El presupuesto está aprobado','error','Reabrilo para cambiar cantidades'); setTimeout(pintar, 0); return; }
+        rb.cantidad = round2(inp.value);
+        recalcCostoRubro(rb);
+        if(typeof _sincronizarCantidades === 'function') _sincronizarCantidades(rb.rubro_codigo);
+        ed.tocado = true;
+        _mgPreparar();                        // recalcula costos con la cantidad nueva
+        renderRubros(); renderInsumos();
+        inp.blur(); setTimeout(pintar, 0);
+      });
+    });
+    document.getElementById('piGuardar').onclick = async function(){
+      if(!ed.tocado){ showToast('No hay cambios para guardar','info'); return; }
+      ov.remove(); await saveBudget();
+    };
+    document.getElementById('piIrProp').onclick = function(){ ov.remove(); openPropuesta(true); };   // con los coeficientes de esta planilla
+  };
+  document.getElementById('piGen').addEventListener('change', pintar);
+  document.getElementById('piAplicar').onclick = function(){
+    const co = Number(document.getElementById('piGen').value)||0;
+    const pct = Math.round((1-co)*10000)/100;
+    document.getElementById('mgPct').value = pct;
+    const mc = document.getElementById('mgCoef'); if(mc) mc.value = co.toFixed(4);
+    MG.porRubro = {};                           // todos vuelven al general
+    showToast('Coeficiente '+co.toFixed(4)+' aplicado a todos los rubros','success','Los rubros con coeficiente propio se limpiaron');
+    pintar();
+  };
+  document.getElementById('piCerrar').onclick = function(){ ov.remove(); };
+  ov.addEventListener('click', function(e){ if(e.target === ov) ov.remove(); });
+  pintar();
+}
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('mgCancel').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('pmCerosBtn').addEventListener('click', revisarLineasEnCero);
@@ -6505,6 +6653,19 @@ document.getElementById('pmCerosBtn').addEventListener('click', revisarLineasEnC
     try{ localStorage.setItem('axc_mg_comp', c.checked ? '1' : '0'); }catch(e){}
     showToast(c.checked ? 'La propuesta va a mostrar la composición' : 'La propuesta no va a mostrar la composición',
               'info', c.checked ? '% de mano de obra y material por rubro, y el resumen con gráfico al final' : '');
+  });
+})();
+(function(){
+  const c = document.getElementById('mgPorMargen'), ov = document.getElementById('mgOverlay');
+  if(!c || !ov) return;
+  const pintar = function(){ ov.classList.toggle('con-margen', c.checked); };
+  try{ c.checked = localStorage.getItem('axc_mg_pormargen') === '1'; }catch(e){}
+  pintar();
+  c.addEventListener('change', function(){
+    try{ localStorage.setItem('axc_mg_pormargen', c.checked ? '1' : '0'); }catch(e){}
+    pintar();
+    showToast(c.checked ? 'Carga por margen %' : 'Carga por coeficiente', 'info',
+      c.checked ? 'El coeficiente se acomoda solo: coeficiente = 1 − margen' : 'El precio sale de costo ÷ coeficiente');
   });
 })();
 document.getElementById('mgRedondeo').addEventListener('change', function(){
@@ -9524,3 +9685,4 @@ document.getElementById('tabReporte').addEventListener('click', function(){ show
 </div>
 </body>
 </html>
+  
