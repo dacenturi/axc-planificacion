@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.14 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.15 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -6882,14 +6882,21 @@ async function abrirPlanillaIntegral(){
         const pu  = _mgPrecio(cu, c.pct);
         const pt  = Math.round(pu * (Number(r.cantidad)||0));
         if(!r.opcional){ costoT += cp; ventaT += pt; cCap += cp; vCap += pt; }
-        const chips = '<span style="font-size:9.5px;font-weight:800;border-radius:4px;padding:0 5px;margin-left:6px;'+
-          (r.tiene_receta ? 'background:#FDE7E7;color:#B42B2B">RECETA' : 'background:#FFF4DC;color:#8a5a00">SERVICIO')+'</span>';
+        // v10.15 · Mismas etiquetas que el presupuesto: receta o servicio, origen,
+        // conteo de materiales y mano de obra, observación y avisos del rubro.
+        const _cat = (ed.arbolByCod && ed.arbolByCod[String(r.rubro_codigo||'')]) || null;
+        const chips = (r.tiene_receta
+            ? '<span class="pm-tag pm-tag-rec">🧱 RECETA</span>' + (_cat ? _origenBadge(_cat.origen) : '')
+            : '<span class="pm-tag pm-tag-serv">💰 SERVICIO</span>')+
+          ((r.tiene_receta && r.rubro_codigo) ? _dgChip(r.rubro_codigo, !!PI_ABIERTO[r.rubro_codigo]) : '')+
+          ((_cat && _cat.receta_obs) ? '<button type="button" class="rub-obs pi-obs" data-obs="'+escapeHtml(r.rubro_codigo||'')+'" title="Esta composición tiene una observación">📝</button>' : '')+
+          _ctChip(r)+_compNuevaChip(r)+_ceroChip(r);
         return '<tr'+(r.opcional?' style="opacity:.62"':'')+'>'+
           '<td><input class="pm-input pi-f" data-i="'+i+'" data-f="sector" list="piSecDl" value="'+escapeHtml(r.sector||'')+'" style="width:88px;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
-          '<td><div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864;font-weight:700">'+
-              (r.tiene_receta?'<button type="button" class="pi-dg" data-i="'+i+'" title="Ver el desglose de insumos" style="border:0;background:none;cursor:pointer;color:#1F3864;font-weight:800;padding:0 4px 0 0">'+(PI_ABIERTO[r.rubro_codigo]?'▾':'▸')+'</button>':'')+
-              escapeHtml(r.rubro_codigo||'')+chips+'</div>'+
-              '<div style="font-size:12px;color:#33405c">'+escapeHtml(r.descripcion||'')+'</div></td>'+
+          '<td><div class="pm-codline" style="flex-wrap:wrap">'+
+              (r.tiene_receta?'<button type="button" class="dg-tog pi-dg" data-i="'+i+'" aria-expanded="'+(!!PI_ABIERTO[r.rubro_codigo])+'" title="'+(PI_ABIERTO[r.rubro_codigo]?'Plegar':'Desplegar')+' el desglose de materiales y mano de obra">▶</button>':'')+
+              '<span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+chips+'</div>'+
+              '<span class="pm-rubname">'+escapeHtml(r.descripcion||'')+'</span>'+_compObsLinea(r)+'</td>'+
           '<td style="font-size:12px">'+escapeHtml(r.unidad||'')+'</td>'+
           '<td class="n"><input class="pm-input pi-cant" data-i="'+i+'" type="number" step="0.01" min="0" value="'+(Number(r.cantidad)||0)+'" style="width:78px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
           '<td style="text-align:center"><input type="checkbox" class="pi-opc" data-i="'+i+'"'+(r.opcional?' checked':'')+(bloq?' disabled':'')+'></td>'+
@@ -6925,6 +6932,10 @@ async function abrirPlanillaIntegral(){
     document.getElementById('piBody').innerHTML = h;
     // El desglose usa los mismos controles del presupuesto
     try{ _dgBind(document.getElementById('piBody')); }catch(e){}
+    // El ▶ y el chip de la planilla abren el desglose acá, no en el presupuesto
+    document.getElementById('piBody').querySelectorAll('[data-dg]').forEach(function(b){
+      const nb = b.cloneNode(true); b.parentNode.replaceChild(nb, b);
+    });
     document.getElementById('piBody').addEventListener('change', function(ev){
       if(ev.target.closest && ev.target.closest('.dg-box')){ ed.tocado = true; setTimeout(function(){ _mgPreparar(); pintar(); }, 0); }
     });
@@ -6951,6 +6962,22 @@ async function abrirPlanillaIntegral(){
 
     const body = document.getElementById('piBody');
     const refrescar = function(){ _mgPreparar(); renderRubros(); renderInsumos(); setTimeout(pintar, 0); };
+    body.querySelectorAll('.dg-sum').forEach(function(b){
+      b.onclick = function(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        const cod = b.getAttribute('data-dg') || b.getAttribute('data-dgchip');
+        if(!cod) return;
+        if(PI_ABIERTO[cod]) delete PI_ABIERTO[cod]; else PI_ABIERTO[cod] = 1;
+        pintar();
+      };
+    });
+    body.querySelectorAll('.pi-obs').forEach(function(b){
+      b.onclick = async function(){
+        const cod = b.getAttribute('data-obs');
+        const cat = (ed.arbolByCod||{})[cod] || {};
+        await _modalTexto({ titulo:'Observación de la composición', sub:cod+' · '+(cat.nombre||''), texto:cat.receta_obs||'' });
+      };
+    });
     body.querySelectorAll('.pi-dg').forEach(function(b){
       b.onclick = function(){
         const cod = ed.rubros[Number(b.dataset.i)].rubro_codigo;
