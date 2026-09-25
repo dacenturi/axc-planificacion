@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.8 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.9 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -6524,124 +6524,197 @@ async function abrirPlanillaIntegral(){
   if(!state.puedeVerMargen && !state.isAdmin){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
   const presu = (document.getElementById('pmCodigo').value||'').trim();
   if(!presu){ showToast('Abrí primero un presupuesto','error'); return; }
-  if(!MG.rows || !MG.rows.length) _mgPreparar();          // usa el mismo cálculo de la propuesta
+  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
+  _mgPreparar();
   const gen0 = Number(document.getElementById('mgPct').value) || 31;
 
   const ov = document.createElement('div');
   ov.id = 'piOv';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:12600;display:flex;align-items:center;justify-content:center;padding:10px';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:12600;display:flex;align-items:center;justify-content:center;padding:8px';
   ov.innerHTML =
-    '<div style="background:#fff;border-radius:14px;width:min(1700px,100%);height:calc(100vh - 20px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35)">'+
-      '<div style="background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:13px 20px;border-radius:14px 14px 0 0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'+
+    '<div style="background:#fff;border-radius:14px;width:min(1800px,100%);height:calc(100vh - 16px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">'+
+      '<div style="background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'+
         '<div><div style="font-weight:800;font-size:17px">🧮 Planilla integral · '+escapeHtml(presu)+'</div>'+
-          '<div style="font-size:12px;opacity:.85">Costo de obra y precio comercial en la misma planilla · versión de prueba</div></div>'+
+          '<div style="font-size:12px;opacity:.85" id="piSub">Costo de obra y precio comercial en la misma planilla · versión de prueba</div></div>'+
         '<div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
           '<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
-            '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:96px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
+            '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:94px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
           '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>'+
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
         '</div></div>'+
-      '<div id="piBody" style="flex:1;overflow:auto;padding:0 0 4px"></div>'+
-      '<div id="piPie" style="border-top:1px solid #e2e6ee;padding:11px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:#fafbfd"></div>'+
+      '<div id="piBody" style="flex:1;overflow:auto"></div>'+
+      '<div id="piPie" style="border-top:1px solid #e2e6ee;padding:10px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:#fafbfd"></div>'+
     '</div>';
   document.body.appendChild(ov);
 
+  // Sectores ya usados en este presupuesto, para el desplegable
+  const _secs = Array.from(new Set((ed.rubros||[]).map(function(r){ return String(r.sector||'').trim(); }).filter(Boolean))).sort();
+  const secDl = '<datalist id="piSecDl">'+_secs.map(function(x){ return '<option value="'+escapeHtml(x)+'">'; }).join('')+'</datalist>';
+
   const pintar = function(){
     const gen = (1 - (Number(document.getElementById('piGen').value)||0)) * 100;
-    let h = '<table class="ins-tbl" style="width:100%"><thead><tr>'+
-      '<th style="width:70px">Sector</th><th style="width:78px">Rubro</th><th>Descripción</th>'+
-      '<th style="width:54px">Unid.</th><th class="n" style="width:92px">Cantidad</th>'+
-      '<th class="n" style="width:104px">Costo unit.</th><th class="n" style="width:118px">Costo parcial</th>'+
-      '<th class="n" style="width:96px;background:#1B5524;color:#fff">Coeficiente</th>'+
-      '<th class="n" style="width:118px;background:#173B63;color:#fff">Precio unit.</th>'+
-      '<th class="n" style="width:130px;background:#173B63;color:#fff">Precio parcial</th></tr></thead><tbody>';
-    let costoT = 0, ventaT = 0, sec = null;
-    MG.rows.forEach(function(r, i){
-      if(r.sector !== sec){
-        sec = r.sector;
-        h += '<tr><td colspan="10" style="background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px">'+escapeHtml(sec || '(sin sector)')+'</td></tr>';
-      }
-      const c  = _piCoefDe(r.codigo, gen);
-      const cu = r.cantidad > 0 ? Math.round(r.costo / r.cantidad) : r.costo;
-      const pu = _mgPrecio(cu, c.pct);
-      const pt = Math.round(pu * r.cantidad);
-      if(!r.opcional){ costoT += r.costo; ventaT += pt; }
-      h += '<tr'+(r.opcional?' style="opacity:.6"':'')+'>'+
-        '<td style="font-size:11.5px;color:#5a6377">'+escapeHtml(r.sector||'')+'</td>'+
-        '<td style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864">'+escapeHtml(r.codigo)+'</td>'+
-        '<td>'+escapeHtml(r.descripcion)+(r.opcional?' <span style="font-size:10px;background:#FDE7C7;color:#9a5b00;border-radius:4px;padding:0 5px;font-weight:700">OPCIONAL</span>':'')+'</td>'+
-        '<td style="font-size:12px">'+escapeHtml(r.unidad||'')+'</td>'+
-        '<td class="n"><input class="pm-input pi-cant" data-i="'+i+'" type="number" step="0.01" min="0" value="'+(Number(r.cantidad)||0)+'" style="width:84px;text-align:right;padding:4px 7px"></td>'+
-        '<td class="n">'+fmtGs(cu)+'</td>'+
-        '<td class="n">'+fmtGs(r.costo)+'</td>'+
-        '<td class="n" style="background:#F2FAF3"><input class="pm-input pi-coef" data-i="'+i+'" type="number" step="0.0001" min="0.05" max="1" '+
-          'placeholder="'+(1-gen/100).toFixed(4)+'" value="'+(c.propio?c.coef.toFixed(4):'')+'" style="width:84px;text-align:right;padding:4px 7px;'+(c.propio?'border-color:#1B5524;font-weight:700':'')+'"></td>'+
-        '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pu)+'</b></td>'+
-        '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pt)+'</b></td></tr>';
+    const bloq = !!ed.bloqueado;
+    // Mismo agrupado que el presupuesto: por capítulo, respetando el orden
+    const capDe = function(r){
+      const c = String(r.capitulo || (typeof _capituloDe === 'function' ? (_capituloDe(r.rubro_codigo)||'') : '')).trim();
+      return c || '(sin capítulo)';
+    };
+    const porCap = {}, ordenCap = [];
+    ed.rubros.forEach(function(r, i){
+      const c = capDe(r);
+      if(!porCap[c]){ porCap[c] = []; ordenCap.push(c); }
+      porCap[c].push(i);
+    });
+    let h = secDl + '<table class="ins-tbl" style="width:100%"><thead><tr>'+
+      '<th style="width:96px">Sector</th><th style="width:250px">Rubro · descripción</th>'+
+      '<th style="width:52px">Unid.</th><th class="n" style="width:86px">Cantidad</th><th style="width:40px">Opc.</th>'+
+      '<th class="n" style="width:104px">Material Gs/u</th><th class="n" style="width:104px">M. obra Gs/u</th>'+
+      '<th class="n" style="width:104px">CC. unitario</th><th class="n" style="width:118px">C. parcial</th>'+
+      '<th class="n" style="width:92px;background:#1B5524;color:#fff">Coeficiente</th>'+
+      '<th class="n" style="width:112px;background:#173B63;color:#fff">Precio unit.</th>'+
+      '<th class="n" style="width:126px;background:#173B63;color:#fff">Precio parcial</th>'+
+      '<th style="width:96px"></th></tr></thead><tbody>';
+    let costoT = 0, ventaT = 0;
+    ordenCap.forEach(function(cap){
+      const idxs = porCap[cap];
+      let cCap = 0, vCap = 0;
+      const filas = idxs.map(function(i, pos){
+        const r = ed.rubros[i];
+        const cst = r.tiene_receta ? _costosDeReceta(r) : null;
+        const mat = cst && cst.hay ? cst.mat : (Number(r.material_unit)||0);
+        const mo  = cst && cst.hay ? cst.mo  : (Number(r.mano_obra_unit)||0);
+        const cu  = cst && cst.hay ? (cst.mat+cst.mo)
+                    : (Number(r.cantidad)>0 ? Math.round((Number(r.precio_total)||0)/Number(r.cantidad)) : 0);
+        const cp  = cst && cst.hay ? (cst.matTot+cst.moTot) : (Number(r.precio_total)||0);
+        const c   = _piCoefDe(r.rubro_codigo, gen);
+        const pu  = _mgPrecio(cu, c.pct);
+        const pt  = Math.round(pu * (Number(r.cantidad)||0));
+        if(!r.opcional){ costoT += cp; ventaT += pt; cCap += cp; vCap += pt; }
+        const chips = '<span style="font-size:9.5px;font-weight:800;border-radius:4px;padding:0 5px;margin-left:6px;'+
+          (r.tiene_receta ? 'background:#FDE7E7;color:#B42B2B">RECETA' : 'background:#FFF4DC;color:#8a5a00">SERVICIO')+'</span>';
+        return '<tr'+(r.opcional?' style="opacity:.62"':'')+'>'+
+          '<td><input class="pm-input pi-f" data-i="'+i+'" data-f="sector" list="piSecDl" value="'+escapeHtml(r.sector||'')+'" style="width:88px;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
+          '<td><div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864;font-weight:700">'+escapeHtml(r.rubro_codigo||'')+chips+'</div>'+
+              '<div style="font-size:12px;color:#33405c">'+escapeHtml(r.descripcion||'')+'</div></td>'+
+          '<td style="font-size:12px">'+escapeHtml(r.unidad||'')+'</td>'+
+          '<td class="n"><input class="pm-input pi-cant" data-i="'+i+'" type="number" step="0.01" min="0" value="'+(Number(r.cantidad)||0)+'" style="width:78px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
+          '<td style="text-align:center"><input type="checkbox" class="pi-opc" data-i="'+i+'"'+(r.opcional?' checked':'')+(bloq?' disabled':'')+'></td>'+
+          (cst && cst.hay
+            ? '<td class="n">'+fmtGs(mat)+'</td><td class="n" style="color:#1B6B34">'+fmtGs(mo)+'</td>'
+            : '<td class="n"><input class="pm-input pi-f" data-i="'+i+'" data-f="material_unit" inputmode="numeric" value="'+fmtGs(mat)+'" style="width:92px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
+              '<td class="n"><input class="pm-input pi-f" data-i="'+i+'" data-f="mano_obra_unit" inputmode="numeric" value="'+fmtGs(mo)+'" style="width:92px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>')+
+          '<td class="n"><b>'+fmtGs(cu)+'</b></td>'+
+          '<td class="n"><b>'+fmtGs(cp)+'</b></td>'+
+          '<td class="n" style="background:#F2FAF3"><input class="pm-input pi-coef" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" type="number" step="0.0001" min="0.05" max="1" '+
+            'placeholder="'+(1-gen/100).toFixed(4)+'" value="'+(c.propio?c.coef.toFixed(4):'')+'" style="width:82px;text-align:right;padding:4px 7px;'+(c.propio?'border-color:#1B5524;font-weight:700':'')+'"></td>'+
+          '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pu)+'</b></td>'+
+          '<td class="n" style="background:#F4F7FC"><b>'+fmtGs(pt)+'</b></td>'+
+          '<td style="white-space:nowrap">'+
+            '<button class="pm-mv pi-up" data-i="'+i+'" type="button" title="Subir"'+(pos===0||bloq?' disabled':'')+'>▲</button>'+
+            '<button class="pm-mv pi-dn" data-i="'+i+'" type="button" title="Bajar"'+(pos===idxs.length-1||bloq?' disabled':'')+'>▼</button>'+
+            '<button class="pm-delx pi-del" data-i="'+i+'" type="button" title="Quitar el rubro"'+(bloq?' disabled':'')+'>×</button></td></tr>';
+      }).join('');
+      h += '<tr><td colspan="8" style="background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px">'+escapeHtml(cap)+
+           ' <span style="font-weight:400;color:#6b7a92">'+idxs.length+' rubro(s)</span></td>'+
+           '<td class="n" style="background:#EAF0F8;color:#1F3864;font-weight:800">'+fmtGs(cCap)+'</td>'+
+           '<td style="background:#EAF0F8"></td><td style="background:#EAF0F8"></td>'+
+           '<td class="n" style="background:#EAF0F8;color:#1F3864;font-weight:800">'+fmtGs(vCap)+'</td><td style="background:#EAF0F8"></td></tr>' + filas;
     });
     h += '</tbody></table>';
     document.getElementById('piBody').innerHTML = h;
+
     const util = ventaT - costoT, coefR = ventaT > 0 ? costoT/ventaT : 0;
-    const d = function(l, v, s){ return '<div><div style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</div>'+
-      '<div style="font-size:16px;font-weight:800;color:#1a2236">'+v+'</div>'+(s?'<div style="font-size:11px;color:#8893a5">'+s+'</div>':'')+'</div>'; };
+    const d = function(l, v, s2){ return '<div><div style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</div>'+
+      '<div style="font-size:16px;font-weight:800;color:#1a2236">'+v+'</div>'+(s2?'<div style="font-size:11px;color:#8893a5">'+s2+'</div>':'')+'</div>'; };
     document.getElementById('piPie').innerHTML =
-      d('Costo de obra','₲ '+fmtGs(costoT), MG.rows.length+' rubro(s)')+
+      d('Costo de obra','₲ '+fmtGs(costoT), ed.rubros.length+' rubro(s)')+
       d('Precio al cliente','₲ '+fmtGs(ventaT),'sin IVA')+
       d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' % de la venta' : '')+
       d('Coeficiente real', coefR?coefR.toFixed(4):'—','costo ÷ venta')+
-      '<div style="margin-left:auto;display:flex;gap:10px">'+
-        '<button type="button" id="piGuardar" class="pm-save" style="padding:9px 16px">Guardar cantidades</button>'+
-        '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">Ir a la propuesta</button></div>';
+      '<div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button type="button" id="piAddRub" class="pm-toggle" style="border:1px solid #C9D0DC"'+(bloq?' disabled':'')+'>＋ Agregar rubro</button>'+
+        '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
+        '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>'+
+        '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0"'+(ed.activo?' disabled':'')+'>🚀 Publicar</button>'+
+        '<button type="button" id="piGuardar" class="pm-save" style="padding:9px 16px">'+(ed.tocado?'● ':'')+'Guardar presupuesto</button></div>';
+    document.getElementById('piSub').textContent = ed.bloqueado
+      ? 'Presupuesto aprobado · solo lectura. Reabrilo desde el presupuesto para editarlo.'
+      : 'Costo de obra y precio comercial en la misma planilla · versión de prueba';
 
-    // Coeficiente por rubro: vacío = usa el general
-    document.getElementById('piBody').querySelectorAll('.pi-coef').forEach(function(inp){
+    const body = document.getElementById('piBody');
+    const refrescar = function(){ _mgPreparar(); renderRubros(); renderInsumos(); setTimeout(pintar, 0); };
+    body.querySelectorAll('.pi-coef').forEach(function(inp){
       inp.addEventListener('change', function(){
-        const r = MG.rows[Number(inp.dataset.i)];
-        const v = inp.value.trim();
-        if(!v){ delete MG.porRubro[r.codigo]; }
-        else {
-          const co = Math.min(1, Math.max(0.05, Number(v)||0));
-          MG.porRubro[r.codigo] = Math.round((1-co)*10000)/100;
-        }
+        const cod = inp.dataset.cod, v = inp.value.trim();
+        if(!v) delete MG.porRubro[cod];
+        else MG.porRubro[cod] = Math.round((1 - Math.min(1, Math.max(0.05, Number(v)||0)))*10000)/100;
         inp.blur(); setTimeout(pintar, 0);
       });
     });
-    // Cantidad: se toca acá y queda en el presupuesto al guardar
-    document.getElementById('piBody').querySelectorAll('.pi-cant').forEach(function(inp){
+    body.querySelectorAll('.pi-cant').forEach(function(inp){
       inp.addEventListener('change', function(){
-        const r  = MG.rows[Number(inp.dataset.i)];
-        const rb = (ed.rubros||[]).filter(function(x){ return x.rubro_codigo === r.codigo; })[0];
-        if(!rb){ showToast('No se encontró el rubro en el presupuesto','error', r.codigo); return; }
-        if(ed.bloqueado){ showToast('El presupuesto está aprobado','error','Reabrilo para cambiar cantidades'); setTimeout(pintar, 0); return; }
-        rb.cantidad = round2(inp.value);
-        recalcCostoRubro(rb);
-        if(typeof _sincronizarCantidades === 'function') _sincronizarCantidades(rb.rubro_codigo);
-        ed.tocado = true;
-        _mgPreparar();                        // recalcula costos con la cantidad nueva
-        renderRubros(); renderInsumos();
-        inp.blur(); setTimeout(pintar, 0);
+        const r = ed.rubros[Number(inp.dataset.i)];
+        r.cantidad = round2(inp.value); recalcCostoRubro(r);
+        if(typeof _sincronizarCantidades === 'function') _sincronizarCantidades(r.rubro_codigo);
+        ed.tocado = true; inp.blur(); refrescar();
       });
     });
-    document.getElementById('piGuardar').onclick = async function(){
-      if(!ed.tocado){ showToast('No hay cambios para guardar','info'); return; }
-      ov.remove(); await saveBudget();
+    body.querySelectorAll('.pi-opc').forEach(function(ch){
+      ch.addEventListener('change', function(){ ed.rubros[Number(ch.dataset.i)].opcional = ch.checked; ed.tocado = true; refrescar(); });
+    });
+    body.querySelectorAll('.pi-f').forEach(function(inp){
+      inp.addEventListener('change', function(){
+        const r = ed.rubros[Number(inp.dataset.i)], f = inp.dataset.f;
+        if(f === 'sector') r.sector = inp.value;
+        else { r[f] = parseGs(inp.value); recalcCostoRubro(r); }
+        ed.tocado = true; inp.blur(); refrescar();
+      });
+    });
+    const mover = function(i, dir){
+      const r = ed.rubros[i], cap = capDe(r);
+      const mismos = ed.rubros.map(function(x, k){ return { x:x, k:k }; }).filter(function(o){ return capDe(o.x) === cap; });
+      const pos = mismos.findIndex(function(o){ return o.k === i; });
+      const dst = mismos[pos + dir]; if(!dst) return;
+      const t = ed.rubros[i]; ed.rubros[i] = ed.rubros[dst.k]; ed.rubros[dst.k] = t;
+      ed.tocado = true; refrescar();
     };
-    document.getElementById('piIrProp').onclick = function(){ ov.remove(); openPropuesta(true); };   // con los coeficientes de esta planilla
+    body.querySelectorAll('.pi-up').forEach(function(b){ b.onclick = function(){ mover(Number(b.dataset.i), -1); }; });
+    body.querySelectorAll('.pi-dn').forEach(function(b){ b.onclick = function(){ mover(Number(b.dataset.i), +1); }; });
+    body.querySelectorAll('.pi-del').forEach(function(b){
+      b.onclick = function(){
+        const r = ed.rubros[Number(b.dataset.i)];
+        if(!confirm('¿Quitar el rubro '+(r.rubro_codigo||'')+' · '+(r.descripcion||'')+' del presupuesto?')) return;
+        ed.insumos = (ed.insumos||[]).filter(function(x){ return (x.rubro_codigo||'') !== r.rubro_codigo; });
+        ed.rubros.splice(Number(b.dataset.i), 1);
+        ed.tocado = true; refrescar();
+      };
+    });
+    document.getElementById('piGuardar').onclick = async function(){ ov.remove(); await saveBudget(); };
+    document.getElementById('piIrProp').onclick = function(){ ov.remove(); openPropuesta(true); };
+    document.getElementById('piDocs').onclick   = function(){ ov.remove(); document.getElementById('pmCotBtn').click(); };
+    const pub = document.getElementById('piPublicar');
+    if(pub) pub.onclick = function(){ ov.remove(); document.getElementById('pmToggleBtn').click(); };
+    const add = document.getElementById('piAddRub');
+    if(add) add.onclick = function(){
+      ov.remove();
+      const bus = document.getElementById('pmRubAdd');
+      if(bus){ bus.scrollIntoView({block:'center'}); const f = bus.closest('.pm-row') || bus.parentElement; const inp = f && f.parentElement ? f.parentElement.querySelector('input:not([type=hidden])') : null; (inp||bus).focus(); }
+      showToast('Agregá el rubro desde el buscador del presupuesto','info','Después volvé a la planilla integral: los datos siguen ahí');
+    };
   };
   document.getElementById('piGen').addEventListener('change', pintar);
   document.getElementById('piAplicar').onclick = function(){
     const co = Number(document.getElementById('piGen').value)||0;
-    const pct = Math.round((1-co)*10000)/100;
-    document.getElementById('mgPct').value = pct;
+    document.getElementById('mgPct').value = Math.round((1-co)*10000)/100;
     const mc = document.getElementById('mgCoef'); if(mc) mc.value = co.toFixed(4);
-    MG.porRubro = {};                           // todos vuelven al general
-    showToast('Coeficiente '+co.toFixed(4)+' aplicado a todos los rubros','success','Los rubros con coeficiente propio se limpiaron');
+    MG.porRubro = {};
+    showToast('Coeficiente '+co.toFixed(4)+' aplicado a todos','success','Los rubros con coeficiente propio se limpiaron');
     pintar();
   };
   document.getElementById('piCerrar').onclick = function(){ ov.remove(); };
-  ov.addEventListener('click', function(e){ if(e.target === ov) ov.remove(); });
   pintar();
 }
+
 document.getElementById('mgClose').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('mgCancel').addEventListener('click', function(){ document.getElementById('mgOverlay').style.display='none'; });
 document.getElementById('pmCerosBtn').addEventListener('click', revisarLineasEnCero);
@@ -9685,4 +9758,3 @@ document.getElementById('tabReporte').addEventListener('click', function(){ show
 </div>
 </body>
 </html>
-  
