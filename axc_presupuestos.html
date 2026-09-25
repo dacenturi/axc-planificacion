@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.17 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.19 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -811,6 +811,7 @@ body{
         <div class="pm-menu-l">
           <button type="button" id="pmCotBtn"><b>Planilla de costos</b><small>El costo real de la obra, para revisar e imprimir</small></button>
           <button type="button" id="pmReporteBtn"><b>Análisis de costos</b><small>Materiales, mano de obra y logística por capítulo</small></button>
+          <button type="button" id="pmIntegralDocBtn"><b>Planilla de carga</b><small>Cargar rubros, cantidades y desglose en una sola pantalla</small></button>
         </div>
       </div>
       <div class="pm-menu" id="pmMenuCli">
@@ -818,7 +819,6 @@ body{
         <div class="pm-menu-l">
           <button type="button" id="pmPropBtn"><b>Propuesta económica</b><small>Aplicar el coeficiente y emitir el precio al cliente</small></button>
           <button type="button" id="pmPropListBtn"><b>Propuestas emitidas</b><small>Versiones, coeficiente y cuál aceptó el cliente</small></button>
-          <button type="button" id="pmIntegralBtn"><b>Planilla integral <span style="color:#8a6d10">· prueba</span></b><small>Costo y precio comercial en una sola planilla</small></button>
         </div>
       </div>
       <button class="pm-toggle" id="pmToggleBtn" type="button"></button>
@@ -1695,6 +1695,15 @@ async function loadProfileAndApp(){
   // El permiso vive en perfiles.permisos, que se administra desde «Perfiles y Permisos».
   const _perm = profile.permisos || {};
   state.puedeVerMargen = (_perm.pres_margen === true) || profile.puede_ver_margen === true;
+  // v10.19 · La planilla es una sola: su nombre y su alcance dependen del permiso
+  setTimeout(function(){
+    const b = document.getElementById('pmIntegralDocBtn');
+    if(!b) return;
+    const com = state.puedeVerMargen || state.isAdmin;
+    b.innerHTML = com
+      ? '<b>Planilla integral</b><small>Costo de obra, coeficiente y precio al cliente en una sola pantalla</small>'
+      : '<b>Planilla de carga</b><small>Rubros, cantidades y desglose · el presupuesto de costos se imprime desde acá</small>';
+  }, 0);
   // Reabrir un presupuesto congelado: administradores y quien tenga el permiso
   state.puedeReabrirPres = state.isAdmin || _perm.pres_reabrir === true;
   // v9.2 · Composiciones: el catálogo es común a todas las obras.
@@ -6533,7 +6542,7 @@ document.getElementById('pmCotBtn').addEventListener('click', function(){
 /* v10.0 · «Contratar rubros» se sacó del presupuesto: los contratos se cargan
    desde el módulo Contratos, que ya permite elegir el presupuesto. */
 document.getElementById('pmPropBtn').addEventListener('click', openPropuesta);
-document.getElementById('pmIntegralBtn').addEventListener('click', abrirPlanillaIntegral);
+document.getElementById('pmIntegralDocBtn').addEventListener('click', abrirPlanillaIntegral);
 
 /* ═══ v10.8 · Planilla integral (en prueba) ═══════════════════════════
    Una sola pantalla con el costo del presupuesto y el precio comercial:
@@ -6551,6 +6560,7 @@ function _piOpcionesPDF(presu){
   const def = Object.assign({ sector:true, codigo:true, cant:true, costoU:false, costoP:false,
     coef:false, margen:false, precioU:true, precioP:true, comp:false, iva:true, opcionales:true, resumen:true,
     anexos:false, registrar:false }, guardado);
+  const verCom = !!(state.puedeVerMargen || state.isAdmin);
   const chk = function(id, txt, sub){
     return '<label style="display:flex;gap:9px;align-items:flex-start;padding:7px 9px;border:1px solid #e2e6ee;border-radius:9px;cursor:pointer;background:#fff">'+
       '<input type="checkbox" id="pio_'+id+'"'+(def[id]?' checked':'')+' style="width:16px;height:16px;margin-top:1px;accent-color:#1F3864">'+
@@ -6564,10 +6574,10 @@ function _piOpcionesPDF(presu){
         '<div style="font-weight:800;font-size:16px">🖨 Generar PDF · '+escapeHtml(presu)+'</div>'+
         '<div style="font-size:12px;opacity:.85">Elegí qué columnas salen. Lo que marques se recuerda para la próxima.</div></div>'+
       '<div style="padding:14px 18px;overflow:auto">'+
-        '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#8a6d10;margin-bottom:6px">PARA EL CLIENTE</div>'+
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#8a6d10;margin-bottom:6px">'+(verCom?'PARA EL CLIENTE':'DATOS DE LA PLANILLA')+'</div>'+
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
-          chk('precioU','Precio unitario','El precio de venta por unidad')+
-          chk('precioP','Precio parcial','Cantidad × precio unitario')+
+          (verCom ? chk('precioU','Precio unitario','El precio de venta por unidad')+
+                    chk('precioP','Precio parcial','Cantidad × precio unitario') : '')+
           chk('cant','Cantidad y unidad')+
           chk('iva','IVA y total general', 'Usa el IVA cargado en el presupuesto')+
           chk('sector','Columna Sector')+
@@ -6578,8 +6588,7 @@ function _piOpcionesPDF(presu){
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
           chk('costoU','Costo unitario')+
           chk('costoP','Costo parcial')+
-          chk('coef','Coeficiente aplicado')+
-          chk('margen','Margen %')+
+          (verCom ? chk('coef','Coeficiente aplicado')+chk('margen','Margen %') : '')+
         '</div>'+
         '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#1B5524;margin:14px 0 6px">COMPOSICIÓN</div>'+
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
@@ -6589,7 +6598,7 @@ function _piOpcionesPDF(presu){
         '<div style="font-size:11px;font-weight:800;letter-spacing:.8px;color:#1F3864;margin:14px 0 6px">DOCUMENTO</div>'+
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
           chk('anexos','Adjuntar los archivos del presupuesto','Planos y documentos, en hojas aparte al final')+
-          chk('registrar','Registrar esta versión en Propuestas emitidas','Queda guardada con sus precios: después se marca cuál aceptó el cliente')+
+          (verCom ? chk('registrar','Registrar esta versión en Propuestas emitidas','Queda guardada con sus precios: después se marca cuál aceptó el cliente') : '')+
         '</div>'+
         '<div id="pioAviso" style="margin-top:12px"></div>'+
       '</div>'+
@@ -6600,7 +6609,8 @@ function _piOpcionesPDF(presu){
   const leer = function(){
     const o = {};
     ['sector','codigo','cant','costoU','costoP','coef','margen','precioU','precioP','comp','iva','opcionales','resumen','anexos','registrar']
-      .forEach(function(k){ o[k] = ov.querySelector('#pio_'+k).checked; });
+      .forEach(function(k){ const e = ov.querySelector('#pio_'+k); o[k] = e ? e.checked : false; });
+    if(!verCom){ o.precioU = o.precioP = o.coef = o.margen = o.registrar = false; if(!o.costoU && !o.costoP) o.costoP = true; }
     return o;
   };
   const avisar = function(){
@@ -6749,7 +6759,7 @@ async function _piPDF(presu, o){
     '<div class="tb"><b>'+(interno?'Planilla interna':'Propuesta económica')+' · '+escapeHtml(presu)+'</b><span class="sp"></span>'+
       '<button class="gh" onclick="window.print()">🖨 Imprimir</button>'+
       '<button onclick="descargarPDF()">⬇ Descargar PDF</button></div>'+
-    '<div class="hoja"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
+    '<div class="hoja page"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
       '<div><div class="k">'+(interno?'PRESUPUESTO DE COSTOS · DOCUMENTO CONFIDENCIAL':'PRESUPUESTO ECONÓMICO · PARA EL CLIENTE')+'</div>'+
         '<div class="t">'+escapeHtml(desc || presu)+'</div>'+
         '<div class="s">'+escapeHtml([obra, presu].filter(Boolean).join(' · '))+'</div></div>'+
@@ -6789,7 +6799,8 @@ const PI_ABIERTO = {};
 function _piDesglose(r){
   // v10.14 · Es el MISMO desglose del presupuesto: se edita igual (rendimiento,
   // divisor, merma, precio, agregar y quitar líneas, restaurar desde la composición).
-  return _dgHtml(r).replace('colspan="10"', 'colspan="13"');
+  const n = (state.puedeVerMargen || state.isAdmin) ? 13 : 10;
+  return _dgHtml(r).replace('colspan="10"', 'colspan="'+n+'"');
 }
 function _piCoefDe(cod, gen){
   const v = MG.porRubro[cod];
@@ -6797,7 +6808,11 @@ function _piCoefDe(cod, gen){
   return { pct:pct, coef:1 - pct/100, propio:!(v == null || v === '') };
 }
 async function abrirPlanillaIntegral(){
-  if(!state.puedeVerMargen && !state.isAdmin){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
+  /* v10.18 · Dos modos:
+       · CARGA DE COSTOS — sin permiso de márgenes: solo el costo de obra.
+       · INTEGRAL — con permiso: agrega coeficiente y precio al cliente.
+     Es la misma planilla: lo comercial aparece solo para quien puede verlo. */
+  const verCom = !!(state.puedeVerMargen || state.isAdmin);
   if(!ed.open){ showToast('Abrí o creá un presupuesto primero','error'); return; }
   const presu = (document.getElementById('pmCodigo').value||'').trim() || 'presupuesto nuevo';
   _mgPreparar();          // sin rubros devuelve una lista vacía: se carga desde acá
@@ -6809,12 +6824,12 @@ async function abrirPlanillaIntegral(){
   ov.innerHTML =
     '<div style="background:#fff;border-radius:14px;width:min(1800px,100%);height:calc(100vh - 16px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">'+
       '<div style="background:linear-gradient(180deg,#1F3864,#1F4E78);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'+
-        '<div><div style="font-weight:800;font-size:17px">🧮 Planilla integral · '+escapeHtml(presu)+'</div>'+
-          '<div style="font-size:12px;opacity:.85" id="piSub">Costo de obra y precio comercial en la misma planilla · versión de prueba</div></div>'+
+        '<div><div style="font-weight:800;font-size:17px">🧮 '+(verCom?'Planilla integral':'Planilla de carga')+' · '+escapeHtml(presu)+'</div>'+
+          '<div style="font-size:12px;opacity:.85" id="piSub">'+(verCom?'Costo de obra y precio comercial en la misma planilla':'Carga de rubros y costo de obra')+'</div></div>'+
         '<div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
-          '<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
+          (verCom?'<label style="font-size:12px;display:flex;align-items:center;gap:6px">Coeficiente general'+
             '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:94px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
-          '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>'+
+          '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>':'')+
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
         '</div></div>'+
       '<div id="piBody" style="flex:1;overflow:auto"></div>'+
@@ -6863,7 +6878,8 @@ async function abrirPlanillaIntegral(){
   const secDl = '<datalist id="piSecDl">'+_secs.map(function(x){ return '<option value="'+escapeHtml(x)+'">'; }).join('')+'</datalist>';
 
   const pintar = function(){
-    const gen = (1 - (Number(document.getElementById('piGen').value)||0)) * 100;
+    const _g = document.getElementById('piGen');
+    const gen = _g ? (1 - (Number(_g.value)||0)) * 100 : (Number(document.getElementById('mgPct').value)||31);
     const bloq = !!ed.bloqueado;
     // Mismo agrupado que el presupuesto: por capítulo, respetando el orden
     const capDe = function(r){
@@ -6894,16 +6910,16 @@ async function abrirPlanillaIntegral(){
       '</style>'+
       '<table class="ins-tbl" style="width:100%"><thead>'+
       '<tr class="g"><th colspan="5" style="background:#EEF1F6;color:#5a6377">MEDICIÓN</th>'+
-        '<th colspan="4" style="background:#E7ECF4;color:#1F3864">COSTO DE OBRA · INTERNO</th>'+
-        '<th colspan="3" class="cli">PRECIO AL CLIENTE · COMERCIAL</th><th style="background:#EEF1F6"></th></tr>'+
+        '<th colspan="4" style="background:#E7ECF4;color:#1F3864">COSTO DE OBRA'+(verCom?' · INTERNO':'')+'</th>'+
+        (verCom?'<th colspan="3" class="cli">PRECIO AL CLIENTE · COMERCIAL</th>':'')+'<th style="background:#EEF1F6"></th></tr>'+
       '<tr class="c">'+
       '<th style="width:96px">Sector</th><th style="width:250px">Rubro · descripción</th>'+
       '<th style="width:52px">Unid.</th><th class="n" style="width:86px">Cantidad</th><th style="width:40px">Opc.</th>'+
       '<th class="n" style="width:104px">Material Gs/u</th><th class="n" style="width:104px">M. obra Gs/u</th>'+
       '<th class="n" style="width:104px">CC. unitario</th><th class="n" style="width:118px">C. parcial</th>'+
-      '<th class="n coefh" style="width:92px">Coeficiente</th>'+
+      (verCom?'<th class="n coefh" style="width:92px">Coeficiente</th>'+
       '<th class="n cli" style="width:112px">Precio unit.</th>'+
-      '<th class="n cli" style="width:126px">Precio parcial</th>'+
+      '<th class="n cli" style="width:126px">Precio parcial</th>':'')+
       '<th style="width:96px"></th></tr></thead><tbody>';
     let costoT = 0, ventaT = 0;
     ordenCap.forEach(function(cap){
@@ -6945,10 +6961,10 @@ async function abrirPlanillaIntegral(){
               '<td class="n"><input class="pm-input pi-f" data-i="'+i+'" data-f="mano_obra_unit" inputmode="numeric" value="'+fmtGs(mo)+'" style="width:92px;text-align:right;padding:4px 7px"'+(bloq?' disabled':'')+'></td>')+
           '<td class="n"><b>'+fmtGs(cu)+'</b></td>'+
           '<td class="n"><b>'+fmtGs(cp)+'</b></td>'+
-          '<td class="n coefc"><input class="pm-input pi-coef" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" type="number" step="0.0001" min="0.05" max="1" '+
+          (verCom?'<td class="n coefc"><input class="pm-input pi-coef" data-cod="'+escapeHtml(r.rubro_codigo||'')+'" type="number" step="0.0001" min="0.05" max="1" '+
             'placeholder="'+(1-gen/100).toFixed(4)+'" value="'+(c.propio?c.coef.toFixed(4):'')+'" style="width:82px;text-align:right;padding:4px 7px;'+(c.propio?'border-color:#1B5524;font-weight:700':'')+'"></td>'+
           '<td class="n cli"><b>'+fmtGs(pu)+'</b></td>'+
-          '<td class="n cli"><b style="color:#173B63">'+fmtGs(pt)+'</b></td>'+
+          '<td class="n cli"><b style="color:#173B63">'+fmtGs(pt)+'</b></td>':'')+
           '<td style="white-space:nowrap">'+
             '<button class="pm-mv pi-up" data-i="'+i+'" type="button" title="Subir"'+(pos===0||bloq?' disabled':'')+'>▲</button>'+
             '<button class="pm-mv pi-dn" data-i="'+i+'" type="button" title="Bajar"'+(pos===idxs.length-1||bloq?' disabled':'')+'>▼</button>'+
@@ -6958,11 +6974,12 @@ async function abrirPlanillaIntegral(){
       h += '<tr><td colspan="8" style="background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px">'+escapeHtml(cap)+
            ' <span style="font-weight:400;color:#6b7a92">'+idxs.length+' rubro(s)</span></td>'+
            '<td class="n" style="background:#EAF0F8;color:#1F3864;font-weight:800">'+fmtGs(cCap)+'</td>'+
-           '<td style="background:#EAF0F8"></td><td style="background:#EAF0F8"></td>'+
-           '<td class="n" style="background:#DCE6F4;color:#173B63;font-weight:800">'+fmtGs(vCap)+'</td><td style="background:#EAF0F8"></td></tr>' + filas;
+           (verCom?'<td style="background:#EAF0F8"></td><td style="background:#EAF0F8"></td>'+
+           '<td class="n" style="background:#DCE6F4;color:#173B63;font-weight:800">'+fmtGs(vCap)+'</td>':'')+
+           '<td style="background:#EAF0F8"></td></tr>' + filas;
     });
     if(!ed.rubros.length){
-      h += '<tr><td colspan="13" style="padding:34px 20px;text-align:center;color:#5a6377">'+
+      h += '<tr><td colspan="'+(verCom?13:10)+'" style="padding:34px 20px;text-align:center;color:#5a6377">'+
            '<div style="font-size:15px;font-weight:700;color:#1F3864;margin-bottom:4px">Todavía no hay rubros</div>'+
            'Cargalos con la barra de abajo: elegí sector, capítulo y composición, poné la cantidad y apretá <b>Agregar rubro</b>.'+
            '<div style="font-size:12px;color:#8893a5;margin-top:6px">El precio comercial se calcula solo con el coeficiente general.</div></td></tr>';
@@ -6983,21 +7000,24 @@ async function abrirPlanillaIntegral(){
     const d = function(l, v, s2){ return '<div style="display:flex;align-items:baseline;gap:6px">'+
       '<span style="font-size:10px;letter-spacing:.3px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</span>'+
       '<b style="font-size:14px;color:#1a2236">'+v+'</b>'+(s2?'<span style="font-size:10.5px;color:#8893a5">'+s2+'</span>':'')+'</div>'; };
-    const _iva = Number(ivaGet())||0, _ivaG = Math.round(ventaT*_iva/100);
+    const _iva = Number(ivaGet())||0, _ivaG = Math.round((verCom?ventaT:costoT)*_iva/100);
     document.getElementById('piPie').innerHTML =
       d('Costo','₲ '+fmtGs(costoT), ed.rubros.length+' rubros')+
-      d('Venta','₲ '+fmtGs(ventaT), _iva ? ('+ IVA '+_iva+' % = ₲ '+fmtGs(ventaT+_ivaG)) : 'sin IVA')+
-      d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' %' : '')+
-      d('Coef. real', coefR?coefR.toFixed(4):'—')+
+      (verCom
+        ? d('Venta','₲ '+fmtGs(ventaT), _iva ? ('+ IVA '+_iva+' % = ₲ '+fmtGs(ventaT+_ivaG)) : 'sin IVA')+
+          d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' %' : '')+
+          d('Coef. real', coefR?coefR.toFixed(4):'—')
+        : d('Con IVA','₲ '+fmtGs(costoT+_ivaG), _iva ? ('IVA '+_iva+' %') : 'sin IVA'))+
       '<div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'+
         '<button type="button" id="piPdf" class="pm-toggle" style="border:1px solid #C9D0DC">🖨 Generar PDF</button>'+
         '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
-        '<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>'+
+        (verCom?'<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>':'')+
         '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0"'+(ed.activo?' disabled':'')+'>🚀 Publicar</button>'+
         '<button type="button" id="piGuardar" class="pm-save" style="padding:9px 16px">'+(ed.tocado?'● ':'')+'Guardar presupuesto</button></div>';
     document.getElementById('piSub').textContent = ed.bloqueado
       ? 'Presupuesto aprobado · solo lectura. Reabrilo desde el presupuesto para editarlo.'
-      : 'Costo de obra y precio comercial en la misma planilla · versión de prueba';
+      : (verCom ? 'Costo de obra y precio comercial en la misma planilla'
+                : 'Carga de rubros y costo de obra · los precios al cliente no se muestran con tu permiso');
 
     const body = document.getElementById('piBody');
     const refrescar = function(){ _mgPreparar(); renderRubros(); renderInsumos(); setTimeout(pintar, 0); };
@@ -7074,14 +7094,17 @@ async function abrirPlanillaIntegral(){
       };
     });
     document.getElementById('piGuardar').onclick = async function(){ _cerrar(); await saveBudget(); };
-    document.getElementById('piIrProp').onclick = function(){ _cerrar(); openPropuesta(true); };
+    const _irp = document.getElementById('piIrProp');
+    if(_irp) _irp.onclick = function(){ _cerrar(); openPropuesta(true); };
     document.getElementById('piDocs').onclick   = function(){ _cerrar(); document.getElementById('pmCotBtn').click(); };
     document.getElementById('piPdf').onclick    = function(){ _piOpcionesPDF(presu); };
     const pub = document.getElementById('piPublicar');
     if(pub) pub.onclick = function(){ _cerrar(); document.getElementById('pmToggleBtn').click(); };
   };
-  document.getElementById('piGen').addEventListener('change', pintar);
-  document.getElementById('piAplicar').onclick = function(){
+  const _gen = document.getElementById('piGen');
+  if(_gen) _gen.addEventListener('change', pintar);
+  const _apl = document.getElementById('piAplicar');
+  if(_apl) _apl.onclick = function(){
     const co = Number(document.getElementById('piGen').value)||0;
     document.getElementById('mgPct').value = Math.round((1-co)*10000)/100;
     const mc = document.getElementById('mgCoef'); if(mc) mc.value = co.toFixed(4);
