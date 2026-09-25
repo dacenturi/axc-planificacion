@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.20 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.21 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -2509,6 +2509,11 @@ async function openEdit(codigo){
     const { data:ins } = await sb.from('presupuesto_insumos').select('*').eq('presupuesto', codigo).order('material');
     ed.insumos = (ins||[]).map(function(i){ return { editado_manual:!!i.editado_manual, codigo_insumo:i.codigo_insumo||'', material:i.material||'', unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, rubro_codigo:i.rubro_codigo||'', coef1:(i.coef1!=null?Number(i.coef1):''), coef2:(i.coef2!=null?Number(i.coef2):''), merma_pct:(i.merma_pct!=null?Number(i.merma_pct):''), precio_unitario:(i.precio_unitario!=null?Number(i.precio_unitario):null), producto_id:(i.producto_id!=null?String(i.producto_id):''), precio_origen:(i.precio_origen||'catalogo'), subtipo:(i.subtipo||''), precio_ref:(i.precio_ref!=null?Number(i.precio_ref):null),
       tipo:(i.tipo || (/^MO-/i.test(String(i.codigo_insumo||'')) ? 'mano_obra' : (/^LG-/i.test(String(i.codigo_insumo||'')) ? 'logistica' : 'insumo'))) }; });
+    const _co = _coefDesdeRubros();
+    if(_co && (state.puedeVerMargen || state.isAdmin)){
+      showToast('Coeficientes recuperados','info',
+        'General '+_co.general.toFixed(4)+(_co.propios ? (' · '+_co.propios+' rubro(s) con coeficiente propio') : ''));
+    }
     renderRubros(); renderInsumos();
     _detectarCompNuevas(true);
     // v10.20 · Vista preferida: si la última vez trabajó en la planilla, se abre sola
@@ -3984,6 +3989,43 @@ async function rubrosConConsumo(codigo){
   return out;
 }
 
+/* v10.21 · Coeficiente que se guarda en cada rubro: el que está aplicado en la
+   planilla (propio o general). Sin permiso de márgenes se conserva el anterior. */
+function _coefParaGuardar(r){
+  const cod = r.rubro_codigo || '';
+  if(!(state.puedeVerMargen || state.isAdmin)) return (r.coeficiente != null ? Number(r.coeficiente) : null);
+  const gen = Number((document.getElementById('mgPct')||{}).value);
+  if(isNaN(gen)) return (r.coeficiente != null ? Number(r.coeficiente) : null);
+  const v = (MG.porRubro||{})[cod];
+  const pct = (v == null || v === '') ? gen : Number(v);
+  const co = Math.round((1 - pct/100)*10000)/10000;
+  return (co > 0 && co <= 1) ? co : null;
+}
+/* Al abrir el presupuesto: se recuperan los coeficientes guardados y el general
+   es el que más se repite. Si no hay ninguno, queda el valor por defecto. */
+function _coefDesdeRubros(){
+  const cuenta = {}; let n = 0;
+  (ed.rubros||[]).forEach(function(r){
+    const co = Number(r.coeficiente);
+    if(!(co > 0 && co <= 1) || !r.rubro_codigo) return;
+    n++; cuenta[co.toFixed(4)] = (cuenta[co.toFixed(4)]||0) + 1;
+  });
+  if(!n) return false;
+  let gen = null, max = 0;
+  Object.keys(cuenta).forEach(function(k){ if(cuenta[k] > max){ max = cuenta[k]; gen = Number(k); } });
+  const pctGen = Math.round((1-gen)*10000)/100;
+  const ip = document.getElementById('mgPct'), ic = document.getElementById('mgCoef');
+  if(ip) ip.value = pctGen;
+  if(ic) ic.value = gen.toFixed(4);
+  MG.porRubro = {};
+  (ed.rubros||[]).forEach(function(r){
+    const co = Number(r.coeficiente);
+    if(!(co > 0 && co <= 1) || !r.rubro_codigo) return;
+    if(Math.abs(co - gen) < 0.00005) return;            // usa el general
+    MG.porRubro[r.rubro_codigo] = Math.round((1-co)*10000)/100;
+  });
+  return { general:gen, propios:Object.keys(MG.porRubro).length, rubros:n };
+}
 async function saveBudget(){
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
   const obra = (document.getElementById('pmObra').value||'').trim();
@@ -4293,7 +4335,10 @@ async function saveBudget(){
                  material_unit: mat, mano_obra_unit: mo,
                  costo_unit: cu, costo_parcial: (cu!=null ? Math.round(cu*q) : null),
                  mano_obra_total: (mo!=null ? Math.round(mo*q) : null),
-                 coeficiente: null };   // el margen se aplica en la propuesta, no en el rubro
+                 // v10.21 · El coeficiente comercial queda guardado con el rubro:
+                 // al abrir el presupuesto se recupera tal cual se dejó. Quien no
+                 // tiene permiso de márgenes no lo toca: se conserva el guardado.
+                 coeficiente: _coefParaGuardar(r) };
       });
       // Detalle para el contratista: la columna se manda solo si hay alguno
       // cargado, así el guardado no falla si todavía no se corrió el SQL.
@@ -4680,9 +4725,10 @@ function openPropuesta(mantenerCoef){
   if(!state.puedeVerMargen){ showToast('No tenés permiso para aplicar márgenes','error','Pedí el permiso a un administrador'); return; }
   if(!ed.open){ showToast('Abrí un presupuesto primero','error'); return; }
   if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error'); return; }
-  const _coefPrevios = (mantenerCoef === true) ? Object.assign({}, MG.porRubro) : null;
+  // v10.21 · Los coeficientes guardados en el presupuesto son el punto de partida
+  const _coefPrevios = Object.assign({}, MG.porRubro);
   _mgPreparar();
-  MG.porRubro = _coefPrevios || {};
+  MG.porRubro = _coefPrevios;
   document.getElementById('mgSub').textContent =
     (document.getElementById('pmCodigo').value||'') + ' · ' +
     (document.getElementById('pmObra').value||'') + ' · ' + MG.rows.length + ' rubros';
@@ -4704,12 +4750,13 @@ function openPropuesta(mantenerCoef){
   // Recuperar los márgenes de la última propuesta emitida de este presupuesto
   const _cod = document.getElementById('pmCodigo').value||'';
   const _avisoId = 'mgPrevio';
-  if(!mantenerCoef) _mgCargarUltima(_cod).then(function(prev){
+  const _hayGuardados = Object.keys(MG.porRubro||{}).length > 0 || (ed.rubros||[]).some(function(r){ return Number(r.coeficiente) > 0; });
+  _mgCargarUltima(_cod).then(function(prev){
     const cont = document.getElementById('mgSub');
     if(!prev || !prev.items.length || !cont) return;
     // Margen general de la propuesta anterior
     const gen = Number(prev.cab.margen_general);
-    if(!isNaN(gen) && gen > 0){
+    if(!isNaN(gen) && gen > 0 && !_hayGuardados){
       document.getElementById('mgPct').value = gen;
       document.getElementById('mgCoef').value = (1-gen/100).toFixed(4);
     }
@@ -4725,7 +4772,8 @@ function openPropuesta(mantenerCoef){
       if(it.rubro_codigo == null) return;
       const pct = Number(it.margen_pct);
       if(isNaN(pct)) return;
-      MG.porRubro[it.rubro_codigo] = pct; _enPrev[it.rubro_codigo] = 1;
+      _enPrev[it.rubro_codigo] = 1;
+      if(!_hayGuardados) MG.porRubro[it.rubro_codigo] = pct;   // v10.21 · lo guardado en el presupuesto manda
       if(isNaN(gen) || Math.abs(pct-gen) > 0.001) n++;
     });
     (MG.rows||[]).forEach(function(r){ if(!_enPrev[r.codigo]) nuevos++; });
