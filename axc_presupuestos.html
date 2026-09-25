@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.22 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.24 · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -2157,6 +2157,23 @@ function refreshSectoresForObra(){
   if(!obra && live && !opts.length){ /* sin obra aún */ }
 }
 
+/* v10.24 · Sectores de la obra abierta, para los desplegables de cada fila */
+function _sectoresDeObra(){
+  const sel = document.getElementById('pmRubSector');
+  const set = {};
+  if(sel) Array.from(sel.options).forEach(function(o){ if(o.value) set[o.value] = 1; });
+  (ed.rubros||[]).forEach(function(r){ const v = String(r.sector||'').trim(); if(v) set[v] = 1; });
+  return Object.keys(set).sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
+}
+function _selectSector(valor, attrs){
+  const v = String(valor||'');
+  const ops = _sectoresDeObra();
+  if(v && ops.indexOf(v) < 0) ops.push(v);
+  return '<select '+(attrs||'')+' class="pm-input pm-sec-sel">'+
+    '<option value=""'+(v?'':' selected')+'>Sector…</option>'+
+    ops.map(function(s){ return '<option value="'+escapeHtml(s)+'"'+(s===v?' selected':'')+'>'+escapeHtml(s)+'</option>'; }).join('')+
+    '<option value="__nuevo">＋ Nuevo sector…</option></select>';
+}
 // ── Abrir editor ────────────────────────────────────────
 function _aplicarPermisoMargen(){
   const b=document.getElementById('pmPropBtn');
@@ -3089,7 +3106,9 @@ function renderRubros(){
     const _dgAb = _dgOk && _dgAbierto(r.rubro_codigo);
     const _cls = [r.opcional?'pm-esopc':'', _dgAb?'dg-open':''].filter(Boolean).join(' ');
     return '<tr'+(_cls?' class="'+_cls+'"':'')+(r.rubro_codigo?' data-rcod="'+escapeHtml(r.rubro_codigo)+'"':'')+'>' +
-      '<td><input data-i="'+i+'" data-f="sector" value="'+escapeHtml(r.sector)+'"></td>' +
+      '<td><div style="display:flex;gap:4px;align-items:center">'+
+        _selectSector(r.sector, 'data-i="'+i+'" data-f="sector"')+
+        '<button type="button" class="pm-addmini pm-secadd" data-i="'+i+'" title="Agregar un sector nuevo a esta obra">+</button></div></td>' +
       // v8.2 compacto: código + etiquetas en una línea, nombre debajo (máx. 2 líneas).
       // El capítulo ya no se repite en cada fila: va en la banda del grupo.
       '<td><div class="pm-desccell" title="'+escapeHtml((r.rubro_codigo||'')+' · '+(r.descripcion||'')+(r.capitulo?('\nCapítulo: '+r.capitulo):''))+'">'+
@@ -3191,6 +3210,16 @@ function renderRubros(){
       ed.tocado = true;
       renderRubros(); renderInsumos();
     });
+  });
+  tb.querySelectorAll('select[data-f="sector"]').forEach(function(sel){
+    sel.addEventListener('change', function(){
+      const i = Number(sel.dataset.i);
+      if(sel.value === '__nuevo'){ sel.value = ed.rubros[i].sector || ''; openMini('sector', i); return; }
+      ed.rubros[i].sector = sel.value; ed.tocado = true; renderRubros(); renderInsumos();
+    });
+  });
+  tb.querySelectorAll('.pm-secadd').forEach(function(b){
+    b.addEventListener('click', function(){ openMini('sector', Number(b.dataset.i)); });
   });
   tb.querySelectorAll('input[data-f]').forEach(function(inp){
     inp.addEventListener('change', function(){
@@ -4508,7 +4537,7 @@ async function openPropuestasLista(){
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:12500;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML =
-    '<div style="background:#fff;border-radius:14px;width:min(1040px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
+    '<div style="background:#fff;border-radius:14px;width:min(1240px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">'+
       '<div style="background:#1f3864;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0">'+
         '<div style="font-weight:800;font-size:16px">📑 Propuestas emitidas · '+escapeHtml(presu)+'</div>'+
         '<div style="font-size:12px;opacity:.85">La marcada como ACEPTADA es la que se usa para comparar costo contra venta</div></div>'+
@@ -4585,10 +4614,20 @@ async function openPropuestasLista(){
       }
 
       box.innerHTML = ficha +
+        '<style>#plBody .ins-tbl{font-size:12.5px}#plBody .ins-tbl th{position:sticky;top:0;z-index:3;background:#F0F3F8}'+
+        '#plBody .ins-tbl td,#plBody .ins-tbl th{padding:6px 8px}'+
+        '#plBody .pl-acc{width:150px;padding:6px 10px!important}'+
+        '#plBody .pl-b{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;margin-bottom:5px;'+
+          'border-radius:8px;padding:5px 9px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #C9D0DC;background:#fff;color:#1F3864;white-space:nowrap}'+
+        '#plBody .pl-b:last-child{margin-bottom:0}'+
+        '#plBody .pl-b-pdf:hover{background:#EEF3FA}'+
+        '#plBody .pl-b-mk{background:#1B5524;border-color:#1B5524;color:#fff}#plBody .pl-b-mk:hover{filter:brightness(1.12)}'+
+        '#plBody .pl-b-ok{background:#DFF3E3;border-color:#9BD3A9;color:#1B5524;cursor:default}'+
+        '</style>'+
         '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
-        '<th class="n">Margen gral.</th><th class="n">Coef. real</th><th class="n">Rubros</th>'+
-        '<th class="n">Costo</th><th class="n">Utilidad</th><th class="n">Venta sin IVA</th>'+
-        '<th class="n">Total con IVA</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
+        '<th class="n">Margen</th><th class="n">Coef.</th><th class="n">Rubros</th>'+
+        '<th class="n">Costo</th><th class="n">Utilidad</th><th class="n">Venta</th>'+
+        '<th class="n">Con IVA</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
         cabs.map(function(c){
           const a = agg[c.id] || { costo:0, venta:0, n:0, dif:0 };
           const coef = a.venta>0 ? (a.costo/a.venta) : 0;
@@ -4597,7 +4636,7 @@ async function openPropuestasLista(){
           return '<tr'+(c.aceptada?' style="background:#f0f8f1"':'')+'>'+
             '<td><b>v'+c.version+'</b></td>'+
             '<td>'+escapeHtml(_fmtF(c.emitido_en,false)||'')+'</td>'+
-            '<td style="font-size:12px">'+escapeHtml(c.emitido_por||'')+'</td>'+
+            '<td style="font-size:12px" title="'+escapeHtml(c.emitido_por||'')+'">'+escapeHtml(_nombreCorto(c.emitido_por||''))+'</td>'+
             '<td class="n">'+(isNaN(Number(c.margen_general))?'—':(Number(c.margen_general)+' %'))+'</td>'+
             '<td class="n"><b>'+(coef?coef.toFixed(4):'—')+'</b>'+
               (a.dif?('<div style="font-size:11px;color:#8a6d10">'+a.dif+' rubro(s) ajustado(s)</div>'):'')+'</td>'+
@@ -4611,9 +4650,11 @@ async function openPropuestasLista(){
                 (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
                 (c.aceptada_obs?('<div style="font-size:11px;color:#8893a5">'+escapeHtml(c.aceptada_obs)+'</div>'):'')
               : '<span style="color:#8893a5;font-size:12px">emitida</span>')+'</td>'+
-            '<td style="text-align:right;white-space:nowrap">'+
-              '<button type="button" class="btn-g" data-plver="'+c.id+'">📄 Ver PDF</button> '+
-              (c.aceptada?'':'<button type="button" class="btn-ok" data-placep="'+c.version+'">✓ Marcar aceptada</button>')+
+            '<td class="pl-acc">'+
+              '<button type="button" class="pl-b pl-b-pdf" data-plver="'+c.id+'" title="Ver o imprimir esta versión tal como se emitió">📄 <span>Ver PDF</span></button>'+
+              (c.aceptada
+                ? '<span class="pl-b pl-b-ok" title="Es la versión vigente: contra esta se compara el costo">✓ <span>Aceptada</span></span>'
+                : '<button type="button" class="pl-b pl-b-mk" data-placep="'+c.version+'" title="Marcar esta versión como la que aceptó el cliente">✓ <span>Marcar aceptada</span></button>')+
             '</td></tr>';
         }).join('')+'</tbody></table>'+
         '<div style="font-size:11.5px;color:#8893a5;margin-top:10px">El coeficiente real es costo ÷ venta de toda la propuesta. '+
@@ -6944,6 +6985,7 @@ async function abrirPlanillaIntegral(){
   const secDl = '<datalist id="piSecDl">'+_secs.map(function(x){ return '<option value="'+escapeHtml(x)+'">'; }).join('')+'</datalist>';
 
   const pintar = function(){
+    window._piRepintar = function(){ try{ pintar(); }catch(e){} };
     const _g = document.getElementById('piGen');
     const gen = _g ? (1 - (Number(_g.value)||0)) * 100 : (Number(document.getElementById('mgPct').value)||31);
     const bloq = !!ed.bloqueado;
@@ -7013,7 +7055,10 @@ async function abrirPlanillaIntegral(){
           ((_cat && _cat.receta_obs) ? '<button type="button" class="rub-obs pi-obs" data-obs="'+escapeHtml(r.rubro_codigo||'')+'" title="Esta composición tiene una observación">📝</button>' : '')+
           _ctChip(r)+_compNuevaChip(r)+_ceroChip(r);
         return '<tr'+(r.opcional?' style="opacity:.62"':'')+'>'+
-          '<td><input class="pm-input pi-f" data-i="'+i+'" data-f="sector" list="piSecDl" value="'+escapeHtml(r.sector||'')+'" style="width:88px;padding:4px 7px"'+(bloq?' disabled':'')+'></td>'+
+          '<td><div style="display:flex;gap:4px;align-items:center">'+
+            _selectSector(r.sector, 'data-i="'+i+'" data-f="sector" style="width:104px;padding:3px 6px" class="pm-input pi-f"'+(bloq?' disabled':'')) +
+            (bloq?'':'<button type="button" class="pm-addmini pi-secadd" data-i="'+i+'" title="Agregar un sector nuevo a esta obra">+</button>')+
+          '</div></td>'+
           '<td><div class="pm-codline" style="flex-wrap:wrap">'+
               (r.tiene_receta?'<button type="button" class="dg-tog pi-dg" data-i="'+i+'" aria-expanded="'+(!!PI_ABIERTO[r.rubro_codigo])+'" title="'+(PI_ABIERTO[r.rubro_codigo]?'Plegar':'Desplegar')+' el desglose de materiales y mano de obra">▶</button>':'')+
               '<span class="pm-rubcod">'+escapeHtml(r.rubro_codigo||'—')+'</span>'+chips+'</div>'+
@@ -7135,7 +7180,18 @@ async function abrirPlanillaIntegral(){
     body.querySelectorAll('.pi-opc').forEach(function(ch){
       ch.addEventListener('change', function(){ ed.rubros[Number(ch.dataset.i)].opcional = ch.checked; ed.tocado = true; refrescar(); });
     });
+    body.querySelectorAll('select[data-f="sector"]').forEach(function(sel){
+      sel.addEventListener('change', function(){
+        const i = Number(sel.dataset.i);
+        if(sel.value === '__nuevo'){ sel.value = ed.rubros[i].sector || ''; openMini('sector', i); return; }
+        ed.rubros[i].sector = sel.value; ed.tocado = true; refrescar();
+      });
+    });
+    body.querySelectorAll('.pi-secadd').forEach(function(b){
+      b.onclick = function(){ openMini('sector', Number(b.dataset.i)); };
+    });
     body.querySelectorAll('.pi-f').forEach(function(inp){
+      if(inp.tagName === 'SELECT') return;
       inp.addEventListener('change', function(){
         const r = ed.rubros[Number(inp.dataset.i)], f = inp.dataset.f;
         if(f === 'sector') r.sector = inp.value;
@@ -7288,7 +7344,9 @@ document.getElementById('pmRubComp').addEventListener('change', _onCompChange);
 
 // ===== Pop-up para agregar Obra o Sector al vuelo =====
 var _miniMode = null; // 'obra' | 'sector'
-function openMini(mode){
+var _miniFila = null;
+function openMini(mode, fila){
+  _miniFila = (typeof fila === 'number') ? fila : null;
   _miniMode = mode;
   var title = document.getElementById('miniTitle');
   var label = document.getElementById('miniLabel');
@@ -7364,6 +7422,13 @@ async function saveMini(){
       if(ins2.error) throw ins2.error;
       await loadListas(); refreshSectoresForObra();
       document.getElementById('pmRubSector').value = nombre;
+      // v10.24 · Si el sector se pidió desde una fila, se le asigna ahí
+      if(_miniFila != null && ed.rubros[_miniFila]){
+        ed.rubros[_miniFila].sector = nombre; ed.tocado = true;
+        renderRubros(); renderInsumos();
+        if(typeof _piRepintar === 'function') _piRepintar();
+      }
+      _miniFila = null;
       showToast('Sector «'+nombre+'» agregado a '+obra, 'success'); closeMini();
     }
   }catch(e){ console.warn('saveMini', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
