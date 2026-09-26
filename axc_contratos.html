@@ -313,7 +313,7 @@ table.lin .inp,table.lin .sel{padding:6px 8px;font-size:13px}
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v1.3</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v1.5</p>
   </div>
 </div>
 
@@ -1119,11 +1119,15 @@ function editorLineas(cont, ctx){
   const ppSel = ctx.pp ? '<select class="sel" id="elPP" style="max-width:420px"><option value="">＋ Agregar un rubro del presupuesto '+esc(ctx.pp.codigo)+'…</option>'+
     ctx.pp.rubros.map(function(r){ return '<option value="'+esc(r.rubro_codigo)+'">'+esc(r.rubro_codigo+' · '+r.descripcion+' · '+(r.sector||'')+' · '+fmtQ(r.cantidad)+' '+r.unidad)+'</option>'; }).join('')+'</select>' : '';
   cont.innerHTML = dlRubHtml()+dlSecHtml(ctx.obra, ctx.pp?ctx.pp.rubros.map(function(r){ return r.sector; }):[])+
-    '<div class="card"><div class="tbl-wrap"><table class="tbl lin"><thead><tr><th style="width:118px">Rubro (catálogo)</th><th style="width:120px">Sector</th><th>Descripción del trabajo *</th><th style="width:74px">Unid.</th><th class="num" style="width:96px">Cantidad *</th><th class="num" style="width:122px">Precio Gs *</th><th class="num" style="width:110px">Subtotal</th><th class="num" style="width:96px">Referencia</th><th style="width:110px">Detalle</th><th style="width:40px"></th></tr></thead><tbody>'+
+    '<div class="card"><div class="tbl-wrap"><table class="tbl lin"><thead><tr><th style="width:104px">Rubro</th><th style="width:120px">Sector</th><th>Descripción del trabajo *</th><th style="width:74px">Unid.</th><th class="num" style="width:96px">Cantidad *</th><th class="num" style="width:122px">Precio Gs *</th><th class="num" style="width:110px">Subtotal</th><th class="num" style="width:96px">Referencia</th><th style="width:110px">Detalle</th><th style="width:40px"></th></tr></thead><tbody>'+
     (L.length ? L.map(function(l,i){
       const sub=Math.round((Number(l.cantidad)||0)*(Number(l.precio_pactado)||0));
       return '<tr data-i="'+i+'">'+
-        '<td><input class="inp" list="dlRub" data-f="rubro_codigo" value="'+esc(l.rubro_codigo)+'" placeholder="Opcional"'+(l.presupuesto?' readonly title="Vinculado al presupuesto '+esc(l.presupuesto)+'"':'')+'></td>'+
+        /* v1.5 · El rubro solo sale del presupuesto. Un trabajo que no está
+           presupuestado se carga sin rubro: no se inventan códigos. */
+        '<td>'+(l.presupuesto
+          ? '<span class="code" title="Del presupuesto '+esc(l.presupuesto)+'">'+esc(l.rubro_codigo||'—')+'</span>'
+          : '<span class="muted" title="Este trabajo no está en el presupuesto: se contrata como adicional, sin rubro">sin rubro</span>')+'</td>'+
         '<td><input class="inp" list="dlSec" data-f="sector" value="'+esc(l.sector)+'"'+(l.presupuesto?' readonly':'')+'></td>'+
         '<td><input class="inp" data-f="descripcion" value="'+esc(l.descripcion)+'" maxlength="300"'+(l.presupuesto?' readonly':'')+'>'+(l.presupuesto?'<div class="hint">Del presupuesto '+esc(l.presupuesto)+'</div>':'')+'</td>'+
         '<td><input class="inp" data-f="unidad" value="'+esc(l.unidad)+'" maxlength="12"'+(l.presupuesto?' readonly':'')+'></td>'+
@@ -1136,7 +1140,7 @@ function editorLineas(cont, ctx){
     }).join('') : '<tr><td colspan="10" class="empty"><b>Sin líneas</b>Agregá un trabajo con el botón de abajo.</td></tr>')+
     '</tbody></table></div></div>'+
     '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn btn-gh btn-sm" id="elAdd">＋ Agregar trabajo</button>'+ppSel+
-    '<span class="hint" style="margin:0">Si elegís un código del catálogo se completa la descripción y se toma la mano de obra de su composición como referencia de precio.</span></div>';
+    '<span class="hint" style="margin:0">El rubro sale del presupuesto: los trabajos que no están presupuestados se cargan como adicional, sin rubro y sin precio de referencia.</span></div>';
   function pintar(){ editorLineas(cont, ctx); if(ctx.onChange) ctx.onChange(); }
   cont.querySelectorAll('tr[data-i]').forEach(function(tr){
     const l=L[Number(tr.getAttribute('data-i'))];
@@ -1192,6 +1196,8 @@ function avisosE(){
     }
     if(l.precio_referencia && l.precio_pactado > l.precio_referencia*1.10) w.push({t:n+': precio '+Math.round((l.precio_pactado/l.precio_referencia-1)*100)+' % por encima de la referencia'});
   });
+  const sinRub=L.filter(function(l){ return !l.presupuesto; }).length;
+  if(sinRub) w.push({t:sinRub+' trabajo(s) no están en el presupuesto: se contratan como adicional, sin rubro. No descuentan saldo de ningún rubro y no tienen precio de referencia'});
   const sinDet=L.filter(function(l){ return !String(l.detalle||'').trim(); }).length;
   if(sinDet) w.push({t:sinDet+' línea(s) sin detalle del trabajo. No es obligatorio, pero evita discusiones al certificar'});
   if(total && Number(E.cab.anticipo) > total*0.3) w.push({t:'El anticipo supera el 30 % del monto estimado'});
@@ -1271,7 +1277,8 @@ async function guardarEd(aprobar){
     for(let i=0;i<L.length;i++){
       const l=L[i];
       const row={ contrato_id:id, adenda:0, orden:i+1, presupuesto:l.presupuesto||null, sector:l.sector||null, capitulo:l.capitulo||(l.rubro_codigo?capTxt('',l.rubro_codigo):null),
-        rubro_codigo:l.rubro_codigo||null, descripcion:String(l.descripcion).trim(), unidad:l.unidad||null, cantidad:Number(l.cantidad)||0,
+        rubro_codigo: l.presupuesto ? (l.rubro_codigo||null) : null,   // v1.5 · sin presupuesto, sin rubro
+        descripcion:String(l.descripcion).trim(), unidad:l.unidad||null, cantidad:Number(l.cantidad)||0,
         precio_pactado:Math.round(Number(l.precio_pactado)||0), precio_referencia:l.precio_referencia?Math.round(l.precio_referencia):null,
         referencia_origen:l.precio_referencia?(l.referencia_origen||(l.presupuesto?'presupuesto':'catalogo')):null, detalle:l.detalle||null, es_adicional:!!l.es_adicional };
       if(l.id){ const r=await sb.from('contrato_items').update(row).eq('id',l.id); if(r.error) throw r.error; vivos[l.id]=1; }
@@ -1502,7 +1509,7 @@ async function guardarAdenda(aprobar){
     const ra=await sb.from('contrato_adendas').insert({ contrato_id:A.c.id, numero:A.n, motivo:mot, estado:'Borrador', creado_por:u }).select().single();
     if(ra.error) throw ra.error;
     const rows=A.lines.map(function(l,i){ return { contrato_id:A.c.id, adenda:A.n, orden:i+1, presupuesto:l.presupuesto||null, sector:l.sector||null, capitulo:l.capitulo||(l.rubro_codigo?capTxt('',l.rubro_codigo):null),
-      rubro_codigo:l.rubro_codigo||null, descripcion:l.descripcion.trim(), unidad:l.unidad||null, cantidad:Number(l.cantidad)||0, precio_pactado:Math.round(l.precio_pactado),
+      rubro_codigo: l.presupuesto ? (l.rubro_codigo||null) : null, descripcion:l.descripcion.trim(), unidad:l.unidad||null, cantidad:Number(l.cantidad)||0, precio_pactado:Math.round(l.precio_pactado),
       precio_referencia:l.precio_referencia?Math.round(l.precio_referencia):null, referencia_origen:l.precio_referencia?(l.referencia_origen||'catalogo'):null, detalle:l.detalle||null,
       es_adicional:!l.presupuesto, creado_por:u }; });
     const ri=await sb.from('contrato_items').insert(rows); if(ri.error) throw ri.error;
@@ -1612,7 +1619,7 @@ async function guardarUrg(aprobar){
       regularizacion:'pendiente', fecha:hoyISO(), inicio:hoyISO(), plazo_dias:U.plazo_dias===''?null:Number(U.plazo_dias), anticipo:0, forma_pago:DEF.forma_pago, materiales:'contratado',
       lugar:DEF.lugar, encargado:userName(), representante:DEF.representante, ruc:DEF.ruc, monto_estimado:monto, creado_por:u, creado_en:now, actualizado_por:u, actualizado_en:now }).select('id').single();
     if(r.error) throw r.error;
-    const rows=U.lines.map(function(l,i){ return { contrato_id:r.data.id, adenda:0, orden:i+1, sector:l.sector||U.sector||null, capitulo:l.rubro_codigo?capTxt('',l.rubro_codigo):null, rubro_codigo:l.rubro_codigo||null,
+    const rows=U.lines.map(function(l,i){ l.rubro_codigo=''; return { contrato_id:r.data.id, adenda:0, orden:i+1, sector:l.sector||U.sector||null, capitulo:l.rubro_codigo?capTxt('',l.rubro_codigo):null, rubro_codigo:l.rubro_codigo||null,
       descripcion:l.descripcion.trim(), unidad:l.unidad||null, cantidad:Number(l.cantidad), precio_pactado:Math.round(l.precio_pactado), precio_referencia:l.precio_referencia?Math.round(l.precio_referencia):null,
       referencia_origen:l.precio_referencia?'catalogo':null, detalle:l.detalle||null, es_adicional:false, creado_por:u }; });
     const ri=await sb.from('contrato_items').insert(rows); if(ri.error) throw ri.error;
@@ -1633,6 +1640,8 @@ const PDF_CSS =
 'body{font-family:Arial,Helvetica,sans-serif;background:#E9ECF1;margin:0;color:#141A26;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
 '.tb{position:sticky;top:0;background:#1F3864;color:#fff;padding:9px 18px;display:flex;gap:16px;align-items:center;font-size:13px;z-index:9;flex-wrap:wrap}'+
 '.tb label{display:flex;gap:6px;align-items:center;cursor:pointer}.tb select{padding:4px 8px;border-radius:6px;border:0}.tb .sp{flex:1}'+
+'.tb .bt-gh{background:#fff;color:#1F3864;border:1px solid #d6dce8}'+
+'.tb-n{position:sticky;top:38px;z-index:8;background:#FFF8E6;color:#7A5600;border-bottom:1px solid #F2CD7A;padding:7px 18px;font-size:12px}'+
 '.tb button{background:#C8A028;color:#1c2430;border:0;padding:8px 18px;border-radius:7px;font-weight:700;cursor:pointer}'+
 '.hoja{width:188mm;margin:14px auto;background:#fff;padding:9mm 10mm 8mm;box-shadow:0 2px 14px rgba(0,0,0,.12);position:relative}'+
 '.top{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px;padding-bottom:9px;border-bottom:3px solid #1F3864}'+
@@ -1676,7 +1685,7 @@ const PDF_CSS =
 '.wm{position:absolute;top:44%;left:0;right:0;text-align:center;font-size:58px;font-weight:900;letter-spacing:8px;color:rgba(192,57,43,.13);transform:rotate(-24deg);pointer-events:none}'+
 '.cx{font-size:8.5px;color:#9AA3B2;text-align:right;margin-top:4mm}'+
 'body.sinpr .pr{display:none}body.sindet .dx{display:none}body.sinct .ct,body.sinct .anx{display:none}'+
-'@media print{body{background:#fff}.tb{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}.hoja+.hoja{margin-top:0}}';
+'@media print{body{background:#fff}.tb,.tb-n{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}.hoja+.hoja{margin-top:0}}';
 
 /* Formato del «Reporte para contratista» de Presupuestos (v8.5–v9.0),
    ahora con los datos guardados en el contrato: número CT, contratista,
@@ -1739,8 +1748,26 @@ const RC_CSS =
 '.firmas div{border-top:1px solid #111;padding-top:4px}'+
 '.wm{position:absolute;top:40%;left:0;right:0;text-align:center;font-size:60px;font-weight:900;letter-spacing:8px;color:rgba(192,57,43,.13);transform:rotate(-24deg);pointer-events:none}'+
 '.cx{font-size:9px;color:#888;text-align:right;margin-top:6mm}'+
-'@media print{body{background:#fff}.bar,.cx{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}}';
+'.tb .bt-gh{background:#fff;color:#1F3864}'+
+'.tb-n{position:sticky;top:38px;z-index:8;background:#FFF8E6;color:#7A5600;border-bottom:1px solid #F2CD7A;padding:7px 18px;font-size:12px}'+
+'@media print{body{background:#fff}.bar,.cx,.tb,.tb-n{display:none}.hoja{box-shadow:none;margin:0;width:auto;padding:0}}';
 
+/* v1.4 · Nombre del archivo y botón de descarga dentro de la ventana del PDF.
+   El navegador usa el título del documento como nombre sugerido al guardar. */
+function _nombreArchivo(t){
+  return String(t||'documento').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^A-Za-z0-9 _.-]/g,' ').replace(/\s+/g,' ').trim().replace(/ /g,'_').slice(0,80);
+}
+function _pdfDescarga(nombre){
+  window.descargarPDF = function(){
+    const prev = document.title;
+    document.title = nombre;                 // Chrome propone este nombre de archivo
+    const n = document.getElementById('tbNota'), a = document.getElementById('tbArch');
+    if(n && a){ a.textContent = nombre + '.pdf'; n.hidden = false; }
+    window.focus();
+    setTimeout(function(){ window.print(); setTimeout(function(){ document.title = prev; }, 1500); }, 60);
+  };
+}
 function _v(x){ return (x!=null && String(x).trim()!=='') ? '<span class="fl">'+esc(x)+'</span>' : '<span class="vacio"></span>'; }
 /* opts.orden → orden de trabajo: sin precios y sin cláusulas */
 function pdfContrato(c, items, adendas, opts){
@@ -1868,10 +1895,13 @@ _v(k.nombre)+' con CI N.° '+_v(k.ci_ruc)+', mayor de edad, de profesión '+_v(k
     '<label><input type="checkbox" id="fVac"> Solo trabajos con detalle</label>'+
     '<label><input type="checkbox" id="fPr"'+(opts.orden?' checked':'')+'> Ocultar precios</label>'+
     '<label><input type="checkbox" id="fCt"'+(opts.orden?'':' checked')+'> Incluir contrato</label>'+
-    '<span class="sp"></span><button onclick="window.print()">Imprimir / PDF</button></div>'+
+    '<span class="sp"></span>'+
+    '<button class="bt-gh" onclick="window.print()" title="Abre el diálogo de impresión">🖨 Imprimir</button>'+
+    '<button onclick="descargarPDF()" title="Se abre el diálogo con «Guardar como PDF» y el nombre del archivo ya puesto">⬇ Descargar PDF</button></div>'+
+    '<div class="tb-n" id="tbNota" hidden>En el diálogo elegí <b>Destino → Guardar como PDF</b> y apretá Guardar. El archivo se llama <b id="tbArch"></b></div>'+
     hoja1+contrato+anexo+
     '<div class="cx" style="width:190mm;margin:0 auto 20px">'+n+' trabajos · '+nDet+' con detalle · Desarrollado por Conexdata</div>'+
-    '<scr'+'ipt>var letras='+letras.toString()+';('+_rcPopup.toString()+')();</scr'+'ipt></body></html>');
+    '<scr'+'ipt>var letras='+letras.toString()+';('+_rcPopup.toString()+')();('+_pdfDescarga.toString()+')('+JSON.stringify(_nombreArchivo('Contrato '+num+' '+(k.nombre||'')))+');</scr'+'ipt></body></html>');
   w.document.close();
 }
 /* Corre dentro de la ventana del PDF: filtros y totales */
@@ -1950,10 +1980,14 @@ $('repPdf').addEventListener('click', function(){
   if(!O.length) body='<p style="font-size:11px;margin-top:14px">Sin contratos aprobados para el filtro elegido.</p>';
   w.document.open();
   w.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Mano de obra por obra · '+esc(R.obra||'todas las obras')+' · '+hoyISO()+'</title><style>'+css+'</style></head><body>'+
-    '<div class="tb"><b>Reporte de mano de obra por obra</b><span class="sp"></span><button onclick="window.print()">Imprimir / Guardar PDF</button></div>'+
+    '<div class="tb"><b>Reporte de mano de obra por obra</b><span class="sp"></span>'+
+    '<button class="bt-gh" onclick="window.print()">🖨 Imprimir</button>'+
+    '<button onclick="descargarPDF()">⬇ Descargar PDF</button></div>'+
+    '<div class="tb-n" id="tbNota" hidden>En el diálogo elegí <b>Destino → Guardar como PDF</b> y apretá Guardar. El archivo se llama <b id="tbArch"></b></div>'+
     '<div class="hoja"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC"><div><div class="k">CONTRATOS DE MANO DE OBRA</div><div class="t">Contratado, certificado y saldo por obra</div><div class="s">'+esc(R.obra||'Todas las obras')+' · emitido el '+fmtFH(new Date().toISOString())+' por '+esc(userName())+'</div></div><div></div></div><div class="gold"></div>'+
     '<div class="kp"><div><i>Contratado</i><b>Gs '+fmtGs(tm)+'</b></div><div><i>Certificado aprobado</i><b>Gs '+fmtGs(tc)+'</b></div><div><i>Saldo por certificar</i><b>Gs '+fmtGs(tm-tc)+'</b></div><div><i>Sin presupuesto / adicionales</i><b>Gs '+fmtGs(tsp)+' / '+fmtGs(tad)+'</b></div></div>'+
     body+(S.certOk?'':'<p style="font-size:9px;color:#8893A5;margin-top:8px">Nota: los certificados todavía no están vinculados a los contratos; el certificado se completará cuando la certificación registre el contrato de cada línea.</p>')+
+    '<scr'+'ipt>('+_pdfDescarga.toString()+')('+JSON.stringify(_nombreArchivo('Contratos por obra '+(R.obra||'todas')))+');</scr'+'ipt>'+
     '<div class="pie"><span>AXC Constructora · Contratos de mano de obra</span><span>Desarrollado por Conexdata</span></div></div></body></html>');
   w.document.close();
 });
