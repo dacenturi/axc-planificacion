@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.26 · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.27 · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -1591,6 +1591,17 @@ body{
   table.np-t tr.np-sec td{background:#EAF0F8;color:#1F3864;font-weight:800;font-size:12px}
   .np-doc{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#1F3864}
   .np-nota{font-size:11px;color:#8893a5;margin-top:2px}
+  .np-filtros{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .np-in{flex:1;min-width:260px;padding:9px 12px;border:1.5px solid #d6dce8;border-radius:10px;font:inherit;font-size:13.5px;background:#fff}
+  .np-chips{display:flex;gap:6px;flex-wrap:wrap}
+  .np-chip{border:1px solid #dfe4ec;background:#fff;border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;color:#5a6677;cursor:pointer}
+  .np-chip:hover{background:#F6F9FD}
+  .np-chip.on{background:#1F3864;color:#fff;border-color:#1F3864}
+  .np-ver{display:inline-block;margin-top:3px;border:0;background:none;padding:0;color:#1F3864;font-size:11.5px;font-weight:700;cursor:pointer;text-decoration:underline}
+  table.np-mini{width:100%;border-collapse:collapse;font-size:12px;background:#F8FAFD;border-radius:8px}
+  table.np-mini td{padding:4px 10px;border-bottom:1px solid #eef1f6;color:#42506a}
+  table.np-mini td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr.np-det>td{background:#F8FAFD;padding:8px 12px}
   .np-acc{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:14px;background:#fff;border:1px solid #e2e6ee;border-radius:12px;padding:12px 15px}
   .np-seltxt{font-size:13px;font-weight:700;color:#1F3864}
   .np-lbl{display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:700;color:#42506a;text-transform:uppercase;letter-spacing:.4px}
@@ -10336,7 +10347,7 @@ document.getElementById('marcaSearch').addEventListener('input', function(e){ co
    de la lista. La regularización la decide la residente (por ahora no
    requiere aprobación; queda mapeado para una mejora futura).
    ═══════════════════════════════════════════════════════════════════ */
-const NP = { obra:'', filas:[], sel:{}, cargado:false, pps:[], totPres:0 };
+const NP = { obra:'', filas:[], sel:{}, cargado:false, pps:[], totPres:0, q:'', filtro:'todos' };
 
 function npIniciar(){
   const sel = document.getElementById('npObra');
@@ -10418,16 +10429,27 @@ async function npCargar(){
     const ids = cand.map(function(o){ return o.id; }), byId = {};
     cand.forEach(function(o){ byId[o.id] = o; });
     if(ids.length){
+      const porOC = {};
       const { data:it } = await sb.from('ordenes_compra_items').select('id,oc_id,producto_nombre,cantidad,precio_unit,rubro_codigo').in('oc_id', ids);
       (it||[]).forEach(function(x){
         const o = byId[x.oc_id] || {};
         const sinRubro = !x.rubro_codigo, sinPP = !o.presupuesto;
         if(!sinRubro && !sinPP) return;
-        if(yaReg['oc|'+x.id]) return;
-        filas.push({ origen:'oc', ref:String(x.id), fecha:o.fecha||'', doc:o.numero_oc||('OC '+x.oc_id),
-          quien:o.proveedor||'', detalle:x.producto_nombre||'', unidad:'', cantidad:Number(x.cantidad)||0,
-          monto:Math.round((Number(x.cantidad)||0)*(Number(x.precio_unit)||0)),
-          nota:(sinPP?'Orden sin presupuesto':'Ítem sin rubro') });
+        if(yaReg['oc|oc'+x.oc_id]) return;   // la compra se regulariza entera, no ítem por ítem
+        const k = 'oc'+x.oc_id;
+        const g = porOC[k] || (porOC[k] = { origen:'oc', ref:'oc'+x.oc_id, fecha:o.fecha||'',
+          doc:o.numero_oc||('OC '+x.oc_id), quien:o.proveedor||'', detalle:'', unidad:'', cantidad:0, monto:0,
+          nota:(sinPP?'Orden sin presupuesto':'Ítems sin rubro'), items:[] });
+        const imp = Math.round((Number(x.cantidad)||0)*(Number(x.precio_unit)||0));
+        g.monto += imp;
+        g.items.push({ nombre:x.producto_nombre||'', cantidad:Number(x.cantidad)||0, monto:imp });
+      });
+      Object.keys(porOC).forEach(function(k){
+        const g = porOC[k];
+        g.detalle = g.items.length + ' material(es) · ' + g.items.slice(0,3).map(function(i){ return i.nombre; }).join(', ') +
+                    (g.items.length > 3 ? ' y ' + (g.items.length-3) + ' más' : '');
+        g.cantidad = 0; g.unidad = '';
+        filas.push(g);
       });
     }
   }catch(e){ console.warn('compras', e); }
@@ -10452,20 +10474,27 @@ async function npCargar(){
 const NP_ORIG = { certificado:{ t:'Certificados', i:'📐', c:'#1F3864' }, oc:{ t:'Órdenes de compra', i:'🧱', c:'#8a6d10' }, caja:{ t:'Caja chica', i:'💵', c:'#1B5524' } };
 
 function npPintar(){
-  const F = NP.filas;
+  const q = _normObra(NP.q||'');
+  const fg = NP.filtro || 'todos';
+  const F = NP.filas.filter(function(f){
+    if(fg !== 'todos' && f.origen !== fg) return false;
+    if(!q) return true;
+    return _normObra([f.doc, f.quien, f.detalle, f.nota].join(' ')).indexOf(q) >= 0;
+  });
   if(!F.length){
     npPintarVacio('<b>'+escapeHtml(NP.obra)+' no tiene gastos sin rubro.</b> Todo lo que se certificó, compró y gastó está imputado a un rubro del presupuesto.');
     return;
   }
   const tot = { certificado:0, oc:0, caja:0 }, cant = { certificado:0, oc:0, caja:0 };
-  F.forEach(function(f){ tot[f.origen] += f.monto; cant[f.origen]++; });
+  NP.filas.forEach(function(f){ tot[f.origen] += f.monto; cant[f.origen]++; });
   const total = tot.certificado + tot.oc + tot.caja;
   const pct = NP.totPres > 0 ? (total / NP.totPres * 100) : 0;
   const kpi = function(l, v, s2, color){
     return '<div class="np-kpi"><div class="np-kl">'+l+'</div><div class="np-kv"'+(color?' style="color:'+color+'"':'')+'>'+v+'</div>'+(s2?'<div class="np-ks">'+s2+'</div>':'')+'</div>';
   };
   let h = '<div class="np-kpis">'+
-    kpi('Total sin presupuestar','₲ '+fmtGs(total), F.length+' línea(s) en '+escapeHtml(NP.obra))+
+    kpi('Total sin presupuestar','₲ '+fmtGs(total), NP.filas.length+' línea(s) en '+escapeHtml(NP.obra)+
+      (F.length !== NP.filas.length ? ' · '+F.length+' a la vista' : ''))+
     kpi('Certificados','₲ '+fmtGs(tot.certificado), cant.certificado+' trabajo(s) medidos')+
     kpi('Órdenes de compra','₲ '+fmtGs(tot.oc), cant.oc+' ítem(s) de material')+
     kpi('Caja chica','₲ '+fmtGs(tot.caja), cant.caja+' gasto(s)')+
@@ -10476,6 +10505,14 @@ function npPintar(){
        'Ejemplo: «Demolición de revestimiento · 12 m² · ₲ 1.800.000» se carga como rubro nuevo en el capítulo que elijas, con 12 de cantidad y ₲ 150.000 por m². '+
        'Si el presupuesto está aprobado, se reabre solo y queda la observación.</div>';
   const grupos = ['certificado','oc','caja'];
+  h += '<div class="np-filtros">'+
+    '<input type="text" id="npBuscar" class="np-in" placeholder="Buscar por documento, proveedor o descripción…" value="'+escapeHtml(NP.q||'')+'">'+
+    '<div class="np-chips">'+
+      ['todos','certificado','oc','caja'].map(function(g){
+        const t = g==='todos' ? 'Todo' : NP_ORIG[g].i+' '+NP_ORIG[g].t;
+        return '<button type="button" class="np-chip'+((NP.filtro||'todos')===g?' on':'')+'" data-g="'+g+'">'+t+'</button>';
+      }).join('')+
+    '</div></div>';
   h += '<div class="np-tabla"><table class="np-t"><thead><tr>'+
     '<th style="width:34px"><input type="checkbox" id="npAll" title="Elegir todo"></th>'+
     '<th style="width:88px">Fecha</th><th style="width:120px">Documento</th><th style="width:150px">Proveedor / contratista</th>'+
@@ -10491,9 +10528,16 @@ function npPintar(){
         '<td>'+escapeHtml(_fmtF(f.fecha)||'')+'</td>'+
         '<td><span class="np-doc">'+escapeHtml(f.doc)+'</span></td>'+
         '<td>'+escapeHtml(f.quien||'—')+'</td>'+
-        '<td>'+escapeHtml(f.detalle)+(f.nota?'<div class="np-nota">'+escapeHtml(f.nota)+'</div>':'')+'</td>'+
+        '<td>'+escapeHtml(f.detalle)+(f.nota?'<div class="np-nota">'+escapeHtml(f.nota)+'</div>':'')+
+          (f.items && f.items.length ? '<button type="button" class="np-ver" data-det="'+escapeHtml(id)+'">ver el detalle</button>' : '')+'</td>'+
         '<td class="n">'+(f.cantidad?_qty(f.cantidad)+' '+escapeHtml(f.unidad||''):'—')+'</td>'+
-        '<td class="n"><b>'+fmtGs(f.monto)+'</b></td></tr>';
+        '<td class="n"><b>'+fmtGs(f.monto)+'</b></td></tr>'+
+        (f.items && f.items.length
+          ? '<tr class="np-det" id="npd-'+escapeHtml(id).replace(/[^a-zA-Z0-9-]/g,'_')+'" hidden><td colspan="7">'+
+            '<table class="np-mini"><tbody>'+f.items.map(function(i){
+              return '<tr><td>'+escapeHtml(i.nombre)+'</td><td class="n">'+_qty(i.cantidad)+'</td><td class="n">'+fmtGs(i.monto)+'</td></tr>';
+            }).join('')+'</tbody></table></td></tr>'
+          : '');
     });
   });
   h += '</tbody></table></div>';
@@ -10520,6 +10564,19 @@ function npPintar(){
     refrescarSel();
   });
   document.getElementById('npReg').addEventListener('click', npRegularizar);
+  const bq = document.getElementById('npBuscar');
+  if(bq){
+    let t; bq.addEventListener('input', function(){ clearTimeout(t); t = setTimeout(function(){ NP.q = bq.value; npPintar(); document.getElementById('npBuscar').focus(); }, 250); });
+  }
+  document.getElementById('npBody').querySelectorAll('.np-chip').forEach(function(c){
+    c.addEventListener('click', function(){ NP.filtro = c.dataset.g; npPintar(); });
+  });
+  document.getElementById('npBody').querySelectorAll('.np-ver').forEach(function(b){
+    b.addEventListener('click', function(){
+      const el = document.getElementById('npd-'+b.dataset.det.replace(/[^a-zA-Z0-9-]/g,'_'));
+      if(el){ el.hidden = !el.hidden; b.textContent = el.hidden ? 'ver el detalle' : 'ocultar el detalle'; }
+    });
+  });
   refrescarSel();
 }
 /* Regularizar: crea los rubros en el presupuesto elegido con la cantidad y
@@ -10558,8 +10615,11 @@ async function npRegularizar(){
       usados[cod] = 1; orden++;
       const q = f.cantidad > 0 ? f.cantidad : 1;
       const un = f.unidad || 'gl';
+      const desc = f.origen === 'oc'
+        ? ('Materiales ' + (f.doc||'') + (f.quien ? (' · '+f.quien) : ''))
+        : ((f.detalle||'Gasto sin presupuestar') + ' · ' + f.doc);
       return { presupuesto:pp, sector:'Regularización', orden:orden, rubro_codigo:cod,
-        descripcion:(f.detalle||'Gasto sin presupuestar')+' · '+f.doc, unidad:un, cantidad:q,
+        descripcion: desc, unidad:un, cantidad:q,
         tiene_receta:false, material_unit: f.origen==='certificado' ? 0 : Math.round(f.monto/q),
         mano_obra_unit: f.origen==='certificado' ? Math.round(f.monto/q) : 0,
         costo_unit: Math.round(f.monto/q), precio_total: f.monto, opcional:false, coeficiente:null };
