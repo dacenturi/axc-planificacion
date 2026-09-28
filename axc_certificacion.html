@@ -189,6 +189,10 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+#dlgExtra .op-anexo{display:flex;gap:9px;align-items:flex-start;border:1.5px dashed #d6dce8;border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff}
+#dlgExtra .op-anexo input{margin-top:3px;width:16px;height:16px;accent-color:#1F3864}
+#dlgExtra .op-anexo b{font-size:13px;color:#1F3864}
+#dlgExtra .op-anexo small{display:block;font-size:11.5px;color:#5a6677;line-height:1.45;margin-top:2px}
 /* ── Estado de cuenta del contratista v8.2 ──────────────────────── */
 .ec-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:18px}
 .ec-kpi{background:#fff;border:1px solid #e2e6ee;border-left:4px solid #1F3864;border-radius:11px;padding:11px 13px}
@@ -692,7 +696,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.2 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.3 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -4729,6 +4733,10 @@ document.getElementById('opEmitir').onclick = async function(){
   if(T.ret > 0 && !String(OP.retMot||'').trim()){ showToast('Escribí el motivo de la retención','error','Una retención sin motivo no se puede explicar después'); return; }
   const obras = Array.from(new Set(T.inc.map(function(c){ return c._obra || c.obra || 'Sin obra'; })));
   const r = await axcDialog({
+    html:'<label class="op-anexo"><input type="checkbox" id="opAnexo" checked>'+
+         '<span><b>Adjuntar las planillas de avance</b>'+
+         '<small>Un solo PDF: primero la orden de pago y después la planilla de cada certificado incluido. '+
+         'Sin marcar, sale solo la orden.</small></span></label>',
     tono:'ok', icono:'💳', titulo:'Emitir la orden de pago',
     subtitulo: OP.contratista + ' · ' + T.inc.length + ' certificado(s)',
     mensaje:'Se va a emitir una orden de pago por <b>'+gs(T.neto)+'</b> netos. '+
@@ -4743,6 +4751,7 @@ document.getElementById('opEmitir').onclick = async function(){
     ok:'Emitir la orden', cancelar:'Revisar'
   });
   if(!r.ok) return;
+  const conAnexo = !!(r.box && r.box.querySelector('#opAnexo') && r.box.querySelector('#opAnexo').checked);
   OP.emitiendo = true;
   const btn = this; btn.disabled = true; btn.textContent = 'Emitiendo…';
   try{
@@ -4782,7 +4791,7 @@ document.getElementById('opEmitir').onclick = async function(){
     T.inc.forEach(function(c){ c.orden_pago = numero; });
     showToast('Orden '+numero+' emitida','success', gs(T.neto)+' netos · '+T.inc.length+' certificado(s)');
     OP.ultima = { cab: Object.assign({ id:ordenId }, cab), items: T.inc.slice() };
-    opPDF(OP.ultima);
+    await opPDF(OP.ultima, conAnexo);
     OP.sel = {}; OP.ret = 0; OP.retMot = ''; OP.obs = '';
     await loadList();
     await opCargar();
@@ -4819,8 +4828,8 @@ document.getElementById('opVerEmitidas').onclick = async function(){
         const cab = data.filter(function(x){ return x.id === id; })[0];
         const { data:its } = await sb.from('orden_pago_items').select('*').eq('orden_id', id);
         opPDF({ cab: cab, items: (its||[]).map(function(x){
-          return { numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
-        }) });
+          return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
+        }) }, false);
       };
     });
   }catch(e){
@@ -4867,7 +4876,7 @@ function gsEnLetras(n){
 
 /* PDF de la orden consolidada: una hoja para la administración, con el
    detalle por obra, la liquidación y las firmas.                          */
-function opPDF(O){
+async function opPDF(O, conAnexo){
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   const { jsPDF } = window.jspdf;
   const c = O.cab, its = O.items || [];
@@ -5002,6 +5011,20 @@ function opPDF(O){
   });
   doc.setFontSize(7.5).setTextColor.apply(doc, GRIS);
   doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  emitida el '+fmtFecha(c.fecha)+'  ·  documento interno', M, H-8);
+
+  /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
+     Es lo que administración archiva junto con la orden.                    */
+  if(conAnexo){
+    for(let i = 0; i < its.length; i++){
+      const cid = its[i].id || its[i].certificado_id;
+      if(!cid) continue;
+      try{
+        const { data:cab } = await sb.from('certificados').select('*').eq('id', cid).maybeSingle();
+        const { data:cits } = await sb.from('certificado_items').select('*').eq('certificado_id', cid).order('orden',{ascending:true});
+        if(cab) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true });
+      }catch(e){ console.warn('anexo de planilla', e); }
+    }
+  }
   doc.save(String(c.numero||'orden_de_pago').replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
 }
 
@@ -6095,10 +6118,14 @@ async function generarOrdenPago(c, its, opts){
   doc.setFillColor.apply(doc, NAVY); doc.rect(0, 0, W, 34, 'F');
   doc.setFillColor(255,255,255); doc.roundedRect(M, 8, 40, 18, 2, 2, 'F');
   try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 11, 34, 12); }catch(e){}
-  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(15);
-  doc.text('ORDEN DE PAGO', M+48, 17);
-  doc.setFont('helvetica','normal').setFontSize(10);
-  doc.text('Por certificado de obra  ·  AXC Constructora', M+48, 24);
+  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(14);
+  doc.text('LIQUIDACION DEL CERTIFICADO', M+48, 16);
+  doc.setFont('helvetica','normal').setFontSize(8.8);
+  doc.text('Detalle de lo certificado y su saldo a cobrar  ·  AXC Constructora', M+48, 22);
+  doc.setFontSize(8).setTextColor(255,214,150);
+  doc.text(c.orden_pago
+    ? ('PAGADO EN LA ORDEN '+pdfSafe(c.orden_pago))
+    : 'DOCUMENTO DE TRABAJO  ·  NO AUTORIZA EL PAGO', M+48, 27.5);
   doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
   doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
   doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
@@ -6467,7 +6494,7 @@ async function pedirReportes(c, its){
         (nF ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>' : '')+
         (nA ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'A">📎 Documentos adjuntos ('+nA+')</label>' : '')+
       '</div>' : '';
-    // La orden de pago no lleva anexos: es el documento de pago, va sola.
+    // La liquidación no lleva anexos: es el resumen del certificado, va sola.
     const bloque = (pfx, ico, tit, sub, on, off, conAnexos) =>
       '<div style="border:1.5px solid #e2e6ee;border-radius:11px;padding:11px 12px;margin-bottom:10px'+(off?';opacity:.55':'')+'">'+
         '<label style="display:flex;gap:10px;align-items:flex-start;cursor:'+(off?'not-allowed':'pointer')+'">'+
@@ -6483,15 +6510,15 @@ async function pedirReportes(c, its){
           '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué documentos necesitás</div></div>'+
         '<div style="padding:14px 18px">'+
           bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false, true)+
-          bloque('rpOp','💰','Orden de pago','Liquidación con descuentos, firma del residente y aprobación.', aprobado, !aprobado, false)+
+          bloque('rpOp','💰','Liquidación del certificado','Detalle de lo certificado con sus descuentos y el saldo a cobrar. No autoriza el pago: la orden se emite desde el botón «Orden de pago».', aprobado, !aprobado, false)+
           (state.puedeVerVenta
             ? bloque('rpCl','🧾','Avance al cliente','Mismo formato, valorizado a los precios de la propuesta aceptada. Uso restringido.', false, false, true)
             : '')+
-          (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px;margin-bottom:10px">La orden de pago sale recién cuando el certificado está aprobado.</div>' : '')+
+          (!aprobado ? '<div style="font-size:11.5px;color:#8a6d10;background:#fdf7e8;border:1px solid #f0e2bd;border-radius:8px;padding:8px 10px;margin-bottom:10px">La liquidación sale recién cuando el certificado está aprobado.</div>' : '')+
           '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1.5px dashed #d6dce8;border-radius:10px;cursor:pointer">'+
             '<input type="checkbox" id="rpUnico" checked style="margin-top:3px;width:17px;height:17px">'+
             '<span><b style="font-size:13px">📎 Un solo archivo</b>'+
-            '<span style="display:block;font-size:11.5px;color:#64748b">Un mismo PDF: primero la orden de pago, después la planilla de avance y sus anexos. '+
+            '<span style="display:block;font-size:11.5px;color:#64748b">Un mismo PDF: primero la liquidación, después la planilla de avance y sus anexos. '+
             'Sin marcar, se descarga un archivo por documento.</span></span></label>'+
         '</div>'+
         '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
