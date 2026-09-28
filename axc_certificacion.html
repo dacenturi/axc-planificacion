@@ -704,7 +704,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.5 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.7 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -896,6 +896,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       <button type="button" class="btn-g" id="opCerrar">Cerrar</button>
       <span style="flex:1"></span>
       <button type="button" class="btn-nav" id="opVerEmitidas">📜 Órdenes emitidas</button>
+      <button type="button" class="btn-g" id="opPrev" title="Ver cómo va a salir la orden antes de emitirla. No numera ni marca los certificados." disabled>👁 Vista previa (borrador)</button>
       <button type="button" class="btn-pri" id="opEmitir" disabled>💳 Emitir la orden</button>
     </div>
   </div>
@@ -2172,19 +2173,25 @@ async function cargarLineas(){
 }
 
 async function agregarLibre(){
+  /* v8.7 · Primero se clasifica el gasto y recién después se describe: la
+     clasificación es la decisión importante y define contra qué se imputa. */
+  const cl = await clasificarLibre();
+  if(!cl) return;
+  const esInd = cl.clasif === 'indirecto';
   const r = await axcDialog({
-    tono:'warn', icono:'＋', titulo:'Trabajo que no está ni en el contrato ni en el presupuesto',
-    subtitulo:'Hay que clasificarlo: es lo que después explica el desvío de la obra',
-    mensaje:'Este trabajo <b>no tiene saldo ni precio de referencia</b>: se certifica con el precio que cargues a mano. '+
-            'Antes de seguir, decinos qué tipo de gasto es.',
-    campo:{ label:'Descripción del trabajo', placeholder:'Ej. Demolición de revestimiento en escalera', requerido:true },
-    campo2:{ label:'Unidad de medida', placeholder:'m2, ml, jor, gl…', valor:'gl' },
-    ok:'Continuar'
+    tono: esInd ? '' : 'warn', icono: esInd ? '🧰' : '📐',
+    titulo: esInd ? 'Gasto indirecto · describí el trabajo' : 'Gasto a presupuestar · describí el trabajo',
+    subtitulo: esInd ? ('Descuenta del rubro '+(cl.linea.rubro_codigo||'')) : 'Queda en la lista de trabajos sin presupuesto de la obra',
+    mensaje: esInd
+      ? 'Escribí qué se hizo, como lo va a leer el contratista en su certificado. La cantidad y el precio se cargan en la planilla.'
+      : 'Escribí el trabajo y su unidad de obra: con eso después se crea el rubro en el presupuesto. La cantidad y el precio se cargan en la planilla.',
+    campo:{ label:'Descripción del trabajo',
+            placeholder: esInd ? 'Ej. Limpieza general del sector tras la demolición' : 'Ej. Demolición de revestimiento en escalera', requerido:true },
+    campo2:{ label:'Unidad de medida', placeholder: esInd ? 'jor, gl, hs…' : 'm2, ml, m3, un…', valor: esInd ? 'gl' : 'm2' },
+    ok:'Agregar el trabajo', cancelar:'Volver'
   });
   if(!r.ok) return;
   const desc = (r.valor||'').trim(), un = (r.valor2 || 'gl').trim();
-  const cl = await clasificarLibre(desc, un);
-  if(!cl) return;
   /* Nace en el sector que la residente está mirando: si está filtrando por
      «Nivel 1», el trabajo nuevo va a Nivel 1 y aparece a la vista. */
   const secAct = document.getElementById('edSector').value || '';
@@ -2219,7 +2226,7 @@ async function agregarLibre(){
      (los de colchón: ayuda de gremios, limpieza, acarreos…).
    · Gasto a presupuestar → no descuenta de nada y queda en la lista de
      pendientes de la obra, para crear el rubro después.                  */
-async function clasificarLibre(desc, unidad){
+async function clasificarLibre(){
   const cand = (ed.lineas||[]).filter(function(l){ return l.rubro_codigo && !l.libre; })
     .map(function(l){
       const h = ed.hist[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion)] || { aprob:0, tramite:0 };
@@ -2250,10 +2257,10 @@ async function clasificarLibre(desc, unidad){
     '<div class="ax-hint" id="clErr" style="color:#B42B2B;min-height:1em"></div>';
   const r = await axcDialog({
     tono:'warn', icono:'🏷', titulo:'¿Qué tipo de gasto es?',
-    subtitulo: desc + (unidad ? (' · '+unidad) : ''),
+    subtitulo:'Este trabajo no está ni en el contrato ni en el presupuesto',
     mensaje:'<b>Cómo decidir:</b> si el trabajo se mide en una unidad de obra (m², ml, m³, unidad) es <b>a presupuestar</b>. '+
             'Si es tiempo, apoyo o servicio general, es <b>indirecto</b>.',
-    html: html, ok:'Agregar el trabajo', cancelar:'Cancelar',
+    html: html, ok:'Continuar →', cancelar:'Cancelar',
     validar: function(box){
       const t = box.querySelector('input[name=clTipo]:checked');
       const m = (box.querySelector('#clMot').value||'').trim();
@@ -2381,8 +2388,7 @@ function renderLineas(){
   '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'+
     (CT.contratos.length
       ? '<button type="button" class="btn-g" id="btnAlContrato" style="border-color:#1B5524;color:#1B5524;font-weight:700">➕ Agregar un trabajo al contrato</button>'
-      : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'+
-        '<button type="button" class="btn-g" id="btnLibre">➕ Agregar un trabajo que no está en el presupuesto</button>')+'</div>';
+      : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>')+'</div>';
 
   const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
   const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
@@ -4720,6 +4726,7 @@ function opPintarDetalle(){
         '<div class="op-ct">Datos de la orden</div>'+
         '<div class="op-tip">Los descuentos se cargan <b>acá</b>, en la orden: el sistema propone devolver todo lo pendiente '+
           'y podés bajar el monto si se acordó descontar en cuotas. Lo que descuentes se registra solo en la cuenta del contratista.</div>'+
+        '<button type="button" class="btn-g" id="opEntrega" style="width:100%;margin-bottom:10px">＋ Registrar un anticipo o préstamo de '+escapeHtml(OP.contratista)+'</button>'+
         '<label class="op-l">Motivo de la retención</label>'+
         '<input type="text" id="opRetMot" class="op-in" value="'+escapeHtml(OP.retMot)+'" placeholder="Ej. 5 % de garantía de obra">'+
         '<label class="op-l">Observación de la orden</label>'+
@@ -4731,6 +4738,10 @@ function opPintarDetalle(){
   });
   document.getElementById('opAll').onchange = function(){
     const on = this.checked; OP.certs.forEach(function(c){ OP.sel[c.id] = on; }); opPintarDetalle();
+  };
+  const btnE = document.getElementById('opEntrega');
+  if(btnE) btnE.onclick = async function(){
+    if(await ctaOtorgar(OP.contratista)){ CTA.cargado = false; await opCargar(); }
   };
   const ant = document.getElementById('opAnt');
   if(ant) ant.onchange = function(){
@@ -4749,6 +4760,7 @@ function opPintarDetalle(){
   document.getElementById('opRetMot').onchange = function(){ OP.retMot = this.value; };
   document.getElementById('opObs').onchange = function(){ OP.obs = this.value; };
   document.getElementById('opEmitir').disabled = !T.inc.length;
+  document.getElementById('opPrev').disabled = !T.inc.length;
 }
 
 /* Emisión: numera la orden, guarda el detalle, marca los certificados y
@@ -4832,7 +4844,27 @@ document.getElementById('opEmitir').onclick = async function(){
     await loadList();
     await opCargar();
   }catch(e){
-    showToast('No se pudo emitir la orden','error', e.message||'');
+    const msg = String((e && e.message) || '');
+    if(/orden_pago_items_cert_unico|duplicate key/i.test(msg)){
+      await axcDialog({
+        tono:'danger', icono:'⚠', titulo:'Hay un certificado que ya está en otra orden',
+        subtitulo:'La orden no se emitió',
+        mensaje:'Uno de los certificados elegidos <b>ya figura en una orden de pago anterior</b>, aunque esa orden esté anulada. '+
+                'Un certificado no puede estar en dos órdenes.',
+        lista:[
+          'Abrí <b>📜 Órdenes emitidas</b> y buscá en qué orden está ese certificado.',
+          'Si esa orden está <b>anulada</b>, volvé a anularla desde este sistema para que libere los certificados.',
+          'Si está vigente, primero anulala y después emitís esta.'
+        ],
+        ok:'Entendido', cancelar:null
+      });
+    }else if(/permission|row-level|rls/i.test(msg)){
+      showToast('No tenés permiso para emitir órdenes','error','Pedile al administrador el permiso «op_emitir»');
+    }else if(/relation .*orden_pago|does not exist/i.test(msg)){
+      showToast('Falta crear las tablas de la orden de pago','error','Corré el script axc_orden_pago_v1.sql en Supabase');
+    }else{
+      showToast('No se pudo emitir la orden','error', msg || 'Error desconocido');
+    }
   }finally{
     OP.emitiendo = false; btn.disabled = false; btn.textContent = '💳 Emitir la orden';
   }
@@ -4915,6 +4947,26 @@ function gsEnLetras(n){
   return t.trim().replace(/\s+/g,' ') + ' GUARANIES';
 }
 
+/* Vista previa: el mismo documento, con marca de agua BORRADOR y sin número.
+   No numera, no guarda y no marca los certificados: sirve para revisarlo con
+   la dirección antes de emitir.                                            */
+document.getElementById('opPrev').onclick = async function(){
+  const T = opTotales();
+  if(!T.inc.length){ showToast('Elegí al menos un certificado','error'); return; }
+  const obras = Array.from(new Set(T.inc.map(function(c){ return c._obra || c.obra || 'Sin obra'; })));
+  const fechas = T.inc.map(function(c){ return c.fecha; }).filter(Boolean).sort();
+  const quien = state.profile.residente || state.profile.nombre || state.user.email;
+  await opPDF({
+    cab: { numero:'SIN NUMERAR', contratista:OP.contratista, fecha:hoyISO(),
+      periodo_desde:fechas[0]||null, periodo_hasta:fechas[fechas.length-1]||null,
+      total_certificado:T.tot, desc_anticipo:T.antic, desc_prestamo:T.prest,
+      retencion:T.ret, retencion_motivo:OP.retMot||null, neto_pagar:T.neto,
+      obras:obras.join(' · '), observacion:OP.obs||null, emitido_por:quien, _borrador:true },
+    items: T.inc.slice()
+  }, false);
+  showToast('Vista previa generada','info','Es un borrador: no numera ni marca los certificados');
+};
+
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
    el anticipo y el préstamo descontados, y deja el motivo asentado. La orden
    no se borra: queda como anulada, para que el número no se reutilice.     */
@@ -4931,7 +4983,8 @@ async function opAnular(o){
       n+' certificado(s) vuelven a «por pagar»' + ((its||[]).length ? ': '+(its||[]).map(function(x){ return escapeHtml(x.numero||''); }).join(', ') : ''),
       ...((Number(o.desc_anticipo)||0) > 0 ? ['Se repone el anticipo descontado: <b>'+gs(o.desc_anticipo)+'</b>'] : []),
       ...((Number(o.desc_prestamo)||0) > 0 ? ['Se repone el préstamo descontado: <b>'+gs(o.desc_prestamo)+'</b>'] : []),
-      'Si ya se transfirió la plata, esto <b>no revierte el pago</b>: solo corrige el sistema.'
+      'Si ya se transfirió la plata, esto <b>no revierte el pago</b>: solo corrige el sistema.',
+      'La orden anulada queda en el historial con sus totales, pero sin el detalle de certificados.'
     ],
     campo:{ label:'Motivo de la anulación', placeholder:'Ej. se incluyó un certificado con la medición equivocada', requerido:true },
     ok:'Anular la orden', cancelar:'Cancelar'
@@ -4944,6 +4997,9 @@ async function opAnular(o){
     if(up.error) throw up.error;
     const ids = (its||[]).map(function(x){ return x.certificado_id; });
     if(ids.length) await sb.from('certificados').update({ orden_pago:null }).in('id', ids);
+    /* El detalle se borra: si queda, el certificado no puede entrar en otra
+       orden. El resumen y los totales siguen en la cabecera anulada.        */
+    await sb.from('orden_pago_items').delete().eq('orden_id', o.id);
     // Reponer lo descontado, para que el saldo del contratista vuelva a ser el real
     const rev = [];
     if((Number(o.desc_anticipo)||0) > 0) rev.push({ contratista:o.contratista, tipo:'anticipo', movimiento:'otorgado',
@@ -4979,10 +5035,13 @@ async function opPDF(O, conAnexo){
   doc.setFont('helvetica','normal').setFontSize(8.8);
   doc.text('Varios certificados de obra en un solo pago', M+48, 22);
   doc.text('AXC Constructora', M+48, 27);
-  doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
-  doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
-  doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
-  doc.setFontSize(13); doc.text(pdfSafe(c.numero||''), W-M-26, 22, {align:'center'});
+  const esBorr = !!c._borrador;
+  doc.setFillColor.apply(doc, esBorr ? [139,147,167] : GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
+  doc.setTextColor.apply(doc, esBorr ? [255,255,255] : [21,40,68]);
+  doc.setFont('helvetica','bold').setFontSize(8);
+  doc.text(esBorr ? 'BORRADOR' : 'NUMERO', W-M-26, 15.5, {align:'center'});
+  doc.setFontSize(esBorr ? 9 : 13);
+  doc.text(esBorr ? 'SIN NUMERAR' : pdfSafe(c.numero||''), W-M-26, 22, {align:'center'});
 
   let y = 44;
   doc.setDrawColor(226,230,238).setLineWidth(.4);
@@ -5096,8 +5155,20 @@ async function opPDF(O, conAnexo){
     doc.setFontSize(7.2).setTextColor.apply(doc, GRIS);
     doc.text(pdfSafe(f[2]), x, yf+14.5);
   });
+  if(esBorr){
+    // Marca de agua en diagonal: que nadie confunda el borrador con la orden
+    doc.saveGraphicsState();
+    try{ doc.setGState(new doc.GState({ opacity:0.12 })); }catch(e){}
+    doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(76);
+    doc.text('BORRADOR', W/2, H/2, { align:'center', angle:38 });
+    doc.restoreGraphicsState();
+    doc.setFillColor(255,248,230).setDrawColor(242,205,122);
+    doc.roundedRect(M, H-26, W-M*2, 11, 2, 2, 'FD');
+    doc.setTextColor(122,86,0).setFont('helvetica','bold').setFontSize(8.5);
+    doc.text('VISTA PREVIA  ·  NO AUTORIZA EL PAGO  ·  la orden definitiva se emite desde el sistema y lleva numero', W/2, H-19, {align:'center'});
+  }
   doc.setFontSize(7.5).setTextColor.apply(doc, GRIS);
-  doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  emitida el '+fmtFecha(c.fecha)+'  ·  documento interno', M, H-8);
+  doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  '+(esBorr?'vista previa del ':'emitida el ')+fmtFecha(c.fecha)+'  ·  documento interno', M, H-8);
 
   /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
      Es lo que administración archiva junto con la orden.                    */
@@ -5112,7 +5183,7 @@ async function opPDF(O, conAnexo){
       }catch(e){ console.warn('anexo de planilla', e); }
     }
   }
-  doc.save(String(c.numero||'orden_de_pago').replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
+  doc.save((esBorr ? 'BORRADOR_orden_de_pago' : String(c.numero||'orden_de_pago')).replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
 }
 
 /* ═══════════════════════════════════════════════════════════════════
