@@ -642,7 +642,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v7.6 · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v7.7 · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1571,6 +1571,37 @@ function presuEtiqueta(p){
   return escapeHtml(partes.join('  ·  '));
 }
 
+/* Presupuestos que realmente toca el certificado: los elegidos a mano más los
+   que traen las líneas (las que vienen del contrato ya saben su presupuesto). */
+function presusDelCertificado(){
+  const out = ed.presus.slice();
+  (ed.lineas||[]).forEach(function(l){
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const m = ed.med[k];
+    if(!m || !(Number(m.cant) > 0)) return;
+    const pp = String(l.presupuesto||'').trim();
+    if(pp && out.indexOf(pp) < 0) out.push(pp);
+  });
+  return out;
+}
+/* Obras que toca el certificado: por el presupuesto, o por el contrato cuando
+   el presupuesto no tiene obra cargada. */
+function obrasDelCertificado(){
+  const out = [];
+  const add = function(o){ o = String(o||'').trim(); if(o && !out.some(x=>norm(x)===norm(o))) out.push(o); };
+  presusDelCertificado().forEach(function(cod){
+    const p = state.presupuestos.filter(x=>x.codigo===cod)[0];
+    if(p) add(p.obra);
+  });
+  (CT.contratos||[]).forEach(function(c){
+    const usa = (ed.lineas||[]).some(function(l){
+      const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)];
+      return l.contrato_id === c.id && m && Number(m.cant) > 0;
+    });
+    if(usa) add(c.obra);
+  });
+  return out;
+}
 function obrasDePresus(){
   const out = [];
   ed.presus.forEach(cod=>{
@@ -4356,6 +4387,37 @@ async function firmarCertificado(c){
   }
 }
 
+/* v7.7 · La cabecera vieja podía quedar sin obra y sin presupuesto cuando el
+   certificado se armó desde el contrato. Se completa con lo que dicen las
+   líneas, que es el dato firme.                                            */
+function _dtPresus(its){
+  const v = []; (its||[]).forEach(function(x){ const p=String(x.presupuesto||'').trim(); if(p && v.indexOf(p)<0) v.push(p); });
+  return v.join(', ');
+}
+function _dtObras(its){
+  const v = [];
+  (its||[]).forEach(function(x){
+    const p = state.presupuestos.filter(function(y){ return y.codigo === x.presupuesto; })[0];
+    const o = p && String(p.obra||'').trim();
+    if(o && !v.some(function(z){ return norm(z)===norm(o); })) v.push(o);
+  });
+  return v.join(' · ');
+}
+function _dtContratos(its){
+  const ids = []; (its||[]).forEach(function(x){ if(x.contrato_item_id && ids.indexOf(x.contrato_item_id)<0) ids.push(x.contrato_item_id); });
+  if(!ids.length) return '';
+  const nums = [];
+  ids.forEach(function(id){
+    const it = (CT.items||[]).filter(function(i){ return i.id === id; })[0];
+    const c = it && (CT.contratos||[]).filter(function(x){ return x.id === it.contrato_id; })[0];
+    const n = c && c.numero;
+    if(n && nums.indexOf(n)<0) nums.push(n);
+  });
+  if(!nums.length) return '';
+  return nums.map(function(n){ return '<span class="lin-tag ct" style="margin-right:4px">'+escapeHtml(n)+'</span>'; }).join('')+
+    (nums.length>1 ? '<div style="font-size:11px;color:#8893a5;font-weight:400;margin-top:3px">'+nums.length+' contratos en este certificado</div>' : '');
+}
+
 /* ── Guardado ────────────────────────────────────────────────────── */
 document.getElementById('edGuardar').onclick = ()=> guardar('Borrador');
 
@@ -4364,8 +4426,9 @@ document.getElementById('edGuardar').onclick = ()=> guardar('Borrador');
    consume el presupuesto. */
 async function guardar(estado){
   if(ed.cargando) return;
-  const obras = obrasDePresus();
+  const obras = obrasDelCertificado();
   const obra = obras.length === 1 ? obras[0] : (obras.length ? 'Varias obras' : 'Sin obra');
+  const presus = presusDelCertificado();
   const contratista = document.getElementById('edContra').value;
   if(!contratista){ showToast('Elegí el contratista','error'); return; }
   const M = medidas();
@@ -4386,7 +4449,7 @@ async function guardar(estado){
       obra: obra,
       sector: document.getElementById('edSector').value || null,
       contratista: contratista,
-      presupuesto: ed.presus.length ? ed.presus.join(', ') : null,
+      presupuesto: presus.length ? presus.join(', ') : null,
       fecha: document.getElementById('edFecha').value || hoyISO(),
       estado: estado,
       observacion: (function(){
@@ -4685,16 +4748,17 @@ async function abrirDetalle(id){
     document.getElementById('dtBody').innerHTML =
       '<div class="ficha">'+
         campo('Estado','<span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span>')+
-        campo('Obra', escapeHtml(c.obra||'—'))+
+        campo('Obra', escapeHtml(c.obra && c.obra !== 'Sin obra' ? c.obra : (_dtObras(its) || '—')))+
         campo('Sector', escapeHtml(c.sector || (function(){
           const v = []; (its||[]).forEach(x=>{ if(x.sector && v.indexOf(x.sector)<0) v.push(x.sector); });
           return v.length ? v.join(' · ') : '—';
         })()))+
         campo('Contratista', escapeHtml(c.contratista||'—'))+
-        campo('Presupuesto', escapeHtml(c.presupuesto||'—')+
+        campo('Presupuesto', escapeHtml(c.presupuesto || _dtPresus(its) || '—')+
           (c.base_versiones ? '<div style="font-size:11px;color:#8893a5;font-weight:400">línea base '+escapeHtml(c.base_versiones)+'</div>'
            : (c.base_version ? '<div style="font-size:11px;color:#8893a5;font-weight:400">línea base v'+c.base_version+'</div>' : '')))+
         campo('Fecha', fmtFecha(c.fecha))+
+        (_dtContratos(its) ? campo('Contrato(s)', _dtContratos(its)) : '')+
         (c.medido_por?campo('Medido por', escapeHtml(c.medido_por)):'')+
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
       '</div>'+
@@ -5094,9 +5158,19 @@ async function generarOrdenPago(c, its, opts){
   dato('FECHA', fmtFecha(c.fecha), M+5, y);
   dato('DE (RESIDENTE)', c.medido_por||c.creado_por||'', M+5+cw, y);
   dato('A', 'ADMINISTRACION', M+5+cw*2, y);
-  dato('OBRA', c.obra||'', M+5, y+13);
+  const _ctrTxt = (function(){
+    const nums = [];
+    (its||[]).forEach(function(x){
+      const it = (CT.items||[]).filter(function(i){ return i.id === x.contrato_item_id; })[0];
+      const ct = it && (CT.contratos||[]).filter(function(z){ return z.id === it.contrato_id; })[0];
+      if(ct && ct.numero && nums.indexOf(ct.numero) < 0) nums.push(ct.numero);
+    });
+    return nums.join(' · ');
+  })();
+  dato('OBRA', c.obra && c.obra !== 'Sin obra' ? c.obra : (_dtObras(its)||''), M+5, y+13);
   dato('CONTRATISTA', c.contratista||'', M+5+cw, y+13);
-  dato('PRESUPUESTO', c.presupuesto||'', M+5+cw*2, y+13);
+  dato('PRESUPUESTO', c.presupuesto || _dtPresus(its) || '', M+5+cw*2, y+13);
+  if(_ctrTxt){ y += 13; dato('CONTRATO(S)', _ctrTxt, M+5, y+13); }
   y += 34;
 
   // ── Detalle por obra y sector ────────────────────────────────────
