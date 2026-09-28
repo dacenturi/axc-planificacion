@@ -189,6 +189,12 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+.op-ln.ed{align-items:center}
+.op-ln.ed span{display:flex;flex-direction:column;line-height:1.3}
+.op-ln.ed i{font-style:normal;font-size:10.5px;color:#8893a5}
+.op-num-in{width:132px;padding:6px 9px;border:1.5px solid #d6dce8;border-radius:8px;font:inherit;font-size:13.5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:#B42B2B}
+.op-num-in:focus{outline:none;border-color:#1F3864}
+.op-tip{background:#F6F9FD;border:1px solid #d9e3f2;border-radius:9px;padding:9px 11px;font-size:11.5px;line-height:1.55;color:#33405c;margin-bottom:10px}
 .dt-lock{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#8a6d10;background:#FFF8E6;border:1px solid #F2CD7A;border-radius:9px;padding:7px 13px}
 .dt-lock b{font-family:ui-monospace,Consolas,monospace}
 #dlgExtra .op-anexo{display:flex;gap:9px;align-items:flex-start;border:1.5px dashed #d6dce8;border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff}
@@ -698,7 +704,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.4 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.5 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -4543,7 +4549,8 @@ function _dtContratos(its){
    anticipo y préstamo, retención opcional y neto a transferir.
    Al emitirla, los certificados quedan marcados con su número de orden.
    ═══════════════════════════════════════════════════════════════════ */
-const OP = { contratista:'', certs:[], sel:{}, cta:{ anticipo:0, prestamo:0 }, ret:0, retMot:'', obs:'', emitiendo:false };
+const OP = { contratista:'', certs:[], sel:{}, cta:{ anticipo:0, prestamo:0 },
+             antic:null, prest:null, ret:0, retMot:'', obs:'', emitiendo:false };
 
 function opAbrir(){
   document.getElementById('opOv').hidden = false;
@@ -4632,6 +4639,7 @@ async function opCargar(){
     return Math.max(0, o - d);
   };
   OP.cta = { anticipo: sal('anticipo'), prestamo: sal('prestamo') };
+  OP.antic = null; OP.prest = null;   // vuelven a la propuesta del sistema
   OP.certs.forEach(function(c){ if(OP.sel[c.id] == null) OP.sel[c.id] = true; });
   opPintarDetalle();
 }
@@ -4639,10 +4647,15 @@ async function opCargar(){
 function opTotales(){
   const inc = OP.certs.filter(function(c){ return OP.sel[c.id]; });
   const tot = inc.reduce(function(a,c){ return a + (Number(c.total)||0); }, 0);
-  const antic = Math.min(OP.cta.anticipo, tot);
-  const prest = Math.min(OP.cta.prestamo, Math.max(0, tot - antic));
+  /* Propuesta del sistema: descontar todo lo pendiente, hasta donde alcance el
+     pago. Si la residente cargó otro número, manda el suyo.                 */
+  const propAnt = Math.min(OP.cta.anticipo, tot);
+  const propPre = Math.min(OP.cta.prestamo, Math.max(0, tot - propAnt));
+  const antic = Math.min(OP.antic == null ? propAnt : (Number(OP.antic)||0), OP.cta.anticipo, tot);
+  const prest = Math.min(OP.prest == null ? propPre : (Number(OP.prest)||0), OP.cta.prestamo, Math.max(0, tot - antic));
   const ret = Math.min(Number(OP.ret)||0, Math.max(0, tot - antic - prest));
-  return { inc:inc, tot:tot, antic:antic, prest:prest, ret:ret, neto: Math.max(0, tot - antic - prest - ret) };
+  return { inc:inc, tot:tot, antic:antic, prest:prest, ret:ret, propAnt:propAnt, propPre:propPre,
+           neto: Math.max(0, tot - antic - prest - ret) };
 }
 
 function opPintarDetalle(){
@@ -4689,15 +4702,24 @@ function opPintarDetalle(){
       '<div class="op-card">'+
         '<div class="op-ct">Liquidación</div>'+
         '<div class="op-ln"><span>Certificados incluidos ('+T.inc.length+')</span><b>'+gs(T.tot)+'</b></div>'+
-        '<div class="op-ln neg"><span>Anticipo a descontar'+(OP.cta.anticipo?'<i> · pendiente '+gs(OP.cta.anticipo)+'</i>':'')+'</span><b>'+(T.antic?'− '+gs(T.antic):'—')+'</b></div>'+
-        '<div class="op-ln neg"><span>Préstamo a descontar'+(OP.cta.prestamo?'<i> · pendiente '+gs(OP.cta.prestamo)+'</i>':'')+'</span><b>'+(T.prest?'− '+gs(T.prest):'—')+'</b></div>'+
-        '<div class="op-ln neg"><span>Retención</span><b>'+(T.ret?'− '+gs(T.ret):'—')+'</b></div>'+
+        '<div class="op-ln neg ed"><span>Anticipo a descontar'+
+          (OP.cta.anticipo ? '<i>pendiente de devolver '+gs(OP.cta.anticipo)+'</i>' : '<i>no tiene anticipo pendiente</i>')+'</span>'+
+          (OP.cta.anticipo
+            ? '<input type="text" inputmode="numeric" id="opAnt" class="op-num-in" value="'+(T.antic?fmtGsIn(T.antic):'')+'" placeholder="0">'
+            : '<b>—</b>')+'</div>'+
+        '<div class="op-ln neg ed"><span>Préstamo a descontar'+
+          (OP.cta.prestamo ? '<i>pendiente de devolver '+gs(OP.cta.prestamo)+'</i>' : '<i>no tiene préstamo pendiente</i>')+'</span>'+
+          (OP.cta.prestamo
+            ? '<input type="text" inputmode="numeric" id="opPre" class="op-num-in" value="'+(T.prest?fmtGsIn(T.prest):'')+'" placeholder="0">'
+            : '<b>—</b>')+'</div>'+
+        '<div class="op-ln neg ed"><span>Retención<i>garantía, multa, materiales</i></span>'+
+          '<input type="text" inputmode="numeric" id="opRet" class="op-num-in" value="'+(OP.ret?fmtGsIn(OP.ret):'')+'" placeholder="0"></div>'+
         '<div class="op-ln tot"><span>Neto a pagar</span><b>'+gs(T.neto)+'</b></div>'+
       '</div>'+
       '<div class="op-card">'+
         '<div class="op-ct">Datos de la orden</div>'+
-        '<label class="op-l">Retención (Gs) <i>garantía, multa, materiales</i></label>'+
-        '<input type="text" id="opRet" class="op-in" inputmode="numeric" value="'+(OP.ret?fmtGsIn(OP.ret):'')+'" placeholder="0">'+
+        '<div class="op-tip">Los descuentos se cargan <b>acá</b>, en la orden: el sistema propone devolver todo lo pendiente '+
+          'y podés bajar el monto si se acordó descontar en cuotas. Lo que descuentes se registra solo en la cuenta del contratista.</div>'+
         '<label class="op-l">Motivo de la retención</label>'+
         '<input type="text" id="opRetMot" class="op-in" value="'+escapeHtml(OP.retMot)+'" placeholder="Ej. 5 % de garantía de obra">'+
         '<label class="op-l">Observación de la orden</label>'+
@@ -4710,8 +4732,20 @@ function opPintarDetalle(){
   document.getElementById('opAll').onchange = function(){
     const on = this.checked; OP.certs.forEach(function(c){ OP.sel[c.id] = on; }); opPintarDetalle();
   };
+  const ant = document.getElementById('opAnt');
+  if(ant) ant.onchange = function(){
+    const v = parseGsIn(this.value) || 0;
+    if(v > OP.cta.anticipo) showToast('El anticipo a descontar supera lo pendiente','error','Pendiente: '+gs(OP.cta.anticipo));
+    OP.antic = Math.min(v, OP.cta.anticipo); opPintarDetalle();
+  };
+  const pre = document.getElementById('opPre');
+  if(pre) pre.onchange = function(){
+    const v = parseGsIn(this.value) || 0;
+    if(v > OP.cta.prestamo) showToast('El préstamo a descontar supera lo pendiente','error','Pendiente: '+gs(OP.cta.prestamo));
+    OP.prest = Math.min(v, OP.cta.prestamo); opPintarDetalle();
+  };
   const ret = document.getElementById('opRet');
-  ret.onchange = function(){ OP.ret = parseGsIn(this.value) || 0; opPintarDetalle(); };
+  if(ret) ret.onchange = function(){ OP.ret = parseGsIn(this.value) || 0; opPintarDetalle(); };
   document.getElementById('opRetMot').onchange = function(){ OP.retMot = this.value; };
   document.getElementById('opObs').onchange = function(){ OP.obs = this.value; };
   document.getElementById('opEmitir').disabled = !T.inc.length;
@@ -4794,7 +4828,7 @@ document.getElementById('opEmitir').onclick = async function(){
     showToast('Orden '+numero+' emitida','success', gs(T.neto)+' netos · '+T.inc.length+' certificado(s)');
     OP.ultima = { cab: Object.assign({ id:ordenId }, cab), items: T.inc.slice() };
     await opPDF(OP.ultima, conAnexo);
-    OP.sel = {}; OP.ret = 0; OP.retMot = ''; OP.obs = '';
+    OP.sel = {}; OP.antic = null; OP.prest = null; OP.ret = 0; OP.retMot = ''; OP.obs = '';
     await loadList();
     await opCargar();
   }catch(e){
@@ -5703,7 +5737,10 @@ async function abrirDetalle(id){
   }
   if(c.estado === 'Aprobado'){
     acc.innerHTML += ' <button type="button" class="btn-g" id="dtFirmaR">✍ Firma residente</button>';
-    if(state.puedeAprobar && !pagado) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
+    /* v8.5 · Los descuentos se cargan en la orden de pago, no acá: si no,
+       el mismo anticipo se puede descontar dos veces. */
+    if(state.puedeAprobar && !pagado && saldoCert(c).anticipo + saldoCert(c).prestamo > 0)
+      acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc" title="Descuentos cargados antes de la orden de pago: ahora se hacen al emitir la orden">Descuentos cargados</button> ' + acc.innerHTML;
   }
 
   try{
