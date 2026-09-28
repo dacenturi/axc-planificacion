@@ -109,7 +109,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .tools input{flex:1;min-width:220px}
 
 /* Lista */
-.cert-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 22px;margin-bottom:12px;box-shadow:var(--shadow);display:grid;grid-template-columns:150px 1fr 200px 130px 120px;gap:14px;align-items:center;cursor:pointer;position:relative;overflow:hidden}
+.cert-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 22px;margin-bottom:12px;box-shadow:var(--shadow);display:grid;grid-template-columns:150px 1fr 190px 190px 130px 130px;gap:14px;align-items:center;cursor:pointer;position:relative;overflow:hidden}
+.cert-op{font-size:10.5px;font-weight:700;color:#1B5524;background:#EEF8F0;border:1px solid #9BD3A9;border-radius:6px;padding:1px 7px;margin-top:4px;display:inline-block}
 .cert-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--border)}
 .cert-card[data-estado="Borrador"]::before{background:var(--state-archivado-bd)}
 .cert-card[data-estado="Medido"]::before{background:var(--state-solicitado-bd)}
@@ -669,7 +670,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v7.9 · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.0 · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1213,6 +1214,15 @@ async function loadPresupuestos(){
   }catch(e){ console.warn('presupuestos', e); }
 }
 
+/* Fecha y hora cortas, para saber cuándo se midió realmente */
+function fmtFechaHora(v){
+  if(!v) return '';
+  try{
+    const d = new Date(v);
+    return d.toLocaleDateString('es-PY') + ' ' + d.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' });
+  }catch(e){ return fmtFecha(v); }
+}
+
 /* ── Lista de certificados ───────────────────────────────────────── */
 async function loadList(){
   document.getElementById('pageSubtitle').textContent = 'Cargando certificados…';
@@ -1281,8 +1291,11 @@ function renderList(){
       '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.obra||'—')+
         '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small></div>'+
+      '<div class="cert-obra">'+escapeHtml(c.medido_por||'—')+
+        '<small>'+(c.medido_en ? ('midió el '+fmtFechaHora(c.medido_en)) : 'residente')+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.contratista||'—')+'<small>contratista</small></div>'+
-      '<div><span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span></div>'+
+      '<div><span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span>'+
+        (c.orden_pago ? '<div class="cert-op" title="Pagado en la orden '+escapeHtml(c.orden_pago)+'">💳 '+escapeHtml(c.orden_pago)+'</div>' : '')+'</div>'+
       '<div class="cert-tot">'+gs(c.total)+'</div>'+
     '</div>').join('');
   cont.querySelectorAll('.cert-card').forEach(el=>{
@@ -4776,6 +4789,39 @@ document.getElementById('opVerEmitidas').onclick = async function(){
   }
 };
 
+/* Importe en letras: en una orden de pago el número solo no alcanza. */
+function gsEnLetras(n){
+  n = Math.round(Math.abs(Number(n)||0));
+  if(n === 0) return 'CERO GUARANIES';
+  if(n === 1) return 'UN GUARANI';
+  const U = ['','UN','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE','DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE',
+             'DIECISEIS','DIECISIETE','DIECIOCHO','DIECINUEVE','VEINTE'];
+  const D = ['','','VEINTI','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
+  const C = ['','CIENTO','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS','SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
+  const dosCifras = function(x){
+    if(x <= 20) return U[x];
+    const d = Math.floor(x/10), u = x%10;
+    if(d === 2) return u ? 'VEINTI'+U[u] : 'VEINTE';
+    return D[d] + (u ? ' Y '+U[u] : '');
+  };
+  const tresCifras = function(x){
+    if(x === 100) return 'CIEN';
+    const c = Math.floor(x/100), r = x%100;
+    return (c ? C[c]+(r?' ':'') : '') + (r ? dosCifras(r) : '');
+  };
+  const bloque = function(x, sing, plur){
+    if(!x) return '';
+    if(x === 1) return sing+' ';
+    return tresCifras(x)+' '+plur+' ';
+  };
+  const mill = Math.floor(n/1000000), mil = Math.floor((n%1000000)/1000), res = n%1000;
+  let t = '';
+  if(mill) t += (mill === 1 ? 'UN MILLON ' : tresCifras(mill)+' MILLONES ');
+  if(mil)  t += bloque(mil, 'MIL', 'MIL');
+  if(res)  t += tresCifras(res)+' ';
+  return t.trim().replace(/\s+/g,' ') + ' GUARANIES';
+}
+
 /* PDF de la orden consolidada: una hoja para la administración, con el
    detalle por obra, la liquidación y las firmas.                          */
 function opPDF(O){
@@ -4789,10 +4835,11 @@ function opPDF(O){
   doc.setFillColor.apply(doc, NAVY); doc.rect(0, 0, W, 34, 'F');
   doc.setFillColor(255,255,255); doc.roundedRect(M, 8, 40, 18, 2, 2, 'F');
   try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 11, 34, 12); }catch(e){}
-  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(15);
-  doc.text('ORDEN DE PAGO CONSOLIDADA', M+48, 17);
-  doc.setFont('helvetica','normal').setFontSize(9.5);
-  doc.text('Varios certificados en un solo pago  ·  AXC Constructora', M+48, 24);
+  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(13.5);
+  doc.text('ORDEN DE PAGO', M+48, 16);
+  doc.setFont('helvetica','normal').setFontSize(8.8);
+  doc.text('Varios certificados de obra en un solo pago', M+48, 22);
+  doc.text('AXC Constructora', M+48, 27);
   doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
   doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
   doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
@@ -4813,7 +4860,7 @@ function opPDF(O){
   dato('EMITIDA POR', c.emitido_por||'', M+5+cw*2, y);
   dato('PERIODO', (c.periodo_desde?fmtFecha(c.periodo_desde):'-')+' al '+(c.periodo_hasta?fmtFecha(c.periodo_hasta):'-'), M+5, y+13);
   dato('CERTIFICADOS', String(its.length), M+5+cw, y+13);
-  dato('OBRA(S)', c.obras||'-', M+5+cw*2, y+13, 62);
+  dato('OBRA(S)', (c.obras||'-').replace(/ · /g, ' / '), M+5+cw*2, y+13, 62);
   y += 34;
 
   // Detalle agrupado por obra
@@ -4851,7 +4898,7 @@ function opPDF(O){
     doc.text(pdfSafe(et), W-M-82, y);
     doc.setFont('helvetica','bold').setFontSize(fuerte?12:10);
     if(neg) doc.setTextColor(180,43,43);
-    doc.text((neg?'- ':'')+gs(val), W-M-3, y, {align:'right'});
+    doc.text((Number(val)>0 ? (neg?'- ':'')+gs(val) : '—'), W-M-3, y, {align:'right'});
     doc.setTextColor.apply(doc, TXT);
     y += fuerte?8:6.4;
   };
@@ -4865,32 +4912,48 @@ function opPDF(O){
   doc.setFillColor.apply(doc, NAVY); doc.roundedRect(W-M-88, y-5.5, 88, 12, 2, 2, 'F');
   doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(10);
   doc.text('NETO A PAGAR', W-M-84, y+2);
-  doc.setFontSize(13); doc.text(gs(c.neto_pagar), W-M-4, y+2.5, {align:'right'});
+  doc.setFontSize(13); doc.text('Gs '+gs(c.neto_pagar), W-M-4, y+2.5, {align:'right'});
   doc.setTextColor.apply(doc, TXT);
+
+  // Importe en letras: la banda que da validez al documento
+  let yl = y + 12;
+  doc.setFillColor(247,248,251); doc.setDrawColor(223,228,236);
+  doc.roundedRect(M, yl-5.5, W-M*2, 13, 2, 2, 'FD');
+  doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor.apply(doc, GRIS);
+  doc.text('SON GUARANIES', M+4, yl-0.5);
+  doc.setFont('helvetica','bold').setFontSize(9.2).setTextColor.apply(doc, TXT);
+  doc.text(doc.splitTextToSize(gsEnLetras(c.neto_pagar), W-M*2-42), M+4, yl+4.5);
 
   // Notas a la izquierda
   let yn = doc.lastAutoTable.finalY + 8;
   doc.setFont('helvetica','bold').setFontSize(8).setTextColor.apply(doc, GRIS);
-  doc.text('DETALLE DEL PAGO', M, yn); yn += 5;
+  doc.text('CONCEPTO DEL PAGO', M, yn); yn += 5;
   doc.setFont('helvetica','normal').setFontSize(8.4).setTextColor.apply(doc, TXT);
   const notas = [
-    'Incluye '+its.length+' certificado(s) aprobado(s) de '+pdfSafe(c.contratista)+'.',
-    (c.retencion>0 ? 'Retencion: '+pdfSafe(c.retencion_motivo||'sin motivo indicado')+'.' : ''),
+    'Pago de '+its.length+' certificado(s) de obra aprobado(s) a nombre de '+pdfSafe(c.contratista)+
+      ((c.periodo_desde && c.periodo_hasta) ? (', del '+fmtFecha(c.periodo_desde)+' al '+fmtFecha(c.periodo_hasta)+'.') : '.'),
+    (c.desc_anticipo>0 ? 'Se descuenta el anticipo entregado previamente al contratista.' : ''),
+    (c.desc_prestamo>0 ? 'Se descuenta el prestamo pendiente de devolucion.' : ''),
+    (c.retencion>0 ? 'Retencion aplicada: '+pdfSafe(c.retencion_motivo||'sin motivo indicado')+'.' : ''),
     (c.observacion ? pdfSafe(c.observacion) : ''),
-    'Los certificados incluidos quedan pagados con esta orden y no entran en otra.'
+    'Los certificados detallados quedan cancelados con esta orden y no se incluyen en otro pago.'
   ].filter(Boolean);
-  doc.text(doc.splitTextToSize(notas.join('  '), W-M*2-96), M, yn);
+  doc.text(doc.splitTextToSize(notas.join(' '), W-M*2-96), M, yn);
 
   // Firmas
-  let yf = Math.max(y + 22, H - 44);
+  let yf = Math.max(Math.max(yl, yn) + 34, H - 52);
   const fw = (W-M*2-16)/3;
-  [['ELABORADO POR', c.emitido_por||''], ['APROBADO POR', APROBADOR_DOC], ['RECIBI CONFORME', c.contratista||'']].forEach(function(f, i){
+  [['ELABORADO POR', c.emitido_por||'', 'residente'],
+   ['AUTORIZADO POR', APROBADOR_DOC, 'direccion de obra'],
+   ['RECIBI CONFORME', c.contratista||'', 'contratista · C.I.']].forEach(function(f, i){
     const x = M + i*(fw+8);
     doc.setDrawColor(150,158,175).setLineWidth(.4); doc.line(x, yf, x+fw, yf);
     doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor.apply(doc, GRIS);
     doc.text(pdfSafe(f[0]), x, yf+5);
     doc.setFont('helvetica','normal').setFontSize(9).setTextColor.apply(doc, TXT);
     doc.text(doc.splitTextToSize(pdfSafe(f[1]||''), fw)[0], x, yf+10);
+    doc.setFontSize(7.2).setTextColor.apply(doc, GRIS);
+    doc.text(pdfSafe(f[2]), x, yf+14.5);
   });
   doc.setFontSize(7.5).setTextColor.apply(doc, GRIS);
   doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  emitida el '+fmtFecha(c.fecha)+'  ·  documento interno', M, H-8);
