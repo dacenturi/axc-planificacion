@@ -189,6 +189,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+.dt-lock{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#8a6d10;background:#FFF8E6;border:1px solid #F2CD7A;border-radius:9px;padding:7px 13px}
+.dt-lock b{font-family:ui-monospace,Consolas,monospace}
 #dlgExtra .op-anexo{display:flex;gap:9px;align-items:flex-start;border:1.5px dashed #d6dce8;border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff}
 #dlgExtra .op-anexo input{margin-top:3px;width:16px;height:16px;accent-color:#1F3864}
 #dlgExtra .op-anexo b{font-size:13px;color:#1F3864}
@@ -696,7 +698,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.3 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.4 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -4820,8 +4822,13 @@ document.getElementById('opVerEmitidas').onclick = async function(){
           (o.estado==='Anulada'?'<div class="op-sub">anulada</div>':'<div class="op-sub">'+escapeHtml(o.emitido_por||'')+'</div>')+'</td>'+
           '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista)+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
           '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
-          '<td class="r"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button></td></tr>';
+          '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
+            (o.estado !== 'Anulada' && state.puedeOrdenPago ? ' <button type="button" class="btn-g" data-opanu="'+o.id+'" title="Libera los certificados y devuelve los descuentos">Anular</button>' : '')+
+          '</td></tr>';
       }).join('')+'</tbody></table></div>';
+    det.querySelectorAll('button[data-opanu]').forEach(function(b){
+      b.onclick = function(){ opAnular(data.filter(function(x){ return x.id === Number(b.dataset.opanu); })[0]); };
+    });
     det.querySelectorAll('button[data-oprev]').forEach(function(b){
       b.onclick = async function(){
         const id = Number(b.dataset.oprev);
@@ -4872,6 +4879,52 @@ function gsEnLetras(n){
   if(mil)  t += bloque(mil, 'MIL', 'MIL');
   if(res)  t += tresCifras(res)+' ';
   return t.trim().replace(/\s+/g,' ') + ' GUARANIES';
+}
+
+/* Anular una orden de pago: devuelve los certificados a «por pagar», repone
+   el anticipo y el préstamo descontados, y deja el motivo asentado. La orden
+   no se borra: queda como anulada, para que el número no se reutilice.     */
+async function opAnular(o){
+  if(!o) return;
+  const { data:its } = await sb.from('orden_pago_items').select('certificado_id,numero,total').eq('orden_id', o.id);
+  const n = (its||[]).length;
+  const r = await axcDialog({
+    tono:'danger', icono:'⚠', titulo:'Anular la orden '+o.numero,
+    subtitulo: o.contratista + ' · ' + gs(o.neto_pagar) + ' netos',
+    mensaje:'La orden queda <b>anulada</b> y no se borra: el número no se vuelve a usar. '+
+            'Los certificados incluidos vuelven a quedar <b>pendientes de pago</b> y se podrán corregir o volver a una orden nueva.',
+    lista:[
+      n+' certificado(s) vuelven a «por pagar»' + ((its||[]).length ? ': '+(its||[]).map(function(x){ return escapeHtml(x.numero||''); }).join(', ') : ''),
+      ...((Number(o.desc_anticipo)||0) > 0 ? ['Se repone el anticipo descontado: <b>'+gs(o.desc_anticipo)+'</b>'] : []),
+      ...((Number(o.desc_prestamo)||0) > 0 ? ['Se repone el préstamo descontado: <b>'+gs(o.desc_prestamo)+'</b>'] : []),
+      'Si ya se transfirió la plata, esto <b>no revierte el pago</b>: solo corrige el sistema.'
+    ],
+    campo:{ label:'Motivo de la anulación', placeholder:'Ej. se incluyó un certificado con la medición equivocada', requerido:true },
+    ok:'Anular la orden', cancelar:'Cancelar'
+  });
+  if(!r.ok) return;
+  try{
+    const quien = state.profile.residente || state.profile.nombre || state.user.email;
+    const up = await sb.from('orden_pago').update({ estado:'Anulada', anulado_por:quien,
+      anulado_en:new Date().toISOString(), anulado_motivo:r.valor }).eq('id', o.id);
+    if(up.error) throw up.error;
+    const ids = (its||[]).map(function(x){ return x.certificado_id; });
+    if(ids.length) await sb.from('certificados').update({ orden_pago:null }).in('id', ids);
+    // Reponer lo descontado, para que el saldo del contratista vuelva a ser el real
+    const rev = [];
+    if((Number(o.desc_anticipo)||0) > 0) rev.push({ contratista:o.contratista, tipo:'anticipo', movimiento:'otorgado',
+      monto:o.desc_anticipo, fecha:hoyISO(), obra:(o.obras||'').split(' · ')[0]||null,
+      concepto:'Reposición por anulación de '+o.numero, observacion:r.valor, activo:true, creado_por:quien });
+    if((Number(o.desc_prestamo)||0) > 0) rev.push({ contratista:o.contratista, tipo:'prestamo', movimiento:'otorgado',
+      monto:o.desc_prestamo, fecha:hoyISO(), obra:(o.obras||'').split(' · ')[0]||null,
+      concepto:'Reposición por anulación de '+o.numero, observacion:r.valor, activo:true, creado_por:quien });
+    if(rev.length){ await sb.from('contratista_cuenta').insert(rev); CTA.cargado = false; }
+    showToast('Orden '+o.numero+' anulada','success', n+' certificado(s) quedaron pendientes de pago');
+    await loadList();
+    document.getElementById('opVerEmitidas').click();
+  }catch(e){
+    showToast('No se pudo anular la orden','error', e.message||'');
+  }
 }
 
 /* PDF de la orden consolidada: una hoja para la administración, con el
@@ -5623,16 +5676,23 @@ async function abrirDetalle(id){
 
   const acc = document.getElementById('dtAcciones');
   acc.innerHTML = '';
-  const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido');   // «Medido» es de certificados anteriores
+  /* v8.4 · Un certificado ya incluido en una orden de pago emitida no se
+     modifica ni se anula: primero hay que anular la orden. Si no, la orden
+     diría una cosa y el certificado otra.                                  */
+  const pagado = !!c.orden_pago;
+  const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido') && !pagado;
+  if(pagado){
+    acc.innerHTML = '<span class="dt-lock">🔒 Incluido en la orden <b>'+escapeHtml(c.orden_pago)+'</b> · para modificarlo, anulá la orden primero</span>';
+  }
   if(enCurso){
     acc.innerHTML = '<button type="button" class="btn-nav" id="dtEditar">Editar</button>';
     if(state.puedeAnular)  acc.innerHTML += ' <button type="button" class="btn-g" id="dtAnular">Anular</button>';
     if(state.puedeAprobar) acc.innerHTML += ' <button type="button" class="btn-ok" id="dtAprobar">✓ Aprobar certificado</button>';
   }
-  if(c.estado === 'Aprobado' && state.puedeReabrir){
+  if(c.estado === 'Aprobado' && state.puedeReabrir && !pagado){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtReabrir" title="Corregir el certificado: vuelve a borrador y hay que aprobarlo de nuevo">✎ Editar (vuelve a borrador)</button>';
   }
-  if(c.estado !== 'Anulado' && (enCurso || state.puedeAprobar)){
+  if(c.estado !== 'Anulado' && !pagado && (enCurso || state.puedeAprobar)){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtOrdenar">↕ Ordenar ítems</button>';
   }
   if(c.estado !== 'Anulado'){
@@ -5643,7 +5703,7 @@ async function abrirDetalle(id){
   }
   if(c.estado === 'Aprobado'){
     acc.innerHTML += ' <button type="button" class="btn-g" id="dtFirmaR">✍ Firma residente</button>';
-    if(state.puedeAprobar) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
+    if(state.puedeAprobar && !pagado) acc.innerHTML = '<button type="button" class="btn-g" id="dtDesc">Descuentos</button> ' + acc.innerHTML;
   }
 
   try{
@@ -6118,19 +6178,19 @@ async function generarOrdenPago(c, its, opts){
   doc.setFillColor.apply(doc, NAVY); doc.rect(0, 0, W, 34, 'F');
   doc.setFillColor(255,255,255); doc.roundedRect(M, 8, 40, 18, 2, 2, 'F');
   try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+3, 11, 34, 12); }catch(e){}
-  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(14);
-  doc.text('LIQUIDACION DEL CERTIFICADO', M+48, 16);
-  doc.setFont('helvetica','normal').setFontSize(8.8);
-  doc.text('Detalle de lo certificado y su saldo a cobrar  ·  AXC Constructora', M+48, 22);
-  doc.setFontSize(8).setTextColor(255,214,150);
+  doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-46, 9, 46, 16, 2, 2, 'F');
+  doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(7);
+  doc.text('CERTIFICADO', W-M-23, 14.5, {align:'center'});
+  doc.setFontSize(11);
+  doc.text(pdfSafe(c.numero||''), W-M-23, 21, {align:'center'});
+  doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(12.5);
+  doc.text('LIQUIDACION DEL CERTIFICADO', M+46, 15);
+  doc.setFont('helvetica','normal').setFontSize(8.2);
+  doc.text('Detalle de lo certificado y su saldo a cobrar', M+46, 20.5);
+  doc.setFontSize(7.6).setTextColor(255,214,150);
   doc.text(c.orden_pago
     ? ('PAGADO EN LA ORDEN '+pdfSafe(c.orden_pago))
-    : 'DOCUMENTO DE TRABAJO  ·  NO AUTORIZA EL PAGO', M+48, 27.5);
-  doc.setFillColor.apply(doc, GOLD); doc.roundedRect(W-M-52, 10, 52, 15, 2, 2, 'F');
-  doc.setTextColor(21,40,68).setFont('helvetica','bold').setFontSize(8);
-  doc.text('NUMERO', W-M-26, 15.5, {align:'center'});
-  doc.setFontSize(13);
-  doc.text(pdfSafe(c.numero||''), W-M-26, 22, {align:'center'});
+    : 'DOCUMENTO DE TRABAJO  ·  NO AUTORIZA EL PAGO', M+46, 26);
 
   // ── Datos del trámite ────────────────────────────────────────────
   let y = 44;
@@ -6280,7 +6340,7 @@ async function generarOrdenPago(c, its, opts){
     if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
   if(opO.noSave) return doc;
-  doc.save(nombreArchivo(c, 'orden-de-pago'));
+  doc.save(nombreArchivo(c, 'liquidacion'));
 }
 
 
