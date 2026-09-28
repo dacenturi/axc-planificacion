@@ -189,6 +189,13 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+#dlgExtra .op-doc{display:flex;gap:10px;align-items:flex-start;border:1px solid #e2e6ee;border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff;margin-bottom:8px}
+#dlgExtra .op-doc:hover{background:#F6F9FD}
+#dlgExtra .op-doc.fijo{background:#F4FBF6;border-color:#9BD3A9;cursor:default}
+#dlgExtra .op-doc.unico{border-style:dashed}
+#dlgExtra .op-doc input{margin-top:3px;width:17px;height:17px;accent-color:#1F3864}
+#dlgExtra .op-doc b{font-size:13px;color:#1F3864}
+#dlgExtra .op-doc small{display:block;font-size:11.5px;color:#5a6677;line-height:1.45;margin-top:2px}
 .op-ln.ed{align-items:center}
 .op-ln.ed span{display:flex;flex-direction:column;line-height:1.3}
 .op-ln.ed i{font-style:normal;font-size:10.5px;color:#8893a5}
@@ -704,7 +711,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.7 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.8 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -4781,10 +4788,6 @@ document.getElementById('opEmitir').onclick = async function(){
   if(T.ret > 0 && !String(OP.retMot||'').trim()){ showToast('Escribí el motivo de la retención','error','Una retención sin motivo no se puede explicar después'); return; }
   const obras = Array.from(new Set(T.inc.map(function(c){ return c._obra || c.obra || 'Sin obra'; })));
   const r = await axcDialog({
-    html:'<label class="op-anexo"><input type="checkbox" id="opAnexo" checked>'+
-         '<span><b>Adjuntar las planillas de avance</b>'+
-         '<small>Un solo PDF: primero la orden de pago y después la planilla de cada certificado incluido. '+
-         'Sin marcar, sale solo la orden.</small></span></label>',
     tono:'ok', icono:'💳', titulo:'Emitir la orden de pago',
     subtitulo: OP.contratista + ' · ' + T.inc.length + ' certificado(s)',
     mensaje:'Se va a emitir una orden de pago por <b>'+gs(T.neto)+'</b> netos. '+
@@ -4799,7 +4802,8 @@ document.getElementById('opEmitir').onclick = async function(){
     ok:'Emitir la orden', cancelar:'Revisar'
   });
   if(!r.ok) return;
-  const conAnexo = !!(r.box && r.box.querySelector('#opAnexo') && r.box.querySelector('#opAnexo').checked);
+  const docs = await opOpcionesPDF('Documentos de la orden', OP.contratista+' · '+T.inc.length+' certificado(s)', 'Emitir y generar');
+  if(!docs) return;
   OP.emitiendo = true;
   const btn = this; btn.disabled = true; btn.textContent = 'Emitiendo…';
   try{
@@ -4839,7 +4843,7 @@ document.getElementById('opEmitir').onclick = async function(){
     T.inc.forEach(function(c){ c.orden_pago = numero; });
     showToast('Orden '+numero+' emitida','success', gs(T.neto)+' netos · '+T.inc.length+' certificado(s)');
     OP.ultima = { cab: Object.assign({ id:ordenId }, cab), items: T.inc.slice() };
-    await opPDF(OP.ultima, conAnexo);
+    await opPDF(OP.ultima, docs);
     OP.sel = {}; OP.antic = null; OP.prest = null; OP.ret = 0; OP.retMot = ''; OP.obs = '';
     await loadList();
     await opCargar();
@@ -4900,9 +4904,14 @@ document.getElementById('opVerEmitidas').onclick = async function(){
         const id = Number(b.dataset.oprev);
         const cab = data.filter(function(x){ return x.id === id; })[0];
         const { data:its } = await sb.from('orden_pago_items').select('*').eq('orden_id', id);
-        opPDF({ cab: cab, items: (its||[]).map(function(x){
+        if(!(its||[]).length && cab.estado === 'Anulada'){
+          showToast('La orden está anulada','info','Queda su resumen, pero el detalle de certificados se liberó');
+        }
+        const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', 'Generar');
+        if(!docs) return;
+        await opPDF({ cab: cab, items: (its||[]).map(function(x){
           return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
-        }) }, false);
+        }) }, docs);
       };
     });
   }catch(e){
@@ -4945,6 +4954,31 @@ function gsEnLetras(n){
   if(mil)  t += bloque(mil, 'MIL', 'MIL');
   if(res)  t += tresCifras(res)+' ';
   return t.trim().replace(/\s+/g,' ') + ' GUARANIES';
+}
+
+/* v8.8 · Qué documentos salen con la orden. Mismo criterio que el certificado:
+   la residente elige, y puede juntarlos en un solo archivo.                 */
+async function opOpcionesPDF(titulo, sub, okTxt){
+  const bloque = function(id, ico, tit, txt, chk, fijo){
+    return '<label class="op-doc'+(fijo?' fijo':'')+'">'+
+      '<input type="checkbox" id="'+id+'"'+(chk?' checked':'')+(fijo?' disabled':'')+'>'+
+      '<span><b>'+ico+' '+tit+'</b><small>'+txt+'</small></span></label>';
+  };
+  const r = await axcDialog({
+    tono:'', icono:'📄', titulo: titulo, subtitulo: sub,
+    mensaje:'Elegí qué documentos necesitás.',
+    html:
+      bloque('opDocOrd','💳','Orden de pago','El documento que autoriza el pago: certificados incluidos, descuentos y neto.', true, true)+
+      bloque('opDocPl','📊','Planillas de avance','Una por cada certificado incluido, con acumulados, % de avance y saldo.', true, false)+
+      bloque('opDocLq','💰','Liquidaciones de cada certificado','El detalle de cada certificado por separado, con su saldo a cobrar.', false, false)+
+      '<label class="op-doc unico"><input type="checkbox" id="opDocUni" checked>'+
+        '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden de pago y después los anexos. '+
+        'Sin marcar, se descarga un archivo por documento.</small></span></label>',
+    ok: okTxt || 'Generar', cancelar:'Cancelar'
+  });
+  if(!r.ok) return null;
+  const v = function(id){ const e = r.box.querySelector('#'+id); return !!(e && e.checked); };
+  return { planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni') };
 }
 
 /* Vista previa: el mismo documento, con marca de agua BORRADOR y sin número.
@@ -5019,7 +5053,8 @@ async function opAnular(o){
 
 /* PDF de la orden consolidada: una hoja para la administración, con el
    detalle por obra, la liquidación y las firmas.                          */
-async function opPDF(O, conAnexo){
+async function opPDF(O, docs){
+  const D = docs || {};
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   const { jsPDF } = window.jspdf;
   const c = O.cab, its = O.items || [];
@@ -5172,15 +5207,23 @@ async function opPDF(O, conAnexo){
 
   /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
      Es lo que administración archiva junto con la orden.                    */
-  if(conAnexo){
+  if(D.planillas || D.liquidaciones){
     for(let i = 0; i < its.length; i++){
       const cid = its[i].id || its[i].certificado_id;
       if(!cid) continue;
       try{
         const { data:cab } = await sb.from('certificados').select('*').eq('id', cid).maybeSingle();
         const { data:cits } = await sb.from('certificado_items').select('*').eq('certificado_id', cid).order('orden',{ascending:true});
-        if(cab) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true });
-      }catch(e){ console.warn('anexo de planilla', e); }
+        if(!cab) continue;
+        if(D.liquidaciones){
+          if(D.unico) await generarOrdenPago(cab, cits||[], { doc:doc, noSave:true });
+          else await generarOrdenPago(cab, cits||[], {});
+        }
+        if(D.planillas){
+          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true });
+          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true });
+        }
+      }catch(e){ console.warn('anexo', e); }
     }
   }
   doc.save((esBorr ? 'BORRADOR_orden_de_pago' : String(c.numero||'orden_de_pago')).replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
