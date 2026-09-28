@@ -189,6 +189,14 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+#dlgExtra .op-modo{display:grid;gap:8px;margin-bottom:12px}
+#dlgExtra .op-md{display:flex;gap:10px;align-items:flex-start;border:1.5px solid #e2e6ee;border-radius:11px;padding:11px 13px;cursor:pointer;background:#fff}
+#dlgExtra .op-md:hover{background:#F6F9FD}
+#dlgExtra .op-md:has(input:checked){border-color:#1F3864;background:#F4F8FE}
+#dlgExtra .op-md input{margin-top:3px;width:17px;height:17px;accent-color:#1F3864}
+#dlgExtra .op-md b{font-size:13.5px;color:#1F3864}
+#dlgExtra .op-md small{display:block;font-size:11.5px;color:#5a6677;line-height:1.45;margin-top:2px}
+#dlgExtra .op-sep{font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#A8841C;margin:14px 0 7px;padding-bottom:4px;border-bottom:1px solid #EDE2C4}
 #dlgExtra .op-doc{display:flex;gap:10px;align-items:flex-start;border:1px solid #e2e6ee;border-radius:10px;padding:10px 12px;cursor:pointer;background:#fff;margin-bottom:8px}
 #dlgExtra .op-doc:hover{background:#F6F9FD}
 #dlgExtra .op-doc.fijo{background:#F4FBF6;border-color:#9BD3A9;cursor:default}
@@ -711,7 +719,7 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.8 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v8.9 · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -902,9 +910,8 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
     <div class="mfoot">
       <button type="button" class="btn-g" id="opCerrar">Cerrar</button>
       <span style="flex:1"></span>
-      <button type="button" class="btn-nav" id="opVerEmitidas">📜 Órdenes emitidas</button>
-      <button type="button" class="btn-g" id="opPrev" title="Ver cómo va a salir la orden antes de emitirla. No numera ni marca los certificados." disabled>👁 Vista previa (borrador)</button>
-      <button type="button" class="btn-pri" id="opEmitir" disabled>💳 Emitir la orden</button>
+      <button type="button" class="btn-g" id="opVerEmitidas">📜 Órdenes emitidas</button>
+      <button type="button" class="btn-pri" id="opEmitir" disabled>📄 Generar la orden</button>
     </div>
   </div>
 </div>
@@ -4767,7 +4774,6 @@ function opPintarDetalle(){
   document.getElementById('opRetMot').onchange = function(){ OP.retMot = this.value; };
   document.getElementById('opObs').onchange = function(){ OP.obs = this.value; };
   document.getElementById('opEmitir').disabled = !T.inc.length;
-  document.getElementById('opPrev').disabled = !T.inc.length;
 }
 
 /* Emisión: numera la orden, guarda el detalle, marca los certificados y
@@ -4787,8 +4793,46 @@ document.getElementById('opEmitir').onclick = async function(){
   if(!T.inc.length){ showToast('Elegí al menos un certificado','error'); return; }
   if(T.ret > 0 && !String(OP.retMot||'').trim()){ showToast('Escribí el motivo de la retención','error','Una retención sin motivo no se puede explicar después'); return; }
   const obras = Array.from(new Set(T.inc.map(function(c){ return c._obra || c.obra || 'Sin obra'; })));
+  const fechas0 = T.inc.map(function(c){ return c.fecha; }).filter(Boolean).sort();
+
+  const docs = await opOpcionesPDF('Generar la orden de pago',
+    OP.contratista+' · '+T.inc.length+' certificado(s) · '+gs(T.neto)+' netos', true);
+  if(!docs) return;
+
+  /* Borrador: se genera y listo, sin tocar nada. */
+  if(docs.modo === 'borrador'){
+    await opPDF({
+      cab: { numero:'SIN NUMERAR', contratista:OP.contratista, fecha:hoyISO(),
+        periodo_desde:fechas0[0]||null, periodo_hasta:fechas0[fechas0.length-1]||null,
+        total_certificado:T.tot, desc_anticipo:T.antic, desc_prestamo:T.prest,
+        retencion:T.ret, retencion_motivo:OP.retMot||null, neto_pagar:T.neto,
+        obras:obras.join(' · '), observacion:OP.obs||null,
+        emitido_por:(state.profile.residente || state.profile.nombre || state.user.email), _borrador:true },
+      items: T.inc.slice()
+    }, docs);
+    showToast('Borrador generado','info','No numera ni marca los certificados. Cuando esté correcto, volvé y emitila.');
+    return;
+  }
+
+  /* Antes de emitir: que ninguno de los certificados esté ya pagado. */
+  try{
+    const { data:chk } = await sb.from('certificados').select('id,numero,orden_pago').in('id', T.inc.map(function(c){ return c.id; }));
+    const ya = (chk||[]).filter(function(c){ return c.orden_pago; });
+    if(ya.length){
+      await axcDialog({
+        tono:'danger', icono:'⚠', titulo:'Hay certificados que ya tienen orden de pago',
+        subtitulo:'La orden no se emitió',
+        mensaje:'Un certificado no puede estar en dos órdenes. Estos ya fueron incluidos en una orden anterior:',
+        lista: ya.map(function(c){ return '<b>'+escapeHtml(c.numero||'')+'</b> · orden <b>'+escapeHtml(c.orden_pago)+'</b>'; })
+          .concat(['Si esa orden está equivocada, anulala desde <b>📜 Órdenes emitidas</b> y volvé a emitir.']),
+        ok:'Entendido', cancelar:null
+      });
+      await opCargar();
+      return;
+    }
+  }catch(e){ console.warn('control previo', e); }
   const r = await axcDialog({
-    tono:'ok', icono:'💳', titulo:'Emitir la orden de pago',
+    tono:'ok', icono:'💳', titulo:'Confirmá la emisión',
     subtitulo: OP.contratista + ' · ' + T.inc.length + ' certificado(s)',
     mensaje:'Se va a emitir una orden de pago por <b>'+gs(T.neto)+'</b> netos. '+
             'Los certificados incluidos quedan marcados con el número de orden y no vuelven a aparecer como pendientes.',
@@ -4802,10 +4846,8 @@ document.getElementById('opEmitir').onclick = async function(){
     ok:'Emitir la orden', cancelar:'Revisar'
   });
   if(!r.ok) return;
-  const docs = await opOpcionesPDF('Documentos de la orden', OP.contratista+' · '+T.inc.length+' certificado(s)', 'Emitir y generar');
-  if(!docs) return;
   OP.emitiendo = true;
-  const btn = this; btn.disabled = true; btn.textContent = 'Emitiendo…';
+  const btn = document.getElementById('opEmitir'); btn.disabled = true; btn.textContent = 'Emitiendo…';
   try{
     const numero = await opProximoNumero();
     const quien = state.profile.residente || state.profile.nombre || state.user.email;
@@ -4870,7 +4912,7 @@ document.getElementById('opEmitir').onclick = async function(){
       showToast('No se pudo emitir la orden','error', msg || 'Error desconocido');
     }
   }finally{
-    OP.emitiendo = false; btn.disabled = false; btn.textContent = '💳 Emitir la orden';
+    OP.emitiendo = false; btn.disabled = false; btn.textContent = '📄 Generar la orden';
   }
 };
 
@@ -4907,7 +4949,7 @@ document.getElementById('opVerEmitidas').onclick = async function(){
         if(!(its||[]).length && cab.estado === 'Anulada'){
           showToast('La orden está anulada','info','Queda su resumen, pero el detalle de certificados se liberó');
         }
-        const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', 'Generar');
+        const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', false);
         if(!docs) return;
         await opPDF({ cab: cab, items: (its||[]).map(function(x){
           return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
@@ -4958,48 +5000,48 @@ function gsEnLetras(n){
 
 /* v8.8 · Qué documentos salen con la orden. Mismo criterio que el certificado:
    la residente elige, y puede juntarlos en un solo archivo.                 */
-async function opOpcionesPDF(titulo, sub, okTxt){
+async function opOpcionesPDF(titulo, sub, conModo){
   const bloque = function(id, ico, tit, txt, chk, fijo){
     return '<label class="op-doc'+(fijo?' fijo':'')+'">'+
       '<input type="checkbox" id="'+id+'"'+(chk?' checked':'')+(fijo?' disabled':'')+'>'+
       '<span><b>'+ico+' '+tit+'</b><small>'+txt+'</small></span></label>';
   };
+  const modo = conModo
+    ? '<div class="op-modo">'+
+        '<label class="op-md"><input type="radio" name="opModo" value="borrador" checked>'+
+          '<span><b>👁 Ver el borrador</b><small>Sale con marca de agua BORRADOR y sin número. '+
+          'No numera, no guarda y los certificados siguen pendientes de pago. Sirve para revisarlo antes.</small></span></label>'+
+        '<label class="op-md"><input type="radio" name="opModo" value="emitir">'+
+          '<span><b>💳 Emitir la orden definitiva</b><small>Numera la orden (OP-2026-XXXX), la guarda, marca los certificados como pagados '+
+          'y descuenta el anticipo o préstamo de la cuenta del contratista.</small></span></label>'+
+      '</div><div class="op-sep">Documentos que se generan</div>'
+    : '';
   const r = await axcDialog({
     tono:'', icono:'📄', titulo: titulo, subtitulo: sub,
-    mensaje:'Elegí qué documentos necesitás.',
-    html:
-      bloque('opDocOrd','💳','Orden de pago','El documento que autoriza el pago: certificados incluidos, descuentos y neto.', true, true)+
-      bloque('opDocPl','📊','Planillas de avance','Una por cada certificado incluido, con acumulados, % de avance y saldo.', true, false)+
+    mensaje: conModo ? 'Primero mirá el borrador. Cuando esté correcto, volvé y emitila con numeración.' : 'Elegí qué documentos necesitás.',
+    html: modo +
+      bloque('opDocOrd','💳','Orden de pago','Certificados incluidos, descuentos y neto a pagar.', true, true)+
+      bloque('opDocPl','📊','Planillas de avance','Una por cada certificado, con acumulados, % de avance y saldo.', true, false)+
       bloque('opDocLq','💰','Liquidaciones de cada certificado','El detalle de cada certificado por separado, con su saldo a cobrar.', false, false)+
       '<label class="op-doc unico"><input type="checkbox" id="opDocUni" checked>'+
-        '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden de pago y después los anexos. '+
+        '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden y después los anexos. '+
         'Sin marcar, se descarga un archivo por documento.</small></span></label>',
-    ok: okTxt || 'Generar', cancelar:'Cancelar'
+    ok:'Generar', cancelar:'Cancelar',
+    alRender: function(box){
+      const btn = document.getElementById('dlgSi');
+      const pintar = function(){
+        const m = box.querySelector('input[name=opModo]:checked');
+        if(btn) btn.textContent = (!m || m.value === 'borrador') ? '👁 Ver el borrador' : '💳 Emitir la orden';
+      };
+      box.querySelectorAll('input[name=opModo]').forEach(function(i){ i.addEventListener('change', pintar); });
+      setTimeout(pintar, 0);   // el diálogo escribe el texto del botón después
+    }
   });
   if(!r.ok) return null;
   const v = function(id){ const e = r.box.querySelector('#'+id); return !!(e && e.checked); };
-  return { planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni') };
+  const m = r.box.querySelector('input[name=opModo]:checked');
+  return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni') };
 }
-
-/* Vista previa: el mismo documento, con marca de agua BORRADOR y sin número.
-   No numera, no guarda y no marca los certificados: sirve para revisarlo con
-   la dirección antes de emitir.                                            */
-document.getElementById('opPrev').onclick = async function(){
-  const T = opTotales();
-  if(!T.inc.length){ showToast('Elegí al menos un certificado','error'); return; }
-  const obras = Array.from(new Set(T.inc.map(function(c){ return c._obra || c.obra || 'Sin obra'; })));
-  const fechas = T.inc.map(function(c){ return c.fecha; }).filter(Boolean).sort();
-  const quien = state.profile.residente || state.profile.nombre || state.user.email;
-  await opPDF({
-    cab: { numero:'SIN NUMERAR', contratista:OP.contratista, fecha:hoyISO(),
-      periodo_desde:fechas[0]||null, periodo_hasta:fechas[fechas.length-1]||null,
-      total_certificado:T.tot, desc_anticipo:T.antic, desc_prestamo:T.prest,
-      retencion:T.ret, retencion_motivo:OP.retMot||null, neto_pagar:T.neto,
-      obras:obras.join(' · '), observacion:OP.obs||null, emitido_por:quien, _borrador:true },
-    items: T.inc.slice()
-  }, false);
-  showToast('Vista previa generada','info','Es un borrador: no numera ni marca los certificados');
-};
 
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
    el anticipo y el préstamo descontados, y deja el motivo asentado. La orden
