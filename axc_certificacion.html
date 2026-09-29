@@ -776,7 +776,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.1 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.2 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -1932,11 +1932,17 @@ document.querySelectorAll('.tr-chip').forEach(c=>{
 function llenarObraFiltro(){
   const sel = document.getElementById('edObraFiltro');
   if(!sel) return;
-  const obras = [];
-  const add = function(o){ o = String(o||'').trim(); if(o && !obras.some(function(x){ return norm(x)===norm(o); })) obras.push(o); };
-  state.presupuestos.forEach(function(p){ add(p.obra); });
-  (state.obrasLista||[]).forEach(add);
-  obras.sort(function(a,b){ return a.localeCompare(b,'es'); });
+  const conPP = [], resto = [];
+  const yaEsta = function(arr,o){ return arr.some(function(x){ return norm(x)===norm(o); }); };
+  const addPP = function(o){ o = String(o||'').trim(); if(o && !yaEsta(conPP,o)) conPP.push(o); };
+  state.presupuestos.forEach(function(p){ addPP(p.obra); });
+  (state.obrasPresu||[]).forEach(addPP);
+  (state.obrasLista||[]).forEach(function(o){
+    o = String(o||'').trim();
+    if(o && !yaEsta(conPP,o) && !yaEsta(resto,o)) resto.push(o);
+  });
+  conPP.sort(function(a,b){ return a.localeCompare(b,'es'); });
+  resto.sort(function(a,b){ return a.localeCompare(b,'es'); });
   const prev = sel.value;
   const libre = ed.libre || ed.presus.length === 0;
   const lbl = sel.parentElement && sel.parentElement.querySelector('label');
@@ -1945,19 +1951,60 @@ function llenarObraFiltro(){
   if(hint) hint.textContent = libre
     ? 'Obligatoria: es la obra a la que se imputa el gasto.'
     : 'Sólo filtra la lista de abajo.';
+  const grupo = function(lbl, arr){
+    return arr.length ? '<optgroup label="'+lbl+'">'+arr.map(function(o){ return '<option>'+escapeHtml(o)+'</option>'; }).join('')+'</optgroup>' : '';
+  };
   sel.innerHTML = '<option value="">'+(libre ? 'Elegí la obra…' : 'Todas las obras')+'</option>' +
-    obras.map(function(o){ return '<option>'+escapeHtml(o)+'</option>'; }).join('');
-  if(obras.indexOf(prev) >= 0) sel.value = prev;
+    grupo('Obras con presupuesto', conPP) +
+    grupo('Todas las obras (orden de compra y planificación)', resto);
+  if(conPP.concat(resto).indexOf(prev) >= 0) sel.value = prev;
+  llenarSectores();
   sel.classList.toggle('req', libre && !sel.value);
 }
-/* La lista de obras del sistema, para poder elegirla sin presupuesto */
+/* Catálogos del sistema: obras con presupuesto, todas las obras, y los
+   sectores que cada obra tiene cargados. Mismo criterio que Presupuestos. */
 async function cargarObrasLista(){
+  state.obrasPresu = []; state.obrasLista = []; state.sectoresObra = {};
   try{
-    const { data } = await sb.from('listas').select('valor').eq('tipo','obras').order('valor');
-    state.obrasLista = (data||[]).map(function(o){ return String(o.valor||'').trim(); }).filter(Boolean);
-  }catch(e){ state.obrasLista = []; }
+    const { data } = await sb.from('listas').select('tipo,valor,obra_ref').in('tipo', ['obras','obras_presu','sectores_presu']);
+    (data||[]).forEach(function(x){
+      const v = String(x.valor||'').trim(); if(!v) return;
+      if(x.tipo === 'obras_presu') state.obrasPresu.push(v);
+      else if(x.tipo === 'obras')  state.obrasLista.push(v);
+      else if(x.tipo === 'sectores_presu' && x.obra_ref){
+        const k = norm(x.obra_ref);
+        (state.sectoresObra[k] = state.sectoresObra[k] || []).push(v);
+      }
+    });
+    state.obrasPresu.sort(function(a,b){ return a.localeCompare(b,'es'); });
+    state.obrasLista.sort(function(a,b){ return a.localeCompare(b,'es'); });
+  }catch(e){ /* sin catálogo, quedan las obras de los presupuestos */ }
+}
+/* Los sectores que se ofrecen salen de la obra elegida: del catálogo de la
+   obra y de lo que ya traen las líneas cargadas. */
+function sectoresDeObra(obra){
+  const out = [];
+  const add = function(v){ v = String(v||'').trim(); if(v && v !== '(sin sector)' && !out.some(function(x){ return norm(x)===norm(v); })) out.push(v); };
+  if(obra) (state.sectoresObra[norm(obra)] || []).forEach(add);
+  (ed.lineas||[]).forEach(function(l){ if(!obra || norm(l.obra||'') === norm(obra) || !l.obra) add(l.sector); });
+  out.sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
+  return out;
 }
 
+function llenarSectores(){
+  const sel = document.getElementById('edSector');
+  if(!sel) return;
+  const obra = String((document.getElementById('edObraFiltro')||{}).value || '').trim();
+  const secs = sectoresDeObra(obra);
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Todos los sectores</option>' +
+    secs.map(function(x){ return '<option>'+escapeHtml(x)+'</option>'; }).join('');
+  if(secs.indexOf(prev) >= 0) sel.value = prev;
+  const hint = sel.parentElement && sel.parentElement.querySelector('.hint');
+  if(hint) hint.textContent = obra
+    ? ('Sectores de '+obra+(secs.length ? '' : ' · esta obra no tiene sectores cargados'))
+    : 'Sólo filtra la lista de abajo.';
+}
 const _of = document.getElementById('edObraFiltro');
 if(_of) _of.onchange = function(){ presuPop(true); llenarObraFiltro(); };
 
@@ -1994,7 +2041,10 @@ if(_pb){
 }
 document.getElementById('edPresuLibre').onclick = function(){
   ed.libre = true; renderChips(); renderLineas();
-  showToast('Ahora podés agregar trabajos sin presupuesto','success','Se cargan con precio manual y quedan marcados como desvío');
+  showToast('Ahora podés agregar trabajos sin presupuesto','success',
+    ed.presus.length
+      ? 'Se suman a los presupuestos ya cargados: el certificado puede tener de los dos'
+      : 'Se cargan con precio a mano. Elegí la obra del certificado para poder imputar el gasto');
 };
 document.getElementById('edContra').onchange = async function(){
   actualizarPaso2();
@@ -2233,14 +2283,8 @@ async function cargarLineas(){
       if(dl) dl.innerHTML = ed.ubicaciones.map(v=>'<option value="'+escapeHtml(v)+'">').join('');
     }catch(eU){ console.warn('ubicaciones', eU); }
 
-    // Sectores de todos los presupuestos juntos
-    const secs = [];
-    ed.lineas.forEach(l=>{ if(secs.indexOf(l.sector)<0) secs.push(l.sector); });
-    secs.sort((a,b)=>a.localeCompare(b,'es'));
-    const ss = document.getElementById('edSector');
-    const prevSec = ss.value;
-    ss.innerHTML = '<option value="">Todos los sectores</option>' + secs.map(x=>'<option>'+escapeHtml(x)+'</option>').join('');
-    if(secs.indexOf(prevSec)>=0) ss.value = prevSec;
+    // Sectores: los de la obra elegida, más los que traen las líneas
+    llenarSectores();
 
     // Sugerencias para las líneas que no traen sector: los del presupuesto más
     // los de la lista de sectores de esas obras
@@ -5735,6 +5779,26 @@ async function guardar(estado){
   const obra = obras.length === 1 ? obras[0]
              : (obras.length ? 'Varias obras' : (obraElegida || 'Sin obra'));
   const presus = presusDelCertificado();
+  /* v9.2 · Toda línea sin presupuesto tiene que estar clasificada: es lo que
+     después permite saber si fue un gasto indirecto o algo a presupuestar. */
+  const sinClasif = (ed.lineas||[]).filter(function(l){
+    if(!l.libre) return false;
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const m = ed.med[k];
+    if(!m || !(Number(m.cant) > 0)) return false;
+    return !m.clasif;
+  });
+  if(sinClasif.length){
+    await axcDialog({
+      tono:'warn', icono:'🏷', titulo:'Hay trabajos sin clasificar',
+      subtitulo: sinClasif.length+' trabajo(s) cargados sin presupuesto',
+      mensaje:'Los trabajos que no están en el presupuesto tienen que quedar clasificados como <b>gasto indirecto</b> o <b>gasto a presupuestar</b>. Sin eso no se puede saber a qué imputarlos.',
+      lista: sinClasif.slice(0,6).map(function(l){ return escapeHtml(l.descripcion||''); })
+        .concat(['Sacá esas líneas y volvé a cargarlas con «➕ Trabajo sin presupuesto».']),
+      ok:'Entendido', cancelar:null
+    });
+    return;
+  }
   if(!presus.length && !obraElegida){
     showToast('Falta la obra','error','Un certificado sin presupuesto necesita la obra: es lo que después permite imputar el gasto');
     const of = document.getElementById('edObraFiltro'); if(of){ of.classList.add('req'); of.focus(); }
