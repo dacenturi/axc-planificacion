@@ -776,7 +776,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.2 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.3 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -838,7 +838,7 @@ html[data-theme="alto-contraste"]{
                    placeholder="Escribí el N° (ej. PP56), la obra o la descripción…">
             <div class="ac-pop" id="edPresuPop" hidden></div>
           </div>
-          <button type="button" class="btn-g" id="edPresuLibre">Certificar sin presupuesto</button>
+          <button type="button" class="btn-g" id="edPresuLibre" hidden>Certificar sin presupuesto</button>
         </div>
         <div class="presu-chips" id="edPresuChips"></div>
         <div class="hint" id="edPresuHint">Podés sumar varios presupuestos, incluso de obras distintas, en un mismo certificado del contratista.</div>
@@ -1986,6 +1986,11 @@ function sectoresDeObra(obra){
   const out = [];
   const add = function(v){ v = String(v||'').trim(); if(v && v !== '(sin sector)' && !out.some(function(x){ return norm(x)===norm(v); })) out.push(v); };
   if(obra) (state.sectoresObra[norm(obra)] || []).forEach(add);
+  // Los que vienen del contrato de esa obra: es el sector con el que se pactó
+  (CT.items||[]).forEach(function(i){
+    const c = (CT.contratos||[]).filter(function(x){ return x.id === i.contrato_id; })[0];
+    if(!obra || !c || !norm(c.obra||'') || norm(c.obra||'') === norm(obra)) add(i.sector);
+  });
   (ed.lineas||[]).forEach(function(l){ if(!obra || norm(l.obra||'') === norm(obra) || !l.obra) add(l.sector); });
   out.sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
   return out;
@@ -2006,7 +2011,11 @@ function llenarSectores(){
     : 'Sólo filtra la lista de abajo.';
 }
 const _of = document.getElementById('edObraFiltro');
-if(_of) _of.onchange = function(){ presuPop(true); llenarObraFiltro(); };
+if(_of) _of.onchange = async function(){
+  const c = (document.getElementById('edContra')||{}).value || '';
+  if(c){ CT.cargado = ''; await ctCargar(c, ed.id); ctAviso(); }
+  presuPop(true); llenarObraFiltro(); renderLineas();
+};
 
 const _pb = document.getElementById('edPresuBuscar');
 if(_pb){
@@ -2063,7 +2072,15 @@ function ctAviso(){
   const anchor = document.getElementById('edPresuBox');
   if(!anchor) return;
   if(!box){ box = document.createElement('div'); box.id = 'ctAviso'; box.className = 'ct-aviso'; anchor.parentNode.insertBefore(box, anchor); }
-  if(!CT.contratos.length){ box.style.display = 'none'; return; }
+  if(!CT.contratos.length){
+    if(CT.otraObra){
+      box.style.display = '';
+      box.innerHTML = '<b>Este contratista tiene '+CT.otraObra+' contrato(s), pero de otra obra.</b> '+
+        'Para certificar contra ellos, cambiá la obra del certificado.';
+      return;
+    }
+    box.style.display = 'none'; return;
+  }
   box.style.display = '';
   box.innerHTML = '<b>🤝 '+CT.contratos.length+' contrato(s) vigente(s) de este contratista</b>'+
     '<div class="ct-lista">'+CT.contratos.map(function(c){
@@ -2308,6 +2325,9 @@ async function cargarLineas(){
 }
 
 async function agregarLibre(){
+  /* v9.3 · Ya no hace falta un botón aparte para «certificar sin presupuesto»:
+     cargar un trabajo suelto activa solo ese modo. Un concepto menos. */
+  if(!ed.libre){ ed.libre = true; renderChips(); }
   /* v8.7 · Primero se clasifica el gasto y recién después se describe: la
      clasificación es la decisión importante y define contra qué se imputa. */
   const cl = await clasificarLibre();
@@ -2920,8 +2940,15 @@ async function ctCargar(nombre, excluirCert){
     const ids = Array.from(new Set((c.data||[]).map(function(x){ return x.contratista_id; })));
     const k = ids.length ? await sb.from('contratistas').select('id,nombre').in('id', ids) : { data:[] };
     const nom = {}; (k.data||[]).forEach(function(x){ nom[x.id] = x.nombre; });
-    CT.contratos = (c.data||[]).filter(function(x){ return norm(nom[x.contratista_id]||'') === norm(n); })
-                               .map(function(x){ return Object.assign({}, x, { contratista: nom[x.contratista_id]||'' }); });
+    /* v9.3 · Si el certificado ya tiene obra, se ofrecen solo los contratos de
+       esa obra: un contrato de otra obra no se certifica acá. */
+    const obraSel = norm(String((document.getElementById('edObraFiltro')||{}).value || '').trim());
+    CT.todos = (c.data||[]).filter(function(x){ return norm(nom[x.contratista_id]||'') === norm(n); })
+                           .map(function(x){ return Object.assign({}, x, { contratista: nom[x.contratista_id]||'' }); });
+    CT.otraObra = obraSel ? CT.todos.filter(function(x){ return norm(x.obra||'') && norm(x.obra||'') !== obraSel; }).length : 0;
+    CT.contratos = obraSel
+      ? CT.todos.filter(function(x){ return !norm(x.obra||'') || norm(x.obra||'') === obraSel; })
+      : CT.todos;
     if(!CT.contratos.length) return;
     const cids = CT.contratos.map(function(x){ return x.id; });
     const [it, ad, ce] = await Promise.all([
