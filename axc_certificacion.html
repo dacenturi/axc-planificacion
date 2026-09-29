@@ -190,6 +190,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .lin-tag.ind{background:#EDE9FE;color:#4C1D95;border:1px solid #C4B5FD}
 .lin-tag.ap{background:#FFF4DC;color:#8a5a00;border:1px solid #F2CD7A}
 .lin-tag.ct{background:#e3f4e7;color:#1B6B34;border:1px solid #9BD3A9}
+#edObraFiltro.req{border-color:#E0A93B;background:#FFFBF0}
 #dlgExtra .op-modo{display:grid;gap:8px;margin-bottom:12px}
 #dlgExtra .op-md{display:flex;gap:10px;align-items:flex-start;border:1.5px solid #e2e6ee;border-radius:11px;padding:11px 13px;cursor:pointer;background:#fff}
 #dlgExtra .op-md:hover{background:#F6F9FD}
@@ -775,7 +776,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.0 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v9.1 · temas de color por perfil · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -825,7 +826,7 @@ html[data-theme="alto-contraste"]{
       <div class="ficha">
         <div class="fld"><label>Contratista *</label><select id="edContra"><option value="">Seleccionar contratista…</option></select><div class="hint">Elegilo primero: sus precios pactados se cargan solos en cada trabajo.</div></div>
         <div class="fld"><label>Fecha</label><input type="date" id="edFecha"></div>
-        <div class="fld"><label>Filtrar por obra</label><select id="edObraFiltro"><option value="">Todas las obras</option></select><div class="obra-calc" id="edObraCalc" style="margin-top:6px">Se toma de los presupuestos</div></div>
+        <div class="fld"><label>Filtrar por obra</label><select id="edObraFiltro"><option value="">Todas las obras</option></select><div class="hint" id="edObraHint">Sólo filtra la lista de abajo.</div><div class="obra-calc" id="edObraCalc" style="margin-top:6px">Se toma de los presupuestos</div></div>
         <div class="fld"><label>Filtrar por sector</label><select id="edSector"><option value="">Todos los sectores</option></select><div class="hint">Sólo filtra la lista de abajo.</div></div>
       </div>
       <div class="paso"><span class="paso-n">2</span> Presupuestos a certificar</div>
@@ -837,7 +838,7 @@ html[data-theme="alto-contraste"]{
                    placeholder="Escribí el N° (ej. PP56), la obra o la descripción…">
             <div class="ac-pop" id="edPresuPop" hidden></div>
           </div>
-          <button type="button" class="btn-g" id="edPresuLibre">Sin presupuesto</button>
+          <button type="button" class="btn-g" id="edPresuLibre">Certificar sin presupuesto</button>
         </div>
         <div class="presu-chips" id="edPresuChips"></div>
         <div class="hint" id="edPresuHint">Podés sumar varios presupuestos, incluso de obras distintas, en un mismo certificado del contratista.</div>
@@ -1274,6 +1275,7 @@ async function loadProfileAndApp(){
   }
   state.profile = profile;
   temaDesdePerfil(profile);
+  cargarObrasLista().then(llenarObraFiltro);
   state.isAdmin = (String(profile.rol||'').toLowerCase() === 'admin');
   // Permisos puntuales (módulo Perfiles y Permisos): un residente puede
   // aprobar o anular certificados sin ser administrador.
@@ -1923,23 +1925,41 @@ document.querySelectorAll('.tr-chip').forEach(c=>{
     renderLineas();
   };
 });
-/* Las obras del filtro salen de los presupuestos cargados */
+/* Las obras salen de los presupuestos cargados y de la lista de obras del
+   sistema. En un certificado sin presupuesto, este campo deja de ser un
+   filtro y pasa a ser la obra del certificado: sin eso, el gasto no se puede
+   imputar a ninguna obra después.                                          */
 function llenarObraFiltro(){
   const sel = document.getElementById('edObraFiltro');
   if(!sel) return;
   const obras = [];
-  state.presupuestos.forEach(p=>{
-    const o = String(p.obra||'').trim();
-    if(o && !obras.some(x=>norm(x)===norm(o))) obras.push(o);
-  });
-  obras.sort((a,b)=>a.localeCompare(b,'es'));
+  const add = function(o){ o = String(o||'').trim(); if(o && !obras.some(function(x){ return norm(x)===norm(o); })) obras.push(o); };
+  state.presupuestos.forEach(function(p){ add(p.obra); });
+  (state.obrasLista||[]).forEach(add);
+  obras.sort(function(a,b){ return a.localeCompare(b,'es'); });
   const prev = sel.value;
-  sel.innerHTML = '<option value="">Todas las obras</option>' + obras.map(o=>'<option>'+escapeHtml(o)+'</option>').join('');
+  const libre = ed.libre || ed.presus.length === 0;
+  const lbl = sel.parentElement && sel.parentElement.querySelector('label');
+  const hint = document.getElementById('edObraHint');
+  if(lbl) lbl.innerHTML = libre ? 'Obra del certificado <span style="color:#B42B2B">*</span>' : 'Filtrar por obra';
+  if(hint) hint.textContent = libre
+    ? 'Obligatoria: es la obra a la que se imputa el gasto.'
+    : 'Sólo filtra la lista de abajo.';
+  sel.innerHTML = '<option value="">'+(libre ? 'Elegí la obra…' : 'Todas las obras')+'</option>' +
+    obras.map(function(o){ return '<option>'+escapeHtml(o)+'</option>'; }).join('');
   if(obras.indexOf(prev) >= 0) sel.value = prev;
+  sel.classList.toggle('req', libre && !sel.value);
+}
+/* La lista de obras del sistema, para poder elegirla sin presupuesto */
+async function cargarObrasLista(){
+  try{
+    const { data } = await sb.from('listas').select('valor').eq('tipo','obras').order('valor');
+    state.obrasLista = (data||[]).map(function(o){ return String(o.valor||'').trim(); }).filter(Boolean);
+  }catch(e){ state.obrasLista = []; }
 }
 
 const _of = document.getElementById('edObraFiltro');
-if(_of) _of.onchange = function(){ presuPop(true); };
+if(_of) _of.onchange = function(){ presuPop(true); llenarObraFiltro(); };
 
 const _pb = document.getElementById('edPresuBuscar');
 if(_pb){
@@ -5710,9 +5730,16 @@ document.getElementById('edGuardar').onclick = ()=> guardar('Borrador');
    consume el presupuesto. */
 async function guardar(estado){
   if(ed.cargando) return;
+  const obraElegida = String((document.getElementById('edObraFiltro')||{}).value || '').trim();
   const obras = obrasDelCertificado();
-  const obra = obras.length === 1 ? obras[0] : (obras.length ? 'Varias obras' : 'Sin obra');
+  const obra = obras.length === 1 ? obras[0]
+             : (obras.length ? 'Varias obras' : (obraElegida || 'Sin obra'));
   const presus = presusDelCertificado();
+  if(!presus.length && !obraElegida){
+    showToast('Falta la obra','error','Un certificado sin presupuesto necesita la obra: es lo que después permite imputar el gasto');
+    const of = document.getElementById('edObraFiltro'); if(of){ of.classList.add('req'); of.focus(); }
+    return;
+  }
   const contratista = document.getElementById('edContra').value;
   if(!contratista){ showToast('Elegí el contratista','error'); return; }
   const M = medidas();
