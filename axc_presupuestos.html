@@ -559,7 +559,7 @@ body{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.27 · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.28 · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -10347,12 +10347,20 @@ document.getElementById('marcaSearch').addEventListener('input', function(e){ co
    de la lista. La regularización la decide la residente (por ahora no
    requiere aprobación; queda mapeado para una mejora futura).
    ═══════════════════════════════════════════════════════════════════ */
-const NP = { obra:'', filas:[], sel:{}, cargado:false, pps:[], totPres:0, q:'', filtro:'todos' };
+const NP = { obra:'', filas:[], sel:{}, cargado:false, pps:[], totPres:0, q:'', filtro:'todos', obrasLista:[] };
 
-function npIniciar(){
+async function npIniciar(){
   const sel = document.getElementById('npObra');
   if(!sel.dataset.listo){
-    const obras = Array.from(new Set((state.list||[]).map(function(p){ return String(p.obra||'').trim(); }).filter(Boolean))).sort();
+    try{
+      const { data } = await sb.from('listas').select('valor').eq('tipo','obras').order('valor');
+      NP.obrasLista = (data||[]).map(function(o){ return String(o.valor||'').trim(); }).filter(Boolean);
+    }catch(e){ NP.obrasLista = []; }
+    const obras = Array.from(new Set(
+      (state.list||[]).map(function(p){ return String(p.obra||'').trim(); })
+        .concat(NP.obrasLista || [])
+        .filter(Boolean)
+    )).sort(function(a,b){ return a.localeCompare(b,'es'); });
     sel.innerHTML = '<option value="">Elegí la obra…</option>'+obras.map(function(o){ return '<option value="'+escapeHtml(o)+'">'+escapeHtml(o)+'</option>'; }).join('');
     sel.dataset.listo = '1';
     sel.addEventListener('change', function(){ NP.obra = this.value; npCargar(); });
@@ -10482,7 +10490,10 @@ function npPintar(){
     return _normObra([f.doc, f.quien, f.detalle, f.nota].join(' ')).indexOf(q) >= 0;
   });
   if(!F.length){
-    npPintarVacio('<b>'+escapeHtml(NP.obra)+' no tiene gastos sin rubro.</b> Todo lo que se certificó, compró y gastó está imputado a un rubro del presupuesto.');
+    const reg = npCodigoObra(NP.obra);
+    const tieneReg = (state.list||[]).some(function(p){ return p.codigo === reg; });
+    npPintarVacio('<b>'+escapeHtml(NP.obra)+' no tiene gastos sin rubro.</b> Todo lo que se certificó, compró y gastó está imputado a un rubro del presupuesto.'+
+      (tieneReg ? '<br><br>El gasto de esta obra está registrado en el presupuesto <b>'+escapeHtml(reg)+'</b>: desde la pestaña Presupuestos tenés su planilla, su PDF de costos y el reporte de avance.' : ''));
     return;
   }
   const tot = { certificado:0, oc:0, caja:0 }, cant = { certificado:0, oc:0, caja:0 };
@@ -10500,7 +10511,16 @@ function npPintar(){
     kpi('Caja chica','₲ '+fmtGs(tot.caja), cant.caja+' gasto(s)')+
     kpi('Sobre lo presupuestado', NP.totPres>0 ? pct.toFixed(1)+' %' : '—', NP.totPres>0 ? ('presupuesto de la obra ₲ '+fmtGs(NP.totPres)) : 'sin presupuesto publicado', pct>5?'#B42B2B':'#1B5524')+
   '</div>';
-  h += '<div class="np-aviso"><b>Cómo regularizar:</b> tildá las líneas que correspondan al mismo trabajo o material, elegí el presupuesto de la obra y apretá '+
+  const codReg = npCodigoObra(NP.obra);
+  const hayReg = (state.list||[]).some(function(p){ return p.codigo === codReg; });
+  h += '<div class="np-aviso"><b>Dos formas de registrar:</b> '+
+    '<b>«🏗 Registrar en el presupuesto de gastos»</b> es para las obras que arrancaron <b>sin presupuesto</b>: '+
+    (hayReg
+      ? 'suma los gastos elegidos al presupuesto <b>'+escapeHtml(codReg)+'</b>, que ya existe.'
+      : 'crea <b>'+escapeHtml(codReg)+'</b> y ordena todo en tres capítulos (90 mano de obra, 91 materiales, 92 caja chica).')+
+    ' <b>«＋ Sumar al presupuesto elegido»</b> es para cuando la obra <b>sí tiene presupuesto</b> y el gasto le falta a ese presupuesto.'+
+    '</div>';
+  h += '<div class="np-aviso" style="display:none"><b>Cómo regularizar:</b> tildá las líneas que correspondan al mismo trabajo o material, elegí el presupuesto de la obra y apretá '+
        '<b>«Crear los rubros»</b>. Por cada línea se crea un rubro con la cantidad y el importe ya gastados, así el presupuesto refleja la obra real. '+
        'Ejemplo: «Demolición de revestimiento · 12 m² · ₲ 1.800.000» se carga como rubro nuevo en el capítulo que elijas, con 12 de cantidad y ₲ 150.000 por m². '+
        'Si el presupuesto está aprobado, se reabre solo y queda la observación.</div>';
@@ -10546,7 +10566,8 @@ function npPintar(){
     '<span style="flex:1"></span>'+
     '<label class="np-lbl">Presupuesto donde crear los rubros'+
       '<select id="npPP" class="rp-sel">'+(NP.pps.length ? NP.pps.map(function(c){ return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>'; }).join('') : '<option value="">La obra no tiene presupuestos</option>')+'</select></label>'+
-    '<button class="btn-new" id="npReg" style="background:#1B5524" disabled>✓ Crear los rubros</button></div>';
+    '<button class="btn-new" id="npReg" style="background:#33527F" disabled>＋ Sumar al presupuesto elegido</button>'+
+    '<button class="btn-new" id="npRegObra" style="background:#1B5524" disabled>🏗 Registrar en el presupuesto de gastos</button></div>';
   document.getElementById('npBody').innerHTML = h;
 
   const refrescarSel = function(){
@@ -10554,6 +10575,7 @@ function npPintar(){
     const m = NP.filas.filter(function(f){ return NP.sel[f.origen+'|'+f.ref]; }).reduce(function(a,f){ return a+f.monto; }, 0);
     document.getElementById('npSelTxt').textContent = n ? (n+' línea(s) elegidas · ₲ '+fmtGs(m)) : 'Ninguna línea elegida';
     document.getElementById('npReg').disabled = !n || !NP.pps.length;
+    document.getElementById('npRegObra').disabled = !n;
   };
   document.getElementById('npBody').querySelectorAll('.np-ck').forEach(function(c){
     c.addEventListener('change', function(){ NP.sel[c.dataset.id] = c.checked; refrescarSel(); });
@@ -10564,6 +10586,7 @@ function npPintar(){
     refrescarSel();
   });
   document.getElementById('npReg').addEventListener('click', npRegularizar);
+  document.getElementById('npRegObra').addEventListener('click', npRegistrarObra);
   const bq = document.getElementById('npBuscar');
   if(bq){
     let t; bq.addEventListener('input', function(){ clearTimeout(t); t = setTimeout(function(){ NP.q = bq.value; npPintar(); document.getElementById('npBuscar').focus(); }, 250); });
@@ -10644,6 +10667,124 @@ async function npRegularizar(){
     await loadList();
   }catch(e){
     showToast('No se pudo regularizar','error', e.message||'');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRESUPUESTO DE GASTOS DE LA OBRA · v10.28
+   Para las obras que arrancaron sin presupuesto. Junta lo certificado,
+   lo comprado y la caja chica en un presupuesto propio, ordenado por
+   capítulos, para que la obra tenga planilla, PDF y reportes como
+   cualquier otra. No inventa precios: usa lo que realmente se gastó.
+   ═══════════════════════════════════════════════════════════════════ */
+const NP_CAP = {
+  certificado: { cod:'90', txt:'Mano de obra certificada' },
+  oc:          { cod:'91', txt:'Materiales comprados' },
+  caja:        { cod:'92', txt:'Gastos de caja chica' }
+};
+function npCodigoObra(obra){
+  return 'REG-' + String(obra||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,18);
+}
+
+async function npRegistrarObra(){
+  const elegidas = NP.filas.filter(function(f){ return NP.sel[f.origen+'|'+f.ref]; });
+  if(!elegidas.length) return;
+  const monto = elegidas.reduce(function(a,f){ return a+f.monto; }, 0);
+  const cod = npCodigoObra(NP.obra);
+  const porOrig = { certificado:0, oc:0, caja:0 }, cntOrig = { certificado:0, oc:0, caja:0 };
+  elegidas.forEach(function(f){ porOrig[f.origen] += f.monto; cntOrig[f.origen]++; });
+
+  // ¿Ya existe el presupuesto de gastos de esta obra?
+  let cab = null;
+  try{
+    const { data } = await sb.from('presupuesto_cab').select('*').eq('codigo', cod).maybeSingle();
+    cab = data || null;
+  }catch(e){ console.warn('presupuesto de gastos', e); }
+
+  const nuevo = !cab;
+  const r = await _confirmarAccion({
+    titulo: nuevo ? ('Crear el presupuesto de gastos de '+NP.obra) : ('Sumar al presupuesto de gastos '+cod),
+    sub: elegidas.length+' línea(s) · ₲ '+fmtGs(monto), tono:'ok',
+    intro: nuevo
+      ? 'Esta obra no tiene presupuesto. Se va a crear <b>'+escapeHtml(cod)+'</b>, un presupuesto de <b>registro de gastos</b>: '+
+        'no es una estimación, es lo que la obra ya gastó, ordenado por capítulos. '+
+        'Desde ahí la obra pasa a tener planilla, PDF de costos y reportes de avance como cualquier otra.'
+      : 'Los gastos elegidos se agregan al presupuesto de gastos <b>'+escapeHtml(cod)+'</b>, que ya existe. '+
+        'Los rubros nuevos se suman a los capítulos que correspondan.',
+    riesgos:[
+      'Se crean <b>'+cntOrig.certificado+' rubro(s)</b> en el capítulo <b>90 · Mano de obra certificada</b> (₲ '+fmtGs(porOrig.certificado)+').',
+      'Se crean <b>'+cntOrig.oc+' rubro(s)</b> en el capítulo <b>91 · Materiales comprados</b>, uno por orden de compra (₲ '+fmtGs(porOrig.oc)+').',
+      'Se crean <b>'+cntOrig.caja+' rubro(s)</b> en el capítulo <b>92 · Gastos de caja chica</b> (₲ '+fmtGs(porOrig.caja)+').',
+      'El presupuesto queda <b>en borrador</b>: revisalo y publicalo cuando esté correcto.',
+      '⚠ Los rubros se cargan <b>sin composición</b>, con el importe ya gastado. No sirven para presupuestar una obra nueva tal cual están.',
+      '⚠ Revisá antes que no haya líneas de prueba: lo que registres queda en el presupuesto de la obra.'
+    ],
+    nota:{ label:'Observación', placeholder:'Ej. registro de gastos de agosto y septiembre' },
+    ok: nuevo ? 'Crear el presupuesto' : 'Sumar los gastos', cancelar:'Cancelar'
+  });
+  if(r === null) return;
+  const obs = (typeof r === 'string') ? r : '';
+  const quien = _userTag();
+
+  try{
+    // 1) Cabecera del presupuesto de gastos
+    if(nuevo){
+      const c1 = await sb.from('presupuesto_cab').insert({
+        codigo: cod, obra: NP.obra,
+        descripcion: 'Registro de gastos · obra sin presupuesto',
+        activo: false, creado_por: quien, creado_en: new Date().toISOString(),
+        observaciones: '[' + new Date().toLocaleDateString('es-PY') + '] Creado por ' + quien +
+          ' desde Obra no presupuestada. Refleja el gasto real de la obra, no una estimación.'
+      });
+      if(c1.error) throw c1.error;
+    }
+    // 2) Rubros, numerados por capítulo
+    const { data:ex } = await sb.from('presupuesto_rubros').select('rubro_codigo,orden').eq('presupuesto', cod);
+    const usados = {}; let orden = 0;
+    (ex||[]).forEach(function(x){ usados[String(x.rubro_codigo||'')] = 1; orden = Math.max(orden, Number(x.orden)||0); });
+    const sig = {};
+    Object.keys(NP_CAP).forEach(function(k){
+      const c = NP_CAP[k].cod;
+      let n = 0;
+      Object.keys(usados).forEach(function(u){ if(u.indexOf(c+'.') === 0) n = Math.max(n, Number(u.split('.')[1])||0); });
+      sig[k] = n;
+    });
+    const orig = ['certificado','oc','caja'];
+    const filas = [];
+    orig.forEach(function(g){
+      elegidas.filter(function(f){ return f.origen === g; }).forEach(function(f){
+        sig[g]++; orden++;
+        const codR = NP_CAP[g].cod + '.' + String(sig[g]).padStart(3,'0');
+        usados[codR] = 1;
+        const q = f.cantidad > 0 ? f.cantidad : 1;
+        const un = f.unidad || 'gl';
+        const desc = g === 'oc'
+          ? ('Materiales ' + (f.doc||'') + (f.quien ? (' · '+f.quien) : ''))
+          : ((f.detalle||'Gasto de obra') + ' · ' + f.doc + (f.quien ? (' · '+f.quien) : ''));
+        filas.push({ presupuesto:cod, sector: NP_CAP[g].cod+' '+NP_CAP[g].txt, orden:orden,
+          rubro_codigo:codR, descripcion:desc, unidad:un, cantidad:q, tiene_receta:false,
+          material_unit: g === 'certificado' ? 0 : Math.round(f.monto/q),
+          mano_obra_unit: g === 'certificado' ? Math.round(f.monto/q) : 0,
+          costo_unit: Math.round(f.monto/q), precio_total: f.monto, opcional:false, coeficiente:null });
+      });
+    });
+    const ins = await sb.from('presupuesto_rubros').insert(filas);
+    if(ins.error) throw ins.error;
+    // 3) Registro, para que la línea no vuelva a aparecer
+    const regs = elegidas.map(function(f, i){
+      return { obra:NP.obra, origen:f.origen, referencia:f.ref, detalle:(f.detalle||'')+' · '+f.doc, monto:f.monto,
+        presupuesto:cod, rubro_codigo:filas[i] ? filas[i].rubro_codigo : null, observacion:obs||null, creado_por:quien };
+    });
+    const rg = await sb.from('obra_regularizaciones').insert(regs);
+    if(rg.error) console.warn('registro', rg.error);
+
+    showToast(nuevo ? ('Presupuesto '+cod+' creado') : (elegidas.length+' gasto(s) sumados a '+cod), 'success',
+      '₲ '+fmtGs(monto)+' · queda en borrador para revisarlo');
+    await npCargar();
+    await loadList();
+  }catch(e){
+    showToast('No se pudo registrar','error', e.message||'');
   }
 }
 
