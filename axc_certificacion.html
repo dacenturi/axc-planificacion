@@ -500,6 +500,14 @@ tr:hover .ord-bt,.ord-bt:focus-within{opacity:1}
 .ord-bt button{border:0;background:none;color:#64748b;font-size:10px;line-height:1;padding:1px 3px;cursor:pointer;border-radius:3px}
 .ord-bt button:hover:not([disabled]){background:#E8EEF8;color:#1F3864}
 .ord-bt button[disabled]{opacity:.25;cursor:default}
+.oph-bar{display:grid;grid-template-columns:2fr 1.2fr .8fr;gap:8px;margin-bottom:8px}
+.oph-in{padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-family:inherit;font-size:13px;background:#fff;color:var(--text)}
+.oph-res{font-size:12.5px;color:var(--text-soft);margin:2px 0 8px}
+.oph-anu td{opacity:.6}
+.oph-tag{color:#9B1C1C !important;font-weight:800;letter-spacing:.3px}
+.oph-anular{border-color:#E4B4B4 !important;color:#9B1C1C !important;font-weight:700}
+.oph-anular:hover{background:#9B1C1C !important;color:#fff !important}
+.oph-nota{font-size:12px;color:var(--text-muted);margin-top:8px}
 .nc-pie{font-size:12px;color:var(--text-muted);align-self:center}
 .obra-ctr{font-size:13.5px;font-weight:700;color:var(--navy);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
 .lin-tag.fc{background:#fff4dc;color:#8a5a00;border:1px solid #f2cd7a}
@@ -1086,7 +1094,7 @@ html[data-theme="alto-contraste"]{
     <div class="mfoot">
       <button type="button" class="btn-g" id="ecCerrar">Cerrar</button>
       <span style="flex:1"></span>
-      <button type="button" class="btn-pri" id="ecPdf" disabled>📄 Generar PDF</button>
+      <button type="button" class="btn-ok" id="ecPdf" disabled>📄 Generar PDF</button>
     </div>
   </div>
 </div>
@@ -1103,7 +1111,7 @@ html[data-theme="alto-contraste"]{
       <button type="button" class="btn-g" id="opCerrar">Cerrar</button>
       <span style="flex:1"></span>
       <button type="button" class="btn-g" id="opVerEmitidas">📜 Órdenes emitidas</button>
-      <button type="button" class="btn-pri" id="opEmitir" disabled>📄 Generar la orden</button>
+      <button type="button" class="btn-ok" id="opEmitir" disabled>📄 Generar la orden</button>
     </div>
   </div>
 </div>
@@ -6150,50 +6158,85 @@ document.getElementById('opEmitir').onclick = async function(){
   }
 };
 
-/* Listado de órdenes ya emitidas, para reimprimir o anular */
+/* Listado de órdenes ya emitidas, para reimprimir o anular.
+   v11.10 · Muestra TODAS las órdenes (de cualquier contratista y de cualquier
+   usuario que las emitió), con filtros propios: contratista, estado y texto.
+   El contratista elegido arriba ya no limita el historial.                 */
+const OPH = { data:[], contra:'', estado:'vigentes', q:'' };
 document.getElementById('opVerEmitidas').onclick = async function(){
   const det = document.getElementById('opDet');
   det.innerHTML = '<div class="vacio">Buscando órdenes…</div>';
   try{
-    let q = sb.from('orden_pago').select('*').order('emitido_en',{ascending:false}).limit(60);
-    if(OP.contratista) q = q.eq('contratista', OP.contratista);
-    const { data, error } = await q;
+    const { data, error } = await sb.from('orden_pago').select('*').order('emitido_en',{ascending:false}).limit(500);
     if(error) throw error;
-    if(!(data||[]).length){ det.innerHTML = '<div class="vacio"><b>Todavía no se emitió ninguna orden de pago.</b></div>'; return; }
-    det.innerHTML = '<div class="op-tabla"><table class="op-t"><thead><tr><th>Orden</th><th style="width:110px">Fecha</th>'+
-      '<th>Contratista</th><th>Obras</th><th class="r" style="width:130px">Certificados</th>'+
-      '<th class="r" style="width:130px">Neto pagado</th><th style="width:100px"></th></tr></thead><tbody>'+
-      data.map(function(o){
-        return '<tr'+(o.estado==='Anulada'?' style="opacity:.55"':'')+'><td><b class="op-num">'+escapeHtml(o.numero)+'</b>'+
-          (o.estado==='Anulada'?'<div class="op-sub">anulada</div>':'<div class="op-sub">'+escapeHtml(o.emitido_por||'')+'</div>')+'</td>'+
-          '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista)+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
-          '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
-          '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
-            (o.estado !== 'Anulada' && state.puedeAnularOP ? ' <button type="button" class="btn-g" data-opanu="'+o.id+'" title="Libera los certificados y devuelve los descuentos">Anular</button>' : '')+
-          '</td></tr>';
-      }).join('')+'</tbody></table></div>';
-    det.querySelectorAll('button[data-opanu]').forEach(function(b){
-      b.onclick = function(){ opAnular(data.filter(function(x){ return x.id === Number(b.dataset.opanu); })[0]); };
-    });
-    det.querySelectorAll('button[data-oprev]').forEach(function(b){
-      b.onclick = async function(){
-        const id = Number(b.dataset.oprev);
-        const cab = data.filter(function(x){ return x.id === id; })[0];
-        const { data:its } = await sb.from('orden_pago_items').select('*').eq('orden_id', id);
-        if(!(its||[]).length && cab.estado === 'Anulada'){
-          showToast('La orden está anulada','info','Queda su resumen, pero el detalle de certificados se liberó');
-        }
-        const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', false);
-        if(!docs) return;
-        await opPDF({ cab: cab, items: (its||[]).map(function(x){
-          return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
-        }) }, docs);
-      };
-    });
+    OPH.data = data || [];
+    if(!OPH.data.length){ det.innerHTML = '<div class="vacio"><b>Todavía no se emitió ninguna orden de pago.</b></div>'; return; }
+    opHistPintar();
   }catch(e){
     det.innerHTML = '<div class="vacio">No se pudo leer el historial.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
 };
+function opHistPintar(){
+  const det = document.getElementById('opDet');
+  const contras = Array.from(new Set(OPH.data.map(function(o){ return String(o.contratista||'').trim(); }).filter(Boolean))).sort(function(a,b){ return a.localeCompare(b,'es'); });
+  const q = norm(OPH.q||'');
+  const L = OPH.data.filter(function(o){
+    if(OPH.contra && String(o.contratista||'').trim() !== OPH.contra) return false;
+    if(OPH.estado === 'vigentes' && o.estado === 'Anulada') return false;
+    if(OPH.estado === 'anuladas' && o.estado !== 'Anulada') return false;
+    if(q && norm([o.numero, o.contratista, o.obras, o.emitido_por].join(' ')).indexOf(q) < 0) return false;
+    return true;
+  });
+  const vig = L.filter(function(o){ return o.estado !== 'Anulada'; });
+  const totVig = vig.reduce(function(a,o){ return a + (Number(o.neto_pagar)||0); }, 0);
+  det.innerHTML =
+    '<div class="oph-bar">'+
+      '<input id="ophQ" class="oph-in" placeholder="Buscar por número, obra o quién la emitió…" value="'+escapeHtml(OPH.q)+'">'+
+      '<select id="ophC" class="oph-in"><option value="">Todos los contratistas</option>'+
+        contras.map(function(c){ return '<option'+(OPH.contra===c?' selected':'')+'>'+escapeHtml(c)+'</option>'; }).join('')+'</select>'+
+      '<select id="ophE" class="oph-in">'+
+        [['vigentes','Vigentes'],['anuladas','Anuladas'],['todas','Todas']].map(function(x){ return '<option value="'+x[0]+'"'+(OPH.estado===x[0]?' selected':'')+'>'+x[1]+'</option>'; }).join('')+'</select>'+
+    '</div>'+
+    '<div class="oph-res">'+L.length+' orden(es)'+(vig.length ? ' · vigentes por <b>'+gs(totVig)+'</b> netos' : '')+'</div>'+
+    (L.length ? '<div class="op-tabla"><table class="op-t"><thead><tr><th>Orden</th><th style="width:100px">Fecha</th>'+
+      '<th>Contratista</th><th>Obras</th><th>Emitida por</th><th class="r" style="width:120px">Certificados</th>'+
+      '<th class="r" style="width:120px">Neto</th><th style="width:170px"></th></tr></thead><tbody>'+
+      L.map(function(o){
+        const anu = o.estado === 'Anulada';
+        return '<tr'+(anu?' class="oph-anu"':'')+'><td><b class="op-num">'+escapeHtml(o.numero)+'</b>'+
+            (anu ? '<div class="op-sub oph-tag">ANULADA'+(o.anulado_por?' · '+escapeHtml(o.anulado_por):'')+'</div>'+(o.anulado_motivo?'<div class="op-sub">'+escapeHtml(o.anulado_motivo)+'</div>':'') : '')+'</td>'+
+          '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista||'—')+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
+          '<td>'+escapeHtml(o.emitido_por||'—')+'</td>'+
+          '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
+          '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
+            (!anu && state.puedeAnularOP ? ' <button type="button" class="btn-g oph-anular" data-opanu="'+o.id+'" title="Solo administración: libera los certificados y repone los descuentos">🚫 Anular</button>' : '')+
+          '</td></tr>';
+      }).join('')+'</tbody></table></div>'
+      : '<div class="vacio">Ninguna orden coincide con los filtros.</div>')+
+    (state.puedeAnularOP ? '' : '<div class="oph-nota">Para anular una orden, pedíselo a administración.</div>');
+  const qi = document.getElementById('ophQ');
+  qi.oninput = function(){ OPH.q = this.value; clearTimeout(qi._t); qi._t = setTimeout(function(){ const pos = qi.selectionStart; opHistPintar(); const n = document.getElementById('ophQ'); n.focus(); n.setSelectionRange(pos,pos); }, 250); };
+  document.getElementById('ophC').onchange = function(){ OPH.contra = this.value; opHistPintar(); };
+  document.getElementById('ophE').onchange = function(){ OPH.estado = this.value; opHistPintar(); };
+  det.querySelectorAll('button[data-opanu]').forEach(function(b){
+    b.onclick = function(){ opAnular(OPH.data.filter(function(x){ return x.id === Number(b.dataset.opanu); })[0]); };
+  });
+  det.querySelectorAll('button[data-oprev]').forEach(function(b){
+    b.onclick = async function(){
+      const id = Number(b.dataset.oprev);
+      const cab = OPH.data.filter(function(x){ return x.id === id; })[0];
+      const { data:its } = await sb.from('orden_pago_items').select('*').eq('orden_id', id);
+      if(!(its||[]).length && cab.estado === 'Anulada'){
+        showToast('La orden está anulada','info','Queda su resumen, pero el detalle de certificados se liberó');
+      }
+      const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', false);
+      if(!docs) return;
+      await opPDF({ cab: cab, items: (its||[]).map(function(x){
+        return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
+      }) }, docs);
+    };
+  });
+}
 
 /* En el PDF los importes van sin el símbolo ₲: la fuente base de jsPDF no lo
    tiene y lo dibuja como un «²». La moneda se aclara en el encabezado. */
@@ -6282,6 +6325,7 @@ async function opOpcionesPDF(titulo, sub, conModo){
    no se borra: queda como anulada, para que el número no se reutilice.     */
 async function opAnular(o){
   if(!o) return;
+  if(!state.puedeAnularOP){ showToast('Solo administración puede anular una orden de pago','error'); return; }
   const { data:its } = await sb.from('orden_pago_items').select('certificado_id,numero,total').eq('orden_id', o.id);
   const n = (its||[]).length;
   const r = await axcDialog({
@@ -6306,7 +6350,10 @@ async function opAnular(o){
       anulado_en:new Date().toISOString(), anulado_motivo:r.valor }).eq('id', o.id);
     if(up.error) throw up.error;
     const ids = (its||[]).map(function(x){ return x.certificado_id; });
-    if(ids.length) await sb.from('certificados').update({ orden_pago:null }).in('id', ids);
+    if(ids.length){
+      const lib = await sb.from('certificados').update({ orden_pago:null }).in('id', ids);
+      if(lib.error) showToast('La orden se anuló, pero los certificados no se liberaron','error', (lib.error.message||'')+' · revisá los permisos en la base');
+    }
     /* El detalle se borra: si queda, el certificado no puede entrar en otra
        orden. El resumen y los totales siguen en la cabecera anulada.        */
     await sb.from('orden_pago_items').delete().eq('orden_id', o.id);
