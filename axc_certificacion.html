@@ -7989,7 +7989,7 @@ async function generarOrdenPago(c, its, opts){
   doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
 
   if(!opO.sinAnexos){
-    if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M);
+    if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M, opO.fotosPorHoja);
     if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
   if(opO.noSave) return doc;
@@ -8193,6 +8193,29 @@ function panelAdjuntos(c, its){
   });
 }
 
+
+/* ── Fotos por hoja en el anexo fotográfico ──────────────────────────
+   2, 4 o 6 por hoja. Se recuerda la última elección mientras la página
+   esté abierta. El selector se habilita solo si se marcan las fotos. */
+let pdfFotosPorHoja = 4;
+function selFotosPorHoja(id){
+  return '<select id="'+id+'" title="Fotos por hoja" style="font-size:12px;padding:3px 6px;border:1px solid #cfd6e2;border-radius:7px;background:#fff;color:#1f3864">'+
+    [2,4,6].map(n=>'<option value="'+n+'"'+(n===pdfFotosPorHoja?' selected':'')+'>'+n+' por hoja</option>').join('')+
+  '</select>';
+}
+function atarFotosPorHoja(ov, chkId, selId){
+  const chk = ov.querySelector('#'+chkId), sel = ov.querySelector('#'+selId);
+  if(!chk || !sel) return;
+  const upd = ()=>{ sel.disabled = !chk.checked; sel.style.opacity = chk.checked ? '1' : '.45'; };
+  chk.addEventListener('change', upd); upd();
+}
+function leerFotosPorHoja(ov, selId){
+  const e = ov.querySelector('#'+selId);
+  const n = e ? Number(e.value) : pdfFotosPorHoja;
+  if([2,4,6].includes(n)) pdfFotosPorHoja = n;
+  return pdfFotosPorHoja;
+}
+
 /* ── Qué reportes generamos ──────────────────────────────────────────
    Un solo botón: se elige qué documento sale y, en cada uno, si lleva las
    fotos de los trabajos y los documentos adjuntos del certificado. */
@@ -8204,7 +8227,7 @@ async function pedirReportes(c, its){
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
     const anexos = (pfx) =>
       (nF||nA) ? '<div style="margin:6px 0 0 30px;display:flex;gap:16px;flex-wrap:wrap">'+
-        (nF ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>' : '')+
+        (nF ? '<span style="display:flex;gap:8px;align-items:center"><label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>'+selFotosPorHoja(pfx+'N')+'</span>' : '')+
         (nA ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'A">📎 Documentos adjuntos ('+nA+')</label>' : '')+
       '</div>' : '';
     // La liquidación no lleva anexos: es el resumen del certificado, va sola.
@@ -8240,12 +8263,13 @@ async function pedirReportes(c, its){
       '</div>';
     document.body.appendChild(ov);
     const val = id => { const e = ov.querySelector('#'+id); return !!(e && e.checked); };
+    ['rpPl','rpCl'].forEach(p => atarFotosPorHoja(ov, p+'F', p+'N'));
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#rpOk').onclick = ()=> cerrar({
       unico:    val('rpUnico'),
-      cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA') },
-      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA') },
+      cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA'), fotosPorHoja:leerFotosPorHoja(ov,'rpClN') },
+      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA'), fotosPorHoja:leerFotosPorHoja(ov,'rpPlN') },
       orden:    val('rpOp'), ordenOps:{ fotos:false, adjuntos:false }
     });
     ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
@@ -8282,7 +8306,7 @@ async function pedirReportes(c, its){
   doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { doc:doc, noSave:true, sinAnexos:true }));
   if(!doc) return;
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
-  if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M, r.planillaOps.fotosPorHoja);
   if(r.planillaOps.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   doc.save(nombreArchivo(c, 'certificado'));
 }
@@ -8306,7 +8330,8 @@ function pedirAnexos(c, titulo){
           '<div style="font-weight:800;font-size:16px">📄 '+escapeHtml(titulo)+'</div>'+
           '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué anexos incluir</div></div>'+
         '<div style="padding:14px 18px">'+
-          (nF ? fila('anxFotos','📷','Fotos de los trabajos ('+nF+')','Se agregan al final, agrupadas por rubro medido.', true) : '')+
+          (nF ? fila('anxFotos','📷','Fotos de los trabajos ('+nF+')','Se agregan al final, en el orden de los rubros medidos, con el trabajo al pie de cada foto.', true)+
+                '<div style="display:flex;gap:8px;align-items:center;margin:-2px 0 10px 40px;font-size:12px;color:#475569">Distribución: '+selFotosPorHoja('anxN')+'</div>' : '')+
           (nA ? fila('anxAdj','📎','Documentos del certificado ('+nA+')','Planos y documentos generales. Las imágenes y los PDF se imprimen; el resto se lista con su nombre.', true) : '')+
           '<div style="font-size:11.5px;color:#8893a5">Sin marcar nada, sale solo el reporte para firmar.</div></div>'+
         '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
@@ -8314,9 +8339,11 @@ function pedirAnexos(c, titulo){
           '<button type="button" class="btn-ok" id="anxOk">Generar PDF</button></div>'+
       '</div>';
     document.body.appendChild(ov);
+    atarFotosPorHoja(ov, 'anxFotos', 'anxN');
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#anxCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#anxOk').onclick = ()=> cerrar({
+      fotosPorHoja: leerFotosPorHoja(ov, 'anxN'),
       fotos: !!(ov.querySelector('#anxFotos') && ov.querySelector('#anxFotos').checked),
       adjuntos: !!(ov.querySelector('#anxAdj') && ov.querySelector('#anxAdj').checked)
     });
@@ -8783,7 +8810,7 @@ async function generarPlanillaPDF(c, its, opts){
   }
 
   if(!op.sinAnexos){
-    if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
+    if(op.fotos)    await anexoFotos(doc, c, its, W, H, M, op.fotosPorHoja);
     if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
   pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : 'Planilla de avance', desdePag);
@@ -9051,48 +9078,82 @@ async function generarPDF(c, its, conFotos){
   firma3(M+(bw3+8)*2,   'CONFORME',    c.contratista||'',  'Contratista · C.I.');
   y += 44;
 
-  if(opA.fotos)    await anexoFotos(doc, c, its, W, H, M);
+  if(opA.fotos)    await anexoFotos(doc, c, its, W, H, M, opA.fotosPorHoja);
   if(opA.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
 
   doc.save(nombreArchivo(c, 'certificado'));
 }
 
 /* Anexo fotográfico: las fotos de cada rubro medido */
-async function anexoFotos(doc, c, its, W, H, M){
-  if(dtFotos.length){
-    let fallidas = 0;
-    const porItemF = {};
-    dtFotos.forEach(f=>{ (porItemF[f.item_id] = porItemF[f.item_id]||[]).push(f); });
-    doc.addPage();
-    doc.setFillColor(31,56,100); doc.rect(0,0,W,18,'F');
-    doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(12);
-    doc.text('ANEXO FOTOGRAFICO  ·  '+pdfSafe(c.numero||''), M, 12);
-    let fy = 28;
-    for(const it of (its||[])){
-      const fs = porItemF[it.id] || [];
-      if(!fs.length) continue;
-      if(fy > H-70){ doc.addPage(); fy = 20; }
-      doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9.5);
-      doc.text(pdfSafe(it.descripcion) + (it.ubicacion?('  ·  '+pdfSafe(it.ubicacion)):''), M, fy);
-      fy += 4;
-      let fx = M;
-      const anc = 62, alt = 47;
-      for(const f of fs){
-        try{
-          const dataUrl = await urlADataURL(f._url);
-          if(fx + anc > W - M){ fx = M; fy += alt + 5; }
-          if(fy + alt > H - 12){ doc.addPage(); fy = 20; fx = M; }
-          doc.addImage(dataUrl, 'JPEG', fx, fy, anc, alt);
-          fx += anc + 5;
-        }catch(e){
-          console.warn('foto pdf', e);
-          fallidas++;
-        }
-      }
-      fy += alt + 10;
+async function anexoFotos(doc, c, its, W, H, M, porHoja){
+  if(!dtFotos.length) return;
+  porHoja = [2,4,6].includes(Number(porHoja)) ? Number(porHoja) : 4;
+  // Grilla según la orientación de la hoja
+  const apaisada = W > H;
+  const cols  = apaisada ? ({2:2, 4:2, 6:3})[porHoja] : ({2:1, 4:2, 6:2})[porHoja];
+  const filas = porHoja / cols;
+
+  // Fotos en el orden de los rubros de la planilla
+  const porItemF = {};
+  dtFotos.forEach(f=>{ (porItemF[f.item_id] = porItemF[f.item_id]||[]).push(f); });
+  const lista = [];
+  (its||[]).forEach((it, idx)=>{
+    const fs = porItemF[it.id] || [];
+    fs.forEach((f, k)=> lista.push({ f, it, nro: idx+1, k: k+1, tot: fs.length }));
+  });
+  if(!lista.length) return;
+
+  const TOP = 24, PIE = 20, GAP = 6, LEY = 10;       // mm
+  const cw = (W - 2*M - GAP*(cols-1)) / cols;
+  const ch = (H - TOP - PIE - GAP*(filas-1)) / filas;
+  const ih = ch - LEY;                                  // alto útil de la foto
+  const totHojas = Math.ceil(lista.length / porHoja);
+  let fallidas = 0, hoja = 0;
+
+  const cabecera = ()=>{
+    doc.addPage(); hoja++;
+    doc.setFillColor(31,56,100); doc.rect(0, 0, W, 16, 'F');
+    doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(11.5);
+    doc.text('ANEXO FOTOGRAFICO  ·  '+pdfSafe(c.numero||''), M, 10.5);
+    doc.setFont('helvetica','normal').setFontSize(8.5);
+    doc.text('Hoja '+hoja+' de '+totHojas+'  ·  '+porHoja+' fotos por hoja', W-M, 10.5, {align:'right'});
+  };
+  const recortar = (txt, ancho)=>{
+    const l = doc.splitTextToSize(txt, ancho);
+    if(l.length <= 1) return l[0] || '';
+    let t = l[0];
+    while(t.length > 3 && doc.getTextWidth(t+'...') > ancho) t = t.slice(0, -1);
+    return t.replace(/\s+$/,'') + '...';
+  };
+
+  for(let i=0; i<lista.length; i++){
+    const x = lista[i], pos = i % porHoja;
+    if(pos === 0) cabecera();
+    const cx = M + (pos % cols) * (cw + GAP);
+    const cy = TOP + Math.floor(pos / cols) * (ch + GAP);
+
+    doc.setDrawColor(214,220,232).setLineWidth(0.25);
+    doc.rect(cx, cy, cw, ih);
+    try{
+      const dataUrl = await urlADataURL(x.f._url);
+      const p = doc.getImageProperties(dataUrl);
+      const esc = Math.min(cw / p.width, ih / p.height);      // sin deformar
+      const w = p.width * esc, h = p.height * esc;
+      doc.addImage(dataUrl, (p.fileType || 'JPEG'), cx + (cw - w)/2, cy + (ih - h)/2, w, h, undefined, 'FAST');
+    }catch(e){
+      console.warn('foto pdf', e);
+      fallidas++;
+      doc.setTextColor(150,150,150).setFont('helvetica','italic').setFontSize(8);
+      doc.text('Foto no disponible', cx + cw/2, cy + ih/2, {align:'center'});
     }
-    if(fallidas) showToast(fallidas+' foto(s) no se pudieron incluir','info','Revisá la conexión y volvé a generar el PDF.');
+    // Leyenda: trabajo y ubicación, para saber a qué rubro pertenece cada foto
+    doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(8);
+    doc.text(recortar(x.nro+'. '+pdfSafe(x.it.descripcion||''), cw), cx, cy + ih + 4);
+    doc.setTextColor(100,116,139).setFont('helvetica','normal').setFontSize(7);
+    const sub = [x.it.ubicacion ? pdfSafe(x.it.ubicacion) : '', 'Foto '+x.k+' de '+x.tot].filter(Boolean).join('  ·  ');
+    doc.text(recortar(sub, cw), cx, cy + ih + 8);
   }
+  if(fallidas) showToast(fallidas+' foto(s) no se pudieron incluir','info','Revisá la conexión y volvé a generar el PDF.');
 }
 
 
