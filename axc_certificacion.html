@@ -850,7 +850,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v10.0 · carga por contrato · fuera del contrato a Gastos a presupuestar · obras sin repetir · tema elegido en Perfiles · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v10.1 · carga por contrato · fuera del contrato a Gastos a presupuestar · obras sin repetir · tema elegido en Perfiles · estado de cuenta del contratista · orden de pago consolidada · clasifica lo que se certifica sin contrato ni presupuesto · descuenta el anticipo del contrato y documenta como adenda lo certificado fuera de contrato · buscador de rubros liviano para agregar al contrato; al editar vuelven todas las líneas guardadas; el trabajo extra se agrega al contrato como adenda; los precios del certificado se ponen al día con el contrato; el detalle del trabajo manda y el rubro queda como referencia; trae los trabajos del contrato del contratista (precio pactado y saldo) y el presupuesto madre · contratista primero · precios pactados con vigencia y pantalla propia · sector obligatorio por línea · precio pactado en el PDF · desvío contra el presupuesto a la vista</p>
   </div>
 </div>
 
@@ -2038,17 +2038,58 @@ function obraClave(o){
   k = k.replace(/\s+(s\s?a\s?e\s?c\s?a|s\s?a\s?c\s?i|s\s?r\s?l|s\s?a|e\s?a\s?s|ltda)$/,'').trim();
   return k;
 }
+/* v10.1 · Dos nombres son la misma obra si, palabra por palabra, son
+   iguales o difieren en una o dos letras en palabras largas (5 letras o
+   más). «Top Intenacional» = «Top Internacional», pero «Bloque A» y
+   «Bloque B», o «Torre 1» y «Torre 2», siguen siendo obras distintas. */
+function _lev(a,b){
+  if(a===b) return 0;
+  const m=a.length, n=b.length; if(Math.abs(m-n)>2) return 9;
+  let prev=[]; for(let j=0;j<=n;j++) prev[j]=j;
+  for(let i=1;i<=m;i++){
+    const cur=[i];
+    for(let j=1;j<=n;j++) cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    prev=cur;
+  }
+  return prev[n];
+}
+function obraParecida(a,b){
+  const ka = obraClave(a), kb = obraClave(b);
+  if(ka === kb) return true;
+  const ta = ka.split(' '), tb = kb.split(' ');
+  if(ta.length !== tb.length) return false;
+  let dif = 0;
+  for(let i=0;i<ta.length;i++){
+    if(ta[i] === tb[i]) continue;
+    if(/\d/.test(ta[i]) || /\d/.test(tb[i])) return false;
+    if(Math.min(ta[i].length, tb[i].length) < 5) return false;
+    const larga = Math.min(ta[i].length, tb[i].length) >= 8;
+    if(_lev(ta[i], tb[i]) > (larga ? 2 : 1)) return false;
+    dif++;
+  }
+  return dif <= 1;
+}
 function llenarObraFiltro(){
   const sel = document.getElementById('edObraFiltro');
   if(!sel) return;
   const conPP = [], resto = [];
-  const yaEsta = function(arr,o){ const k = obraClave(o); return arr.some(function(x){ return obraClave(x)===k; }); };
-  const addPP = function(o){ o = String(o||'').trim(); if(o && !yaEsta(conPP,o)) conPP.push(o); };
+  const yaEsta = function(arr,o){ return arr.some(function(x){ return obraParecida(x,o); }); };
+  /* Entre dos variantes del mismo nombre queda la más completa: el error de
+     tipeo casi siempre es una letra de menos («Intenacional»). */
+  const sumar = function(arr, o){
+    const i = arr.findIndex(function(x){ return obraParecida(x,o); });
+    if(i < 0){ arr.push(o); return; }
+    // Mejor: el nombre más completo (sin contar la razón social); si empatan,
+    // el que no está todo en mayúsculas y, después, el más corto.
+    const pts = function(x){ const k = obraClave(x); return k.length*100 + (x === x.toUpperCase() ? 0 : 50) - Math.min(x.length, 49); };
+    if(pts(o) > pts(arr[i])) arr[i] = o;
+  };
+  const addPP = function(o){ o = String(o||'').trim(); if(o) sumar(conPP, o); };
   state.presupuestos.forEach(function(p){ addPP(p.obra); });
   (state.obrasPresu||[]).forEach(addPP);
   (state.obrasLista||[]).forEach(function(o){
     o = String(o||'').trim();
-    if(o && !yaEsta(conPP,o) && !yaEsta(resto,o)) resto.push(o);
+    if(o && !yaEsta(conPP,o)) sumar(resto, o);
   });
   conPP.sort(function(a,b){ return a.localeCompare(b,'es'); });
   resto.sort(function(a,b){ return a.localeCompare(b,'es'); });
@@ -2122,6 +2163,12 @@ function llenarSectores(){
 }
 const _of = document.getElementById('edObraFiltro');
 if(_of) _of.onchange = async function(){
+  // v10.1 · Sin contrato, los trabajos sueltos van a la obra elegida
+  if(modoCert() === 'sin'){
+    const ob = String(this.value||'').trim();
+    (ed.lineas||[]).forEach(function(l){ if(l.libre && !l.fueraContrato) l.obra = ob; });
+    this.classList.toggle('req', !ob);
+  }
   const c = (document.getElementById('edContra')||{}).value || '';
   if(c){ CT.cargado = ''; await ctCargar(c, ed.id); ctAviso(); }
   presuPop(true); llenarObraFiltro(); renderLineas();
@@ -6253,7 +6300,9 @@ async function guardar(estado){
     const items = M.map(x=>({
       certificado_id: certId,
       presupuesto: x.linea.presupuesto || null,
-      obra: x.linea.obra || (obras.length===1?obras[0]:null),
+      // v10.1 · En un certificado sin contrato ni presupuesto la línea no trae
+      // obra: se usa la elegida en la cabecera. Antes quedaba vacía.
+      obra: x.linea.obra || (obras.length===1 ? obras[0] : (obras.length ? null : (obraElegida || null))),
       sector: x.sector || null,
       rubro_codigo: x.linea.rubro_codigo || null,
       rubro_desc: x.linea.rubro_desc || null,
