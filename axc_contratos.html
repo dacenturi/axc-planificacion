@@ -427,7 +427,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v1.9 · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.0 · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -1525,6 +1525,8 @@ function pintarDetalle(){
     if(S.puedeAprobar) a.push('<button class="btn btn-gh" id="acCer">Cerrar contrato</button>');
     a.push('<button class="btn btn-pri" id="acAd">Nueva adenda</button>');
   }
+  // v2.0 · Administración puede llevar el contrato a cualquier estado, con motivo
+  if(S.isAdmin) a.splice(2, 0, '<button class="btn btn-gh" id="acEst" title="Solo administración: corrige el estado del contrato">⚙ Cambiar estado</button>');
   $('dtFoot').innerHTML=a.join('');
   const on=function(id,fn){ if($(id)) $(id).addEventListener('click', fn); };
   on('acPdf', function(){ pdfContrato(Object.assign({},c,{_contratista:k}), itemsDe(c.id), ads.filter(function(x){ return x.estado==='Aprobada'; }), {}); });
@@ -1537,6 +1539,7 @@ function pintarDetalle(){
   on('acFirm', function(){ registrarFirma(c); });
   on('acCer', function(){ cerrarContrato(c); });
   on('acAd', function(){ nuevaAdenda(c); });
+  on('acEst', function(){ cambiarEstadoAdmin(c); });
 }
 async function refrescarDetalle(){ await cargarTodo(); if(D && $('ovDet').classList.contains('show')) pintarDetalle(); }
 
@@ -1596,6 +1599,67 @@ async function anularContrato(c){
   const r=await sb.from('contratos').update({ estado:'Anulado', anulado_por:quien(), anulado_en:new Date().toISOString(), motivo_anulacion:mot }).eq('id',c.id);
   if(r.error){ toast('No se pudo anular','error',errMsg(r.error)); return; }
   audit(c.numero,'anular',{ motivo:mot }); toast('Contrato anulado','success'); refrescarDetalle();
+}
+/* v2.0 · Cambio de estado por administración.
+   Cubre las correcciones que el flujo normal no permite: reabrir un cerrado,
+   volver a vigente, pasar a firmar o a borrador. Siempre con motivo, y queda
+   en la auditoría con el estado anterior y el nuevo.                        */
+const EST_TXT = { Borrador:'Borrador', Emitido:'A firmar', Vigente:'Vigente', Cerrado:'Cerrado', Anulado:'Anulado' };
+async function cambiarEstadoAdmin(c){
+  if(!S.isAdmin){ toast('Solo administración puede cambiar el estado','error'); return; }
+  const anterior = c.estado;          // se guarda antes de tocar nada
+  const m = metricas(c);
+  const ops = Object.keys(EST_TXT).filter(function(e){ return e !== c.estado; });
+  const html =
+    '<p>Estado actual: <span class="pill st-'+c.estado+'">'+esc(EST_TXT[c.estado]||c.estado)+'</span> · <b>'+esc(c.numero||'sin número')+'</b></p>'+
+    '<div class="fgrp" style="margin-top:12px"><label class="lbl">Nuevo estado</label>'+
+      '<select class="inp" id="ceEst">'+ops.map(function(e){ return '<option value="'+e+'">'+esc(EST_TXT[e])+'</option>'; }).join('')+'</select>'+
+      '<div class="hint" id="ceAyuda"></div></div>'+
+    (m.cert > 0 ? '<div class="note note-w" style="margin-top:10px">Este contrato tiene <b>Gs '+fmtGs(m.cert)+'</b> certificados. Esos certificados no cambian.</div>' : '');
+  const ayuda = {
+    Borrador:'Vuelve a borrador para corregirlo. Conserva su número.',
+    Emitido:'Queda aprobado y listo para firmar. Si no tiene número, se le asigna el próximo.',
+    Vigente:'Queda firmado y se puede certificar contra él.',
+    Cerrado:'Se da por terminado: no admite más certificados.',
+    Anulado:'Queda anulado con su número. No se borra.'
+  };
+  setTimeout(function(){
+    const sel = $('ceEst'); if(!sel) return;
+    const pinta = function(){ $('ceAyuda').textContent = ayuda[sel.value] || ''; };
+    sel.onchange = pinta; pinta();
+  }, 30);
+  const mot = await ask({ title:'Cambiar estado · '+(c.numero||'contrato'), html:html, input:'textarea', label:'Motivo del cambio (queda en la auditoría)', required:true, ok:'Cambiar estado', okClass:'btn-pri' });
+  if(!mot) return;
+  const nuevo = ($('ceEst')||{}).value;
+  if(!nuevo || nuevo === anterior) return;
+  if(nuevo === 'Anulado' && m.cert > 0){ toast('No se puede anular','error','Tiene certificados: pasalo a Cerrado.'); return; }
+  if(nuevo === 'Anulado' && !c.numero){ toast('Es un borrador sin número','info','Usá «Eliminar borrador».'); return; }
+  busy(true,'Cambiando estado…');
+  try{
+    let numero = c.numero;
+    // Sin número y a un estado que lo necesita: primero se numera como una aprobación
+    if(!numero && nuevo !== 'Borrador'){
+      const ra = await sb.rpc('aprobar_contrato',{ p_id:c.id, p_usuario:quien() });
+      if(ra.error) throw ra.error;
+      numero = ra.data;
+    }
+    const ahora = new Date().toISOString();
+    const upd = { estado:nuevo, actualizado_por:quien(), actualizado_en:ahora };
+    if(nuevo === 'Vigente' && !c.vigente_en) upd.vigente_en = ahora;
+    if(nuevo === 'Cerrado'){ upd.cerrado_por = quien(); upd.cerrado_en = ahora; }
+    if(nuevo === 'Anulado'){ upd.anulado_por = quien(); upd.anulado_en = ahora; upd.motivo_anulacion = mot; }
+    if(anterior === 'Cerrado' && nuevo !== 'Cerrado'){ upd.cerrado_por = null; upd.cerrado_en = null; }
+    if(anterior === 'Anulado' && nuevo !== 'Anulado'){ upd.anulado_por = null; upd.anulado_en = null; upd.motivo_anulacion = null; }
+    const r = await sb.from('contratos').update(upd).eq('id', c.id);
+    if(r.error) throw r.error;
+    audit(numero || c.numero, 'cambio_estado', { de:anterior, a:nuevo, motivo:mot });
+    busy(false);
+    toast('Contrato '+(numero||'')+': '+(EST_TXT[anterior]||anterior)+' → '+(EST_TXT[nuevo]||nuevo),'success', mot);
+    refrescarDetalle();
+  }catch(e){
+    busy(false);
+    toast('No se pudo cambiar el estado','error', errMsg(e));
+  }
 }
 async function eliminarBorrador(c){
   const ok=await ask({ title:'Eliminar borrador', html:'<p>Se elimina el borrador de <b>'+esc(contratistaDe(c.contratista_id).nombre)+'</b>. Como nunca fue aprobado, no tiene número y no deja hueco en la numeración.</p>', ok:'Eliminar', okClass:'btn-bad' });
