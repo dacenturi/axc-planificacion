@@ -166,6 +166,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 
 /* Lista */
 .cert-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 22px;margin-bottom:12px;box-shadow:var(--shadow);display:grid;grid-template-columns:150px 1fr 190px 190px 130px 130px;gap:14px;align-items:center;cursor:pointer;position:relative;overflow:hidden}
+.cert-anx{display:inline-flex;gap:6px;margin-left:6px;vertical-align:middle}
+.cert-anx span{font-size:10.5px;font-weight:700;color:#1f3864;background:#EEF2F9;border:1px solid #C9D4E8;border-radius:6px;padding:0 6px;line-height:16px;white-space:nowrap}
 .cert-op{font-size:10.5px;font-weight:700;color:#1B5524;background:#EEF8F0;border:1px solid #9BD3A9;border-radius:6px;padding:1px 7px;margin-top:4px;display:inline-block}
 .cert-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--border)}
 .cert-card[data-estado="Borrador"]::before{background:var(--state-archivado-bd)}
@@ -1517,6 +1519,7 @@ async function loadList(){
     llenarFiltros();
     renderKpis();
     renderList();
+    cargarConteoAnexos();   // en segundo plano: los íconos aparecen al terminar
     document.getElementById('pageSubtitle').textContent = state.list.length + ' certificado(s)';
   }catch(e){
     console.warn('loadList', e);
@@ -1525,6 +1528,39 @@ async function loadList(){
       '<br>Si es la primera vez, falta crear las tablas: corré el script de instalación en Supabase.</small></div>';
     document.getElementById('pageSubtitle').textContent = 'Sin datos';
   }
+}
+
+/* ── Íconos de anexos en el listado ─────────────────────────────────
+   📎 documentos del certificado (certificado_adjuntos) y 📷 fotos de los
+   trabajos (certificado_fotos, pegadas a cada ítem). Se cuentan aparte de
+   la lista para no demorarla; si algo falla, simplemente no se muestran. */
+async function cargarConteoAnexos(){
+  const cnt = {};
+  const suma = (id, k) => { if(id==null) return; (cnt[id] = cnt[id] || { adj:0, fotos:0 })[k]++; };
+  try{
+    const { data:ad } = await sb.from('certificado_adjuntos').select('certificado_id').limit(50000);
+    (ad||[]).forEach(a => suma(a.certificado_id, 'adj'));
+  }catch(e){ console.warn('conteo adjuntos', e); }
+  try{
+    const { data:fs } = await sb.from('certificado_fotos').select('item_id').limit(50000);
+    const ids = [...new Set((fs||[]).map(f=>f.item_id).filter(x=>x!=null))];
+    const certDeItem = {};
+    for(let i=0; i<ids.length; i+=300){
+      const { data:its } = await sb.from('certificado_items').select('id,certificado_id').in('id', ids.slice(i, i+300));
+      (its||[]).forEach(it => { certDeItem[it.id] = it.certificado_id; });
+    }
+    (fs||[]).forEach(f => suma(certDeItem[f.item_id], 'fotos'));
+  }catch(e){ console.warn('conteo fotos', e); }
+  state.anexos = cnt;
+  renderList();
+}
+function iconosAnexos(c){
+  const a = (state.anexos || {})[c.id];
+  if(!a || (!a.adj && !a.fotos)) return '';
+  return '<span class="cert-anx">'+
+    (a.adj   ? '<span title="'+a.adj+' documento(s) adjunto(s): planos, contrato, notas">📎 '+a.adj+'</span>' : '')+
+    (a.fotos ? '<span title="'+a.fotos+' foto(s) de los trabajos">📷 '+a.fotos+'</span>' : '')+
+  '</span>';
 }
 
 function llenarFiltros(){
@@ -1572,7 +1608,7 @@ function renderList(){
   }
   cont.innerHTML = L.map(c =>
     '<div class="cert-card" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'">'+
-      '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+'</small></div>'+
+      '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+iconosAnexos(c)+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.obra||'—')+
         '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.medido_por||'—')+
