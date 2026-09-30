@@ -508,6 +508,16 @@ tr:hover .ord-bt,.ord-bt:focus-within{opacity:1}
 .oph-anular{border-color:#E4B4B4 !important;color:#9B1C1C !important;font-weight:700}
 .oph-anular:hover{background:#9B1C1C !important;color:#fff !important}
 .oph-nota{font-size:12px;color:var(--text-muted);margin-top:8px}
+.eord{display:inline-flex;flex-direction:column;vertical-align:middle;margin-left:3px;opacity:.18;transition:opacity .12s}
+tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity:1}
+.lin-nom .eord{margin:0 6px 0 0;float:left}
+.eord button{border:0;background:none;color:#64748b;font-size:9.5px;line-height:1;padding:1px 3px;cursor:pointer;border-radius:3px}
+.eord button:hover{background:#E8EEF8;color:#1F3864}
+.pl-det{font-weight:700;color:#1F3864;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.pl-ref{font-size:11px;color:#8893a5;margin-top:2px;line-height:1.35}
+.lin-det-tit{color:#1F3864}
+.det-tit{color:#1F3864}
+.det-ref{font-size:11px !important;color:#8893a5 !important}
 .nc-pie{font-size:12px;color:var(--text-muted);align-self:center}
 .obra-ctr{font-size:13.5px;font-weight:700;color:var(--navy);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
 .lin-tag.fc{background:#fff4dc;color:#8a5a00;border:1px solid #f2cd7a}
@@ -1647,6 +1657,7 @@ async function abrirEditor(id){
       document.getElementById('edSector').value = c.sector||'';
       // Traer lo ya cargado en este certificado
       const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
+      (its||[]).sort(function(a,b){ return (Number(a.orden)||0) - (Number(b.orden)||0); });
       (its||[]).forEach((it, idx)=>{
         const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
         ed.ordenPrevio[k] = idx;   // el orden elegido se respeta al volver a guardar
@@ -3506,6 +3517,64 @@ document.addEventListener('click', function(ev){
 }, true);
 document.addEventListener('keydown', function(ev){ if(ev.key === 'Escape'){ const p = document.getElementById('detPop'); if(p) p.remove(); } });
 
+/* v11.11 · Orden de los trabajos en el certificado.
+   Dentro de cada presupuesto y sector: primero el orden que eligió el
+   residente (▲▼), después por código de rubro. Es el mismo orden con el que
+   se guarda y sale en el detalle y en el PDF.                              */
+function ordenCmp(a, b){
+  const _op = ed.ordenPrevio || {};
+  const ka = keyLinea(a.rubro_codigo,a.codigo_insumo,a.descripcion,a.presupuesto);
+  const kb = keyLinea(b.rubro_codigo,b.codigo_insumo,b.descripcion,b.presupuesto);
+  const pa = (_op[ka] != null) ? _op[ka] : 1e6, pb = (_op[kb] != null) ? _op[kb] : 1e6;
+  return (pa - pb) ||
+    (String(a.rubro_codigo||'').trim()||'zzzz').localeCompare((String(b.rubro_codigo||'').trim()||'zzzz'),'es',{numeric:true}) ||
+    String(a.descripcion||'').localeCompare(String(b.descripcion||''),'es');
+}
+function grupoPP(l){ return (l.libre ? '' : l.presupuesto) || '(sin presupuesto)'; }
+/* Todas las líneas agregadas, en el orden en que se ven (sin filtros) */
+function ordenVisual(){
+  const L = (ed.lineas||[]).filter(function(l){ return ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)]; });
+  const pps = Array.from(new Set(L.map(grupoPP))).sort(function(a,b){ return (a==='(sin presupuesto)') - (b==='(sin presupuesto)') || a.localeCompare(b,'es'); });
+  const out = [];
+  pps.forEach(function(pp){
+    const G = L.filter(function(l){ return grupoPP(l) === pp; });
+    const secs = Array.from(new Set(G.map(function(l){ return l.sector; }))).sort(function(a,b){ return String(a).localeCompare(String(b),'es'); });
+    secs.forEach(function(sc){ G.filter(function(l){ return l.sector === sc; }).sort(ordenCmp).forEach(function(l){ out.push(l); }); });
+  });
+  return out;
+}
+function ordBtnsHtml(k){
+  if(ed.buscar || ed.filtro) return '';   // con filtros activos no se reordena
+  return '<span class="eord"><button type="button" data-emv="-1" data-k="'+escapeHtml(k)+'" title="Subir">▲</button>'+
+         '<button type="button" data-emv="1" data-k="'+escapeHtml(k)+'" title="Bajar">▼</button></span>';
+}
+function moverLinea(k, d){
+  const V = ordenVisual();
+  const i = V.findIndex(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto) === k; });
+  const j = i + d;
+  if(i < 0 || j < 0 || j >= V.length) return;
+  if(grupoPP(V[i]) !== grupoPP(V[j]) || V[i].sector !== V[j].sector) return;   // solo dentro del mismo grupo
+  const t = V[i]; V[i] = V[j]; V[j] = t;
+  ed.ordenPrevio = {};
+  V.forEach(function(l, n){ ed.ordenPrevio[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] = n; });
+  ed.tocado = true;
+  renderLineas();
+}
+document.addEventListener('click', function(ev){
+  const b = ev.target.closest && ev.target.closest('[data-emv]');
+  if(!b) return;
+  ev.preventDefault(); ev.stopPropagation();
+  moverLinea(b.dataset.k, Number(b.dataset.emv));
+});
+
+/* v11.11 · Si el contrato trae detalle del trabajo, ese es el texto principal:
+   el código y el nombre del rubro pasan a una línea chica y discreta. */
+function descLinea(desc, detalle, cod, ctNum){
+  const d = String(detalle||'').trim();
+  if(!d) return null;
+  return { principal:d, ref:[cod, desc].filter(function(x){ return String(x||'').trim(); }).join(' · ') + (ctNum ? ' · '+ctNum : '') };
+}
+
 /* v11.5 · Botón único para lo que no cubre el contrato (o no hay contrato) */
 function btnNoContratadoHtml(){
   const sin = modoCert() === 'sin';
@@ -3594,12 +3663,7 @@ function renderLineas(){
     grupoP[pp].forEach(l=>{ if(!grupo[l.sector]){ grupo[l.sector]=[]; orden.push(l.sector); } grupo[l.sector].push(l); });
     orden.sort((a,b)=>a.localeCompare(b,'es'));
     // Mismo criterio que el buscador: por código de rubro dentro del sector
-    orden.forEach(sc=>{
-      grupo[sc].sort((a,b)=>
-        (String(a.rubro_codigo||'').trim()||'zzzz').localeCompare(
-        (String(b.rubro_codigo||'').trim()||'zzzz'),'es',{numeric:true}) ||
-        String(a.descripcion||'').localeCompare(String(b.descripcion||''),'es'));
-    });
+    orden.forEach(sc=>{ grupo[sc].sort(ordenCmp); });   // v11.11 · orden elegido, después código
     const subPP = grupoP[pp].reduce((a,l)=>a+montoLinea(l), 0);
     if(ed.vista === 'planilla'){
       return head + '<div class="pl-wrap"><table class="pl-t"><thead>'+
@@ -3720,9 +3784,15 @@ function lineaFila(l, contratista){
     (l.libre && !l.rubro_codigo ? '<span class="pl-tag sr">sin presupuesto</span>' : '')+
     (excedida ? '<span class="pl-tag ex">'+(l.contrato_item_id?'supera el contrato':'supera lo presupuestado')+'</span>' : '');
   return '<tr class="pl-r'+(cargada?' ok':'')+(excedida?' exc':'')+'" data-fila="'+escapeHtml(k)+'">'+
-    '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button></td>'+
-    '<td class="pl-d"><div class="pl-cod">'+(l.rubro_codigo?escapeHtml(l.rubro_codigo):'—')+tags+'</div>'+
-      '<div class="pl-desc">'+escapeHtml(l.descripcion)+'</div>'+
+    '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button>'+ordBtnsHtml(k)+'</td>'+
+    (function(){
+      const dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
+      if(dl) return '<td class="pl-d"><div class="pl-cod">'+tags+'</div>'+
+        '<div class="pl-desc pl-det" title="'+escapeHtml(dl.principal)+'">'+escapeHtml(dl.principal)+'</div>'+
+        '<div class="pl-ref">'+escapeHtml(dl.ref)+'</div>';
+      return '<td class="pl-d"><div class="pl-cod">'+(l.rubro_codigo?escapeHtml(l.rubro_codigo):'—')+tags+'</div>'+
+        '<div class="pl-desc">'+escapeHtml(l.descripcion)+'</div>';
+    })()+
       (m.obs?'<div class="pl-obs">'+escapeHtml(m.obs)+'</div>':'')+'</td>'+
     '<td class="c">'+escapeHtml(l.unidad||'')+'</td>'+
     '<td class="n">'+(base>0?qty(base):'—')+'</td>'+
@@ -3843,7 +3913,7 @@ function lineaHTML(l, contratista){
   const cantCambiada = !l.libre && cpCert != null && l.cant_presup > 0 && Math.abs(cpCert - l.cant_presup) > 0.001;
   return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
-      '<div class="lin-nom"><b>'+escapeHtml(l.descripcion)+
+      '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(String(l.contrato_detalle||'').trim() || l.descripcion)+
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
           (l.libre?(l.rubro_codigo?'sin precio de referencia':'fuera de presupuesto'):(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr" title="La cantidad sí está presupuestada; lo que falta es la mano de obra en la composición del rubro. El pago se hace igual, con el precio del contrato o el que cargues.">sin mano de obra en el presupuesto</span>' : '')+
@@ -3857,7 +3927,7 @@ function lineaHTML(l, contratista){
         (l.indirecto ? '<span class="lin-tag ind" title="'+(l.rubro_codigo ? 'Gasto indirecto: descuenta del rubro '+escapeHtml(l.rubro_codigo) : 'Gasto indirecto de la obra: no descuenta de ningún rubro')+'">gasto indirecto</span>' : '')+
         (l.aPresupuestar ? '<span class="lin-tag ap" title="No descuenta de ningún rubro: queda en la lista de pendientes de la obra">a presupuestar</span>' : '')+
       '</b>'+
-        '<small>'+(l.rubro_codigo ? escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc)) : 'trabajo libre')+
+        '<small>'+(l.contrato_detalle ? escapeHtml([l.rubro_codigo, l.descripcion].filter(Boolean).join(' · '))+' · ' : '')+(l.rubro_codigo ? (l.contrato_detalle ? '' : escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc))) : 'trabajo libre')+
         (l.esRubro ? ' · se certifica el rubro completo' : (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : ''))+'</small></div>'+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>presupuestado</small></div>'
@@ -3874,7 +3944,7 @@ function lineaHTML(l, contratista){
         '<div class="px-orig '+origen+'" title="'+escapeHtml(origenTxt+(P.alcance?(' · '+P.alcance):''))+'">'+(pnum?gs(pnum):'—')+
           '<i>'+(origen==='pact' ? ('pactado'+(P.alcance?(' · '+escapeHtml(P.alcance)):'')) : origenTxt)+'</i></div></div>'+
     '</div>'+
-    (l.contrato_detalle ? '<div class="lin-det"><span>Detalle del trabajo · '+escapeHtml(l.contrato_numero||'contrato')+'</span>'+escapeHtml(l.contrato_detalle)+'</div>' : '')+
+
     cpRefHTML(l, k, precio, pact, Number(cant)||0) + acum + pctBox + ultLinea +
     (cargada ? '<div class="lin-body">'+
       (faltaSector ? '<div class="fld falta"><label>Sector / nivel *</label><input type="text" list="edSectoresDl" data-s="'+escapeHtml(k)+'" value="'+escapeHtml(m.sector||'')+'" placeholder="Ej. Nivel 3, NP2, Subsuelo" autocomplete="off"><div class="hint">Este trabajo no trae sector del presupuesto. Sin sector no se puede diferenciar el precio por nivel ni cruzarlo después.</div></div>' : '')+
@@ -7008,10 +7078,11 @@ async function guardar(estado){
 
     // Orden de los ítems: lo que ya estaba ordenado conserva su lugar y lo
     // nuevo va al final, en el orden del presupuesto.
-    const _op = ed.ordenPrevio || {};
+    // v11.11 · Se guarda en el orden en que se ve en la carga
+    const _vis = {}; ordenVisual().forEach(function(l, n){ _vis[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] = n; });
     M.sort((a,b)=>{
-      const pa = (_op[a.key] != null) ? _op[a.key] : 1e6 + a.orden;
-      const pb = (_op[b.key] != null) ? _op[b.key] : 1e6 + b.orden;
+      const pa = (_vis[a.key] != null) ? _vis[a.key] : 1e6 + a.orden;
+      const pb = (_vis[b.key] != null) ? _vis[b.key] : 1e6 + b.orden;
       return pa - pb;
     });
     M.forEach((x,i)=>{ x.orden = i; });
@@ -7290,7 +7361,7 @@ async function abrirDetalle(id){
           '<td class="ord-td">'+n+(dtPuedeOrdenar
             ? '<span class="ord-bt"><button type="button" data-mv="-1" data-oid="'+x.id+'" title="Subir">▲</button><button type="button" data-mv="1" data-oid="'+x.id+'" title="Bajar">▼</button></span>'
             : '')+'</td>'+
-          '<td><b>'+escapeHtml(x.descripcion)+'</b>'+
+          '<td>'+(String(x.detalle||'').trim() ? '<b class="det-tit">'+escapeHtml(String(x.detalle).trim())+'</b>' : '<b>'+escapeHtml(x.descripcion)+'</b>')+
             iconoDetalle(x.detalle, (CT.porId && CT.porId[x.contrato_item_id] && CT.porId[x.contrato_item_id]._numero) || 'contrato')+
             (x.excedente?' <span class="lin-tag sr">excedente</span>':'')+
             (globalMalMedido(x.unidad, x.cantidad, x.cant_presup)?' <span class="lin-tag sr" title="Rubro global medido en otra unidad">global mal medido</span>':'')+
@@ -7299,7 +7370,7 @@ async function abrirDetalle(id){
                   ? ' <span class="lin-tag sr" title="El rubro está en el presupuesto, pero no tiene mano de obra cargada: no hay contra qué comparar el precio certificado">sin precio de referencia</span>'
                   : ' <span class="lin-tag sr" title="Este trabajo no está en el presupuesto">fuera de presupuesto</span>')
               : '')+
-            '<div class="det-obs">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(x.rubro_desc||''):'trabajo libre')+'</div>'+
+            '<div class="det-obs'+(String(x.detalle||'').trim()?' det-ref':'')+'">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(String(x.detalle||'').trim() ? (x.descripcion||x.rubro_desc||'') : (x.rubro_desc||'')):'trabajo libre')+'</div>'+
             (x.ubicacion?'<div class="det-obs">📍 '+escapeHtml(x.ubicacion)+'</div>':'')+
             (x.observacion?'<div class="det-obs">'+escapeHtml(x.observacion)+'</div>':'')+
             (fs?'<div class="det-fotos">'+fs+'</div>':'')+
