@@ -1421,8 +1421,12 @@ async function loadProfileAndApp(){
   // propuesta comercial en Presupuestos
   state.puedeVerVenta = state.isAdmin || _perm.pres_margen === true;
   state.puedeAnular  = state.isAdmin || _perm.cert_anular  === true;
-  // v7.9 · Emitir la orden de pago consolidada: admin, o quien tenga el permiso
-  state.puedeOrdenPago = state.isAdmin || _perm.op_emitir === true;
+  // v11.9 · Emitir la orden de pago: todos los residentes (y el supervisor),
+  // además del admin y de quien tenga el permiso «op_emitir».
+  // Anular una orden emitida sigue siendo de administración.
+  const _rol = String(profile.rol||'').toLowerCase();
+  state.puedeOrdenPago = state.isAdmin || _perm.op_emitir === true || _rol === 'residente' || _rol === 'supervisor_caja';
+  state.puedeAnularOP  = state.isAdmin || _perm.op_emitir === true;
   const _bop = document.getElementById('btnOP'); if(_bop) _bop.hidden = !state.puedeOrdenPago;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
@@ -1636,12 +1640,12 @@ async function abrirEditor(id){
       // Traer lo ya cargado en este certificado
       const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
       (its||[]).forEach((it, idx)=>{
-        const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+        const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
         ed.ordenPrevio[k] = idx;   // el orden elegido se respeta al volver a guardar
         // v6.5 · Toda línea guardada vuelve al editor, tenga o no rubro y
         // esté o no el presupuesto entre los elegidos. Si no, el certificado
         // se abría vacío y no se podía guardar.
-        if(!ed.lineas.some(l=>keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)===k)){
+        if(!ed.lineas.some(l=>keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)===k)){
           const ci = it.contrato_item_id ? CT.porId[it.contrato_item_id] : null;
           ed.lineas.push({ rubro_codigo: it.rubro_codigo||'', rubro_desc: it.rubro_desc || (it.rubro_codigo ? it.descripcion : 'Fuera de presupuesto'),
             sector: (it.sector||'').trim() || '(sin sector)',
@@ -1658,7 +1662,7 @@ async function abrirEditor(id){
         // v10.0 · La clasificación vuelve con la línea: antes se perdía y el
         // certificado con trabajos sin presupuesto no se podía volver a guardar.
         if(it.clasificacion === 'indirecto' || it.clasificacion === 'a_presupuestar') ed.med[k].clasif = it.clasificacion;
-        { const lx = ed.lineas.filter(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion) === k; })[0];
+        { const lx = ed.lineas.filter(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto) === k; })[0];
           if(lx && it.clasificacion === 'a_presupuestar'){ lx.aPresupuestar = true; lx.presupuesto = ''; if(it.fuera_contrato) lx.fueraContrato = true; }
           if(lx && it.clasificacion === 'indirecto'){ lx.indirecto = true; }
           const mA = /Adenda al contrato (CT-[\w-]+)/.exec(it.observacion||'');
@@ -1677,7 +1681,7 @@ async function abrirEditor(id){
           const porItem = {}; (its||[]).forEach(x=>{ porItem[x.id] = x; });
           for(const f of (fs||[])){
             const it = porItem[f.item_id]; if(!it) continue;
-            const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+            const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
             let url = '';
             try{
               const { data:sg } = await sb.storage.from('oc-adjuntos').createSignedUrl(f.url_storage, 3600);
@@ -1697,11 +1701,18 @@ async function abrirEditor(id){
   }
 }
 
-function keyLinea(rk, ci, desc){ return (rk||'') + '|' + (ci || norm(desc)); }
+/* v11.8 · Identidad de un trabajo: presupuesto + rubro + insumo (o descripción).
+   El mismo código de rubro en dos presupuestos distintos (01.024 en PP64-2 y
+   en PP75-2) son trabajos distintos: no comparten medición ni acumulado.
+   Los trabajos sueltos sin rubro se identifican solo por su descripción. */
+function keyLinea(rk, ci, desc, pp){
+  const pre = (rk && pp) ? (String(pp).trim() + '::') : '';
+  return pre + (rk||'') + '|' + (ci || norm(desc));
+}
 
 /* Importe medido de una línea, para los subtotales por sector y presupuesto */
 function montoLinea(l){
-  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
   const m = ed.med[k];
   if(!m || !(Number(m.cant) > 0)) return 0;
   const pu = (m.precio != null && m.precio !== '') ? Number(m.precio) : (l.precio_presup || 0);
@@ -1774,9 +1785,9 @@ async function continuarDesde(numero){
 
     let n = 0;
     its.forEach(x=>{
-      const k = keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion);
+      const k = keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion, x.presupuesto);
       // Si era un trabajo libre, se repone la línea
-      if(!x.rubro_codigo && !ed.lineas.some(l=>keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)===k)){
+      if(!x.rubro_codigo && !ed.lineas.some(l=>keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)===k)){
         ed.lineas.push({ rubro_codigo:'', rubro_desc:'Fuera de presupuesto', sector:'(sin sector)',
           presupuesto:x.presupuesto||'', obra:x.obra||'', codigo_insumo:'',
           descripcion:x.descripcion, unidad:x.unidad||'', cant_presup:0, precio_presup:0, libre:true });
@@ -1912,9 +1923,10 @@ function presuEtiqueta(p){
 /* Presupuestos que realmente toca el certificado: los elegidos a mano más los
    que traen las líneas (las que vienen del contrato ya saben su presupuesto). */
 function presusDelCertificado(){
-  const out = ed.presus.slice();
+  // v11.8 · Por contrato, solo los presupuestos que tienen algo medido
+  const out = (modoCert() === 'contrato') ? [] : ed.presus.slice();
   (ed.lineas||[]).forEach(function(l){
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     const m = ed.med[k];
     if(!m || !(Number(m.cant) > 0)) return;
     const pp = String(l.presupuesto||'').trim();
@@ -1933,7 +1945,7 @@ function obrasDelCertificado(){
   });
   (CT.contratos||[]).forEach(function(c){
     const usa = (ed.lineas||[]).some(function(l){
-      const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)];
+      const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)];
       return l.contrato_id === c.id && m && Number(m.cant) > 0;
     });
     if(usa) add(c.obra);
@@ -1941,7 +1953,7 @@ function obrasDelCertificado(){
   // v10.0 · Trabajos fuera del contrato o sin contrato: su obra también cuenta
   (ed.lineas||[]).forEach(function(l){
     if(!l.libre || !l.obra) return;
-    const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)];
+    const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)];
     if(m && Number(m.cant) > 0) add(l.obra);
   });
   return out;
@@ -2005,7 +2017,7 @@ async function agregarPresu(cod){
 async function quitarPresu(cod){
   if(cod === '__libre'){
     ed.libre = false;
-    ed.lineas.filter(l=>l.libre).forEach(l=>{ const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion); delete ed.sel[k]; delete ed.med[k]; delete ed.fotos[k]; });
+    ed.lineas.filter(l=>l.libre).forEach(l=>{ const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto); delete ed.sel[k]; delete ed.med[k]; delete ed.fotos[k]; });
     ed.lineas = ed.lineas.filter(l=>!l.libre);
     const ofq = document.getElementById('edObraFiltro'); if(ofq){ ofq.value=''; ofq.classList.remove('req'); }
   }else{
@@ -2013,7 +2025,7 @@ async function quitarPresu(cod){
     if(i >= 0) ed.presus.splice(i,1);
     // Se borra también lo medido de ese presupuesto
     ed.lineas.filter(l=>l.presupuesto===cod).forEach(l=>{
-      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
+      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto);
       delete ed.med[k]; delete ed.fotos[k];
     });
   }
@@ -2081,7 +2093,7 @@ document.getElementById('edAddTodos').onclick = async function(){
     ok:'Agregar todos'
   });
   if(!r.ok) return;
-  disp.forEach(l=>{ ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)] = true; });
+  disp.forEach(l=>{ ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] = true; });
   renderLineas();
 };
 document.getElementById('edBuscar').oninput = function(){ ed.buscar = norm(this.value); renderLineas(); };
@@ -2264,7 +2276,7 @@ function llenarSectores(){
     // También los sectores de lo ya agregado (adenda, no contratado)
     (ed.lineas||[]).forEach(function(l){
       const sc = String(l.sector||'').trim();
-      if(ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)] && sc && sc !== '(sin sector)' && secs.indexOf(sc) < 0) secs.push(sc);
+      if(ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] && sc && sc !== '(sin sector)' && secs.indexOf(sc) < 0) secs.push(sc);
     });
     secs.sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
   }else{
@@ -2423,7 +2435,8 @@ function aplicarModo(){
     }
   }
   const t2 = document.getElementById('edPaso2Tit');
-  if(t2) t2.textContent = modo === 'presu' ? 'Presupuestos del certificado (carga anterior)' : 'Contrato a certificar';
+  if(t2) t2.textContent = modo === 'presu' ? 'Presupuestos del certificado (carga anterior)'
+    : (modo === 'contrato' && ed.ctSel.length > 1 ? ('Contratos a certificar · '+ed.ctSel.length+' elegidos') : 'Contratos a certificar');
   const box = document.getElementById('edPresuBox');
   if(box) box.style.display = (modo === 'presu') ? '' : 'none';
   const ph = document.getElementById('edPresuHint');
@@ -2439,7 +2452,7 @@ async function ctToggle(id){
   if(!c) return;
   if(ctElegido(id)){
     const medidasCt = (ed.lineas||[]).filter(function(l){
-      const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)];
+      const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)];
       return ctDeItem(l.contrato_item_id) === id && m && Number(m.cant) > 0;
     });
     if(medidasCt.length){
@@ -2451,7 +2464,7 @@ async function ctToggle(id){
     }
     (ed.lineas||[]).forEach(function(l){
       if(ctDeItem(l.contrato_item_id) !== id) return;
-      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
+      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto);
       delete ed.sel[k]; delete ed.med[k]; delete ed.fotos[k];
     });
     ed.ctSel = ed.ctSel.filter(function(x){ return x !== id; });
@@ -2534,7 +2547,7 @@ async function agregarFueraContrato(){
       if(!u) return axMarcar(box,'#fcUn','#fcErr','<b>Unidad:</b> indicá la unidad de medida (m2, ml, m3, un, gl…).');
       if(m.length < 8) return axMarcar(box,'#fcMot','#fcErr','<b>Motivo:</b> explicá por qué el trabajo no está en el contrato (al menos 8 caracteres). Queda registrado en el certificado.');
       const k = keyLinea('', '', d);
-      if((ed.lineas||[]).some(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion) === k; })){
+      if((ed.lineas||[]).some(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto) === k; })){
         return axMarcar(box,'#fcDesc','#fcErr','<b>Descripción:</b> ya hay un trabajo con ese nombre en el certificado. Usá una descripción distinta.');
       }
       return true;
@@ -2607,7 +2620,7 @@ function revisarCertificado(ctx){
   }
   const sinClasif = (ed.lineas||[]).filter(function(l){
     if(!l.libre) return false;
-    const m = ed.med[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion)];
+    const m = ed.med[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto)];
     return m && Number(m.cant) > 0 && !m.clasif;
   });
   if(sinClasif.length){
@@ -2708,7 +2721,7 @@ function adendaCandidatos(c){
     if(l.libre || l.contrato_item_id || !l.rubro_codigo) return;
     if(String(l.presupuesto||'').trim() !== pp) return;
     const g = l.rubro_codigo + '|' + (l.sector||'');
-    if(ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)] && l.adendaPend) return;   // ya marcado
+    if(ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] && l.adendaPend) return;   // ya marcado
     if(!G[g]) G[g] = { linea:l, rubro_codigo:l.rubro_codigo, descripcion:l.rubro_desc || l.descripcion, unidad:l.unidad||'',
                        sector:(l.sector && l.sector !== '(sin sector)') ? l.sector : '', presupuesto:pp, cant:0, precio:0 };
     G[g].cant = Math.max(G[g].cant, Number(l.cant_presup)||0);
@@ -2860,7 +2873,7 @@ async function adendaDesdeCertificado(){
     if(!tr.querySelector('.ad-ck').checked) return;
     const g = L[Number(tr.getAttribute('data-i'))];
     const l = g.linea;
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     l.adendaPend = { contrato_id:c.id, numero:c.numero };
     ed.sel[k] = true;
     ed.med[k] = Object.assign(ed.med[k] || {}, {
@@ -3016,8 +3029,8 @@ async function trabajoSinContrato(tipoFijo){
       if(!(parseNum(box.querySelector('#scPre').value) > 0)) return axMarcar(box,'#scPre','#scErr','<b>Costo unitario:</b> indicá el precio por unidad, en guaraníes.');
       if((box.querySelector('#scMot').value||'').trim().length < 8) return axMarcar(box,'#scMot','#scErr','<b>Justificación:</b> explicá por qué se certifica sin contrato (al menos 8 caracteres). Queda registrada en el certificado.');
       const rub = box.querySelector('#scRub');
-      const k = keyLinea((rub && box.querySelector('input[name=scTipo]:checked').value==='indirecto' && rub.value) || '', '', d);
-      if((ed.lineas||[]).some(function(l){ return keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion) === k; })) return axMarcar(box,'#scDesc','#scErr','<b>Descripción:</b> ya hay un trabajo con ese nombre en el certificado. Usá una descripción distinta.');
+      // Un trabajo cargado a mano no puede repetir la descripción de otro
+      if((ed.lineas||[]).some(function(l){ return l.libre && norm(l.descripcion||'') === norm(d); })) return axMarcar(box,'#scDesc','#scErr','<b>Descripción:</b> ya hay un trabajo con ese nombre en el certificado. Usá una descripción distinta.');
       return true;
     }
   });
@@ -3042,7 +3055,7 @@ async function trabajoSinContrato(tipoFijo){
   };
   if(tipo === 'indirecto') linea.indirecto = true; else linea.aPresupuestar = true;
   ed.lineas.push(linea);
-  const k = keyLinea(linea.rubro_codigo, '', desc);
+  const k = keyLinea(linea.rubro_codigo, '', desc, linea.presupuesto);
   ed.sel[k] = true;
   const ctN = (ed.ctSel && ed.ctSel.length && ctSelContratos()[0]) ? ctSelContratos()[0].numero : '';
   ed.med[k] = { cant:cant, precio:pre, clasif:tipo, obs:(tipo === 'indirecto' ? 'Gasto indirecto' : 'A presupuestar')+(ctN ? ' · fuera del contrato '+ctN : '')+': '+mot };
@@ -3099,10 +3112,12 @@ function ctAviso(){
     '<span class="ct-l3">Pide obra, clasificación y motivo</span></span></button>';
   html += '</div>';
   html += '<div class="ct-nota">'+(modo === 'contrato'
-      ? '✓ Obra, presupuesto, rubros, precio y saldo salen del contrato. Si el contratista hizo algo que <b>no está en su contrato</b>, usá <b>«➕ Trabajo no contratado»</b>: te pregunta si está en el presupuesto y te lleva al camino correcto.'
+      ? '✓ <b>'+ed.ctSel.length+' contrato(s) elegido(s).</b> Obra, presupuesto, rubros, precio y saldo salen del contrato.'+
+        ((CT.contratos||[]).length > ed.ctSel.length ? ' Podés <b>sumar otro contrato</b> del mismo contratista tildando su tarjeta: cada uno se certifica contra su propio presupuesto y saldo.' : '')+
+        ' Si el contratista hizo algo que <b>no está en su contrato</b>, usá <b>«➕ Trabajo no contratado»</b>.'
       : (modo === 'sin'
           ? '✓ Sin contrato: elegí la <b>obra del certificado</b> (paso 1) y cargá cada trabajo con <b>«➕ Trabajo sin contrato»</b>, debajo de la lista: te pregunta si es gasto indirecto o gasto a presupuestar.'
-          : 'Elegí el contrato que vas a certificar. Podés elegir más de uno.'))+'</div>';
+          : 'Elegí el contrato que vas a certificar. <b>Podés elegir más de uno</b>: tildá cada tarjeta.'))+'</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-ct]').forEach(function(b){
     b.onclick = function(){ ctToggle(Number(b.getAttribute('data-ct'))); };
@@ -3128,7 +3143,7 @@ async function ctTraer(contratoId, silencioso){
   (ed.lineas||[]).forEach(function(l){
     const ci = l.contrato_item_id ? CT.porId[l.contrato_item_id] : null;
     if(!ci || ci.contrato_id !== contratoId) return;
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     const saldo = saldoLinea(l, ed.hist[k]);
     n++;
     if(saldo == null || saldo > 0){ ed.sel[k] = true; conSaldo++; }
@@ -3154,7 +3169,7 @@ function actualizarPaso2(){
    el residente no escribió a mano. */
 function reaplicarPrecios(){
   (ed.lineas||[]).forEach(function(l){
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     const m = ed.med[k];
     if(!m || m.precioManual) return;
     const P = precioDeLinea(l, { sector:m.sector });
@@ -3275,7 +3290,7 @@ async function cargarLineas(){
       if(ed.id && it.certificado_id === ed.id) return;   // lo propio no cuenta al editar
       const est = (it.certificados && it.certificados.estado) || '';
       if(est === 'Anulado') return;
-      const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+      const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
       if(!ed.hist[k]) ed.hist[k] = { aprob:0, tramite:0, quien:[] };
       const c = Number(it.cantidad)||0;
       if(est === 'Aprobado') ed.hist[k].aprob += c; else ed.hist[k].tramite += c;
@@ -3372,7 +3387,7 @@ async function agregarLibre(){
     codigo_insumo:'', descripcion:desc, unidad:un,
     cant_presup:0, precio_presup:0, libre:true
   }, cl.linea));
-  const k = keyLinea(cl.linea.rubro_codigo||'', '', desc);
+  const k = keyLinea(cl.linea.rubro_codigo||'', '', desc, cl.linea.presupuesto);
   ed.sel[k] = true;
   /* Si algún filtro lo dejaría fuera de la lista, se limpia: el trabajo recién
      cargado tiene que verse, si no parece que no se guardó. */
@@ -3399,7 +3414,7 @@ async function agregarLibre(){
 async function clasificarLibre(){
   const cand = (ed.lineas||[]).filter(function(l){ return l.rubro_codigo && !l.libre; })
     .map(function(l){
-      const h = ed.hist[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion)] || { aprob:0, tramite:0 };
+      const h = ed.hist[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto)] || { aprob:0, tramite:0 };
       const saldo = Math.max(0, (Number(l.cant_presup)||0) - h.aprob - h.tramite);
       return { l:l, saldo:saldo };
     });
@@ -3499,7 +3514,7 @@ function renderLineas(){
     cpCargar(contratista).then(function(){ renderLineas(); });
   }
   // Solo se muestran los trabajos que el residente agregó
-  let L = ed.lineas.filter(l => ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
+  let L = ed.lineas.filter(l => ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)]);
   ed.secFiltro = sec;
   const disponibles = disponiblesFiltrados();
   selectorTrabajos(disponibles, L.length);
@@ -3507,7 +3522,7 @@ function renderLineas(){
   if(ed.buscar) L = L.filter(l => norm([l.descripcion,l.rubro_codigo,l.rubro_desc,l.codigo_insumo,l.sector].join(' ')).indexOf(ed.buscar)>=0);
   if(ed.filtro){
     L = L.filter(l=>{
-      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
+      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto);
       const h = ed.hist[k] || {aprob:0,tramite:0};
       const disp = l.libre ? 1 : (l.cant_presup - h.aprob - h.tramite);
       if(ed.filtro==='saldo')    return l.libre || disp > 0;
@@ -3518,7 +3533,7 @@ function renderLineas(){
   }
   const cnt = document.getElementById('edCount');
   if(cnt){
-    const nSel = ed.lineas.filter(l=>ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]).length;
+    const nSel = ed.lineas.filter(l=>ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)]).length;
     cnt.textContent = (L.length===nSel ? nSel+' agregado(s)' : L.length+' de '+nSel+' agregado(s)');
   }
   if(!L.length && ed.lineas.length){
@@ -3625,7 +3640,7 @@ function plEnganches(contratista){
       const tr = cont.querySelector('tr[data-fila="'+CSS.escape(k)+'"]');
       const next = tr && tr.nextElementSibling;
       if(next && next.classList.contains('pl-det')){ next.remove(); b.textContent = '▸'; b.classList.remove('on'); return; }
-      const l = (ed.lineas||[]).filter(function(x){ return keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion) === k; })[0];
+      const l = (ed.lineas||[]).filter(function(x){ return keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion, x.presupuesto) === k; })[0];
       if(!l || !tr) return;
       const det = document.createElement('tr');
       det.className = 'pl-det';
@@ -3673,7 +3688,7 @@ function precioDeLinea(l, m){
    tarjetas, así que los enganches y los cálculos no cambian. El ▸ abre la
    tarjeta completa debajo para ubicación, observación y fotos.            */
 function lineaFila(l, contratista){
-  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
   const m = ed.med[k] || {};
   const h = ed.hist[k] || { aprob:0, tramite:0, quien:[] };
   const ant = h.aprob + h.tramite;
@@ -3717,7 +3732,7 @@ function lineaFila(l, contratista){
 }
 
 function lineaHTML(l, contratista){
-  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
   const m = ed.med[k] || {};
   const h = ed.hist[k] || { aprob:0, tramite:0, quien:[] };
   const usado = h.aprob + h.tramite;
@@ -3880,7 +3895,7 @@ function lineaHTML(l, contratista){
    no se entendía qué hacía cada uno y no había forma de volver atrás. */
 async function cpPreguntarAlcance(k){
   const l = (ed.lineas||[]).filter(function(x){
-    return keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion) === k; })[0];
+    return keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion,x.presupuesto) === k; })[0];
   if(!l) return;
   const m = ed.med[k] || {};
   const precio = Number(m.precio) || 0;
@@ -4058,7 +4073,7 @@ async function ctHistorial(){
       if(ed.id && it.certificado_id === ed.id) return;
       const est = (it.certificados && it.certificados.estado) || '';
       if(est === 'Anulado') return;
-      const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion);
+      const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
       if(!ed.hist[k]) ed.hist[k] = { aprob:0, tramite:0, quien:[] };
       const c = Number(it.cantidad)||0;
       if(est === 'Aprobado') ed.hist[k].aprob += c; else ed.hist[k].tramite += c;
@@ -4089,7 +4104,7 @@ function ctPreciosPorDefecto(estado){
   (ed.lineas||[]).forEach(function(l){
     const ctr = Number(l.precio_contrato)||0;
     if(!l.contrato_item_id || !ctr) return;
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     const m = ed.med[k]; if(!m) return;
     const ant = Number(m.precio)||0;
     if(Math.abs(ant - ctr) < 0.5) return;
@@ -4263,7 +4278,7 @@ async function ctAgregarTrabajo(){
       contrato_estado: c.estado, precio_contrato: Math.round(d.precio), cant_contratada: d.cantidad,
       contrato_detalle: d.detalle || '', esContrato:true, esAdicional:true, libre:false };
     ed.lineas.push(l);
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     ed.sel[k] = true; ed.med[k] = ed.med[k] || {}; ed.med[k].precio = l.precio_contrato; ed.med[k].sector = d.sector || '';
     renderLineas(); actualizarTotales();
     showToast('Agregado al contrato '+(c.numero||'')+' como adenda A'+n,'success',
@@ -4456,7 +4471,7 @@ function cpSelector(o){
 
 /* Precio de una línea que ya se está certificando */
 async function cpElegirPrecioLinea(k){
-  const l = ed.lineas.filter(x => keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion) === k)[0];
+  const l = ed.lineas.filter(x => keyLinea(x.rubro_codigo, x.codigo_insumo, x.descripcion, x.presupuesto) === k)[0];
   if(!l) return;
   const contratista = (document.getElementById('edContra')||{}).value || '';
   const sec = sectorLinea(l, ed.med[k] || {});
@@ -4534,7 +4549,7 @@ async function cpAgregarDesdeLista(){
       ed.lineas.push(l);
     }
   }
-  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
   ed.sel[k] = true;
   ed.med[k] = ed.med[k] || {};
   ed.med[k].precio = r.precio;
@@ -4636,7 +4651,7 @@ function trabajoPop(abrir){
     if(!filas.length) return;
     html += '<div class="ac-grp">📋 '+escapeHtml(g)+'</div>';
     filas.forEach(l=>{
-      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion);
+      const k = keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto);
       const h = ed.hist[k] || {aprob:0,tramite:0};
       const d = l.libre ? null : Math.max(0, l.cant_presup - h.aprob - h.tramite);
       const P = precioDeLinea(l, {});
@@ -4688,7 +4703,7 @@ function agregarTrabajo(k){
    si el residente está midiendo el Nivel 5, no tiene por qué ver los otros. */
 function disponiblesFiltrados(){
   const sec = document.getElementById('edSector').value;
-  let D = ed.lineas.filter(l => !ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion)]);
+  let D = ed.lineas.filter(l => !ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)]);
   // v10.0 · Por contrato se ofrecen solo sus trabajos: lo del presupuesto que
   // no está contratado no se certifica acá (va por adenda o a presupuestar).
   if(ed.ctSel && ed.ctSel.length) D = D.filter(l => l.libre || ctElegido(ctDeItem(l.contrato_item_id)));
@@ -4708,7 +4723,7 @@ function enganchesLineas(){
     inp.onchange = async function(){
       const k = inp.getAttribute('data-c');
       const v = inp.value === '' ? '' : Number(inp.value);
-      const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion)===k)[0];
+      const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion,x.presupuesto)===k)[0];
       ed.med[k] = ed.med[k] || {};
       ed.med[k].cant = v;
       if(ed.med[k].precio == null || ed.med[k].precio === ''){
@@ -4731,7 +4746,7 @@ function enganchesLineas(){
   });
   // % de avance acumulado → cantidad de esta medición
   const aplicarPct = function(k, pct){
-    const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion)===k)[0];
+    const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion,x.presupuesto)===k)[0];
     if(!l || !(l.cant_presup>0)) return;
     const h = ed.hist[k] || {aprob:0,tramite:0};
     const ant = h.aprob + h.tramite;
@@ -4780,7 +4795,7 @@ function enganchesLineas(){
     b.onclick = function(ev){
       ev.stopPropagation();
       const k = b.getAttribute('data-saldo');
-      const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion)===k)[0];
+      const l = ed.lineas.filter(x=>keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion,x.presupuesto)===k)[0];
       if(!l) return;
       const h = ed.hist[k] || {aprob:0,tramite:0};
       ed.med[k] = ed.med[k] || {};
@@ -4939,7 +4954,7 @@ function globalMalMedido(unidad, cant, cantPresup){
 function medidas(){
   const out = [];
   ed.lineas.forEach((l,i)=>{
-    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion);
+    const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
     const m = ed.med[k];
     if(!m || !(Number(m.cant) > 0)) return;
     const h = ed.hist[k] || { aprob:0, tramite:0 };
@@ -6124,7 +6139,7 @@ document.getElementById('opEmitir').onclick = async function(){
         ok:'Entendido', cancelar:null
       });
     }else if(/permission|row-level|rls/i.test(msg)){
-      showToast('No tenés permiso para emitir órdenes','error','Pedile al administrador el permiso «op_emitir»');
+      showToast('La base no te deja emitir la orden','error','Falta correr axc_orden_pago_residentes.sql en Supabase (habilita a los residentes)');
     }else if(/relation .*orden_pago|does not exist/i.test(msg)){
       showToast('Falta crear las tablas de la orden de pago','error','Corré el script axc_orden_pago_v1.sql en Supabase');
     }else{
@@ -6154,7 +6169,7 @@ document.getElementById('opVerEmitidas').onclick = async function(){
           '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista)+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
           '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
           '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
-            (o.estado !== 'Anulada' && state.puedeOrdenPago ? ' <button type="button" class="btn-g" data-opanu="'+o.id+'" title="Libera los certificados y devuelve los descuentos">Anular</button>' : '')+
+            (o.estado !== 'Anulada' && state.puedeAnularOP ? ' <button type="button" class="btn-g" data-opanu="'+o.id+'" title="Libera los certificados y devuelve los descuentos">Anular</button>' : '')+
           '</td></tr>';
       }).join('')+'</tbody></table></div>';
     det.querySelectorAll('button[data-opanu]').forEach(function(b){
