@@ -435,9 +435,6 @@ table.cta-t b.mi{color:#1B5524;font-variant-numeric:tabular-nums}
 .ct-card .ct-l2{display:block;font-size:12.5px;color:var(--text-soft);margin-top:2px}
 .ct-card .ct-l3{display:block;font-size:12px;color:var(--text-muted);margin-top:3px}
 .ct-card .ct-firmar{display:inline-block;font-size:10.5px;font-weight:800;color:#8a5a00;background:#FEF3CD;border:1px solid #FCD46B;border-radius:20px;padding:0 7px;margin-left:6px;vertical-align:1px}
-.ct-card.sin{border-style:dashed}
-.ct-card.sin.on{border-color:#B8860B;background:#FFFBF0}
-.ct-card.sin.on .ct-chk{background:#B8860B;border-color:#B8860B}
 .ct-nota{font-size:12px;color:var(--text-soft);line-height:1.5;margin-bottom:12px}
 .ct-nota b{color:var(--text)}
 .ct-vacio{border:1px dashed #E0A93B;background:#FFFBF0;border-radius:10px;padding:10px 13px;font-size:13px;color:#6b4a00;margin-bottom:10px}
@@ -1675,6 +1672,7 @@ async function abrirEditor(id){
       ctPreciosPorDefecto(c.estado);
       if(ed.ctSel.length) ed.libre = false;
       renderChips(); ctAviso(); llenarObraFiltro(); aplicarModo();
+      refrescarSectoresObra();
       renderLineas();
     }
   }
@@ -2168,12 +2166,13 @@ function llenarObraFiltro(){
 async function cargarObrasLista(){
   state.obrasPresu = []; state.obrasLista = []; state.sectoresObra = {};
   try{
-    const { data } = await sb.from('listas').select('tipo,valor,obra_ref').in('tipo', ['obras','obras_presu','sectores_presu']);
+    // v11.6 · «sectores» (los de Órdenes de compra) y «sectores_presu» (Presupuestos)
+    const { data } = await sb.from('listas').select('tipo,valor,obra_ref,activo').in('tipo', ['obras','obras_presu','sectores_presu','sectores']);
     (data||[]).forEach(function(x){
       const v = String(x.valor||'').trim(); if(!v) return;
       if(x.tipo === 'obras_presu') state.obrasPresu.push(v);
       else if(x.tipo === 'obras')  state.obrasLista.push(v);
-      else if(x.tipo === 'sectores_presu' && x.obra_ref){
+      else if((x.tipo === 'sectores_presu' || x.tipo === 'sectores') && x.obra_ref && x.activo !== false){
         const k = norm(x.obra_ref);
         (state.sectoresObra[k] = state.sectoresObra[k] || []).push(v);
       }
@@ -2184,10 +2183,37 @@ async function cargarObrasLista(){
 }
 /* Los sectores que se ofrecen salen de la obra elegida: del catálogo de la
    obra y de lo que ya traen las líneas cargadas. */
+/* v11.6 · Sectores que la obra ya usó: los de sus presupuestos y los de
+   certificados anteriores. Se consultan una vez por obra y quedan en memoria. */
+async function sectoresUsadosObra(obra){
+  const k = norm(obra||''); if(!k) return [];
+  state.secUsados = state.secUsados || {};
+  if(state.secUsados[k]) return state.secUsados[k];
+  const out = [];
+  const add = function(v){ v = String(v||'').trim(); if(v && v !== '(sin sector)' && !out.some(function(x){ return norm(x)===norm(v); })) out.push(v); };
+  try{
+    const pps = (state.presupuestos||[]).filter(function(p){ return norm(p.obra||'') === k; }).map(function(p){ return p.codigo; });
+    const [r1, r2] = await Promise.all([
+      pps.length ? sb.from('presupuesto_rubros').select('sector').in('presupuesto', pps) : Promise.resolve({ data:[] }),
+      sb.from('certificado_items').select('sector,obra').eq('obra', obra)
+    ]);
+    (r1.data||[]).forEach(function(x){ add(x.sector); });
+    (r2.data||[]).forEach(function(x){ add(x.sector); });
+  }catch(e){ console.warn('sectores de la obra', e); }
+  state.secUsados[k] = out;
+  return out;
+}
+async function refrescarSectoresObra(){
+  const obra = String((document.getElementById('edObraFiltro')||{}).value || '').trim();
+  if(obra) await sectoresUsadosObra(obra);
+  llenarSectores();
+}
+
 function sectoresDeObra(obra){
   const out = [];
   const add = function(v){ v = String(v||'').trim(); if(v && v !== '(sin sector)' && !out.some(function(x){ return norm(x)===norm(v); })) out.push(v); };
   if(obra) (state.sectoresObra[norm(obra)] || []).forEach(add);
+  if(obra && state.secUsados) (state.secUsados[norm(obra)] || []).forEach(add);
   // Los que vienen del contrato de esa obra: es el sector con el que se pactó
   (CT.items||[]).forEach(function(i){
     const c = (CT.contratos||[]).filter(function(x){ return x.id === i.contrato_id; })[0];
@@ -2232,11 +2258,17 @@ function llenarSectores(){
   sel.innerHTML = '<option value="">Todos los sectores</option>' +
     secs.map(function(x){ return '<option>'+escapeHtml(x)+'</option>'; }).join('');
   if(secs.indexOf(prev) >= 0) sel.value = prev;
+  // Las sugerencias de sector de los formularios son las mismas
+  const dl = document.getElementById('edSectoresDl');
+  if(dl && secs.length){
+    const ya = Array.prototype.map.call(dl.options, function(o){ return o.value; });
+    secs.forEach(function(v){ if(ya.indexOf(v) < 0){ const o = document.createElement('option'); o.value = v; dl.appendChild(o); } });
+  }
   const hint = sel.parentElement && sel.parentElement.querySelector('.hint');
   if(hint) hint.textContent = porCt
     ? (secs.length === 1 ? ('El contrato es del sector '+secs[0]+'.') : (secs.length ? ('Sectores del contrato: '+secs.length+'. Filtra la lista de abajo.') : 'El contrato no tiene sectores cargados.'))
     : (obra
-      ? ('Sectores de '+obra+(secs.length ? '' : ' · esta obra no tiene sectores cargados'))
+      ? (secs.length ? ('Sectores de '+obra+' · filtra la lista de abajo.') : ('Esta obra todavía no tiene sectores. Escribí el sector en cada trabajo.'))
       : 'Sólo filtra la lista de abajo.');
 }
 const _of = document.getElementById('edObraFiltro');
@@ -2250,6 +2282,7 @@ if(_of) _of.onchange = async function(){
   const c = (document.getElementById('edContra')||{}).value || '';
   if(c){ CT.cargado = ''; await ctCargar(c, ed.id); ctAviso(); }
   presuPop(true); llenarObraFiltro(); renderLineas();
+  await refrescarSectoresObra();
 };
 
 const _pb = document.getElementById('edPresuBuscar');
@@ -2360,7 +2393,7 @@ function aplicarModo(){
   const adb = document.getElementById('edAdenda');
   if(adb) adb.style.display = 'none';          // v11.3 · va dentro de «Trabajo no contratado»
   const lib = document.getElementById('edLibreFijo');
-  if(lib) lib.style.display = (modo === 'contrato') ? 'none' : '';   // v11.4 · un solo botón, abajo de la lista
+  if(lib) lib.style.display = (modo === 'contrato' || modo === 'sin') ? 'none' : '';   // v11.5 · un solo botón, abajo de la lista
   if(lib){
     if(modo === 'contrato'){
       lib.textContent = '➕ Trabajo no contratado';
@@ -2443,7 +2476,7 @@ async function modoSinContrato(){
     showToast('Certificado sin contrato','info','Elegí la obra del certificado y cargá cada trabajo con «➕ Trabajo sin contrato»');
     of.focus();
   }else{
-    trabajoSinContrato();
+    trabajoNoContratado();
   }
 }
 
@@ -2673,19 +2706,21 @@ function adendaCandidatos(c){
      · Sí → adenda al contrato (se agrega al aprobar el certificado).
      · No → gasto a presupuestar (Obra no presupuestada).                 */
 async function trabajoNoContratado(){
+  /* v11.5 · El mismo selector sirve con contrato y sin contrato */
+  const porCt = modoCert() === 'contrato';
   const cs = ctSelContratos();
-  if(!cs.length) return;
-  const nAd = cs.reduce(function(a, c){ return a + adendaCandidatos(c).length; }, 0);
+  if(porCt && !cs.length) return;
+  const nAd = porCt ? cs.reduce(function(a, c){ return a + adendaCandidatos(c).length; }, 0) : 0;
   const html =
     '<div class="nc-ops">'+
-      '<button type="button" class="nc-op" data-op="adenda"'+(nAd ? '' : ' disabled')+'>'+
+      (porCt ? '<button type="button" class="nc-op" data-op="adenda"'+(nAd ? '' : ' disabled')+'>'+
         '<span class="nc-ic">📑</span><span><b>Sí, está en el presupuesto</b>'+
         '<small>El rubro figura en el presupuesto de la obra pero no se incluyó en el contrato.</small>'+
         '<em>→ Se agrega al contrato como <b>adenda</b> cuando se aprueba el certificado. Se paga con el precio pactado.</em>'+
         (nAd ? '<i>'+nAd+' rubro(s) del presupuesto disponibles</i>' : '<i class="no">Todos los rubros del presupuesto ya están en el contrato</i>')+
-      '</span></button>'+
+      '</span></button>' : '')+
       '<button type="button" class="nc-op" data-op="fuera">'+
-        '<span class="nc-ic">📐</span><span><b>No, no está en el presupuesto</b>'+
+        '<span class="nc-ic">📐</span><span><b>'+(porCt ? 'No, no está en el presupuesto' : 'Gasto a presupuestar')+'</b>'+
         '<small>Es un trabajo de obra que se mide (m², ml, m³, un) y que nadie previó.</small>'+
         '<em>→ Se registra como <b>gasto a presupuestar</b> de la obra, para crear el rubro después.</em>'+
       '</span></button>'+
@@ -2695,11 +2730,13 @@ async function trabajoNoContratado(){
         '<em>→ Se carga con <b>descripción, unidad, cantidad y costo unitario</b>; el monto parcial se calcula solo.</em>'+
       '</span></button>'+
     '</div>'+
-    '<div class="nc-nota">¿El trabajo <b>sí está en el contrato</b>? Entonces no uses este botón: buscalo en <b>«Agregá los trabajos que vas a certificar»</b>, más arriba.</div>';
+    (porCt
+      ? '<div class="nc-nota">¿El trabajo <b>sí está en el contrato</b>? Entonces no uses este botón: buscalo en <b>«Agregá los trabajos que vas a certificar»</b>, más arriba.</div>'
+      : '<div class="nc-nota">¿El trabajo lo cubre un contrato? Entonces cerrá y elegí el <b>contrato</b> en el paso 2.</div>');
   let elegido = null;
   const r = await axcDialog({
-    tono:'', icono:'➕', titulo:'Trabajo no contratado',
-    subtitulo:'El contratista hizo un trabajo que no está en su contrato',
+    tono:'', icono:'➕', titulo: porCt ? 'Trabajo no contratado' : 'Trabajo sin contrato',
+    subtitulo: porCt ? 'El contratista hizo un trabajo que no está en su contrato' : 'Ningún contrato cubre este trabajo',
     mensaje:'<b>¿Qué tipo de trabajo es?</b> Elegí una opción:',
     html:html, ok:'Cerrar', soloOk:true,
     alRender:function(box){
@@ -2713,7 +2750,7 @@ async function trabajoNoContratado(){
     }
   });
   if(elegido === 'adenda') return adendaDesdeCertificado();
-  if(elegido === 'fuera')  return agregarFueraContrato();
+  if(elegido === 'fuera')  return trabajoSinContrato('a_presupuestar');
   if(elegido === 'indirecto') return trabajoSinContrato('indirecto');
 }
 
@@ -2918,7 +2955,7 @@ async function trabajoSinContrato(tipoFijo){
     '</div>')+
     '<div style="margin-top:10px"><label class="ax-l">Descripción *</label><input id="scDesc" class="ax-in" placeholder="Ej. Limpieza general del Nivel 1 tras la demolición"></div>'+
     '<div class="sc-grid">'+
-      '<div><label class="ax-l">Unidad *</label><input id="scUn" class="ax-in" value="gl" placeholder="gl, jor, hs, m2…"></div>'+
+      '<div><label class="ax-l">Unidad *</label><input id="scUn" class="ax-in" value="'+(tipoFijo === 'a_presupuestar' ? 'm2' : 'gl')+'" placeholder="gl, jor, hs, m2…"></div>'+
       '<div><label class="ax-l">Cantidad *</label><input id="scCant" class="ax-in" inputmode="decimal" value="1"></div>'+
       '<div><label class="ax-l">Costo unitario *</label><input id="scPre" class="ax-in" inputmode="numeric" placeholder="₲"></div>'+
       '<div><label class="ax-l">Monto parcial</label><div id="scPar" class="sc-par">—</div></div>'+
@@ -2926,17 +2963,21 @@ async function trabajoSinContrato(tipoFijo){
     '<div style="margin-top:9px"><label class="ax-l">Sector</label><input id="scSec" class="ax-in" list="edSectoresDl" value="'+escapeHtml(secAct)+'" placeholder="Nivel, bloque, depto… (opcional)"></div>'+
     (ops.length ? '<div id="scRubBox" style="margin-top:9px"><label class="ax-l">Imputar a un rubro del presupuesto (opcional)</label>'+
       '<select id="scRub" class="ax-in"><option value="">No, es gasto indirecto de la obra</option>'+ops.map(function(o){ return '<option value="'+escapeHtml(o.v)+'">'+escapeHtml(o.t)+'</option>'; }).join('')+'</select></div>' : '')+
-    '<div style="margin-top:9px"><label class="ax-l">Justificación * <small style="font-weight:400;color:var(--text-muted)">'+(tipoFijo === 'indirecto' ? 'qué se hizo y por qué' : 'por qué no hay contrato')+'</small></label><textarea id="scMot" class="ax-in" rows="2" placeholder="Por qué se certifica sin contrato"></textarea></div>'+
+    '<div style="margin-top:9px"><label class="ax-l">Justificación * <small style="font-weight:400;color:var(--text-muted)">'+(tipoFijo === 'indirecto' ? 'qué se hizo y por qué' : (tipoFijo === 'a_presupuestar' ? (ed.ctSel && ed.ctSel.length ? 'por qué no está en el contrato ni en el presupuesto' : 'por qué no está en el presupuesto') : 'por qué no hay contrato'))+'</small></label><textarea id="scMot" class="ax-in" rows="2" placeholder="Por qué se certifica sin contrato"></textarea></div>'+
     '<div class="ax-hint" id="scErr" style="color:#B42B2B;min-height:1em"></div>';
   const calc = function(box){
     const q = parseNum(box.querySelector('#scCant').value), p = parseNum(box.querySelector('#scPre').value);
     box.querySelector('#scPar').textContent = (q>0 && p>0) ? gs(Math.round(q*p)) : '—';
   };
   const r = await axcDialog({
-    tono:'warn', icono:'🧰', titulo: tipoFijo === 'indirecto' ? 'Gasto indirecto' : 'Trabajo sin contrato',
-    subtitulo: tipoFijo === 'indirecto' ? 'Apoyo, limpieza, fletes, alquileres, ayuda de gremios' : 'Ningún contrato cubre este trabajo',
+    tono:'warn', icono: tipoFijo === 'a_presupuestar' ? '📐' : '🧰',
+    titulo: tipoFijo === 'indirecto' ? 'Gasto indirecto' : (tipoFijo === 'a_presupuestar' ? 'Gasto a presupuestar' : 'Trabajo sin contrato'),
+    subtitulo: tipoFijo === 'indirecto' ? 'Apoyo, limpieza, fletes, alquileres, ayuda de gremios'
+             : (tipoFijo === 'a_presupuestar' ? 'Trabajo de obra que no está en el presupuesto' : 'Ningún contrato cubre este trabajo'),
     mensaje: tipoFijo === 'indirecto'
-      ? 'Cargá el gasto con su <b>descripción, unidad, cantidad y costo unitario</b>. El <b>monto parcial</b> se calcula solo. No descuenta del contrato.'
+      ? 'Cargá el gasto con su <b>descripción, unidad, cantidad y costo unitario</b>. El <b>monto parcial</b> se calcula solo.'
+      : tipoFijo === 'a_presupuestar'
+      ? 'Cargá el trabajo con su <b>descripción, unidad, cantidad y costo unitario</b>. No descuenta de ningún rubro: queda en <b>Gastos a presupuestar</b> (Presupuestos → Obra no presupuestada) hasta que se cree el rubro.'
       : '<b>Cómo decidir:</b> si es tiempo, apoyo o servicio general, es <b>gasto indirecto</b>. Si se mide en una unidad de obra (m², ml, m³) y falta en el presupuesto, es <b>gasto a presupuestar</b>.',
     html:html, ok:'Agregar al certificado', cancelar:'Volver',
     alRender:function(box){
@@ -2984,7 +3025,8 @@ async function trabajoSinContrato(tipoFijo){
   ed.lineas.push(linea);
   const k = keyLinea(linea.rubro_codigo, '', desc);
   ed.sel[k] = true;
-  ed.med[k] = { cant:cant, precio:pre, clasif:tipo, obs:(tipo === 'indirecto' ? 'Gasto indirecto' : 'A presupuestar')+': '+mot };
+  const ctN = (ed.ctSel && ed.ctSel.length && ctSelContratos()[0]) ? ctSelContratos()[0].numero : '';
+  ed.med[k] = { cant:cant, precio:pre, clasif:tipo, obs:(tipo === 'indirecto' ? 'Gasto indirecto' : 'A presupuestar')+(ctN ? ' · fuera del contrato '+ctN : '')+': '+mot };
   const bq = document.getElementById('edBuscar'); if(bq && bq.value){ bq.value = ''; ed.buscar=''; }
   const fl = document.querySelector('.tr-chip.activo');
   if(fl && fl.dataset.filtro){ document.querySelectorAll('.tr-chip').forEach(function(x){ x.classList.toggle('activo', !x.dataset.filtro); }); ed.filtro = ''; }
@@ -3040,7 +3082,7 @@ function ctAviso(){
   html += '<div class="ct-nota">'+(modo === 'contrato'
       ? '✓ Obra, presupuesto, rubros, precio y saldo salen del contrato. Si el contratista hizo algo que <b>no está en su contrato</b>, usá <b>«➕ Trabajo no contratado»</b>: te pregunta si está en el presupuesto y te lleva al camino correcto.'
       : (modo === 'sin'
-          ? 'Sin contrato: elegí la <b>obra del certificado</b> arriba y cargá cada trabajo con su clasificación (gasto indirecto o gasto a presupuestar).'
+          ? '✓ Sin contrato: elegí la <b>obra del certificado</b> (paso 1) y cargá cada trabajo con <b>«➕ Trabajo sin contrato»</b>, debajo de la lista: te pregunta si es gasto indirecto o gasto a presupuestar.'
           : 'Elegí el contrato que vas a certificar. Podés elegir más de uno.'))+'</div>';
   box.innerHTML = html;
   box.querySelectorAll('[data-ct]').forEach(function(b){
@@ -3278,7 +3320,7 @@ async function agregarLibre(){
   if(ed.ctSel && ed.ctSel.length){ return trabajoNoContratado(); }
   if(!ed.libre && !(ed.presus && ed.presus.length)){ return modoSinContrato(); }
   if(!ed.libre){ ed.libre = true; renderChips(); }
-  return trabajoSinContrato();              // v11.0 · un solo formulario
+  return trabajoNoContratado();             // v11.5 · mismo selector que con contrato
   /* v9.3 · Ya no hace falta un botón aparte para «certificar sin presupuesto»:
      cargar un trabajo suelto activa solo ese modo. Un concepto menos. */
   if(!ed.libre){ ed.libre = true; renderChips(); }
@@ -3396,6 +3438,13 @@ async function clasificarLibre(){
   return { clasif:'a_presupuestar', motivo:motivo, linea:{ aPresupuestar:true } };
 }
 
+/* v11.5 · Botón único para lo que no cubre el contrato (o no hay contrato) */
+function btnNoContratadoHtml(){
+  const sin = modoCert() === 'sin';
+  return '<button type="button" class="btn-g" id="btnNoContratado" style="border-color:var(--navy);color:var(--navy);font-weight:700">'+
+    (sin ? '➕ Trabajo sin contrato' : '➕ Trabajo no contratado')+'</button>'+
+    '<span class="nc-pie">'+(sin ? 'Gastos indirectos y gastos a presupuestar.' : '¿El contratista hizo algo que no está en su contrato? Usá este botón.')+'</span>';
+}
 function renderLineas(){
   const cont = document.getElementById('edLineas');
   const sec = document.getElementById('edSector').value;
@@ -3430,8 +3479,16 @@ function renderLineas(){
   if(!L.length && ed.lineas.length){
     cont.innerHTML = '<div class="vacio"><b>Todavía no agregaste ningún trabajo.</b>'+
       '<br><small>Elegí arriba los rubros que vas a certificar, o agregá todos de una vez.</small>'+
-      (modoCert() === 'contrato' ? '<div style="margin-top:12px"><button type="button" class="btn-g" id="btnNoContratado" style="border-color:var(--navy);color:var(--navy);font-weight:700">➕ Trabajo no contratado</button></div>' : '')+'</div>';
+      ((modoCert() === 'contrato' || modoCert() === 'sin') ? '<div style="margin-top:12px">'+btnNoContratadoHtml()+'</div>' : '')+'</div>';
     const bnc0=document.getElementById('btnNoContratado'); if(bnc0) bnc0.onclick = trabajoNoContratado;
+    actualizarTotales();
+    return;
+  }
+  if(!L.length && modoCert() === 'sin'){
+    cont.innerHTML = '<div class="vacio"><b>Todavía no cargaste trabajos.</b>'+
+      '<br><small>Cargá cada trabajo como <b>gasto indirecto</b> o <b>gasto a presupuestar</b>.</small>'+
+      '<div style="margin-top:12px">'+btnNoContratadoHtml()+'</div></div>';
+    const bnc1=document.getElementById('btnNoContratado'); if(bnc1) bnc1.onclick = trabajoNoContratado;
     actualizarTotales();
     return;
   }
@@ -3501,9 +3558,9 @@ function renderLineas(){
       ? '<div class="grp-sub" style="border-color:var(--navy);background:#EDF3FB"><span>Subtotal '+escapeHtml(pp)+'</span><b>'+gs(subPP)+'</b></div>' : '');
   }).join('') +
   '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'+
-    (CT.contratos.length
-      ? (modoCert() === 'contrato' ? '<button type="button" class="btn-g" id="btnNoContratado" style="border-color:var(--navy);color:var(--navy);font-weight:700">➕ Trabajo no contratado</button><span class="nc-pie">¿El contratista hizo algo que no está en su contrato? Usá este botón.</span>' : '')
-      : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>')+'</div>';
+    ((modoCert() === 'contrato' || modoCert() === 'sin')
+      ? btnNoContratadoHtml()
+      : (CT.contratos.length ? '' : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'))+'</div>';
 
   const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
   const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
@@ -4481,7 +4538,8 @@ function selectorTrabajos(disp, nSel){
   const sl  = document.getElementById('edAddTrabajo');
   const hint= document.getElementById('edSelHint');
   if(!box || !sl) return;
-  if(!ed.lineas.length){ box.style.display = 'none'; return; }
+  // v11.5 · Sin contrato no hay trabajos para elegir: se cargan con el botón
+  if(!ed.lineas.length || modoCert() === 'sin'){ box.style.display = 'none'; return; }
   box.style.display = '';
 
   const orden = [], grupo = {};
@@ -4586,6 +4644,7 @@ function disponiblesFiltrados(){
   // v10.0 · Por contrato se ofrecen solo sus trabajos: lo del presupuesto que
   // no está contratado no se certifica acá (va por adenda o a presupuestar).
   if(ed.ctSel && ed.ctSel.length) D = D.filter(l => l.libre || ctElegido(ctDeItem(l.contrato_item_id)));
+  if(modoCert() === 'sin') D = D.filter(l => l.libre);
   if(sec) D = D.filter(l => l.sector === sec);
   return D;
 }
