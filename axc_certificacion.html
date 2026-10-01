@@ -8511,37 +8511,54 @@ function _plKey(presu, rubro, ci, desc, sector){
   return [presu||'', keyLinea(rubro, ci, desc), norm(sector||'')].join('#');
 }
 async function planillaAnterior(c, its){
+  /* v11.17 · Acumulado anterior de la planilla:
+     · por presupuesto: certificados aprobados del mismo contratista (el nombre
+       se compara sin importar mayúsculas ni espacios) anteriores a este;
+     · por ítem de contrato: todo lo aprobado antes contra ese mismo ítem (el
+       ítem ya es de un solo contratista), aunque el presupuesto o el nombre
+       difieran, como un avance previo cargado por administración.          */
   const out = {};
   const presus = Array.from(new Set((its||[]).map(x=>x.presupuesto).filter(Boolean)));
-  if(!c.contratista) return out;
+  const ciIds  = Array.from(new Set((its||[]).map(x=>x.contrato_item_id).filter(Boolean)));
+  if(!c.contratista && !ciIds.length) return out;
+  const fc = String(c.fecha||'').slice(0,10), nc = String(c.numero||'');
+  const nom = norm(c.contratista);
+  const esAntes = function(cab){
+    const f = String(cab.fecha||'').slice(0,10), n = String(cab.numero||'');
+    return f < fc || (f === fc && n < nc);
+  };
+  const sumar = function(k, it){
+    if(!out[k]) out[k] = { cant:0, monto:0 };
+    out[k].cant  += Number(it.cantidad)||0;
+    out[k].monto += Number(it.subtotal)||0;
+  };
+  const SEL = 'id,presupuesto,rubro_codigo,codigo_insumo,descripcion,sector,cantidad,subtotal,certificado_id,contrato_item_id,certificados!inner(id,numero,fecha,estado,contratista)';
   try{
-    let q = sb.from('certificado_items')
-      .select('presupuesto,rubro_codigo,codigo_insumo,descripcion,sector,cantidad,subtotal,certificado_id,contrato_item_id,certificados!inner(id,numero,fecha,estado,contratista)')
-      .eq('certificados.contratista', c.contratista)
-      .eq('certificados.estado', 'Aprobado')
-      .limit(5000);
-    if(presus.length) q = q.in('presupuesto', presus);
-    const { data, error } = await q;
-    if(error) throw error;
-    const fc = String(c.fecha||'').slice(0,10), nc = String(c.numero||'');
-    (data||[]).forEach(it=>{
-      const cab = it.certificados || {};
-      if(it.certificado_id === c.id) return;
-      const f = String(cab.fecha||'').slice(0,10), n = String(cab.numero||'');
-      const antes = f < fc || (f === fc && n < nc);
-      if(!antes) return;
-      const k = _plKey(it.presupuesto, it.rubro_codigo, it.codigo_insumo, it.descripcion, it.sector);
-      if(!out[k]) out[k] = { cant:0, monto:0 };
-      out[k].cant  += Number(it.cantidad)||0;
-      out[k].monto += Number(it.subtotal)||0;
-      // v11.15 · Acumulado por ítem del contrato (planilla contra el contrato)
-      if(it.contrato_item_id){
-        const kc = 'ci:'+it.contrato_item_id;
-        if(!out[kc]) out[kc] = { cant:0, monto:0 };
-        out[kc].cant  += Number(it.cantidad)||0;
-        out[kc].monto += Number(it.subtotal)||0;
-      }
-    });
+    const vistos = {};
+    // 1 · Por presupuesto
+    if(presus.length && c.contratista){
+      const { data, error } = await sb.from('certificado_items').select(SEL)
+        .eq('certificados.estado','Aprobado').in('presupuesto', presus).limit(5000);
+      if(error) throw error;
+      (data||[]).forEach(function(it){
+        const cab = it.certificados || {};
+        if(it.certificado_id === c.id || cab.estado !== 'Aprobado' || !esAntes(cab)) return;
+        if(norm(cab.contratista) !== nom) return;
+        sumar(_plKey(it.presupuesto, it.rubro_codigo, it.codigo_insumo, it.descripcion, it.sector), it);
+        if(it.contrato_item_id){ sumar('ci:'+it.contrato_item_id, it); vistos[it.id] = 1; }
+      });
+    }
+    // 2 · Por ítem de contrato (lo que no entró por presupuesto)
+    if(ciIds.length){
+      const { data, error } = await sb.from('certificado_items').select(SEL)
+        .eq('certificados.estado','Aprobado').in('contrato_item_id', ciIds).limit(5000);
+      if(error) throw error;
+      (data||[]).forEach(function(it){
+        const cab = it.certificados || {};
+        if(vistos[it.id] || it.certificado_id === c.id || cab.estado !== 'Aprobado' || !esAntes(cab)) return;
+        sumar('ci:'+it.contrato_item_id, it);
+      });
+    }
   }catch(e){
     console.warn('planilla anterior', e);
     showToast('No se pudo leer el acumulado anterior','error', e.message||'');
@@ -8583,7 +8600,7 @@ async function generarPlanillaPDF(c, its, opts){
   const desdePag = doc.getNumberOfPages();
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 10;
   const q2 = n => (Math.round((Number(n)||0)*100)/100).toLocaleString('es-PY',{maximumFractionDigits:2});
-  const g0 = n => Math.round(Number(n)||0).toLocaleString('es-PY');
+  const g0 = n => (Math.round(Number(n)||0) || 0).toLocaleString('es-PY');   // sin «-0»
 
   // Cabecera
   doc.setFillColor(31,56,100); doc.rect(0,0,W,24,'F');
