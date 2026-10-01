@@ -7396,6 +7396,12 @@ async function abrirDetalle(id){
 
     // Residente que creó el certificado (si no quedó, el que midió)
     const residenteCert = c.creado_por || c.medido_por || '—';
+    /* Si el certificado tiene ítems contratados, el detalle se contrasta contra
+       el contrato: cantidad contratada, precio pactado y avance acumulado del
+       ítem (certificados aprobados anteriores + esta medición). Las líneas sin
+       contrato muestran su presupuesto y no tienen avance.                    */
+    const CTD = (its||[]).some(x=>x.contrato_item_id) ? await planillaContrato(c, its) : null;
+    const vistaCt = !!CTD;
     // Agrupado por obra, con su subtotal, y total general al pie
     const porObra = {}, ordObra = [];
     (its||[]).forEach(x=>{
@@ -7416,7 +7422,19 @@ async function abrirDetalle(id){
         const fs = (porItem[x.id]||[]).map(f=>
           '<img src="'+escapeHtml(f._url||'')+'" alt="'+escapeHtml(f.nombre||'')+'" onclick="window.open(this.src)">'
         ).join('');
-        const pct = x.cant_presup > 0 ? Math.round((Number(x.cantidad)/Number(x.cant_presup))*100) : null;
+        let pct = x.cant_presup > 0 ? Math.round((Number(x.cantidad)/Number(x.cant_presup))*100) : null;
+        const ci = (vistaCt && x.contrato_item_id) ? CTD.items[x.contrato_item_id] : null;
+        let acumCt = null;
+        if(vistaCt){
+          pct = null;
+          if(ci){
+            const k0 = x.contrato_item_id;
+            const prev = CTD.ant[k0] || { cant:0 }, run = CTD.run[k0] || { cant:0 };
+            acumCt = prev.cant + run.cant + (Number(x.cantidad)||0);
+            CTD.run[k0] = { cant: run.cant + (Number(x.cantidad)||0), monto:0 };
+            pct = ci.cant > 0 ? Math.round(acumCt / ci.cant * 100) : null;
+          }
+        }
         // v10.2 · Obra de la línea (o la del certificado) y residente que lo cargó
         const obraL = x.obra || (c.obra && c.obra !== 'Sin obra' && c.obra !== 'Varias obras' ? c.obra : '') || '—';
         dtFlat.push(x);
@@ -7440,15 +7458,25 @@ async function abrirDetalle(id){
           '</td>'+
           '<td>'+escapeHtml(obraL)+'</td>'+
           '<td>'+escapeHtml(residenteCert)+'</td>'+
-          '<td>'+escapeHtml(x.clasificacion === 'a_presupuestar' ? '—' : (x.presupuesto||'—'))+'</td>'+
+          (vistaCt
+            ? '<td>'+(ci
+                ? '<span class="lin-tag ct">'+escapeHtml(ci.numero||'contrato')+'</span>'+(ci.adenda?'<div class="det-obs">adenda '+ci.adenda+'</div>':'')
+                : '<span class="lin-tag sr" title="Trabajo fuera de contrato o gasto indirecto">sin contrato</span>')+
+              (x.presupuesto && x.clasificacion !== 'a_presupuestar' ? '<div class="det-obs">'+escapeHtml(x.presupuesto)+'</div>' : '')+'</td>'
+            : '<td>'+escapeHtml(x.clasificacion === 'a_presupuestar' ? '—' : (x.presupuesto||'—'))+'</td>')+
           '<td>'+escapeHtml(x.sector||'—')+'</td>'+
-          '<td class="r">'+(x.cant_presup!=null?qty(x.cant_presup):'—')+'</td>'+
+          (vistaCt
+            ? '<td class="r">'+(ci ? qty(ci.cant) : '—')+'</td>'
+            : '<td class="r">'+(x.cant_presup!=null?qty(x.cant_presup):'—')+'</td>')+
           '<td class="r">'+qty(x.cantidad)+' '+escapeHtml(x.unidad||'')+'</td>'+
-          '<td class="r">'+(pct!=null?pct+'%':'—')+'</td>'+
+          '<td class="r"'+(pct!=null && pct>100 ? ' style="color:#c0392b;font-weight:700"' : '')+'>'+(pct!=null?pct+'%':'—')+
+            (vistaCt && ci ? '<div class="det-obs">'+qty(acumCt)+' de '+qty(ci.cant)+'</div>' : '')+'</td>'+
           '<td class="r">'+gs(x.precio_unit)+
             (x.precio_origen === 'pactado'
               ? '<div class="det-obs" style="color:#1B5524">pactado'+(x.precio_alcance?('<br>'+escapeHtml(x.precio_alcance)):'')+'</div>'
               : (x.precio_origen === 'manual' ? '<div class="det-obs" style="color:#8a6d10">cargado a mano</div>' : ''))+
+            (vistaCt && ci && Math.round(Number(x.precio_unit)) !== Math.round(ci.precio)
+              ? '<div class="det-obs" style="color:#8a6d10">contrato '+gs(ci.precio)+'</div>' : '')+
             (x.precio_presup > 0 && Number(x.precio_unit) !== Number(x.precio_presup)
               ? '<div class="det-obs">presup. '+gs(x.precio_presup)+'</div>' : '')+'</td>'+
           '<td class="r"><b>'+gs(x.subtotal)+'</b></td>'+
@@ -7478,8 +7506,9 @@ async function abrirDetalle(id){
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
       '</div>'+
       (_po.obs?'<div class="aviso-dup" style="margin-bottom:14px">'+escapeHtml(_po.obs).replace(/\n/g,'<br>')+'</div>':'')+
-      '<table class="det-tbl"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th><th>Obra</th><th>Residente</th><th>Presup.</th><th>Sector</th>'+
-      '<th class="r">Cant. presup.</th><th class="r">Medición</th><th class="r">Avance</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
+      (vistaCt ? '<div style="font-size:11.5px;color:#64748b;margin:0 0 6px">Contrastado contra el <b>contrato</b>: cantidad contratada (con adendas) y avance acumulado del ítem, sumando los certificados aprobados anteriores y esta medición. Las líneas sin contrato no tienen avance.</div>' : '')+
+      '<table class="det-tbl"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th><th>Obra</th><th>Residente</th><th>'+(vistaCt?'Contrato':'Presup.')+'</th><th>Sector</th>'+
+      '<th class="r">'+(vistaCt?'Cant. contrat.':'Cant. presup.')+'</th><th class="r">Medición</th><th class="r"'+(vistaCt?' title="Acumulado del ítem de contrato / cantidad contratada"':'')+'>'+(vistaCt?'Avance acum.':'Avance')+'</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
       '<tbody>'+filas+'</tbody>'+
       '<tfoot><tr><td colspan="10" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>'+
       liquidacionHTML(c)+
