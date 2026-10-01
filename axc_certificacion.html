@@ -8234,6 +8234,7 @@ function panelAdjuntos(c, its){
    2, 4 o 6 por hoja. Se recuerda la última elección mientras la página
    esté abierta. El selector se habilita solo si se marcan las fotos. */
 let pdfFotosPorHoja = 4;
+let pdfBasePlanilla = 'presupuesto';   // presupuesto | contrato
 function selFotosPorHoja(id){
   return '<select id="'+id+'" title="Fotos por hoja" style="font-size:12px;padding:3px 6px;border:1px solid #cfd6e2;border-radius:7px;background:#fff;color:#1f3864">'+
     [2,4,6].map(n=>'<option value="'+n+'"'+(n===pdfFotosPorHoja?' selected':'')+'>'+n+' por hoja</option>').join('')+
@@ -8258,6 +8259,8 @@ function leerFotosPorHoja(ov, selId){
 async function pedirReportes(c, its){
   const nF = dtFotos.length, nA = dtAdj.length;
   const aprobado = c.estado === 'Aprobado';
+  const hayCt = (its||[]).some(x => x.contrato_item_id);
+  const baseIni = (hayCt && pdfBasePlanilla === 'contrato') ? 'contrato' : 'presupuesto';
   const r = await new Promise(resolve=>{
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
@@ -8282,6 +8285,14 @@ async function pedirReportes(c, its){
           '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué documentos necesitás</div></div>'+
         '<div style="padding:14px 18px">'+
           bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false, true)+
+          '<div id="rpBaseBox" style="margin:-4px 0 12px 12px;padding:9px 12px;background:#f6f8fc;border:1px solid #e2e6ee;border-radius:9px;font-size:12px;color:#475569">'+
+            '<b style="color:#1f3864">Valorizar la planilla según:</b>'+
+            '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:6px;cursor:pointer"><input type="radio" name="rpBase" value="presupuesto" '+(baseIni==='presupuesto'?'checked':'')+' style="margin-top:2px">'+
+              '<span><b>Presupuesto</b> · cantidad y precio del presupuesto de la obra.</span></label>'+
+            '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:4px;cursor:'+(hayCt?'pointer':'not-allowed')+';'+(hayCt?'':'opacity:.55')+'"><input type="radio" name="rpBase" value="contrato" '+(baseIni==='contrato'?'checked':'')+' '+(hayCt?'':'disabled')+' style="margin-top:2px">'+
+              '<span><b>Contrato</b> · cantidad contratada y precio pactado con el contratista, con sus adendas.'+
+              (hayCt ? '' : ' <i>Este certificado no tiene ítems contratados.</i>')+'</span></label>'+
+          '</div>'+
           bloque('rpOp','💰','Liquidación del certificado','Detalle de lo certificado con sus descuentos y el saldo a cobrar. No autoriza el pago: la orden se emite desde el botón «Orden de pago».', aprobado, !aprobado, false)+
           (state.puedeVerVenta
             ? bloque('rpCl','🧾','Avance al cliente','Mismo formato, valorizado a los precios de la propuesta aceptada. Uso restringido.', false, false, true)
@@ -8300,12 +8311,17 @@ async function pedirReportes(c, its){
     document.body.appendChild(ov);
     const val = id => { const e = ov.querySelector('#'+id); return !!(e && e.checked); };
     ['rpPl','rpCl'].forEach(p => atarFotosPorHoja(ov, p+'F', p+'N'));
+    // La base solo aplica a la planilla: se apaga si la planilla no va
+    { const chk = ov.querySelector('#rpPl'), box = ov.querySelector('#rpBaseBox');
+      const upd = ()=>{ if(box){ box.style.opacity = chk.checked ? '1' : '.45'; box.querySelectorAll('input').forEach(i=>{ if(i.value!=='contrato' || hayCt) i.disabled = !chk.checked; }); } };
+      if(chk){ chk.addEventListener('change', upd); upd(); } }
+    const baseSel = ()=>{ const e = ov.querySelector('input[name="rpBase"]:checked'); const b = e ? e.value : 'presupuesto'; pdfBasePlanilla = b; return b; };
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#rpOk').onclick = ()=> cerrar({
       unico:    val('rpUnico'),
       cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA'), fotosPorHoja:leerFotosPorHoja(ov,'rpClN') },
-      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA'), fotosPorHoja:leerFotosPorHoja(ov,'rpPlN') },
+      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA'), fotosPorHoja:leerFotosPorHoja(ov,'rpPlN'), base:baseSel() },
       orden:    val('rpOp'), ordenOps:{ fotos:false, adjuntos:false }
     });
     ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
@@ -8567,6 +8583,51 @@ async function planillaAnterior(c, its){
   return out;
 }
 
+/* ── Planilla según contrato ─────────────────────────────────────────
+   Para cada línea contratada trae la cantidad y el precio pactados (con su
+   adenda) y el acumulado anterior del MISMO ítem de contrato: certificados
+   aprobados anteriores a este. Las líneas sin contrato no tienen % ni saldo. */
+async function planillaContrato(c, its){
+  const out = { items:{}, ant:{}, run:{}, visto:{}, numeros:[] };
+  const ids = Array.from(new Set((its||[]).map(x=>x.contrato_item_id).filter(Boolean)));
+  if(!ids.length) return out;
+  try{
+    const { data:ci, error } = await sb.from('contrato_items')
+      .select('id,contrato_id,cantidad,precio_pactado,adenda').in('id', ids);
+    if(error) throw error;
+    const cids = Array.from(new Set((ci||[]).map(x=>x.contrato_id).filter(Boolean)));
+    const num = {};
+    if(cids.length){
+      const { data:cts } = await sb.from('contratos').select('id,numero').in('id', cids);
+      (cts||[]).forEach(t=>{ num[t.id] = t.numero; });
+    }
+    (ci||[]).forEach(x=>{
+      const n = num[x.contrato_id] || '';
+      out.items[x.id] = { cant:Number(x.cantidad)||0, precio:Number(x.precio_pactado)||0, numero:n, adenda:Number(x.adenda)||0 };
+      if(n && out.numeros.indexOf(n) < 0) out.numeros.push(n);
+    });
+    const { data:prev, error:e2 } = await sb.from('certificado_items')
+      .select('contrato_item_id,cantidad,subtotal,certificado_id,certificados!inner(id,numero,fecha,estado)')
+      .in('contrato_item_id', ids).eq('certificados.estado', 'Aprobado').limit(5000);
+    if(e2) throw e2;
+    const fc = String(c.fecha||'').slice(0,10), nc = String(c.numero||'');
+    (prev||[]).forEach(it=>{
+      const cab = it.certificados || {};
+      if(it.certificado_id === c.id) return;
+      const f = String(cab.fecha||'').slice(0,10), n = String(cab.numero||'');
+      if(!(f < fc || (f === fc && n < nc))) return;
+      const k = it.contrato_item_id;
+      if(!out.ant[k]) out.ant[k] = { cant:0, monto:0 };
+      out.ant[k].cant  += Number(it.cantidad)||0;
+      out.ant[k].monto += Number(it.subtotal)||0;
+    });
+  }catch(e){
+    console.warn('planilla contrato', e);
+    showToast('No se pudo leer el contrato','error', e.message||'');
+  }
+  return out;
+}
+
 async function pedirPlanilla(c, its){
   const op = await pedirAnexos(c, 'Planilla de avance');
   if(!op) return;
@@ -8579,6 +8640,9 @@ async function generarPlanillaPDF(c, its, opts){
   const ant = await planillaAnterior(c, its);
   const { jsPDF } = window.jspdf;
   const op = opts || {};
+  // Base de la planilla: lo presupuestado (por defecto) o lo contratado
+  const esCt = !op.cliente && op.base === 'contrato';
+  const CTD  = esCt ? await planillaContrato(c, its) : null;
   // op.doc: sigue en un documento ya empezado (los dos reportes en un archivo)
   const doc = op.doc || new jsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
   if(op.doc) doc.addPage('a4', 'landscape');
@@ -8595,7 +8659,8 @@ async function generarPlanillaPDF(c, its, opts){
     doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+2.5, 6.2, 35, 11.5);
     tx = M + 46;
   }catch(e){}
-  const sub = op.cliente ? 'Avance certificado para facturacion al cliente' : 'Certificacion de trabajos por sector';
+  const sub = op.cliente ? 'Avance certificado para facturacion al cliente'
+            : (esCt ? 'Certificacion de trabajos por sector  ·  segun contrato' : 'Certificacion de trabajos por sector');
   doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(14);
   doc.text(op.cliente ? 'CERTIFICADO DE AVANCE AL CLIENTE' : 'PLANILLA DE AVANCE DE OBRA', tx, 11.5);
   doc.setFont('helvetica','normal').setFontSize(8.5);
@@ -8628,7 +8693,7 @@ async function generarPlanillaPDF(c, its, opts){
        ['PROPUESTA', (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]]
     : [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
-       ['PRESUPUESTOS', c.presupuesto||'-'],
+       esCt ? ['CONTRATOS', CTD.numeros.join(', ') || '-'] : ['PRESUPUESTOS', c.presupuesto||'-'],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]];
   const cw = (W-M*2)/info.length;
   info.forEach((it,i)=>{
@@ -8661,20 +8726,49 @@ async function generarPlanillaPDF(c, its, opts){
       n++;
       const k  = _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector);
       const a  = ant[k] || { cant:0, monto:0 };
-      const cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
-                            : (Number(x.cant_presup)||0);
-      const pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
-                            : (Number(x.precio_unit)||0);
-      const libre = !x.rubro_codigo || !(cp > 0);
+      let cp, pu, libre, A, C, ref, repetida = false;
+      const B = Number(x.cantidad)||0;
+      const D = op.cliente ? null : (Number(x.subtotal)||0);
+      if(esCt){
+        // Según contrato: cantidad y precio pactados, acumulado del mismo ítem de contrato
+        const ci = x.contrato_item_id ? CTD.items[x.contrato_item_id] : null;
+        if(ci){
+          const k0 = x.contrato_item_id;
+          const prev = CTD.ant[k0] || { cant:0, monto:0 };
+          const run  = CTD.run[k0] || { cant:0, monto:0 };   // otra línea de este certificado, mismo ítem
+          cp = ci.cant; pu = ci.precio; libre = !(cp > 0);
+          A = prev.cant + run.cant; C = prev.monto + run.monto;
+          CTD.run[k0] = { cant: run.cant + B, monto: run.monto + D };
+          repetida = !!CTD.visto[k0]; CTD.visto[k0] = true;
+          ref = ci.numero + (ci.adenda ? ' Ad.'+ci.adenda : '');
+        }else{
+          cp = 0; pu = Number(x.precio_unit)||0; libre = true;
+          A = a.cant; C = a.monto; ref = 'sin contrato';
+        }
+      }else{
+        cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
+                        : (Number(x.cant_presup)||0);
+        pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
+                        : (Number(x.precio_unit)||0);
+        libre = !x.rubro_codigo || !(cp > 0);
+        A = a.cant;
+        // Al cliente se le factura al precio de la propuesta aceptada
+        C = op.cliente ? Math.round(A*pu) : a.monto;
+        ref = op.cliente ? ((x.presupuesto||'-')+' v'+(op.propVersion||'')) : (x.presupuesto||'-');
+      }
+      const F = A+B;
+      const Dv = op.cliente ? Math.round(B*pu) : D;
       const G = libre ? 0 : cp*pu;
-      const A = a.cant, B = Number(x.cantidad)||0, F = A+B;
-      // Al cliente se le factura al precio de la propuesta aceptada
-      const C = op.cliente ? Math.round(A*pu) : a.monto;
-      const D = op.cliente ? Math.round(B*pu) : (Number(x.subtotal)||0);
-      const E = C+D;
+      const E = C+Dv;
       const pct = G > 0 ? (E/G*100) : null;
       const S = G > 0 ? G-E : null;
-      st.G += G; st.C += C; st.D += D; st.E += E; if(S != null) st.S += S;
+      if(repetida){
+        // Segunda línea del mismo ítem de contrato: el total contratado y el
+        // acumulado anterior ya se sumaron; solo suma lo medido ahora.
+        st.D += Dv; st.E += Dv; if(G > 0) st.S -= Dv;
+      }else{
+        st.G += G; st.C += C; st.D += Dv; st.E += E; if(S != null) st.S += S;
+      }
       const cod = (x.rubro_codigo||'').trim();
       const pctTxt = pct == null ? '-' : (Math.round(pct*10)/10).toLocaleString('es-PY')+'%';
       const nota = pdfNotaLinea(x);
@@ -8687,12 +8781,12 @@ async function generarPlanillaPDF(c, its, opts){
         libre ? '-' : q2(cp),
         g0(pu),
         libre ? '-' : g0(G),
-        pdfSafe(op.cliente ? ((x.presupuesto||'-')+' v'+(op.propVersion||'')) : (x.presupuesto||'-')),
+        pdfSafe(ref),
         q2(A),
         { content:q2(B), styles:{ fillColor:GRIS, fontStyle:'bold' } },
         q2(F),
         g0(C),
-        { content:g0(D), styles:{ fillColor:GRIS, fontStyle:'bold' } },
+        { content:g0(Dv), styles:{ fillColor:GRIS, fontStyle:'bold' } },
         g0(E),
         { content:pctTxt, styles:{ textColor: (pct != null && pct > 100.05) ? [192,57,43] : [26,34,54] } },
         { content: S == null ? '-' : g0(S), styles:{ textColor: (S != null && S < -0.5) ? [192,57,43] : [26,34,54] } }
@@ -8719,15 +8813,15 @@ async function generarPlanillaPDF(c, its, opts){
   const head = [
     [ { content:'#', rowSpan:3, styles:hS },
       { content:'Detalle de trabajos realizados', rowSpan:3, styles:hS },
-      { content: op.cliente ? 'PROPUESTA ACEPTADA' : 'PRESUPUESTO', colSpan:5, styles:hS },
+      { content: op.cliente ? 'PROPUESTA ACEPTADA' : (esCt ? 'CONTRATO' : 'PRESUPUESTO'), colSpan:5, styles:hS },
       { content:'PRODUCCION', colSpan:6, styles:hS },
       { content:'% AVANCE', rowSpan:2, styles:hS },
       { content:'SALDO Gs.', rowSpan:2, styles:hS } ],
     [ { content:'Unid.', rowSpan:2, styles:hS },
-      { content:'Cant.', rowSpan:2, styles:hS },
-      { content:'Precio unit. Gs.', rowSpan:2, styles:hS },
-      { content: op.cliente ? 'Total contratado (G)' : 'Total pres. (G)', rowSpan:2, styles:hS },
-      { content: op.cliente ? 'N. de prop.' : 'N. de pres.', rowSpan:2, styles:hS },
+      { content: esCt ? 'Cant. contrat.' : 'Cant.', rowSpan:2, styles:hS },
+      { content: esCt ? 'Precio pactado Gs.' : 'Precio unit. Gs.', rowSpan:2, styles:hS },
+      { content: (op.cliente || esCt) ? 'Total contratado (G)' : 'Total pres. (G)', rowSpan:2, styles:hS },
+      { content: op.cliente ? 'N. de prop.' : (esCt ? 'N. de contrato' : 'N. de pres.'), rowSpan:2, styles:hS },
       { content:'CANTIDAD EJECUTADA', colSpan:3, styles:hS },
       { content:'MONTOS EN GUARANIES', colSpan:3, styles:hS } ],
     [ { content:'Acum. anterior (A)', styles:hS },
@@ -8784,6 +8878,11 @@ async function generarPlanillaPDF(c, its, opts){
       'Total contratado (G) = cantidad de la propuesta x precio unitario. '+
       'Acumulado anterior: avance reconocido en certificados aprobados anteriores. '+
       'Los trabajos fuera de la propuesta no tienen % ni saldo.'
+    : esCt
+    ? 'Documento de uso interno: residente, supervision y gerencia. Planilla valorizada segun contrato. '+
+      'Acumulado anterior: certificados aprobados anteriores a este, del mismo item de contrato. '+
+      'Total contratado (G) = cantidad contratada x precio pactado, incluidas las adendas (Ad.). '+
+      'Los trabajos sin contrato (fuera de contrato o gastos indirectos) no tienen % ni saldo.'
     : 'Documento de uso interno: residente, supervision y gerencia. '+
       'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
       'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
@@ -8849,9 +8948,9 @@ async function generarPlanillaPDF(c, its, opts){
     if(op.fotos)    await anexoFotos(doc, c, its, W, H, M, op.fotosPorHoja);
     if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
-  pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : 'Planilla de avance', desdePag);
+  pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : (esCt ? 'Planilla de avance segun contrato' : 'Planilla de avance'), desdePag);
   if(op.noSave) return doc;
-  doc.save(nombreArchivo(c, op.cliente ? 'avance-cliente' : 'planilla-de-avance'));
+  doc.save(nombreArchivo(c, op.cliente ? 'avance-cliente' : (esCt ? 'planilla-de-avance-contrato' : 'planilla-de-avance')));
 }
 
 /* ── Ordenar los ítems de un certificado ──────────────────────────────
