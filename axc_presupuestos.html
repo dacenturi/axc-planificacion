@@ -662,7 +662,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.35 · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.36 · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -1779,7 +1779,32 @@ const AXC_LOGO_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPMAAAB
 
 const SUPABASE_URL = 'https://zvucnezwhgfgupasgqnd.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+/* v10.36 · Conexión resistente a cortes de internet (tablet, celular, wifi de obra).
+   · Las LECTURAS (GET) se reintentan solas hasta 3 veces si se corta la conexión.
+   · Las ESCRITURAS no se reintentan a ciegas (podrían duplicar): el que guarda
+     verifica si quedó guardado y avisa con un mensaje claro.               */
+function _esCorteRed(e){
+  const m = String((e && (e.message || e)) || '');
+  return /Failed to fetch|NetworkError|Load failed|network request failed|ERR_INTERNET|ERR_NETWORK|timed? ?out/i.test(m);
+}
+async function _fetchConReintento(url, opts){
+  const metodo = String((opts && opts.method) || 'GET').toUpperCase();
+  const lectura = (metodo === 'GET' || metodo === 'HEAD');
+  const esperas = lectura ? [0, 700, 1800] : [0];
+  let ult;
+  for(let i = 0; i < esperas.length; i++){
+    if(esperas[i]) await new Promise(function(r){ setTimeout(r, esperas[i]); });
+    try{ return await fetch(url, opts); }
+    catch(e){ ult = e; if(!_esCorteRed(e)) throw e; }
+  }
+  throw ult;
+}
+/* Mensaje para el usuario: un corte de red no se muestra como «TypeError» */
+function _msgError(e){
+  if(_esCorteRed(e)) return 'Se cortó la conexión con el servidor. Revisá el internet (wifi o datos) y probá de nuevo: lo que cargaste en pantalla no se perdió.';
+  return (e && (e.message || e.details || e.hint)) || String(e || '');
+}
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global:{ fetch:_fetchConReintento } });
 
 const state = { user:null, profile:null, list:[], filtered:[] };
 
@@ -4594,7 +4619,7 @@ async function saveBudget(){
       (activo ? 'publicado · ya disponible en la orden de compra' : 'queda en borrador, no aparece en la orden de compra hasta publicarlo'));
     _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
-  }catch(e){ console.warn('saveBudget', e); showToast('No se pudo guardar: ' + (e.message||''), 'error'); }
+  }catch(e){ console.warn('saveBudget', e); showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
   finally{ btn.disabled = false; if(txt) txt.textContent = old; }
 }
 
@@ -6714,7 +6739,7 @@ function pmAvisoSalida(o){
     bG.onclick = async function(){
       bG.disabled = true; bG.textContent = 'Guardando…';
       try{ await o.onGuardar(); cerrar('guardado'); }
-      catch(e){ showToast('No se pudo guardar','error', e.message||String(e)); }
+      catch(e){ showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar','error', _msgError(e)); }
       finally{ bG.disabled = false; bG.textContent = o.textoGuardar || 'Guardar y salir'; }
     };
     ov.onclick = function(e){ if(e.target === ov) cerrar('volver'); };
@@ -7577,11 +7602,31 @@ async function saveMini(){
       }
       var _u2 = _userTag(), _n2 = new Date().toISOString();
       var _fila2 = { tipo:'sectores_presu', valor:nombre, obra_ref:obra, activo:true };
-      var ins2 = await sb.from('listas').insert(Object.assign({ creado_por:_u2, creado_en:_n2 }, _fila2));
-      if(ins2 && ins2.error && /creado_por|creado_en/i.test(ins2.error.message||'')) ins2 = await sb.from('listas').insert(_fila2);
+      var ins2;
+      try{
+        ins2 = await sb.from('listas').insert(Object.assign({ creado_por:_u2, creado_en:_n2 }, _fila2));
+        if(ins2 && ins2.error && /creado_por|creado_en/i.test(ins2.error.message||'')) ins2 = await sb.from('listas').insert(_fila2);
+      }catch(eRed){ ins2 = { error: eRed }; }
+      if(ins2.error && _esCorteRed(ins2.error)){
+        // v10.36 · Se cortó la conexión: ¿llegó a guardarse? (la lectura se reintenta sola)
+        try{
+          var ver = await sb.from('listas').select('id,valor,obra_ref').eq('tipo','sectores_presu').ilike('valor', nombre);
+          var ya = (ver.data||[]).some(function(x){
+            return (x.valor||'').trim().toLowerCase() === nombre.toLowerCase() && _obraMatch(_normObra(x.obra_ref||''), obra);
+          });
+          if(ya) ins2 = { error:null };
+        }catch(e2){ /* sigue sin conexión: se avisa abajo */ }
+      }
       if(!ins2.error) _audit('lista', obra+' · '+nombre, 'sector_alta', 'Sector creado desde Presupuestos');
       if(ins2.error) throw ins2.error;
-      await loadListas(); refreshSectoresForObra();
+      // El sector ya está guardado: si refrescar las listas falla, se agrega a mano
+      try{ await loadListas(); }
+      catch(e3){
+        ed.sectByObraCat = ed.sectByObraCat || {};
+        var _k = _normObra(obra);
+        (ed.sectByObraCat[_k] = ed.sectByObraCat[_k] || {})[nombre] = 1;
+      }
+      refreshSectoresForObra();
       document.getElementById('pmRubSector').value = nombre;
       // v10.24 · Si el sector se pidió desde una fila, se le asigna ahí
       if(_miniFila != null && ed.rubros[_miniFila]){
@@ -7592,7 +7637,7 @@ async function saveMini(){
       _miniFila = null;
       showToast('Sector «'+nombre+'» agregado a '+obra, 'success'); closeMini();
     }
-  }catch(e){ console.warn('saveMini', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
+  }catch(e){ console.warn('saveMini', e); showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
@@ -9316,7 +9361,7 @@ async function saveComposicion(){
         cambios:{ costo:[_costoAnt, _cn], componentes:comp.items.length }, usuario:_userTag(), origen:'app' });
       comp._costoOrig = _cn;
     }catch(e){ /* historial aún no instalado */ }
-  }catch(e){ console.warn('saveComposicion', e); showToast('No se pudo guardar: '+(e.message||''), 'error'); }
+  }catch(e){ console.warn('saveComposicion', e); showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
 
