@@ -6408,6 +6408,14 @@ async function opOpcionesPDF(titulo, sub, conModo){
     html: modo +
       bloque('opDocOrd','💳','Orden de pago','Certificados incluidos, descuentos y neto a pagar.', true, true)+
       bloque('opDocPl','📊','Planillas de avance','Una por cada certificado, con acumulados, % de avance y saldo.', true, false)+
+      '<div id="opBaseBox" style="margin:-2px 0 10px 12px;padding:9px 12px;background:#f6f8fc;border:1px solid #e2e6ee;border-radius:9px;font-size:12px;color:#475569;text-align:left">'+
+        '<b style="color:#1f3864">Valorizar las planillas según:</b>'+
+        '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:6px;cursor:pointer"><input type="radio" name="opBase" value="presupuesto" '+(pdfBasePlanilla!=='contrato'?'checked':'')+' style="margin-top:2px">'+
+          '<span><b>Presupuesto</b> · cantidad y precio del presupuesto de la obra.</span></label>'+
+        '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:4px;cursor:pointer"><input type="radio" name="opBase" value="contrato" '+(pdfBasePlanilla==='contrato'?'checked':'')+' style="margin-top:2px">'+
+          '<span><b>Contrato</b> · cantidad contratada y precio pactado, con sus adendas. '+
+          'El certificado que no tenga ítems contratados sale según presupuesto.</span></label>'+
+      '</div>'+
       bloque('opDocLq','💰','Liquidaciones de cada certificado','El detalle de cada certificado por separado, con su saldo a cobrar.', false, false)+
       '<label class="op-doc unico"><input type="checkbox" id="opDocUni" checked>'+
         '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden y después los anexos. '+
@@ -6421,12 +6429,20 @@ async function opOpcionesPDF(titulo, sub, conModo){
       };
       box.querySelectorAll('input[name=opModo]').forEach(function(i){ i.addEventListener('change', pintar); });
       setTimeout(pintar, 0);   // el diálogo escribe el texto del botón después
+      // La base solo aplica a las planillas: se apaga si no se piden
+      const chkPl = box.querySelector('#opDocPl'), bb = box.querySelector('#opBaseBox');
+      const updB = function(){ if(!chkPl || !bb) return; bb.style.opacity = chkPl.checked ? '1' : '.45';
+        bb.querySelectorAll('input').forEach(function(i){ i.disabled = !chkPl.checked; }); };
+      if(chkPl){ chkPl.addEventListener('change', updB); updB(); }
     }
   });
   if(!r.ok) return null;
   const v = function(id){ const e = r.box.querySelector('#'+id); return !!(e && e.checked); };
   const m = r.box.querySelector('input[name=opModo]:checked');
-  return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni') };
+  const b = r.box.querySelector('input[name=opBase]:checked');
+  const base = b ? b.value : 'presupuesto';
+  if(v('opDocPl')) pdfBasePlanilla = base;
+  return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni'), base: base };
 }
 
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
@@ -6643,6 +6659,7 @@ async function opPDF(O, docs){
   /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
      Es lo que administración archiva junto con la orden.                    */
   if(D.planillas || D.liquidaciones){
+    const sinCt = [];   // certificados sin ítems contratados: su planilla sale según presupuesto
     for(let i = 0; i < its.length; i++){
       const cid = its[i].id || its[i].certificado_id;
       if(!cid) continue;
@@ -6655,11 +6672,15 @@ async function opPDF(O, docs){
           else await generarOrdenPago(cab, cits||[], {});
         }
         if(D.planillas){
-          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true });
-          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true });
+          let base = D.base === 'contrato' ? 'contrato' : 'presupuesto';
+          if(base === 'contrato' && !(cits||[]).some(function(x){ return x.contrato_item_id; })){ base = 'presupuesto'; sinCt.push(cab.numero); }
+          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true, base:base });
+          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true, base:base });
         }
       }catch(e){ console.warn('anexo', e); }
     }
+    if(sinCt.length) showToast(sinCt.length+' planilla(s) salieron según presupuesto','info',
+      'No tienen ítems contratados: '+sinCt.join(', '));
   }
   doc.save((esBorr ? 'BORRADOR_orden_de_pago' : String(c.numero||'orden_de_pago')).replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
 }
