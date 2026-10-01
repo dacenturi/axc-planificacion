@@ -166,8 +166,6 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 
 /* Lista */
 .cert-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 22px;margin-bottom:12px;box-shadow:var(--shadow);display:grid;grid-template-columns:150px 1fr 190px 190px 130px 130px;gap:14px;align-items:center;cursor:pointer;position:relative;overflow:hidden}
-.cert-anx{display:inline-flex;gap:6px;margin-left:6px;vertical-align:middle}
-.cert-anx span{font-size:10.5px;font-weight:700;color:#1f3864;background:#EEF2F9;border:1px solid #C9D4E8;border-radius:6px;padding:0 6px;line-height:16px;white-space:nowrap}
 .cert-op{font-size:10.5px;font-weight:700;color:#1B5524;background:#EEF8F0;border:1px solid #9BD3A9;border-radius:6px;padding:1px 7px;margin-top:4px;display:inline-block}
 .cert-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--border)}
 .cert-card[data-estado="Borrador"]::before{background:var(--state-archivado-bd)}
@@ -1519,7 +1517,6 @@ async function loadList(){
     llenarFiltros();
     renderKpis();
     renderList();
-    cargarConteoAnexos();   // en segundo plano: los íconos aparecen al terminar
     document.getElementById('pageSubtitle').textContent = state.list.length + ' certificado(s)';
   }catch(e){
     console.warn('loadList', e);
@@ -1528,39 +1525,6 @@ async function loadList(){
       '<br>Si es la primera vez, falta crear las tablas: corré el script de instalación en Supabase.</small></div>';
     document.getElementById('pageSubtitle').textContent = 'Sin datos';
   }
-}
-
-/* ── Íconos de anexos en el listado ─────────────────────────────────
-   📎 documentos del certificado (certificado_adjuntos) y 📷 fotos de los
-   trabajos (certificado_fotos, pegadas a cada ítem). Se cuentan aparte de
-   la lista para no demorarla; si algo falla, simplemente no se muestran. */
-async function cargarConteoAnexos(){
-  const cnt = {};
-  const suma = (id, k) => { if(id==null) return; (cnt[id] = cnt[id] || { adj:0, fotos:0 })[k]++; };
-  try{
-    const { data:ad } = await sb.from('certificado_adjuntos').select('certificado_id').limit(50000);
-    (ad||[]).forEach(a => suma(a.certificado_id, 'adj'));
-  }catch(e){ console.warn('conteo adjuntos', e); }
-  try{
-    const { data:fs } = await sb.from('certificado_fotos').select('item_id').limit(50000);
-    const ids = [...new Set((fs||[]).map(f=>f.item_id).filter(x=>x!=null))];
-    const certDeItem = {};
-    for(let i=0; i<ids.length; i+=300){
-      const { data:its } = await sb.from('certificado_items').select('id,certificado_id').in('id', ids.slice(i, i+300));
-      (its||[]).forEach(it => { certDeItem[it.id] = it.certificado_id; });
-    }
-    (fs||[]).forEach(f => suma(certDeItem[f.item_id], 'fotos'));
-  }catch(e){ console.warn('conteo fotos', e); }
-  state.anexos = cnt;
-  renderList();
-}
-function iconosAnexos(c){
-  const a = (state.anexos || {})[c.id];
-  if(!a || (!a.adj && !a.fotos)) return '';
-  return '<span class="cert-anx">'+
-    (a.adj   ? '<span title="'+a.adj+' documento(s) adjunto(s): planos, contrato, notas">📎 '+a.adj+'</span>' : '')+
-    (a.fotos ? '<span title="'+a.fotos+' foto(s) de los trabajos">📷 '+a.fotos+'</span>' : '')+
-  '</span>';
 }
 
 function llenarFiltros(){
@@ -1608,7 +1572,7 @@ function renderList(){
   }
   cont.innerHTML = L.map(c =>
     '<div class="cert-card" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'">'+
-      '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+iconosAnexos(c)+'</small></div>'+
+      '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.obra||'—')+
         '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.medido_por||'—')+
@@ -6408,14 +6372,6 @@ async function opOpcionesPDF(titulo, sub, conModo){
     html: modo +
       bloque('opDocOrd','💳','Orden de pago','Certificados incluidos, descuentos y neto a pagar.', true, true)+
       bloque('opDocPl','📊','Planillas de avance','Una por cada certificado, con acumulados, % de avance y saldo.', true, false)+
-      '<div id="opBaseBox" style="margin:-2px 0 10px 12px;padding:9px 12px;background:#f6f8fc;border:1px solid #e2e6ee;border-radius:9px;font-size:12px;color:#475569;text-align:left">'+
-        '<b style="color:#1f3864">Valorizar las planillas según:</b>'+
-        '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:6px;cursor:pointer"><input type="radio" name="opBase" value="presupuesto" '+(pdfBasePlanilla!=='contrato'?'checked':'')+' style="margin-top:2px">'+
-          '<span><b>Presupuesto</b> · cantidad y precio del presupuesto de la obra.</span></label>'+
-        '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:4px;cursor:pointer"><input type="radio" name="opBase" value="contrato" '+(pdfBasePlanilla==='contrato'?'checked':'')+' style="margin-top:2px">'+
-          '<span><b>Contrato</b> · cantidad contratada y precio pactado, con sus adendas. '+
-          'El certificado que no tenga ítems contratados sale según presupuesto.</span></label>'+
-      '</div>'+
       bloque('opDocLq','💰','Liquidaciones de cada certificado','El detalle de cada certificado por separado, con su saldo a cobrar.', false, false)+
       '<label class="op-doc unico"><input type="checkbox" id="opDocUni" checked>'+
         '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden y después los anexos. '+
@@ -6429,20 +6385,12 @@ async function opOpcionesPDF(titulo, sub, conModo){
       };
       box.querySelectorAll('input[name=opModo]').forEach(function(i){ i.addEventListener('change', pintar); });
       setTimeout(pintar, 0);   // el diálogo escribe el texto del botón después
-      // La base solo aplica a las planillas: se apaga si no se piden
-      const chkPl = box.querySelector('#opDocPl'), bb = box.querySelector('#opBaseBox');
-      const updB = function(){ if(!chkPl || !bb) return; bb.style.opacity = chkPl.checked ? '1' : '.45';
-        bb.querySelectorAll('input').forEach(function(i){ i.disabled = !chkPl.checked; }); };
-      if(chkPl){ chkPl.addEventListener('change', updB); updB(); }
     }
   });
   if(!r.ok) return null;
   const v = function(id){ const e = r.box.querySelector('#'+id); return !!(e && e.checked); };
   const m = r.box.querySelector('input[name=opModo]:checked');
-  const b = r.box.querySelector('input[name=opBase]:checked');
-  const base = b ? b.value : 'presupuesto';
-  if(v('opDocPl')) pdfBasePlanilla = base;
-  return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni'), base: base };
+  return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni') };
 }
 
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
@@ -6659,7 +6607,6 @@ async function opPDF(O, docs){
   /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
      Es lo que administración archiva junto con la orden.                    */
   if(D.planillas || D.liquidaciones){
-    const sinCt = [];   // certificados sin ítems contratados: su planilla sale según presupuesto
     for(let i = 0; i < its.length; i++){
       const cid = its[i].id || its[i].certificado_id;
       if(!cid) continue;
@@ -6672,15 +6619,11 @@ async function opPDF(O, docs){
           else await generarOrdenPago(cab, cits||[], {});
         }
         if(D.planillas){
-          let base = D.base === 'contrato' ? 'contrato' : 'presupuesto';
-          if(base === 'contrato' && !(cits||[]).some(function(x){ return x.contrato_item_id; })){ base = 'presupuesto'; sinCt.push(cab.numero); }
-          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true, base:base });
-          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true, base:base });
+          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true });
+          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true });
         }
       }catch(e){ console.warn('anexo', e); }
     }
-    if(sinCt.length) showToast(sinCt.length+' planilla(s) salieron según presupuesto','info',
-      'No tienen ítems contratados: '+sinCt.join(', '));
   }
   doc.save((esBorr ? 'BORRADOR_orden_de_pago' : String(c.numero||'orden_de_pago')).replace(/[^A-Za-z0-9-]/g,'_')+'_'+String(c.contratista||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_')+'.pdf');
 }
@@ -7396,12 +7339,6 @@ async function abrirDetalle(id){
 
     // Residente que creó el certificado (si no quedó, el que midió)
     const residenteCert = c.creado_por || c.medido_por || '—';
-    /* Si el certificado tiene ítems contratados, el detalle se contrasta contra
-       el contrato: cantidad contratada, precio pactado y avance acumulado del
-       ítem (certificados aprobados anteriores + esta medición). Las líneas sin
-       contrato muestran su presupuesto y no tienen avance.                    */
-    const CTD = (its||[]).some(x=>x.contrato_item_id) ? await planillaContrato(c, its) : null;
-    const vistaCt = !!CTD;
     // Agrupado por obra, con su subtotal, y total general al pie
     const porObra = {}, ordObra = [];
     (its||[]).forEach(x=>{
@@ -7422,19 +7359,7 @@ async function abrirDetalle(id){
         const fs = (porItem[x.id]||[]).map(f=>
           '<img src="'+escapeHtml(f._url||'')+'" alt="'+escapeHtml(f.nombre||'')+'" onclick="window.open(this.src)">'
         ).join('');
-        let pct = x.cant_presup > 0 ? Math.round((Number(x.cantidad)/Number(x.cant_presup))*100) : null;
-        const ci = (vistaCt && x.contrato_item_id) ? CTD.items[x.contrato_item_id] : null;
-        let acumCt = null;
-        if(vistaCt){
-          pct = null;
-          if(ci){
-            const k0 = x.contrato_item_id;
-            const prev = CTD.ant[k0] || { cant:0 }, run = CTD.run[k0] || { cant:0 };
-            acumCt = prev.cant + run.cant + (Number(x.cantidad)||0);
-            CTD.run[k0] = { cant: run.cant + (Number(x.cantidad)||0), monto:0 };
-            pct = ci.cant > 0 ? Math.round(acumCt / ci.cant * 100) : null;
-          }
-        }
+        const pct = x.cant_presup > 0 ? Math.round((Number(x.cantidad)/Number(x.cant_presup))*100) : null;
         // v10.2 · Obra de la línea (o la del certificado) y residente que lo cargó
         const obraL = x.obra || (c.obra && c.obra !== 'Sin obra' && c.obra !== 'Varias obras' ? c.obra : '') || '—';
         dtFlat.push(x);
@@ -7458,25 +7383,15 @@ async function abrirDetalle(id){
           '</td>'+
           '<td>'+escapeHtml(obraL)+'</td>'+
           '<td>'+escapeHtml(residenteCert)+'</td>'+
-          (vistaCt
-            ? '<td>'+(ci
-                ? '<span class="lin-tag ct">'+escapeHtml(ci.numero||'contrato')+'</span>'+(ci.adenda?'<div class="det-obs">adenda '+ci.adenda+'</div>':'')
-                : '<span class="lin-tag sr" title="Trabajo fuera de contrato o gasto indirecto">sin contrato</span>')+
-              (x.presupuesto && x.clasificacion !== 'a_presupuestar' ? '<div class="det-obs">'+escapeHtml(x.presupuesto)+'</div>' : '')+'</td>'
-            : '<td>'+escapeHtml(x.clasificacion === 'a_presupuestar' ? '—' : (x.presupuesto||'—'))+'</td>')+
+          '<td>'+escapeHtml(x.clasificacion === 'a_presupuestar' ? '—' : (x.presupuesto||'—'))+'</td>'+
           '<td>'+escapeHtml(x.sector||'—')+'</td>'+
-          (vistaCt
-            ? '<td class="r">'+(ci ? qty(ci.cant) : '—')+'</td>'
-            : '<td class="r">'+(x.cant_presup!=null?qty(x.cant_presup):'—')+'</td>')+
+          '<td class="r">'+(x.cant_presup!=null?qty(x.cant_presup):'—')+'</td>'+
           '<td class="r">'+qty(x.cantidad)+' '+escapeHtml(x.unidad||'')+'</td>'+
-          '<td class="r"'+(pct!=null && pct>100 ? ' style="color:#c0392b;font-weight:700"' : '')+'>'+(pct!=null?pct+'%':'—')+
-            (vistaCt && ci ? '<div class="det-obs">'+qty(acumCt)+' de '+qty(ci.cant)+'</div>' : '')+'</td>'+
+          '<td class="r">'+(pct!=null?pct+'%':'—')+'</td>'+
           '<td class="r">'+gs(x.precio_unit)+
             (x.precio_origen === 'pactado'
               ? '<div class="det-obs" style="color:#1B5524">pactado'+(x.precio_alcance?('<br>'+escapeHtml(x.precio_alcance)):'')+'</div>'
               : (x.precio_origen === 'manual' ? '<div class="det-obs" style="color:#8a6d10">cargado a mano</div>' : ''))+
-            (vistaCt && ci && Math.round(Number(x.precio_unit)) !== Math.round(ci.precio)
-              ? '<div class="det-obs" style="color:#8a6d10">contrato '+gs(ci.precio)+'</div>' : '')+
             (x.precio_presup > 0 && Number(x.precio_unit) !== Number(x.precio_presup)
               ? '<div class="det-obs">presup. '+gs(x.precio_presup)+'</div>' : '')+'</td>'+
           '<td class="r"><b>'+gs(x.subtotal)+'</b></td>'+
@@ -7506,9 +7421,8 @@ async function abrirDetalle(id){
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
       '</div>'+
       (_po.obs?'<div class="aviso-dup" style="margin-bottom:14px">'+escapeHtml(_po.obs).replace(/\n/g,'<br>')+'</div>':'')+
-      (vistaCt ? '<div style="font-size:11.5px;color:#64748b;margin:0 0 6px">Contrastado contra el <b>contrato</b>: cantidad contratada (con adendas) y avance acumulado del ítem, sumando los certificados aprobados anteriores y esta medición. Las líneas sin contrato no tienen avance.</div>' : '')+
-      '<table class="det-tbl"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th><th>Obra</th><th>Residente</th><th>'+(vistaCt?'Contrato':'Presup.')+'</th><th>Sector</th>'+
-      '<th class="r">'+(vistaCt?'Cant. contrat.':'Cant. presup.')+'</th><th class="r">Medición</th><th class="r"'+(vistaCt?' title="Acumulado del ítem de contrato / cantidad contratada"':'')+'>'+(vistaCt?'Avance acum.':'Avance')+'</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
+      '<table class="det-tbl"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th><th>Obra</th><th>Residente</th><th>Presup.</th><th>Sector</th>'+
+      '<th class="r">Cant. presup.</th><th class="r">Medición</th><th class="r">Avance</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
       '<tbody>'+filas+'</tbody>'+
       '<tfoot><tr><td colspan="10" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>'+
       liquidacionHTML(c)+
@@ -8075,7 +7989,7 @@ async function generarOrdenPago(c, its, opts){
   doc.text('Resumen elaborado por Conexdata', W-M, H-11, {align:'right'});
 
   if(!opO.sinAnexos){
-    if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M, opO.fotosPorHoja);
+    if(opO.fotos)    await anexoFotos(doc, c, its, W, H, M);
     if(opO.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
   if(opO.noSave) return doc;
@@ -8279,44 +8193,18 @@ function panelAdjuntos(c, its){
   });
 }
 
-
-/* ── Fotos por hoja en el anexo fotográfico ──────────────────────────
-   2, 4 o 6 por hoja. Se recuerda la última elección mientras la página
-   esté abierta. El selector se habilita solo si se marcan las fotos. */
-let pdfFotosPorHoja = 4;
-let pdfBasePlanilla = 'presupuesto';   // presupuesto | contrato
-function selFotosPorHoja(id){
-  return '<select id="'+id+'" title="Fotos por hoja" style="font-size:12px;padding:3px 6px;border:1px solid #cfd6e2;border-radius:7px;background:#fff;color:#1f3864">'+
-    [2,4,6].map(n=>'<option value="'+n+'"'+(n===pdfFotosPorHoja?' selected':'')+'>'+n+' por hoja</option>').join('')+
-  '</select>';
-}
-function atarFotosPorHoja(ov, chkId, selId){
-  const chk = ov.querySelector('#'+chkId), sel = ov.querySelector('#'+selId);
-  if(!chk || !sel) return;
-  const upd = ()=>{ sel.disabled = !chk.checked; sel.style.opacity = chk.checked ? '1' : '.45'; };
-  chk.addEventListener('change', upd); upd();
-}
-function leerFotosPorHoja(ov, selId){
-  const e = ov.querySelector('#'+selId);
-  const n = e ? Number(e.value) : pdfFotosPorHoja;
-  if([2,4,6].includes(n)) pdfFotosPorHoja = n;
-  return pdfFotosPorHoja;
-}
-
 /* ── Qué reportes generamos ──────────────────────────────────────────
    Un solo botón: se elige qué documento sale y, en cada uno, si lleva las
    fotos de los trabajos y los documentos adjuntos del certificado. */
 async function pedirReportes(c, its){
   const nF = dtFotos.length, nA = dtAdj.length;
   const aprobado = c.estado === 'Aprobado';
-  const hayCt = (its||[]).some(x => x.contrato_item_id);
-  const baseIni = (hayCt && pdfBasePlanilla === 'contrato') ? 'contrato' : 'presupuesto';
   const r = await new Promise(resolve=>{
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1500;display:flex;align-items:center;justify-content:center;padding:16px';
     const anexos = (pfx) =>
       (nF||nA) ? '<div style="margin:6px 0 0 30px;display:flex;gap:16px;flex-wrap:wrap">'+
-        (nF ? '<span style="display:flex;gap:8px;align-items:center"><label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>'+selFotosPorHoja(pfx+'N')+'</span>' : '')+
+        (nF ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'F">📷 Fotos de los trabajos ('+nF+')</label>' : '')+
         (nA ? '<label style="font-size:12px;color:#475569;display:flex;gap:6px;align-items:center"><input type="checkbox" id="'+pfx+'A">📎 Documentos adjuntos ('+nA+')</label>' : '')+
       '</div>' : '';
     // La liquidación no lleva anexos: es el resumen del certificado, va sola.
@@ -8335,14 +8223,6 @@ async function pedirReportes(c, its){
           '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué documentos necesitás</div></div>'+
         '<div style="padding:14px 18px">'+
           bloque('rpPl','📊','Planilla de avance','Por sector, con acumulados, % de avance y saldo.', true, false, true)+
-          '<div id="rpBaseBox" style="margin:-4px 0 12px 12px;padding:9px 12px;background:#f6f8fc;border:1px solid #e2e6ee;border-radius:9px;font-size:12px;color:#475569">'+
-            '<b style="color:#1f3864">Valorizar la planilla según:</b>'+
-            '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:6px;cursor:pointer"><input type="radio" name="rpBase" value="presupuesto" '+(baseIni==='presupuesto'?'checked':'')+' style="margin-top:2px">'+
-              '<span><b>Presupuesto</b> · cantidad y precio del presupuesto de la obra.</span></label>'+
-            '<label style="display:flex;gap:7px;align-items:flex-start;margin-top:4px;cursor:'+(hayCt?'pointer':'not-allowed')+';'+(hayCt?'':'opacity:.55')+'"><input type="radio" name="rpBase" value="contrato" '+(baseIni==='contrato'?'checked':'')+' '+(hayCt?'':'disabled')+' style="margin-top:2px">'+
-              '<span><b>Contrato</b> · cantidad contratada y precio pactado con el contratista, con sus adendas.'+
-              (hayCt ? '' : ' <i>Este certificado no tiene ítems contratados.</i>')+'</span></label>'+
-          '</div>'+
           bloque('rpOp','💰','Liquidación del certificado','Detalle de lo certificado con sus descuentos y el saldo a cobrar. No autoriza el pago: la orden se emite desde el botón «Orden de pago».', aprobado, !aprobado, false)+
           (state.puedeVerVenta
             ? bloque('rpCl','🧾','Avance al cliente','Mismo formato, valorizado a los precios de la propuesta aceptada. Uso restringido.', false, false, true)
@@ -8360,18 +8240,12 @@ async function pedirReportes(c, its){
       '</div>';
     document.body.appendChild(ov);
     const val = id => { const e = ov.querySelector('#'+id); return !!(e && e.checked); };
-    ['rpPl','rpCl'].forEach(p => atarFotosPorHoja(ov, p+'F', p+'N'));
-    // La base solo aplica a la planilla: se apaga si la planilla no va
-    { const chk = ov.querySelector('#rpPl'), box = ov.querySelector('#rpBaseBox');
-      const upd = ()=>{ if(box){ box.style.opacity = chk.checked ? '1' : '.45'; box.querySelectorAll('input').forEach(i=>{ if(i.value!=='contrato' || hayCt) i.disabled = !chk.checked; }); } };
-      if(chk){ chk.addEventListener('change', upd); upd(); } }
-    const baseSel = ()=>{ const e = ov.querySelector('input[name="rpBase"]:checked'); const b = e ? e.value : 'presupuesto'; pdfBasePlanilla = b; return b; };
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#rpCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#rpOk').onclick = ()=> cerrar({
       unico:    val('rpUnico'),
-      cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA'), fotosPorHoja:leerFotosPorHoja(ov,'rpClN') },
-      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA'), fotosPorHoja:leerFotosPorHoja(ov,'rpPlN'), base:baseSel() },
+      cliente:  val('rpCl'), clienteOps:{ fotos:val('rpClF'), adjuntos:val('rpClA') },
+      planilla: val('rpPl'), planillaOps:{ fotos:val('rpPlF'), adjuntos:val('rpPlA') },
       orden:    val('rpOp'), ordenOps:{ fotos:false, adjuntos:false }
     });
     ov.addEventListener('click', ev=>{ if(ev.target===ov) cerrar(null); });
@@ -8408,7 +8282,7 @@ async function pedirReportes(c, its){
   doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { doc:doc, noSave:true, sinAnexos:true }));
   if(!doc) return;
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
-  if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M, r.planillaOps.fotosPorHoja);
+  if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
   if(r.planillaOps.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   doc.save(nombreArchivo(c, 'certificado'));
 }
@@ -8432,8 +8306,7 @@ function pedirAnexos(c, titulo){
           '<div style="font-weight:800;font-size:16px">📄 '+escapeHtml(titulo)+'</div>'+
           '<div style="font-size:12px;opacity:.85">'+escapeHtml(c.numero||'')+' · elegí qué anexos incluir</div></div>'+
         '<div style="padding:14px 18px">'+
-          (nF ? fila('anxFotos','📷','Fotos de los trabajos ('+nF+')','Se agregan al final, en el orden de los rubros medidos, con el trabajo al pie de cada foto.', true)+
-                '<div style="display:flex;gap:8px;align-items:center;margin:-2px 0 10px 40px;font-size:12px;color:#475569">Distribución: '+selFotosPorHoja('anxN')+'</div>' : '')+
+          (nF ? fila('anxFotos','📷','Fotos de los trabajos ('+nF+')','Se agregan al final, agrupadas por rubro medido.', true) : '')+
           (nA ? fila('anxAdj','📎','Documentos del certificado ('+nA+')','Planos y documentos generales. Las imágenes y los PDF se imprimen; el resto se lista con su nombre.', true) : '')+
           '<div style="font-size:11.5px;color:#8893a5">Sin marcar nada, sale solo el reporte para firmar.</div></div>'+
         '<div style="padding:12px 18px;border-top:1px solid #e2e6ee;display:flex;justify-content:flex-end;gap:8px">'+
@@ -8441,11 +8314,9 @@ function pedirAnexos(c, titulo){
           '<button type="button" class="btn-ok" id="anxOk">Generar PDF</button></div>'+
       '</div>';
     document.body.appendChild(ov);
-    atarFotosPorHoja(ov, 'anxFotos', 'anxN');
     const cerrar = v => { ov.remove(); resolve(v); };
     ov.querySelector('#anxCancel').onclick = ()=> cerrar(null);
     ov.querySelector('#anxOk').onclick = ()=> cerrar({
-      fotosPorHoja: leerFotosPorHoja(ov, 'anxN'),
       fotos: !!(ov.querySelector('#anxFotos') && ov.querySelector('#anxFotos').checked),
       adjuntos: !!(ov.querySelector('#anxAdj') && ov.querySelector('#anxAdj').checked)
     });
@@ -8633,51 +8504,6 @@ async function planillaAnterior(c, its){
   return out;
 }
 
-/* ── Planilla según contrato ─────────────────────────────────────────
-   Para cada línea contratada trae la cantidad y el precio pactados (con su
-   adenda) y el acumulado anterior del MISMO ítem de contrato: certificados
-   aprobados anteriores a este. Las líneas sin contrato no tienen % ni saldo. */
-async function planillaContrato(c, its){
-  const out = { items:{}, ant:{}, run:{}, visto:{}, numeros:[] };
-  const ids = Array.from(new Set((its||[]).map(x=>x.contrato_item_id).filter(Boolean)));
-  if(!ids.length) return out;
-  try{
-    const { data:ci, error } = await sb.from('contrato_items')
-      .select('id,contrato_id,cantidad,precio_pactado,adenda').in('id', ids);
-    if(error) throw error;
-    const cids = Array.from(new Set((ci||[]).map(x=>x.contrato_id).filter(Boolean)));
-    const num = {};
-    if(cids.length){
-      const { data:cts } = await sb.from('contratos').select('id,numero').in('id', cids);
-      (cts||[]).forEach(t=>{ num[t.id] = t.numero; });
-    }
-    (ci||[]).forEach(x=>{
-      const n = num[x.contrato_id] || '';
-      out.items[x.id] = { cant:Number(x.cantidad)||0, precio:Number(x.precio_pactado)||0, numero:n, adenda:Number(x.adenda)||0 };
-      if(n && out.numeros.indexOf(n) < 0) out.numeros.push(n);
-    });
-    const { data:prev, error:e2 } = await sb.from('certificado_items')
-      .select('contrato_item_id,cantidad,subtotal,certificado_id,certificados!inner(id,numero,fecha,estado)')
-      .in('contrato_item_id', ids).eq('certificados.estado', 'Aprobado').limit(5000);
-    if(e2) throw e2;
-    const fc = String(c.fecha||'').slice(0,10), nc = String(c.numero||'');
-    (prev||[]).forEach(it=>{
-      const cab = it.certificados || {};
-      if(it.certificado_id === c.id) return;
-      const f = String(cab.fecha||'').slice(0,10), n = String(cab.numero||'');
-      if(!(f < fc || (f === fc && n < nc))) return;
-      const k = it.contrato_item_id;
-      if(!out.ant[k]) out.ant[k] = { cant:0, monto:0 };
-      out.ant[k].cant  += Number(it.cantidad)||0;
-      out.ant[k].monto += Number(it.subtotal)||0;
-    });
-  }catch(e){
-    console.warn('planilla contrato', e);
-    showToast('No se pudo leer el contrato','error', e.message||'');
-  }
-  return out;
-}
-
 async function pedirPlanilla(c, its){
   const op = await pedirAnexos(c, 'Planilla de avance');
   if(!op) return;
@@ -8690,9 +8516,6 @@ async function generarPlanillaPDF(c, its, opts){
   const ant = await planillaAnterior(c, its);
   const { jsPDF } = window.jspdf;
   const op = opts || {};
-  // Base de la planilla: lo presupuestado (por defecto) o lo contratado
-  const esCt = !op.cliente && op.base === 'contrato';
-  const CTD  = esCt ? await planillaContrato(c, its) : null;
   // op.doc: sigue en un documento ya empezado (los dos reportes en un archivo)
   const doc = op.doc || new jsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
   if(op.doc) doc.addPage('a4', 'landscape');
@@ -8709,8 +8532,7 @@ async function generarPlanillaPDF(c, its, opts){
     doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M+2.5, 6.2, 35, 11.5);
     tx = M + 46;
   }catch(e){}
-  const sub = op.cliente ? 'Avance certificado para facturacion al cliente'
-            : (esCt ? 'Certificacion de trabajos por sector  ·  segun contrato' : 'Certificacion de trabajos por sector');
+  const sub = op.cliente ? 'Avance certificado para facturacion al cliente' : 'Certificacion de trabajos por sector';
   doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(14);
   doc.text(op.cliente ? 'CERTIFICADO DE AVANCE AL CLIENTE' : 'PLANILLA DE AVANCE DE OBRA', tx, 11.5);
   doc.setFont('helvetica','normal').setFontSize(8.5);
@@ -8743,7 +8565,7 @@ async function generarPlanillaPDF(c, its, opts){
        ['PROPUESTA', (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]]
     : [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
-       esCt ? ['CONTRATOS', CTD.numeros.join(', ') || '-'] : ['PRESUPUESTOS', c.presupuesto||'-'],
+       ['PRESUPUESTOS', c.presupuesto||'-'],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]];
   const cw = (W-M*2)/info.length;
   info.forEach((it,i)=>{
@@ -8776,49 +8598,20 @@ async function generarPlanillaPDF(c, its, opts){
       n++;
       const k  = _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector);
       const a  = ant[k] || { cant:0, monto:0 };
-      let cp, pu, libre, A, C, ref, repetida = false;
-      const B = Number(x.cantidad)||0;
-      const D = op.cliente ? null : (Number(x.subtotal)||0);
-      if(esCt){
-        // Según contrato: cantidad y precio pactados, acumulado del mismo ítem de contrato
-        const ci = x.contrato_item_id ? CTD.items[x.contrato_item_id] : null;
-        if(ci){
-          const k0 = x.contrato_item_id;
-          const prev = CTD.ant[k0] || { cant:0, monto:0 };
-          const run  = CTD.run[k0] || { cant:0, monto:0 };   // otra línea de este certificado, mismo ítem
-          cp = ci.cant; pu = ci.precio; libre = !(cp > 0);
-          A = prev.cant + run.cant; C = prev.monto + run.monto;
-          CTD.run[k0] = { cant: run.cant + B, monto: run.monto + D };
-          repetida = !!CTD.visto[k0]; CTD.visto[k0] = true;
-          ref = ci.numero + (ci.adenda ? ' Ad.'+ci.adenda : '');
-        }else{
-          cp = 0; pu = Number(x.precio_unit)||0; libre = true;
-          A = a.cant; C = a.monto; ref = 'sin contrato';
-        }
-      }else{
-        cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
-                        : (Number(x.cant_presup)||0);
-        pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
-                        : (Number(x.precio_unit)||0);
-        libre = !x.rubro_codigo || !(cp > 0);
-        A = a.cant;
-        // Al cliente se le factura al precio de la propuesta aceptada
-        C = op.cliente ? Math.round(A*pu) : a.monto;
-        ref = op.cliente ? ((x.presupuesto||'-')+' v'+(op.propVersion||'')) : (x.presupuesto||'-');
-      }
-      const F = A+B;
-      const Dv = op.cliente ? Math.round(B*pu) : D;
+      const cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
+                            : (Number(x.cant_presup)||0);
+      const pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
+                            : (Number(x.precio_unit)||0);
+      const libre = !x.rubro_codigo || !(cp > 0);
       const G = libre ? 0 : cp*pu;
-      const E = C+Dv;
+      const A = a.cant, B = Number(x.cantidad)||0, F = A+B;
+      // Al cliente se le factura al precio de la propuesta aceptada
+      const C = op.cliente ? Math.round(A*pu) : a.monto;
+      const D = op.cliente ? Math.round(B*pu) : (Number(x.subtotal)||0);
+      const E = C+D;
       const pct = G > 0 ? (E/G*100) : null;
       const S = G > 0 ? G-E : null;
-      if(repetida){
-        // Segunda línea del mismo ítem de contrato: el total contratado y el
-        // acumulado anterior ya se sumaron; solo suma lo medido ahora.
-        st.D += Dv; st.E += Dv; if(G > 0) st.S -= Dv;
-      }else{
-        st.G += G; st.C += C; st.D += Dv; st.E += E; if(S != null) st.S += S;
-      }
+      st.G += G; st.C += C; st.D += D; st.E += E; if(S != null) st.S += S;
       const cod = (x.rubro_codigo||'').trim();
       const pctTxt = pct == null ? '-' : (Math.round(pct*10)/10).toLocaleString('es-PY')+'%';
       const nota = pdfNotaLinea(x);
@@ -8831,12 +8624,18 @@ async function generarPlanillaPDF(c, its, opts){
         libre ? '-' : q2(cp),
         g0(pu),
         libre ? '-' : g0(G),
-        pdfSafe(ref),
+        // v11.14 · Lo que no tiene presupuesto dice qué es, en lugar de un guion
+        (function(){
+          if(op.cliente) return pdfSafe((x.presupuesto||'-')+' v'+(op.propVersion||''));
+          if(x.clasificacion === 'a_presupuestar') return { content:'A presup.', styles:{ textColor:[138,90,0], fontStyle:'bold' } };
+          if(x.clasificacion === 'indirecto' && !x.presupuesto) return { content:'Indirecto', styles:{ textColor:[91,74,140], fontStyle:'bold' } };
+          return pdfSafe(x.presupuesto || (x.rubro_codigo ? '-' : 'Fuera de pres.'));
+        })(),
         q2(A),
         { content:q2(B), styles:{ fillColor:GRIS, fontStyle:'bold' } },
         q2(F),
         g0(C),
-        { content:g0(Dv), styles:{ fillColor:GRIS, fontStyle:'bold' } },
+        { content:g0(D), styles:{ fillColor:GRIS, fontStyle:'bold' } },
         g0(E),
         { content:pctTxt, styles:{ textColor: (pct != null && pct > 100.05) ? [192,57,43] : [26,34,54] } },
         { content: S == null ? '-' : g0(S), styles:{ textColor: (S != null && S < -0.5) ? [192,57,43] : [26,34,54] } }
@@ -8863,15 +8662,15 @@ async function generarPlanillaPDF(c, its, opts){
   const head = [
     [ { content:'#', rowSpan:3, styles:hS },
       { content:'Detalle de trabajos realizados', rowSpan:3, styles:hS },
-      { content: op.cliente ? 'PROPUESTA ACEPTADA' : (esCt ? 'CONTRATO' : 'PRESUPUESTO'), colSpan:5, styles:hS },
+      { content: op.cliente ? 'PROPUESTA ACEPTADA' : 'PRESUPUESTO', colSpan:5, styles:hS },
       { content:'PRODUCCION', colSpan:6, styles:hS },
       { content:'% AVANCE', rowSpan:2, styles:hS },
       { content:'SALDO Gs.', rowSpan:2, styles:hS } ],
     [ { content:'Unid.', rowSpan:2, styles:hS },
-      { content: esCt ? 'Cant. contrat.' : 'Cant.', rowSpan:2, styles:hS },
-      { content: esCt ? 'Precio pactado Gs.' : 'Precio unit. Gs.', rowSpan:2, styles:hS },
-      { content: (op.cliente || esCt) ? 'Total contratado (G)' : 'Total pres. (G)', rowSpan:2, styles:hS },
-      { content: op.cliente ? 'N. de prop.' : (esCt ? 'N. de contrato' : 'N. de pres.'), rowSpan:2, styles:hS },
+      { content:'Cant.', rowSpan:2, styles:hS },
+      { content:'Precio unit. Gs.', rowSpan:2, styles:hS },
+      { content: op.cliente ? 'Total contratado (G)' : 'Total pres. (G)', rowSpan:2, styles:hS },
+      { content: op.cliente ? 'N. de prop.' : 'N. de pres.', rowSpan:2, styles:hS },
       { content:'CANTIDAD EJECUTADA', colSpan:3, styles:hS },
       { content:'MONTOS EN GUARANIES', colSpan:3, styles:hS } ],
     [ { content:'Acum. anterior (A)', styles:hS },
@@ -8928,11 +8727,6 @@ async function generarPlanillaPDF(c, its, opts){
       'Total contratado (G) = cantidad de la propuesta x precio unitario. '+
       'Acumulado anterior: avance reconocido en certificados aprobados anteriores. '+
       'Los trabajos fuera de la propuesta no tienen % ni saldo.'
-    : esCt
-    ? 'Documento de uso interno: residente, supervision y gerencia. Planilla valorizada segun contrato. '+
-      'Acumulado anterior: certificados aprobados anteriores a este, del mismo item de contrato. '+
-      'Total contratado (G) = cantidad contratada x precio pactado, incluidas las adendas (Ad.). '+
-      'Los trabajos sin contrato (fuera de contrato o gastos indirectos) no tienen % ni saldo.'
     : 'Documento de uso interno: residente, supervision y gerencia. '+
       'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
       'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
@@ -8995,12 +8789,12 @@ async function generarPlanillaPDF(c, its, opts){
   }
 
   if(!op.sinAnexos){
-    if(op.fotos)    await anexoFotos(doc, c, its, W, H, M, op.fotosPorHoja);
+    if(op.fotos)    await anexoFotos(doc, c, its, W, H, M);
     if(op.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   }
-  pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : (esCt ? 'Planilla de avance segun contrato' : 'Planilla de avance'), desdePag);
+  pdfPiePaginas(doc, c, W, H, M, op.cliente ? 'Avance al cliente' : 'Planilla de avance', desdePag);
   if(op.noSave) return doc;
-  doc.save(nombreArchivo(c, op.cliente ? 'avance-cliente' : (esCt ? 'planilla-de-avance-contrato' : 'planilla-de-avance')));
+  doc.save(nombreArchivo(c, op.cliente ? 'avance-cliente' : 'planilla-de-avance'));
 }
 
 /* ── Ordenar los ítems de un certificado ──────────────────────────────
@@ -9263,82 +9057,48 @@ async function generarPDF(c, its, conFotos){
   firma3(M+(bw3+8)*2,   'CONFORME',    c.contratista||'',  'Contratista · C.I.');
   y += 44;
 
-  if(opA.fotos)    await anexoFotos(doc, c, its, W, H, M, opA.fotosPorHoja);
+  if(opA.fotos)    await anexoFotos(doc, c, its, W, H, M);
   if(opA.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
 
   doc.save(nombreArchivo(c, 'certificado'));
 }
 
 /* Anexo fotográfico: las fotos de cada rubro medido */
-async function anexoFotos(doc, c, its, W, H, M, porHoja){
-  if(!dtFotos.length) return;
-  porHoja = [2,4,6].includes(Number(porHoja)) ? Number(porHoja) : 4;
-  // Grilla según la orientación de la hoja
-  const apaisada = W > H;
-  const cols  = apaisada ? ({2:2, 4:2, 6:3})[porHoja] : ({2:1, 4:2, 6:2})[porHoja];
-  const filas = porHoja / cols;
-
-  // Fotos en el orden de los rubros de la planilla
-  const porItemF = {};
-  dtFotos.forEach(f=>{ (porItemF[f.item_id] = porItemF[f.item_id]||[]).push(f); });
-  const lista = [];
-  (its||[]).forEach((it, idx)=>{
-    const fs = porItemF[it.id] || [];
-    fs.forEach((f, k)=> lista.push({ f, it, nro: idx+1, k: k+1, tot: fs.length }));
-  });
-  if(!lista.length) return;
-
-  const TOP = 24, PIE = 20, GAP = 6, LEY = 10;       // mm
-  const cw = (W - 2*M - GAP*(cols-1)) / cols;
-  const ch = (H - TOP - PIE - GAP*(filas-1)) / filas;
-  const ih = ch - LEY;                                  // alto útil de la foto
-  const totHojas = Math.ceil(lista.length / porHoja);
-  let fallidas = 0, hoja = 0;
-
-  const cabecera = ()=>{
-    doc.addPage(); hoja++;
-    doc.setFillColor(31,56,100); doc.rect(0, 0, W, 16, 'F');
-    doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(11.5);
-    doc.text('ANEXO FOTOGRAFICO  ·  '+pdfSafe(c.numero||''), M, 10.5);
-    doc.setFont('helvetica','normal').setFontSize(8.5);
-    doc.text('Hoja '+hoja+' de '+totHojas+'  ·  '+porHoja+' fotos por hoja', W-M, 10.5, {align:'right'});
-  };
-  const recortar = (txt, ancho)=>{
-    const l = doc.splitTextToSize(txt, ancho);
-    if(l.length <= 1) return l[0] || '';
-    let t = l[0];
-    while(t.length > 3 && doc.getTextWidth(t+'...') > ancho) t = t.slice(0, -1);
-    return t.replace(/\s+$/,'') + '...';
-  };
-
-  for(let i=0; i<lista.length; i++){
-    const x = lista[i], pos = i % porHoja;
-    if(pos === 0) cabecera();
-    const cx = M + (pos % cols) * (cw + GAP);
-    const cy = TOP + Math.floor(pos / cols) * (ch + GAP);
-
-    doc.setDrawColor(214,220,232).setLineWidth(0.25);
-    doc.rect(cx, cy, cw, ih);
-    try{
-      const dataUrl = await urlADataURL(x.f._url);
-      const p = doc.getImageProperties(dataUrl);
-      const esc = Math.min(cw / p.width, ih / p.height);      // sin deformar
-      const w = p.width * esc, h = p.height * esc;
-      doc.addImage(dataUrl, (p.fileType || 'JPEG'), cx + (cw - w)/2, cy + (ih - h)/2, w, h, undefined, 'FAST');
-    }catch(e){
-      console.warn('foto pdf', e);
-      fallidas++;
-      doc.setTextColor(150,150,150).setFont('helvetica','italic').setFontSize(8);
-      doc.text('Foto no disponible', cx + cw/2, cy + ih/2, {align:'center'});
+async function anexoFotos(doc, c, its, W, H, M){
+  if(dtFotos.length){
+    let fallidas = 0;
+    const porItemF = {};
+    dtFotos.forEach(f=>{ (porItemF[f.item_id] = porItemF[f.item_id]||[]).push(f); });
+    doc.addPage();
+    doc.setFillColor(31,56,100); doc.rect(0,0,W,18,'F');
+    doc.setTextColor(255,255,255).setFont('helvetica','bold').setFontSize(12);
+    doc.text('ANEXO FOTOGRAFICO  ·  '+pdfSafe(c.numero||''), M, 12);
+    let fy = 28;
+    for(const it of (its||[])){
+      const fs = porItemF[it.id] || [];
+      if(!fs.length) continue;
+      if(fy > H-70){ doc.addPage(); fy = 20; }
+      doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(9.5);
+      doc.text(pdfSafe(it.descripcion) + (it.ubicacion?('  ·  '+pdfSafe(it.ubicacion)):''), M, fy);
+      fy += 4;
+      let fx = M;
+      const anc = 62, alt = 47;
+      for(const f of fs){
+        try{
+          const dataUrl = await urlADataURL(f._url);
+          if(fx + anc > W - M){ fx = M; fy += alt + 5; }
+          if(fy + alt > H - 12){ doc.addPage(); fy = 20; fx = M; }
+          doc.addImage(dataUrl, 'JPEG', fx, fy, anc, alt);
+          fx += anc + 5;
+        }catch(e){
+          console.warn('foto pdf', e);
+          fallidas++;
+        }
+      }
+      fy += alt + 10;
     }
-    // Leyenda: trabajo y ubicación, para saber a qué rubro pertenece cada foto
-    doc.setTextColor(31,56,100).setFont('helvetica','bold').setFontSize(8);
-    doc.text(recortar(x.nro+'. '+pdfSafe(x.it.descripcion||''), cw), cx, cy + ih + 4);
-    doc.setTextColor(100,116,139).setFont('helvetica','normal').setFontSize(7);
-    const sub = [x.it.ubicacion ? pdfSafe(x.it.ubicacion) : '', 'Foto '+x.k+' de '+x.tot].filter(Boolean).join('  ·  ');
-    doc.text(recortar(sub, cw), cx, cy + ih + 8);
+    if(fallidas) showToast(fallidas+' foto(s) no se pudieron incluir','info','Revisá la conexión y volvé a generar el PDF.');
   }
-  if(fallidas) showToast(fallidas+' foto(s) no se pudieron incluir','info','Revisá la conexión y volvé a generar el PDF.');
 }
 
 
