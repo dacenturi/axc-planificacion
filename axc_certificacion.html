@@ -6380,6 +6380,9 @@ async function opOpcionesPDF(titulo, sub, conModo){
       '<div class="pl-base op"><span>Avance de las planillas:</span>'+
         '<label><input type="radio" name="opBase" value="contrato" checked> contra el <b>contrato</b></label>'+
         '<label><input type="radio" name="opBase" value="presupuesto"> contra el <b>presupuesto</b></label></div>'+
+      '<div class="pl-base op"><span>Anexos de las planillas:</span>'+
+        '<label><input type="checkbox" id="opPlF"> 📷 Fotos de los trabajos</label>'+
+        '<label><input type="checkbox" id="opPlA"> 📎 Documentos adjuntos</label></div>'+
       bloque('opDocLq','💰','Liquidaciones de cada certificado','El detalle de cada certificado por separado, con su saldo a cobrar.', false, false)+
       '<label class="op-doc unico"><input type="checkbox" id="opDocUni" checked>'+
         '<span><b>📎 Un solo archivo</b><small>Un mismo PDF: primero la orden y después los anexos. '+
@@ -6400,7 +6403,7 @@ async function opOpcionesPDF(titulo, sub, conModo){
   const m = r.box.querySelector('input[name=opModo]:checked');
   const b = r.box.querySelector('input[name=opBase]:checked');
   return { modo: m ? m.value : 'emitir', planillas:v('opDocPl'), liquidaciones:v('opDocLq'), unico:v('opDocUni'),
-           base: b ? b.value : 'contrato' };
+           base: b ? b.value : 'contrato', fotos:v('opPlF'), adjuntos:v('opPlA') };
 }
 
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
@@ -6631,8 +6634,21 @@ async function opPDF(O, docs){
         if(D.planillas){
           // v11.15 · Contra el contrato si el certificado tiene trabajos de contrato
           const _base = (D.base === 'contrato' && (cits||[]).some(function(x){ return x.contrato_item_id; })) ? 'contrato' : 'presupuesto';
-          if(D.unico) await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true, base:_base });
-          else await generarPlanillaPDF(cab, cits||[], { fotos:false, adjuntos:false, sinAnexos:true, base:_base });
+          // v11.16 · Fotos y adjuntos de ESTE certificado (no del que está abierto en pantalla)
+          const _fotos = !!D.fotos, _adj = !!D.adjuntos;
+          const _gF = dtFotos, _gA = dtAdj;
+          if(_fotos) dtFotos = await fotosDeItems(cits||[]);
+          if(_adj)   dtAdj   = await cargarAdjuntos(cid);
+          try{
+            if(D.unico){
+              await generarPlanillaPDF(cab, cits||[], { doc:doc, fotos:false, adjuntos:false, sinAnexos:true, noSave:true, base:_base });
+              const dm = dimsBase(doc);
+              if(_fotos) await anexoFotos(doc, cab, cits||[], dm.W, dm.H, 16);
+              if(_adj)   await anexoAdjuntos(doc, cab, dm.W, dm.H, 16);
+            }else{
+              await generarPlanillaPDF(cab, cits||[], { fotos:_fotos, adjuntos:_adj, sinAnexos:!(_fotos||_adj), base:_base });
+            }
+          } finally { dtFotos = _gF; dtAdj = _gA; }
         }
       }catch(e){ console.warn('anexo', e); }
     }
@@ -8303,7 +8319,7 @@ async function pedirReportes(c, its){
   if(!doc) return;
   doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { doc:doc, noSave:true, sinAnexos:true }));
   if(!doc) return;
-  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 16;
+  const _dm = dimsBase(doc), W = _dm.W, H = _dm.H, M = 16;   // v11.16 · formato de la hoja base
   if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
   if(r.planillaOps.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
   doc.save(nombreArchivo(c, 'certificado'));
@@ -9121,6 +9137,29 @@ async function generarPDF(c, its, conFotos){
 }
 
 /* Anexo fotográfico: las fotos de cada rubro medido */
+/* v11.16 · Fotos de los ítems de un certificado, con URL firmada (el bucket
+   puede ser privado). Se usa para armar anexos sin abrir el certificado.  */
+async function fotosDeItems(its){
+  const ids = (its||[]).map(function(x){ return x.id; }).filter(Boolean);
+  if(!ids.length) return [];
+  let fotos = [];
+  try{ const { data } = await sb.from('certificado_fotos').select('*').in('item_id', ids); fotos = data || []; }catch(e){ return []; }
+  for(const f of fotos){
+    try{ const { data:sg } = await sb.storage.from('oc-adjuntos').createSignedUrl(f.url_storage, 3600); f._url = (sg && sg.signedUrl) || ''; }
+    catch(e){ f._url = ''; }
+    if(!f._url){ try{ const { data:pu } = sb.storage.from('oc-adjuntos').getPublicUrl(f.url_storage); f._url = (pu && pu.publicUrl) || ''; }catch(e){} }
+  }
+  return fotos;
+}
+/* Medidas de la hoja base del documento (la primera): los anexos se agregan
+   con ese formato aunque la última hoja sea apaisada (planilla). */
+function dimsBase(doc){
+  const act = doc.getCurrentPageInfo ? doc.getCurrentPageInfo().pageNumber : doc.getNumberOfPages();
+  doc.setPage(1);
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  doc.setPage(act);
+  return { W:W, H:H };
+}
 async function anexoFotos(doc, c, its, W, H, M){
   if(dtFotos.length){
     let fallidas = 0;
