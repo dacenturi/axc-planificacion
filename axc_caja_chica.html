@@ -417,6 +417,15 @@ tr:last-child td{border-bottom:none}
 .cc-kpi .l{font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700}
 .cc-kpi .v{font-size:19px;font-weight:800;color:var(--text);margin-top:3px}
 .cc-kpi .s{font-size:11px;color:var(--text3);margin-top:1px}
+.cg-opts{display:flex;flex-wrap:wrap;gap:8px 18px;margin:4px 0 12px}
+.cg-opt{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none}
+.cg-opt input{width:16px;height:16px;cursor:pointer}
+.cg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:12px}
+.cg-card{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff}
+.cg-card canvas{display:block}
+.cg-rec{margin-top:12px;border:1px solid #E6C766;background:#FBF5E2;border-radius:10px;padding:10px 14px;color:#3A3220}
+.cg-rec-t{font-weight:800;color:#8A6A0E;font-size:13px;margin-bottom:4px}
+.cg-rec ol{margin:0;padding-left:20px;font-size:13px;line-height:1.55}
 .mix-box{margin-top:14px;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--bg)}
 .mix-t{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700;margin-bottom:6px}
 .mix-tbl{font-size:12.5px}
@@ -1075,7 +1084,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.43';
+const APP_VERSION='Caja Chica v7.44';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -3126,15 +3135,226 @@ async function reporteCombustible(){
     '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+totN+'</td><td class="num">'+fmt(totG)+'</td><td colspan="5"></td></tr></tfoot></table></div>'+
 
     '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Con lo que se carga hoy se mide <b>cuánto</b> y <b>cada cuánto</b>. '+
-    'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>';
+    'Para saber si el consumo corresponde hacen falta los litros y el kilometraje del vehículo.</div>'+
+    '<div id="cmb-graf"></div>';
 
   // Las cargas ya vienen desplegadas: el reporte se lee completo de una
   filas.forEach((f,i)=>{ cmbPintar(i); });
 
   gs('rep-info').textContent = filas.length+' residente(s) · '+totN+' carga(s)';
   REPORTE_PDF={ mode:'combustible', filas, totG, totN, promDiasG, adjRows };
+  cmbGraficos();   // v7.44 · gráficos e indicadores opcionales
   gs('r-export-pdf').disabled=false;
   gs('r-export').disabled=true;
+}
+
+/* ═══ v7.44 · Gráficos e indicadores del reporte de combustible ═══════════
+   Opcionales: cada uno con su casilla. Se ven en pantalla y salen en el PDF
+   («Exportar PDF») solo los que estén tildados. Se dibujan en canvas, así la
+   pantalla y el PDF muestran exactamente lo mismo.                        */
+const CMB_GRAF_OPC = [
+  { k:'res',  t:'Torta por residente',      def:true  },
+  { k:'veh',  t:'Barras por vehículo',      def:true  },
+  { k:'obra', t:'Barras por obra',          def:false },
+  { k:'sem',  t:'Evolución por semana',     def:false },
+  { k:'prov', t:'Proveedores principales',  def:false },
+  { k:'rec',  t:'Recomendaciones',          def:true  }
+];
+const CMB_PAL = ['#1F3864','#C8A028','#2E7D6B','#C2621B','#6B5B95','#4F7CAC','#8C6D1F','#A23B3B','#3E8E41','#5A6272'];
+const CMB_OTROS = '#B8B2A6';
+function cmbGrafSel(){
+  let g = {};
+  try{ g = JSON.parse(localStorage.getItem('cc_cmb_graf')||'{}') || {}; }catch(e){ g = {}; }
+  const out = {};
+  CMB_GRAF_OPC.forEach(function(o){ out[o.k] = (o.k in g) ? !!g[o.k] : o.def; });
+  return out;
+}
+function cmbGrafSet(k, v){
+  const g = cmbGrafSel(); g[k] = !!v;
+  try{ localStorage.setItem('cc_cmb_graf', JSON.stringify(g)); }catch(e){}
+  cmbGraficos();
+}
+/* Vehículo de cada carga: sale del comentario (obligatorio en combustible) */
+function cmbVehiculo(m){
+  const v = String((m && m.comentario) || '').replace(/\s+/g,' ').trim().toUpperCase();
+  return v || 'SIN VEHÍCULO INDICADO';
+}
+function cmbAgrupar(movs, keyFn, max){
+  const t = {}, n = {};
+  movs.forEach(function(m){ const k = keyFn(m); t[k] = (t[k]||0) + Number(m.total||0); n[k] = (n[k]||0) + 1; });
+  let L = Object.keys(t).map(function(k){ return { label:k, value:t[k], n:n[k] }; }).sort(function(a,b){ return b.value - a.value; });
+  if(max && L.length > max){
+    const resto = L.slice(max-1);
+    L = L.slice(0, max-1).concat([{ label:'Otros ('+resto.length+')', value:resto.reduce(function(a,x){ return a+x.value; },0),
+      n:resto.reduce(function(a,x){ return a+x.n; },0), otros:true }]);
+  }
+  return L;
+}
+function cmbSemana(f){
+  const d = new Date(String(f).slice(0,10)+'T12:00:00'); const dia = (d.getDay()+6)%7; d.setDate(d.getDate()-dia);
+  const z = function(x){ return String(x).padStart(2,'0'); };
+  return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate());
+}
+function cmbDatos(P){
+  const movs = []; (P.filas||[]).forEach(function(f){ (f.movs||[]).forEach(function(m){ movs.push(m); }); });
+  const res = (P.filas||[]).map(function(f){ return { label:f.res, value:f.tot, n:f.n }; });
+  const resG = res.length > 8 ? res.slice(0,7).concat([{ label:'Otros ('+(res.length-7)+')', value:res.slice(7).reduce(function(a,x){return a+x.value;},0), n:res.slice(7).reduce(function(a,x){return a+x.n;},0), otros:true }]) : res;
+  const semMap = {}; movs.forEach(function(m){ const k = cmbSemana(m.fecha); semMap[k] = (semMap[k]||0) + Number(m.total||0); });
+  const sem = Object.keys(semMap).sort().map(function(k){ return { label:k.slice(8,10)+'/'+k.slice(5,7), value:semMap[k] }; });
+  return { movs:movs, res:resG, veh:cmbAgrupar(movs, cmbVehiculo, 10), obra:cmbAgrupar(movs, function(m){ return m.obra || 'Sin obra'; }, 8),
+           prov:cmbAgrupar(movs, function(m){ return m.proveedor || 'Sin proveedor'; }, 7), sem:sem };
+}
+/* Recomendaciones: solo afirmaciones que salen de los datos del período */
+function cmbRecomendaciones(P, D){
+  const R = [], tot = P.totG || 0; if(!tot) return R;
+  const pc = function(v){ return Math.round(v*100/tot); };
+  const r0 = D.res[0];
+  if(r0 && D.res.length > 1 && pc(r0.value) >= 40)
+    R.push(r0.label+' concentra el '+pc(r0.value)+' % del combustible (₲ '+fmt(r0.value)+' en '+r0.n+' cargas). Conviene revisar sus recorridos y vehículos asignados.');
+  const sinV = D.movs.filter(function(m){ return cmbVehiculo(m) === 'SIN VEHÍCULO INDICADO'; });
+  if(sinV.length) R.push(sinV.length+' carga(s) sin vehículo en el comentario (₲ '+fmt(sinV.reduce(function(a,m){return a+Number(m.total||0);},0))+'). Sin ese dato no se puede controlar el gasto por vehículo.');
+  const v0 = D.veh.filter(function(x){ return !x.otros && x.label !== 'SIN VEHÍCULO INDICADO'; })[0];
+  if(v0) R.push('El vehículo con más gasto es '+v0.label+': ₲ '+fmt(v0.value)+' en '+v0.n+' carga(s), promedio ₲ '+fmt(Math.round(v0.value/v0.n))+' por carga ('+pc(v0.value)+' % del total).');
+  // Mismo vehículo cargado dos o más veces el mismo día
+  const dia = {}; D.movs.forEach(function(m){ const v = cmbVehiculo(m); if(v === 'SIN VEHÍCULO INDICADO') return; const k = v+'|'+String(m.fecha).slice(0,10); dia[k] = (dia[k]||0) + 1; });
+  const rep = Object.keys(dia).filter(function(k){ return dia[k] > 1; });
+  if(rep.length) R.push(rep.length+' caso(s) del mismo vehículo cargado más de una vez el mismo día ('+rep.slice(0,3).map(function(k){ const a = k.split('|'); return a[0]+' el '+a[1]; }).join('; ')+(rep.length>3?'; …':'')+'). Vale la pena confirmar que no sean cargas duplicadas.');
+  const p0 = D.prov[0];
+  if(p0 && !p0.otros && pc(p0.value) >= 35)
+    R.push(p0.label+' recibe el '+pc(p0.value)+' % de las compras de combustible. Con ese volumen se puede pedir un convenio o precio por litro.');
+  if(P.promDiasG != null && P.promDiasG < 2)
+    R.push('En promedio se carga cada '+P.promDiasG.toFixed(1)+' días. Cargas tan frecuentes suelen ser de montos chicos: centralizar en menos cargas facilita el control.');
+  R.push('Para medir el rendimiento (km por litro) hace falta registrar los litros y el kilometraje de cada carga.');
+  return R;
+}
+/* ── Dibujo en canvas (mismo para pantalla y PDF) ── */
+function _cmbCtx(cv, w, h, esc){
+  cv.width = Math.round(w*esc); cv.height = Math.round(h*esc);
+  const c = cv.getContext('2d'); c.setTransform(esc,0,0,esc,0,0);
+  c.fillStyle = '#FFFFFF'; c.fillRect(0,0,w,h); return c;
+}
+function _cmbTitulo(c, t, sub){
+  c.fillStyle = '#1F3864'; c.font = 'bold 16px Helvetica, Arial, sans-serif'; c.textBaseline = 'alphabetic'; c.fillText(t, 16, 26);
+  if(sub){ c.fillStyle = '#6B7280'; c.font = '12px Helvetica, Arial, sans-serif'; c.fillText(sub, 16, 44); }
+}
+function _cmbCorta(c, t, maxW){
+  t = String(t); if(c.measureText(t).width <= maxW) return t;
+  while(t.length > 3 && c.measureText(t+'…').width > maxW) t = t.slice(0,-1);
+  return t+'…';
+}
+function cmbTorta(cv, items, total, w, h, esc){
+  const c = _cmbCtx(cv, w, h, esc);
+  _cmbTitulo(c, 'Gasto por residente', '₲ '+fmt(total)+' en el período');
+  const cx = 150, cy = h/2 + 18, r = Math.min(110, h/2 - 34); let a = -Math.PI/2;
+  items.forEach(function(it, i){
+    const ang = total ? (it.value/total)*Math.PI*2 : 0;
+    c.beginPath(); c.moveTo(cx,cy); c.arc(cx,cy,r,a,a+ang); c.closePath();
+    c.fillStyle = it.otros ? CMB_OTROS : CMB_PAL[i % CMB_PAL.length]; c.fill();
+    c.strokeStyle = '#FFFFFF'; c.lineWidth = 2; c.stroke();
+    const pct = total ? it.value*100/total : 0;
+    if(pct >= 7){ const m = a + ang/2; c.fillStyle = '#FFFFFF'; c.font = 'bold 13px Helvetica, Arial, sans-serif'; c.textAlign = 'center';
+      c.fillText(Math.round(pct)+'%', cx + Math.cos(m)*r*0.62, cy + Math.sin(m)*r*0.62 + 4); c.textAlign = 'left'; }
+    a += ang;
+  });
+  let y = 76; const x = 290;
+  items.forEach(function(it, i){
+    c.fillStyle = it.otros ? CMB_OTROS : CMB_PAL[i % CMB_PAL.length]; c.fillRect(x, y-11, 14, 14);
+    c.fillStyle = '#1C2333'; c.font = 'bold 13px Helvetica, Arial, sans-serif'; c.fillText(_cmbCorta(c, it.label, w-x-30), x+22, y);
+    c.fillStyle = '#4B5563'; c.font = '12.5px Helvetica, Arial, sans-serif';
+    c.fillText('₲ '+fmt(it.value)+'  ·  '+(total?Math.round(it.value*100/total):0)+' %  ·  '+it.n+' carga(s)', x+22, y+17);
+    y += 40;
+  });
+}
+function cmbBarras(cv, items, titulo, sub, w, h, esc, color){
+  const c = _cmbCtx(cv, w, h, esc);
+  _cmbTitulo(c, titulo, sub);
+  const max = Math.max.apply(null, items.map(function(x){ return x.value; }).concat([1]));
+  const top = 62, lw = 190, rw = 120, bh = Math.min(26, (h-top-14)/Math.max(items.length,1) - 8);
+  items.forEach(function(it, i){
+    const y = top + i*(bh+8);
+    c.fillStyle = '#1C2333'; c.font = '12.5px Helvetica, Arial, sans-serif'; c.textBaseline = 'middle';
+    c.fillText(_cmbCorta(c, it.label, lw-12), 16, y+bh/2);
+    const bw = Math.max(2, (w-16-lw-rw)*it.value/max);
+    c.fillStyle = it.otros ? CMB_OTROS : (color || CMB_PAL[i % CMB_PAL.length]); c.fillRect(16+lw-6, y, bw, bh);
+    c.fillStyle = '#1C2333'; c.font = 'bold 12.5px Helvetica, Arial, sans-serif';
+    c.fillText('₲ '+fmt(it.value)+(it.n?('  ('+it.n+')'):''), 16+lw-6+bw+8, y+bh/2);
+  });
+  c.textBaseline = 'alphabetic';
+}
+function cmbColumnas(cv, items, w, h, esc){
+  const c = _cmbCtx(cv, w, h, esc);
+  _cmbTitulo(c, 'Evolución por semana', 'Gasto de cada semana (lunes a domingo)');
+  const max = Math.max.apply(null, items.map(function(x){ return x.value; }).concat([1]));
+  const top = 70, bot = h-34, n = Math.max(items.length,1), gw = (w-40)/n, bw = Math.min(46, gw*0.6);
+  c.strokeStyle = '#E2DCCD'; c.beginPath(); c.moveTo(20, bot+0.5); c.lineTo(w-20, bot+0.5); c.stroke();
+  items.forEach(function(it, i){
+    const x = 20 + i*gw + (gw-bw)/2, bh = (bot-top)*it.value/max;
+    c.fillStyle = '#1F3864'; c.fillRect(x, bot-bh, bw, bh);
+    c.fillStyle = '#1C2333'; c.font = 'bold 11px Helvetica, Arial, sans-serif'; c.textAlign = 'center';
+    c.fillText(fmt(Math.round(it.value/1000))+' mil', x+bw/2, bot-bh-6);
+    c.fillStyle = '#4B5563'; c.font = '11.5px Helvetica, Arial, sans-serif'; c.fillText('Sem. '+it.label, x+bw/2, bot+16);
+    c.textAlign = 'left';
+  });
+}
+/* Lista de gráficos tildados, ya dibujados en canvas */
+function cmbDibujar(P, esc){
+  const S = cmbGrafSel(), D = cmbDatos(P), out = [];
+  const W = 560, mk = function(){ return document.createElement('canvas'); };
+  if(S.res && D.res.length){ const cv = mk(), h = Math.max(300, 70 + D.res.length*40); cmbTorta(cv, D.res, P.totG, W, h, esc); out.push({ k:'res', cv:cv, w:W, h:h }); }
+  if(S.veh && D.veh.length){ const cv = mk(), h = Math.max(220, 76 + D.veh.length*34); cmbBarras(cv, D.veh, 'Gasto por vehículo', 'Según el comentario de cada carga · (cantidad de cargas)', W, h, esc); out.push({ k:'veh', cv:cv, w:W, h:h }); }
+  if(S.obra && D.obra.length){ const cv = mk(), h = Math.max(200, 76 + D.obra.length*34); cmbBarras(cv, D.obra, 'Gasto por obra', 'Obra a la que se imputó cada carga', W, h, esc, '#2E7D6B'); out.push({ k:'obra', cv:cv, w:W, h:h }); }
+  if(S.sem && D.sem.length){ const cv = mk(), h = 280; cmbColumnas(cv, D.sem, W, h, esc); out.push({ k:'sem', cv:cv, w:W, h:h }); }
+  if(S.prov && D.prov.length){ const cv = mk(), h = Math.max(200, 76 + D.prov.length*34); cmbBarras(cv, D.prov, 'Proveedores principales', 'Dónde se carga · (cantidad de cargas)', W, h, esc, '#C2621B'); out.push({ k:'prov', cv:cv, w:W, h:h }); }
+  return { graf:out, rec: S.rec ? cmbRecomendaciones(P, D) : [] };
+}
+function cmbGraficos(){
+  const box = gs('cmb-graf'); const P = REPORTE_PDF;
+  if(!box || !P || P.mode !== 'combustible') return;
+  const S = cmbGrafSel();
+  const opts = CMB_GRAF_OPC.map(function(o){
+    return '<label class="cg-opt"><input type="checkbox" '+(S[o.k]?'checked ':'')+'onchange="cmbGrafSet(\''+o.k+'\', this.checked)"> '+o.t+'</label>';
+  }).join('');
+  const R = cmbDibujar(P, Math.max(2, window.devicePixelRatio||1));
+  box.innerHTML = '<div class="mix-box"><div class="mix-t">Gráficos e indicadores · tildá los que quieras ver y exportar en el PDF</div>'+
+    '<div class="cg-opts">'+opts+'</div>'+
+    (R.graf.length ? '<div class="cg-grid" id="cg-grid"></div>' : '')+
+    (R.rec.length ? '<div class="cg-rec"><div class="cg-rec-t">Recomendaciones</div><ol>'+R.rec.map(function(t){ return '<li>'+_esc(t)+'</li>'; }).join('')+'</ol></div>' : '')+
+    (!R.graf.length && !R.rec.length ? '<div style="font-size:12.5px;color:var(--text3);padding:8px 2px">Ningún gráfico tildado.</div>' : '')+
+    '</div>';
+  const g = gs('cg-grid');
+  if(g) R.graf.forEach(function(x){ const d = document.createElement('div'); d.className = 'cg-card'; x.cv.style.width = '100%'; x.cv.style.height = 'auto'; d.appendChild(x.cv); g.appendChild(d); });
+}
+/* PDF: página de gráficos e indicadores (solo lo tildado) */
+function cmbPDFGraficos(doc, P, M){
+  const R = cmbDibujar(P, 2.4);
+  if(!R.graf.length && !R.rec.length) return false;
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  doc.addPage();
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(31,56,100);
+  doc.text('Graficos e indicadores', M, 16);
+  doc.setDrawColor(200,160,40); doc.setLineWidth(0.5); doc.line(M, 19, W-M, 19);
+  const colW = (W - 2*M - 8)/2; let x = M, y = 24, rowH = 0, col = 0;
+  R.graf.forEach(function(g){
+    const hh = colW * g.h / g.w;
+    if(y + hh > H - 14){ doc.addPage(); y = 16; col = 0; x = M; rowH = 0; }
+    try{ doc.addImage(g.cv.toDataURL('image/png'), 'PNG', x, y, colW, hh); }catch(e){}
+    doc.setDrawColor(226,220,205); doc.setLineWidth(0.2); doc.rect(x, y, colW, hh);
+    rowH = Math.max(rowH, hh);
+    if(col === 0){ col = 1; x = M + colW + 8; } else { col = 0; x = M; y += rowH + 6; rowH = 0; }
+  });
+  if(col === 1){ y += rowH + 6; }
+  if(R.rec.length){
+    const san = function(t){ return String(t).replace(/[—–]/g,'-').replace(/₲\s*/g,'Gs ').replace(/…/g,'...'); };
+    let lines = []; doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    R.rec.forEach(function(t, i){ lines = lines.concat(doc.splitTextToSize((i+1)+'. '+san(t), W - 2*M - 8)); });
+    const need = 10 + lines.length*4.4;
+    if(y + need > H - 12){ doc.addPage(); y = 16; }
+    doc.setFillColor(251,245,226); doc.setDrawColor(200,160,40); doc.roundedRect(M, y, W-2*M, need, 2, 2, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(138,106,14); doc.text('Recomendaciones', M+4, y+6);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40);
+    lines.forEach(function(l, i){ doc.text(l, M+4, y+11.5+i*4.4); });
+  }
+  return true;
 }
 
 async function reporteRendicionInline(rid){
@@ -3682,6 +3902,8 @@ function exportCombustiblePDF(){
   doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(130,130,130);
   doc.text('Mide cuanto y cada cuanto se carga. Para saber si el consumo corresponde hacen falta litros y kilometraje.',
     M, doc.lastAutoTable.finalY+6);
+  // v7.44 · Gráficos e indicadores tildados, en una hoja propia
+  try{ cmbPDFGraficos(doc, P, M); }catch(e){ console.warn('graficos combustible', e); }
   const _fn='caja_chica_combustible_'+todayISO()+'.pdf';
   const _adjChk=gs('r-pdf-adjuntos');
   if(_adjChk && _adjChk.checked && (P.adjRows||[]).some(r=>r.adj && r.adj.length)){
