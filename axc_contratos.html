@@ -273,6 +273,18 @@ table.rb tr.dim td{color:var(--text-muted)}
 .cell-in.w{width:124px}
 .cell-in.err{border-color:#D94A4A;background:#FFF3F3}
 .cell-in:focus{outline:none;border-color:var(--navy2);box-shadow:0 0 0 3px rgba(31,78,120,.12)}
+.tl-det{color:var(--navy,#1F3864);font-weight:600;line-height:1.4;white-space:pre-line;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.tl-sub{font-size:11.5px;color:var(--text-muted,#8893a5);margin-top:3px;line-height:1.35}
+.tl-cod{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px}
+td.code.soft{color:var(--text-muted,#8893a5);font-weight:400}
+.tl-ord th.tl-mv-h,.tl-ord td.tl-mv{width:22px;padding-left:4px;padding-right:0}
+.tl-mv{white-space:nowrap;vertical-align:middle}
+.tl-b{display:block;border:0;background:transparent;color:#B6BFCC;font-size:10px;line-height:1;padding:2px 3px;cursor:pointer;opacity:0;transition:opacity .15s}
+.tl-ord tr:hover .tl-b{opacity:1}
+.tl-b:hover:not([disabled]){color:var(--navy,#1F3864)}
+.tl-b[disabled]{cursor:default;opacity:0!important}
+.tl-ord tr.movida td{background:#FBF6E6;transition:background .6s}
+@media (hover:none){.tl-b{opacity:.7}}
 .det-btn{border:1px dashed #C9B27A;background:#FFFAF0;color:#8A6D10;border-radius:6px;padding:3px 8px;font-size:11.5px;font-weight:700;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .det-btn.on{border-style:solid;background:#FDF3D8}
 [data-theme="dark"] .det-btn{background:#2A2512;color:var(--gold-soft)}
@@ -427,7 +439,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.1 · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.2 · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -940,7 +952,8 @@ async function editarContrato(c){
       const l=lineaVacia({ id:i.id, presupuesto:i.presupuesto, sector:i.sector||'', capitulo:i.capitulo||'', rubro_codigo:i.rubro_codigo||'', descripcion:i.descripcion,
         unidad:i.unidad||'', cantidad:Number(i.cantidad)||0, precio_pactado:Number(i.precio_pactado)||0, precio_referencia:i.precio_referencia, referencia_origen:i.referencia_origen, detalle:i.detalle||'', es_adicional:!!i.es_adicional });
       E.origIds.push(i.id);
-      if(E.tipo==='presupuesto' && !i.es_adicional && i.rubro_codigo && i.presupuesto===c.presupuesto) E.sel[i.rubro_codigo]=l; else E.libres.push(l);
+      if(E.tipo==='presupuesto' && !i.es_adicional && i.rubro_codigo && i.presupuesto===c.presupuesto){ E.sel[i.rubro_codigo]=l; lineaK(l, i.rubro_codigo); } else { E.libres.push(l); lineaK(l); }
+      (E.orden = E.orden || []).push(l._k);   // v2.2 · orden guardado
     });
     if(E.tipo==='presupuesto' && E.cab.presupuesto) E.pp = await cargarPP(E.cab.presupuesto, E.id);
   }catch(e){ busy(false); toast('No se pudo abrir el contrato','error',errMsg(e)); return; }
@@ -948,11 +961,31 @@ async function editarContrato(c){
   $('edTitle').textContent='Editar '+numeroTxt(c); $('edSub').textContent=contratistaDe(c.contratista_id).nombre+' · '+c.obra;
   openOv('ovEd'); renderEd();
 }
+function lineaK(l, k){ if(k) l._k = 's:'+k; if(!l._k) l._k = 'l:'+Math.random().toString(36).slice(2,10); return l._k; }
 function lineasE(){
-  const sel = Object.keys(E.sel).map(function(k){ return E.sel[k]; });
+  const sel = Object.keys(E.sel).map(function(k){ lineaK(E.sel[k], k); return E.sel[k]; });
   sel.sort(function(a,b){ return String(a.sector).localeCompare(String(b.sector),'es',{numeric:true}) || String(a.capitulo).localeCompare(String(b.capitulo),'es',{numeric:true}) || String(a.rubro_codigo).localeCompare(String(b.rubro_codigo),'es',{numeric:true}); });
-  const lib = E.libres.map(function(l){ l.es_adicional = (E.tipo==='presupuesto'); return l; });
-  return sel.concat(lib);
+  const lib = E.libres.map(function(l){ l.es_adicional = (E.tipo==='presupuesto'); lineaK(l); return l; });
+  const all = sel.concat(lib);
+  // v2.2 · Si el residente movió líneas, manda su orden (las nuevas van al final de su grupo)
+  if(E.orden && E.orden.length){
+    const pos = {}; E.orden.forEach(function(k, i){ pos[k] = i; });
+    const idx = {}; all.forEach(function(l, i){ idx[l._k] = i; });
+    all.sort(function(a,b){ const pa = (a._k in pos) ? pos[a._k] : 1e6 + idx[a._k], pb = (b._k in pos) ? pos[b._k] : 1e6 + idx[b._k]; return pa - pb; });
+  }
+  return all;
+}
+function grupoLinea(l){ return l.es_adicional ? 'Adicionales (fuera del presupuesto)' : (l.presupuesto ? 'Presupuesto '+l.presupuesto : 'Trabajos'); }
+/* v2.2 · Mover una línea arriba o abajo, dentro de su grupo */
+function moverLineaE(k, dir){
+  const L = lineasE(), i = L.findIndex(function(l){ return l._k === k; }), j = i + dir;
+  if(i < 0 || j < 0 || j >= L.length || grupoLinea(L[i]) !== grupoLinea(L[j])) return;
+  const keys = L.map(function(l){ return l._k; });
+  const t = keys[i]; keys[i] = keys[j]; keys[j] = t;
+  E.orden = keys;
+  pasoRevision();
+  const fila = document.querySelector('[data-fk="'+k+'"]');
+  if(fila){ fila.classList.add('movida'); setTimeout(function(){ fila.classList.remove('movida'); }, 700); }
 }
 function totalE(){ return lineasE().reduce(function(s,l){ return s+Math.round((Number(l.cantidad)||0)*(Number(l.precio_pactado)||0)); },0); }
 
@@ -1331,18 +1364,34 @@ function avisosE(){
   if(E.tipo!=='presupuesto' && E.cab.motivo_sp==='en_elaboracion' && !E.cab.regularizar_hasta) w.push({t:'Presupuesto en elaboración: conviene poner la fecha límite para regularizar'});
   return w;
 }
+/* v2.2 · Si hay detalle, es lo principal; el trabajo y su código, en gris debajo */
+function trabajoCelda(l){
+  const det = String(l.detalle||'').trim();
+  if(!det) return esc(l.descripcion||'');
+  return '<div class="tl-det" title="'+esc(det.slice(0,600))+'">'+esc(det)+'</div>'+
+         '<div class="tl-sub">'+(l.rubro_codigo ? '<span class="tl-cod">'+esc(l.rubro_codigo)+'</span> · ' : '')+esc(l.descripcion||'')+'</div>';
+}
 function tablaLineasHtml(L, conRef){
-  let h='<div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Código</th><th>Trabajo</th><th>Sector</th><th>Unid.</th><th class="num">Cantidad</th><th class="num">Precio</th><th class="num">Subtotal</th>'+(conRef?'<th class="num">Ref.</th><th class="num">Dif.</th>':'')+'</tr></thead><tbody>';
+  let h='<div class="card"><div class="tbl-wrap"><table class="tbl tl-ord"><thead><tr><th class="tl-mv-h"></th><th>Código</th><th>Trabajo</th><th>Sector</th><th>Unid.</th><th class="num">Cantidad</th><th class="num">Precio</th><th class="num">Subtotal</th>'+(conRef?'<th class="num">Ref.</th><th class="num">Dif.</th>':'')+'</tr></thead><tbody>';
   let grupo=null;
   L.forEach(function(l){
     const g = l.es_adicional ? 'Adicionales (fuera del presupuesto)' : (l.presupuesto ? 'Presupuesto '+l.presupuesto : 'Trabajos');
-    if(g!==grupo){ h+='<tr class="grp"><td colspan="'+(conRef?9:7)+'">'+esc(g)+'</td></tr>'; grupo=g; }
-    h+='<tr><td class="code">'+esc(l.rubro_codigo||'—')+'</td><td>'+esc(l.descripcion)+(l.detalle?' <span class="tag tag-ad" title="'+esc(l.detalle.slice(0,300))+'">detalle</span>':'')+'</td><td>'+esc(l.sector||'')+'</td><td>'+esc(l.unidad||'')+'</td>'+
+    if(g!==grupo){ h+='<tr class="grp"><td colspan="'+(conRef?10:8)+'">'+esc(g)+'</td></tr>'; grupo=g; }
+    const ix = L.indexOf(l), sube = ix > 0 && grupoLinea(L[ix-1]) === grupoLinea(l), baja = ix < L.length-1 && grupoLinea(L[ix+1]) === grupoLinea(l);
+    h+='<tr data-fk="'+esc(lineaK(l))+'"><td class="tl-mv">'+
+        '<button type="button" class="tl-b" data-mvl="'+esc(l._k)+'" data-dir="-1" title="Subir esta línea"'+(sube?'':' disabled')+'>▲</button>'+
+        '<button type="button" class="tl-b" data-mvl="'+esc(l._k)+'" data-dir="1" title="Bajar esta línea"'+(baja?'':' disabled')+'>▼</button></td>'+
+      '<td class="code'+(l.detalle?' soft':'')+'">'+esc(l.rubro_codigo||'—')+'</td><td>'+trabajoCelda(l)+'</td><td>'+esc(l.sector||'')+'</td><td>'+esc(l.unidad||'')+'</td>'+
       '<td class="num">'+fmtQ(l.cantidad)+'</td><td class="num">'+fmtGs(l.precio_pactado)+'</td><td class="num"><b>'+fmtGs(Math.round((Number(l.cantidad)||0)*(Number(l.precio_pactado)||0)))+'</b></td>'+
       (conRef?'<td class="num soft">'+(l.precio_referencia?fmtGs(l.precio_referencia):'—')+'</td><td class="num">'+difHtml(l.precio_pactado,l.precio_referencia)+'</td>':'')+'</tr>';
   });
   return h+'</tbody></table></div></div>';
 }
+document.addEventListener('click', function(e){
+  const b = e.target && e.target.closest ? e.target.closest('[data-mvl]') : null;
+  if(!b || b.disabled) return;
+  e.preventDefault(); e.stopPropagation(); moverLineaE(b.getAttribute('data-mvl'), Number(b.getAttribute('data-dir')));
+}, true);
 function pasoRevision(){
   const c=E.cab, L=lineasE(), tot=totalE(), k=contratistaDe(c.contratista_id);
   let ref=0, conRef=0; L.forEach(function(l){ if(l.precio_referencia){ ref+=Math.round(l.cantidad*l.precio_referencia); conRef+=Math.round(l.cantidad*l.precio_pactado); } });
@@ -1452,7 +1501,7 @@ function pintarDetalle(){
     lh+='<tr class="grp"><td colspan="11">'+esc(g.t)+(g.st?' <span class="pill st-'+g.st+'" style="margin-left:6px">'+g.st+'</span>':'')+'</td></tr>';
     L.forEach(function(i){
       const mo=Math.round((Number(i.cantidad)||0)*(Number(i.precio_pactado)||0)), ce=S.cert[i.id]||{q:0,m:0}, av=mo?ce.m/mo*100:0, cuenta=lineaCuenta(i);
-      lh+='<tr'+(cuenta?'':' style="opacity:.55"')+'><td class="code">'+esc(i.rubro_codigo||'—')+'</td><td>'+esc(i.descripcion)+(i.es_adicional?' <span class="tag tag-ad">adicional</span>':'')+(i.anulado?' <span class="tag tag-late">anulada</span>':'')+'</td>'+
+      lh+='<tr'+(cuenta?'':' style="opacity:.55"')+'><td class="code'+(i.detalle?' soft':'')+'">'+esc(i.rubro_codigo||'—')+'</td><td>'+trabajoCelda(i)+(i.es_adicional?' <span class="tag tag-ad">adicional</span>':'')+(i.anulado?' <span class="tag tag-late">anulada</span>':'')+'</td>'+
         '<td>'+esc(i.sector||'')+'</td><td>'+esc(i.unidad||'')+'</td><td class="num">'+fmtQ(i.cantidad)+'</td><td class="num">'+fmtGs(i.precio_pactado)+'</td><td class="num">'+fmtGs(mo)+'</td>'+
         '<td class="num">'+fmtQ(ce.q)+'<div class="muted" style="font-size:11px">Gs '+fmtGs(ce.m)+'</div></td><td class="num">'+fmtGs(mo-ce.m)+'</td>'+
         '<td><div class="avz"><div class="bar'+(av>100?' over':'')+'"><i style="width:'+Math.min(100,av)+'%"></i></div><span>'+Math.round(av)+'%</span></div></td>'+
