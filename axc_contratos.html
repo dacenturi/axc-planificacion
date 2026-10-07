@@ -439,7 +439,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.2 · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.3 · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -1422,11 +1422,19 @@ function contratoDesdeE(){
 }
 
 /* ── Guardar ──────────────────────────────────────────────── */
+/* v2.3 · Al aprobar, el contrato queda VIGENTE: se imprime y se hace firmar en papel,
+   sin el paso intermedio «A firmar». Misma actualización que hacía «Registrar firma». */
+async function dejarVigente(id){
+  const r = await sb.from('contratos').update({ estado:'Vigente', vigente_en:new Date().toISOString(), actualizado_por:quien(), actualizado_en:new Date().toISOString() }).eq('id', id);
+  if(r.error){ console.warn('vigente', r.error); return false; }
+  audit(id, 'vigente', { motivo:'Aprobado: queda vigente al aprobar (se firma en papel)' });
+  return true;
+}
 async function guardarEd(aprobar){
   for(let p=1;p<=pasosE().length;p++){ const e=validarPaso(p); if(e){ toast(e,'error'); E.paso=p; renderEd(); return; } }
   const errs=erroresLineas(); if(errs.length){ toast('Revisá las líneas','error',errs.slice(0,3).join(' · ')); return; }
   if(aprobar){
-    const ok = await confirmarAprobacion('Aprobar contrato', '<p>Se asigna el número correlativo y el contrato queda <b>listo para firmar</b>. Desde ahí lo pactado no se modifica: los cambios van por adenda.</p><p class="soft" style="margin-top:8px">'+esc(contratistaDe(E.cab.contratista_id).nombre)+' · Monto estimado: <b>Gs '+fmtGs(totalE())+'</b></p>', 'Aprobar y numerar');
+    const ok = await confirmarAprobacion('Aprobar contrato', '<p>Se asigna el número correlativo y el contrato queda <b>vigente</b>: imprimilo y hacelo firmar por el contratista. Desde ahí lo pactado no se modifica: los cambios van por adenda.</p><p class="soft" style="margin-top:8px">'+esc(contratistaDe(E.cab.contratista_id).nombre)+' · Monto estimado: <b>Gs '+fmtGs(totalE())+'</b></p>', 'Aprobar y numerar');
     if(!ok) return;
   }
   busy(true);
@@ -1468,9 +1476,10 @@ async function guardarEd(aprobar){
     if(aprobar){
       const r=await sb.rpc('aprobar_contrato',{ p_id:id, p_usuario:u }); if(r.error) throw r.error; numero=r.data;
       audit(numero, 'aprobar', { monto:totalE() });
+      var vig = await dejarVigente(id);
     }
     busy(false); closeOv('ovEd');
-    toast(aprobar?'Contrato '+numero+' aprobado':'Borrador guardado','success', aprobar?'Imprimilo, hacelo firmar y registrá la firma para dejarlo vigente':'Queda pendiente de aprobación');
+    toast(aprobar?'Contrato '+numero+(vig?' aprobado y vigente':' aprobado'):'Borrador guardado','success', aprobar?(vig?'Imprimilo y hacelo firmar por el contratista':'Imprimilo y hacelo firmar; no se pudo dejar vigente, avisá a administración'):'Queda pendiente de aprobación');
     await cargarTodo(); abrirDetalle(id);
   }catch(e){ busy(false); console.error(e); toast('No se pudo guardar','error',errMsg(e)); }
 }
@@ -1567,11 +1576,12 @@ function pintarDetalle(){
   if(c.estado==='Emitido'){
     if(S.puedeAprobar) a.push('<button class="btn btn-gh" id="acBack">Volver a borrador</button>');
     if(S.puedeAprobar) a.push('<button class="btn btn-bad" id="acAnu">Anular</button>');
-    a.push('<button class="btn btn-ok" id="acFirm">Registrar firma</button>');
+    a.push('<button class="btn btn-ok" id="acFirm" title="Contratos aprobados antes de v2.3: los deja vigentes">Pasar a vigente</button>');
   }
   if(c.estado==='Vigente'){
     if(S.puedeAprobar) a.push('<button class="btn btn-bad" id="acAnu">Anular</button>');
     if(S.puedeAprobar) a.push('<button class="btn btn-gh" id="acCer">Cerrar contrato</button>');
+    if(!c.firmado_path) a.push('<button class="btn btn-gh" id="acFirm" title="Opcional: guardar el contrato firmado escaneado">📎 Adjuntar firmado</button>');
     a.push('<button class="btn btn-pri" id="acAd">Nueva adenda</button>');
   }
   // v2.0 · Administración puede llevar el contrato a cualquier estado, con motivo
@@ -1595,11 +1605,13 @@ async function refrescarDetalle(){ await cargarTodo(); if(D && $('ovDet').classL
 /* ── Acciones de estado ───────────────────────────────────── */
 async function aprobarContrato(c){
   const m=metricas(c);
-  const ok=await confirmarAprobacion('Aprobar contrato', '<p>Se asigna el número correlativo y el contrato queda <b>listo para firmar</b>. Lo pactado ya no se modifica: los cambios van por adenda.</p><p class="soft" style="margin-top:8px">'+esc(contratistaDe(c.contratista_id).nombre)+' · Gs '+fmtGs(m.monto)+'</p>', 'Aprobar y numerar');
+  const ok=await confirmarAprobacion('Aprobar contrato', '<p>Se asigna el número correlativo y el contrato queda <b>vigente</b>: imprimilo y hacelo firmar por el contratista. Lo pactado ya no se modifica: los cambios van por adenda.</p><p class="soft" style="margin-top:8px">'+esc(contratistaDe(c.contratista_id).nombre)+' · Gs '+fmtGs(m.monto)+'</p>', 'Aprobar y numerar');
   if(!ok) return; busy(true,'Aprobando…');
   const r=await sb.rpc('aprobar_contrato',{ p_id:c.id, p_usuario:quien() }); busy(false);
   if(r.error){ toast('No se pudo aprobar','error',errMsg(r.error)); return; }
-  audit(r.data,'aprobar',{ monto:m.monto }); toast('Contrato '+r.data+' aprobado','success','Imprimilo, hacelo firmar y registrá la firma'); refrescarDetalle();
+  audit(r.data,'aprobar',{ monto:m.monto });
+  const vig = await dejarVigente(c.id);
+  toast('Contrato '+r.data+(vig?' aprobado y vigente':' aprobado'),'success', vig?'Imprimilo y hacelo firmar por el contratista':'No se pudo dejar vigente: avisá a administración'); refrescarDetalle();
 }
 async function volverBorrador(c){
   const ok=await ask({ title:'Volver a borrador', html:'<p>El contrato <b>'+esc(c.numero)+'</b> vuelve a borrador para corregirlo. <b>Conserva su número</b>. Usalo solo si todavía no se firmó.</p>', ok:'Volver a borrador' });
@@ -1609,7 +1621,7 @@ async function volverBorrador(c){
   audit(c.numero,'volver_borrador',null); toast('El contrato volvió a borrador','success'); refrescarDetalle();
 }
 async function registrarFirma(c){
-  const ok=await ask({ title:'Registrar firma', html:'<p>El contrato <b>'+esc(c.numero)+'</b> pasa a <b>vigente</b> y ya se puede certificar contra él.</p><div class="fgrp" style="margin-top:12px"><label class="lbl">Contrato firmado escaneado o foto (opcional)</label><input type="file" id="fFirma" class="inp" accept="application/pdf,image/*"><div class="hint">Si no lo subís ahora, queda registrado como firmado en papel.</div></div>', ok:'Registrar firma', okClass:'btn-ok' });
+  const ok=await ask({ title:(c.estado==='Vigente'?'Adjuntar contrato firmado':'Pasar a vigente'), html:(c.estado==='Vigente'?'<p>Guardá el contrato <b>'+esc(c.numero)+'</b> firmado por el contratista, escaneado o en foto. Es opcional: queda junto al contrato.</p>':'<p>El contrato <b>'+esc(c.numero)+'</b> pasa a <b>vigente</b>.</p>')+'<div class="fgrp" style="margin-top:12px"><label class="lbl">Contrato firmado escaneado o foto (opcional)</label><input type="file" id="fFirma" class="inp" accept="application/pdf,image/*"><div class="hint">Si no lo subís ahora, queda registrado como firmado en papel.</div></div>', ok:'Registrar firma', okClass:'btn-ok' });
   if(!ok) return;
   const f=$('fFirma') && $('fFirma').files[0];
   busy(true,'Registrando…');
@@ -1621,7 +1633,7 @@ async function registrarFirma(c){
     const up=await sb.storage.from(BUCKET).upload(path, f, { upsert:false, contentType:f.type||undefined });
     if(up.error){ busy(false); toast('No se pudo subir el archivo','error',errMsg(up.error)); return; }
   }
-  const r=await sb.from('contratos').update({ estado:'Vigente', vigente_en:new Date().toISOString(), firmado_path:path||c.firmado_path||null, actualizado_por:quien(), actualizado_en:new Date().toISOString() }).eq('id',c.id);
+  const r=await sb.from('contratos').update({ estado:'Vigente', vigente_en:c.vigente_en||new Date().toISOString(), firmado_path:path||c.firmado_path||null, actualizado_por:quien(), actualizado_en:new Date().toISOString() }).eq('id',c.id);
   busy(false);
   if(r.error){ toast('No se pudo registrar la firma','error',errMsg(r.error)); return; }
   audit(c.numero,'vigente',{ archivo:path }); toast('Contrato '+c.numero+' vigente','success'); refrescarDetalle();
