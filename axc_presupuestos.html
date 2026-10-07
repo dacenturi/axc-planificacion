@@ -610,6 +610,7 @@ html[data-theme="alto-contraste"]{
 .tema-mini i{width:15px;height:26px;border-radius:4px;display:block}
 .tema-op b{font-size:12.5px;color:#1a2236;display:block}
 .tema-op small{font-size:10.5px;color:#8893a5}
+.imp-nueva{display:flex;gap:6px;margin-top:4px}.imp-nueva[hidden]{display:none}.imp-nueva input{flex:1}.imp-nueva .imp-btn{padding:6px 10px;font-size:12px}
 .imp-wrap{display:inline-flex;flex-direction:column;align-items:center;gap:2px}
 .imp-plantilla{font-size:11px;color:#1F7A3F;font-weight:700;text-decoration:none}.imp-plantilla:hover{text-decoration:underline}
 .imp-ov{position:fixed;inset:0;background:rgba(15,20,30,.55);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px}
@@ -688,7 +689,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.40 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.41 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -6840,6 +6841,7 @@ async function importarExcel(){
       if(!res){ showToast('No se encontró la tabla del presupuesto','error','El Excel tiene que tener las columnas Descripción, Unidad, Cantidad, M. obra y Material. Usá la plantilla de AXC.'); return; }
       if(!res.filas.length){ showToast('El Excel no tiene trabajos','error','Hay títulos pero ninguna fila con unidad, cantidad y precio.'); return; }
       IMP.filas = res.filas; IMP.cab = res.cab; IMP.archivo = file.name; IMP.formato = res.formato; IMP.hoja = res.hoja;
+      try{ if(typeof loadListas === 'function') await loadListas(); }catch(e){}   // lista de obras completa
       impVista();
     }catch(e){ showToast('No se pudo leer el archivo','error', e.message||String(e)); }
   };
@@ -6849,18 +6851,31 @@ function impVista(){
   let ov = document.getElementById('impOv');
   if(!ov){ ov = document.createElement('div'); ov.id = 'impOv'; ov.className = 'imp-ov'; document.body.appendChild(ov); }
   const F = IMP.filas, cab = IMP.cab;
-  const obras = Array.from(document.querySelectorAll('#pmObra option')).map(function(o){ return o.value; }).filter(Boolean);
+  const obras = Array.from(new Set(Array.from(document.querySelectorAll('#pmObra option')).map(function(o){ return o.value; }).filter(Boolean)))
+    .sort(function(a,b){ return a.localeCompare(b,'es'); });
   const obraXls = String(cab.obra||'').trim();
-  const obraOk = obras.filter(function(o){ return _impNorm(o) === _impNorm(obraXls); })[0] || '';
+  // Igual, o parecida (ej. «EDIFICIO ORQUÍDEAS» ↔ «Orquídeas»)
+  const sinEd = function(x){ return _impNorm(x).replace(/^(edificio|edif\.?|obra|residencia|casa)\s+/,''); };
+  let obraOk = obras.filter(function(o){ return _impNorm(o) === _impNorm(obraXls); })[0] || '';
+  let parecida = false;
+  if(!obraOk && obraXls){
+    obraOk = obras.filter(function(o){ const a = sinEd(o), b = sinEd(obraXls); return a && b && (a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0); })[0] || '';
+    parecida = !!obraOk;
+  }
+  IMP.obraXls = obraXls;
   const opts = '<option value="">Elegí la obra…</option>' + obras.map(function(o){ return '<option'+(o===obraOk?' selected':'')+'>'+escapeHtml(o)+'</option>'; }).join('') +
-    (obraXls && !obraOk ? '<option value="'+escapeHtml(obraXls)+'" selected>'+escapeHtml(obraXls)+' (del Excel, no está en la lista)</option>' : '');
+    '<option value="__nueva">＋ Agregar obra nueva…</option>';
   ov.innerHTML =
     '<div class="imp-box"><div class="imp-h"><div><b>📥 Importar presupuesto desde Excel</b><span>'+escapeHtml(IMP.archivo)+' · hoja «'+escapeHtml(IMP.hoja)+'» · '+IMP.formato+'</span></div>'+
       '<button type="button" class="imp-x" id="impX">×</button></div>'+
     '<div class="imp-b">'+
       '<div class="imp-g">'+
         '<label>Código<input id="impCod" value="'+escapeHtml(typeof suggestNextCode==='function' ? suggestNextCode() : '')+'"></label>'+
-        '<label>Obra *<select id="impObra">'+opts+'</select>'+(obraXls && !obraOk ? '<small style="color:#8A6A0E">«'+escapeHtml(obraXls)+'» no está en la lista de obras: elegí la correcta, o queda como está.</small>' : '')+'</label>'+
+        '<label>Obra *<select id="impObra">'+opts+'</select>'+
+          '<small id="impObraNota" style="color:#8A6A0E">'+(parecida ? 'En el Excel dice «'+escapeHtml(obraXls)+'»: se eligió «'+escapeHtml(obraOk)+'». Cambiala si no es esa.'
+            : (obraXls && !obraOk ? '«'+escapeHtml(obraXls)+'» no está en la lista: elegila o tocá «＋ Agregar obra nueva…».' : ''))+'</small>'+
+          '<span class="imp-nueva" id="impNueva" hidden><input id="impNuevaTxt" placeholder="Nombre de la obra"><button type="button" class="imp-btn ok" id="impNuevaOk">Crear obra</button></span>'+
+        '</label>'+
         '<label class="w2">Descripción<input id="impDesc" value="'+escapeHtml(cab.descripcion||'')+'"></label>'+
         '<label>Sector general <small>para filas sin sector</small><input id="impSec" value="'+escapeHtml(cab.sector||'')+'"></label>'+
       '</div>'+
@@ -6903,10 +6918,47 @@ function impVista(){
     si.disabled = !ok;
   };
   document.getElementById('impSec').oninput = pinta;
+  // Obra nueva: mismo control de duplicados que el botón ＋ del editor
+  const so = document.getElementById('impObra'), nv = document.getElementById('impNueva'), nt = document.getElementById('impNuevaTxt');
+  so.onchange = function(){
+    nv.hidden = so.value !== '__nueva';
+    if(so.value === '__nueva'){ nt.value = IMP.obraXls || ''; nt.focus(); nt.select(); }
+  };
+  if(!so.value && IMP.obraXls){ /* se deja elegir */ }
+  document.getElementById('impNuevaOk').onclick = async function(){
+    const nombre = nt.value.trim();
+    if(!nombre){ showToast('Escribí el nombre de la obra','warn'); nt.focus(); return; }
+    const b = this; b.disabled = true; b.textContent = 'Creando…';
+    try{
+      // ¿Ya existe? (sin importar mayúsculas ni acentos)
+      const gen = await sb.from('listas').select('id,valor').eq('tipo','obras');
+      const ya = (gen.data||[]).filter(function(x){ return _impNorm(x.valor) === _impNorm(nombre); })[0];
+      let final = nombre;
+      if(ya){
+        final = ya.valor;
+        showToast('Esa obra ya existe: «'+final+'»','info','Se eligió la existente para no duplicarla.');
+      } else {
+        const u = (typeof _userTag === 'function') ? _userTag() : '', n = new Date().toISOString();
+        const filas = [{ tipo:'obras_presu', valor:nombre, activo:true }, { tipo:'obras', valor:nombre, activo:true }];
+        let ins = await sb.from('listas').insert(filas.map(function(f){ return Object.assign({ creado_por:u, creado_en:n }, f); }));
+        if(ins && ins.error && /creado_por|creado_en/i.test(ins.error.message||'')) ins = await sb.from('listas').insert(filas);
+        if(ins.error) throw ins.error;
+        if(typeof _audit === 'function') _audit('lista', nombre, 'obra_alta', 'Obra creada al importar un presupuesto desde Excel');
+        showToast('Obra «'+nombre+'» agregada','success','Queda disponible en todos los módulos.');
+      }
+      try{ if(typeof loadListas === 'function') await loadListas(); }catch(e){}
+      if(!Array.from(so.options).some(function(o){ return o.value === final; })){
+        const op = document.createElement('option'); op.value = final; op.textContent = final; so.insertBefore(op, so.lastElementChild);
+      }
+      so.value = final; nv.hidden = true;
+      document.getElementById('impObraNota').textContent = '';
+    }catch(e){ showToast('No se pudo crear la obra','error', e.message||String(e)); }
+    b.disabled = false; b.textContent = 'Crear obra';
+  };
   document.getElementById('impX').onclick = document.getElementById('impNo').onclick = function(){ ov.style.display = 'none'; };
   document.getElementById('impSi').onclick = async function(){
     const obra = document.getElementById('impObra').value, cod = document.getElementById('impCod').value.trim();
-    if(!obra){ showToast('Elegí la obra','warn','Es la obra del presupuesto.'); document.getElementById('impObra').focus(); return; }
+    if(!obra || obra === '__nueva'){ showToast('Elegí la obra','warn', obra === '__nueva' ? 'Escribí el nombre y tocá «Crear obra».' : 'Es la obra del presupuesto.'); document.getElementById('impObra').focus(); return; }
     if(!cod){ showToast('Falta el código','warn'); document.getElementById('impCod').focus(); return; }
     const filas = F.filter(function(f){ return f._ok; });
     // Códigos propios por capítulo (R01.001, R01.002…): no se confunden con el catálogo
