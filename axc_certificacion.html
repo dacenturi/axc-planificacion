@@ -526,6 +526,16 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .pl-base label{display:flex;gap:5px;align-items:center;cursor:pointer}
 .pl-base small{color:#94a3b8}
 .pl-tag.ta{background:#E6F0EA;color:#1F5C3A}
+.ct-mas{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:6px 0 2px;font-size:12px;color:var(--text-muted,#6B7280)}
+.ct-nuevo{border:1px dashed #8AA3C8;background:transparent;color:var(--navy,#1F3864);border-radius:8px;padding:5px 10px;font-weight:700;font-size:12.5px;cursor:pointer;font-family:inherit}
+.ct-nuevo:hover{background:#F4F7FB}
+.aj-toggle{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;margin:2px 0 10px;font-size:13px;color:var(--text-muted,#6B7280)}
+.aj-toggle label{display:flex;gap:6px;align-items:center;cursor:pointer;color:var(--text,#1C2333)}
+.aj-toggle:empty{display:none}
+.cert-card.aj{opacity:.82;border-style:dashed}
+.aj-tag{display:inline-block;font-size:12.5px;font-weight:800;letter-spacing:.3px;color:#8A6A0E;background:#FBF6E6;border:1px solid #E6C766;border-radius:6px;padding:2px 8px}
+.badge.aj{background:#F1F4F9;color:#5A6272}
+.cert-tot.aj{color:#8893a5}
 .aa-ed{border:0;background:transparent;cursor:pointer;font-size:12px;padding:0 0 0 4px;opacity:.55;vertical-align:middle}
 .aa-ed:hover{opacity:1;transform:scale(1.15)}
 .aa-box{border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:#F8FAFC}
@@ -1004,7 +1014,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.27 · ajuste del acumulado anterior · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.28 · nuevo contrato y ajustes separados · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -1018,6 +1028,7 @@ html[data-theme="alto-contraste"]{
       <button class="btn-g" id="btnAvance" title="Comparar lo presupuestado contra lo certificado">📊 Avance por rubro</button>
       <button class="btn-g" id="btnOP" title="Juntar varios certificados aprobados de un contratista en una sola orden de pago" hidden>💳 Orden de pago</button>
       <button class="btn-g" id="btnTA" title="Trabajos que se ejecutan y controlan a costo real: cabecera, gastos imputados y liquidación">🛠 Trabajos por administración</button>
+      <button class="btn-g" id="btnCtr" title="Abre Contratos en otra pestaña con un contrato nuevo listo para cargar">📑 Nuevo contrato</button>
       <button class="btn-g" id="btnCuenta" title="Anticipos y préstamos entregados a cada contratista">🧾 Cuenta de contratistas</button>
       <button class="btn-g" id="btnEC" title="Todo lo del contratista en una hoja: contratos, certificados, cuenta corriente y pagos">📋 Estado de cuenta</button>
       <button class="btn-g" id="btnPrecios" title="Ver y editar los precios pactados con cada contratista">₲ Precios por contratista</button>
@@ -1635,8 +1646,15 @@ function llenarFiltros(){
   fo.value=vo; fc.value=vc;
 }
 
+/* v11.28 · Ajustes de acumulado y avances previos (PREVIO-…): corrigen el acumulado,
+   ya están pagados y no son certificados del período */
+function esAjuste(c){ return /^PREVIO-/i.test(String((c && c.numero) || '')); }
+function ajusteTxt(c){
+  const n = String(c.numero||''), m = /^PREVIO-(AJ-)?(.+?)-(\d{2}\.\d{3}[A-Z0-9-]*?)(?:-\d{5})?$/i.exec(n);
+  return { tipo: /^PREVIO-AJ-/i.test(n) ? 'Ajuste de acumulado' : 'Avance previo al sistema', ref: m ? (m[2]+' · '+m[3]) : n };
+}
 function renderKpis(){
-  const L = state.list.filter(c=>c.estado!=='Anulado');
+  const L = state.list.filter(c=>c.estado!=='Anulado' && !esAjuste(c));
   const bor = L.filter(c=>c.estado==='Borrador');
   const med = L.filter(c=>c.estado==='Medido');
   const apr = L.filter(c=>c.estado==='Aprobado');
@@ -1655,6 +1673,14 @@ function renderList(){
   const obr = document.getElementById('fObra').value;
   const con = document.getElementById('fContra').value;
   let L = state.list.slice();
+  // v11.28 · Los ajustes se ven solo si se pide
+  const nAj = L.filter(esAjuste).length;
+  let tg = document.getElementById('ajToggle');
+  if(!tg){ tg = document.createElement('div'); tg.id = 'ajToggle'; tg.className = 'aj-toggle'; const li = document.getElementById('lista'); li.parentNode.insertBefore(tg, li); }
+  tg.innerHTML = nAj ? ('<label><input type="checkbox" id="ajVer"'+(state.verAjustes?' checked':'')+'> Mostrar ajustes de acumulado y avances previos <b>('+nAj+')</b></label>'+
+    '<span>No son certificados: corrigen el acumulado de un trabajo, ya están pagados y no entran en los totales.</span>') : '';
+  const av = document.getElementById('ajVer'); if(av) av.onchange = function(){ state.verAjustes = av.checked; renderList(); };
+  if(!state.verAjustes) L = L.filter(c=>!esAjuste(c));
   if(est) L = L.filter(c=>c.estado===est);
   if(obr) L = L.filter(c=>c.obra===obr);
   if(con) L = L.filter(c=>c.contratista===con);
@@ -1665,8 +1691,16 @@ function renderList(){
     cont.innerHTML = '<div class="vacio"><b>No hay certificados que mostrar.</b><br><small>Creá el primero con «Nuevo certificado».</small></div>';
     return;
   }
-  cont.innerHTML = L.map(c =>
-    '<div class="cert-card" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'">'+
+  cont.innerHTML = L.map(c => esAjuste(c)
+    ? '<div class="cert-card aj" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'" title="'+escapeHtml(c.numero||'')+'">'+
+        '<div class="cert-num"><span class="aj-tag">'+ajusteTxt(c).tipo+'</span><small>'+escapeHtml(ajusteTxt(c).ref)+' · '+fmtFecha(c.fecha)+'</small></div>'+
+        '<div class="cert-obra">'+escapeHtml(c.obra||'—')+'<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'')+'</small></div>'+
+        '<div class="cert-obra">'+escapeHtml(String(c.creado_por||c.medido_por||'—').replace(/\s*\((ajuste de acumulado|ajuste)\)\s*$/i,''))+'<small>registró el ajuste</small></div>'+
+        '<div class="cert-obra">'+escapeHtml(c.contratista||'—')+'<small>contratista</small></div>'+
+        '<div><span class="badge aj">Ya pagado</span></div>'+
+        '<div class="cert-tot aj">'+gs(c.total)+'</div>'+
+      '</div>'
+    : '<div class="cert-card" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'">'+
       '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+'</small></div>'+
       '<div class="cert-obra">'+escapeHtml(c.obra||'—')+
         '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small></div>'+
@@ -2186,6 +2220,26 @@ if(_at){
    en el presupuesto. Antes solo aparecía cuando la lista estaba vacía. */
 document.getElementById('btnOP').onclick = opAbrir;
 document.getElementById('btnTA').onclick = taAbrir;
+/* v11.28 · Contrato nuevo desde Certificación (otra pestaña); al volver se recargan los contratos */
+function abrirNuevoContrato(){
+  const enEd = ed && ed.open;
+  const k = enEd ? String((document.getElementById('edContra')||{}).value||'').trim() : '';
+  const o = enEd ? String((document.getElementById('edObraFiltro')||{}).value||'').trim() : '';
+  const q = new URLSearchParams({ nuevo:'1' }); if(k) q.set('contratista', k); if(o) q.set('obra', o);
+  window.__ctrAbierto = true;
+  window.open('axc_contratos.html?'+q.toString(), '_blank');
+  showToast('Contratos se abrió en otra pestaña','info', 'Cargá y aprobá el contrato allá. Al volver a esta pestaña'+(k?' aparece en las tarjetas de '+k:' se actualizan los contratos')+'.');
+}
+document.getElementById('btnCtr').onclick = abrirNuevoContrato;
+document.addEventListener('click', function(e){
+  const b = e.target && e.target.closest ? e.target.closest('[data-ctrnuevo]') : null;
+  if(!b) return; e.preventDefault(); e.stopPropagation(); abrirNuevoContrato();
+}, true);
+window.addEventListener('focus', async function(){
+  if(!window.__ctrAbierto || !ed || !ed.open) return;
+  const k = String((document.getElementById('edContra')||{}).value||'').trim(); if(!k) return;
+  try{ CT.cargado = ''; await ctCargar(k, ed.id); ctAviso(); showToast('Contratos actualizados','info','Si aprobaste el contrato, ya aparece en el paso 2.'); }catch(e){}
+});
 document.getElementById('taX').onclick = function(){ document.getElementById('taOv').hidden = true; };
 document.getElementById('taCerrar').onclick = function(){ document.getElementById('taOv').hidden = true; };
 document.getElementById('taNuevo').onclick = async function(){ if(await taForm(null, '')) taPintar(false); };
@@ -3994,6 +4048,8 @@ function ctAviso(){
          : '<span class="ct-l2">Certificado aparte para un trabajo</span><span class="ct-l3">Elegís el número (o lo creás)</span>')+
     '</span></button>';
   html += '</div>';
+  html += '<div class="ct-mas"><button type="button" class="ct-nuevo" data-ctrnuevo>📑 ¿No está el contrato? Crealo en Contratos</button>'+
+          '<span>Se abre en otra pestaña con este contratista; al volver, aparece acá.</span></div>';
   html += '<div class="ct-nota">'+(modo === 'contrato'
       ? '✓ <b>'+ed.ctSel.length+' contrato(s) elegido(s).</b> Obra, presupuesto, rubros, precio y saldo salen del contrato.'+
         ((CT.contratos||[]).length > ed.ctSel.length ? ' Podés <b>sumar otro contrato</b> del mismo contratista tildando su tarjeta: cada uno se certifica contra su propio presupuesto y saldo.' : '')+
