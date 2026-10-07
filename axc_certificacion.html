@@ -526,6 +526,14 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .pl-base label{display:flex;gap:5px;align-items:center;cursor:pointer}
 .pl-base small{color:#94a3b8}
 .pl-tag.ta{background:#E6F0EA;color:#1F5C3A}
+.aa-ed{border:0;background:transparent;cursor:pointer;font-size:12px;padding:0 0 0 4px;opacity:.55;vertical-align:middle}
+.aa-ed:hover{opacity:1;transform:scale(1.15)}
+.aa-box{border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:#F8FAFC}
+.aa-t{font-weight:800;color:#1F3864;font-size:13.5px;margin-bottom:6px}
+.aa-g{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.aa-g div{display:flex;flex-direction:column}.aa-g span{font-size:11px;color:#6B7280;font-weight:700}.aa-g b{font-size:15px;color:#1C2333}.aa-g i{font-size:11px;color:#8893a5;font-style:normal}
+.aa-dif{margin-top:6px;font-size:13px;color:#1F3864;min-height:1.2em}
+.aa-nota{margin-top:10px;background:#FBF6E6;border:1px solid #E6C766;border-radius:10px;padding:9px 12px;font-size:12.5px;color:#4B4532;line-height:1.45}
 .lin-tag.ta{background:#E6F0EA;color:#1F5C3A;border:1px solid #BFDCCB}
 .ta-guia{background:#F4F7FB;border:1px solid #D6E0EE;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.5;color:#2B3340;margin-bottom:12px}
 .ta-t td{vertical-align:top}
@@ -996,7 +1004,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.26 · trabajos por administración con rubros · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.27 · ajuste del acumulado anterior · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -4624,6 +4632,115 @@ function precioDeLinea(l, m){
    que la planilla del presupuesto. Usa los mismos data-c / data-p que las
    tarjetas, así que los enganches y los cálculos no cambian. El ▸ abre la
    tarjeta completa debajo para ubicación, observación y fotos.            */
+/* ═══ v11.27 · AJUSTE DEL ACUMULADO ANTERIOR (etapa de prueba) ═══════════
+   Lápiz junto al «Acum. ant.» de cada trabajo. Registra un ajuste aprobado
+   (PREVIO-AJ-…) con la diferencia, marcado PAGO PREVIO: no se paga en ninguna
+   orden, y corrige el acumulado de este certificado, de los próximos y el
+   saldo del contrato. Queda quién, cuándo y por qué.
+   Al terminar la etapa de prueba: AJUSTE_ACUM = false.                    */
+const AJUSTE_ACUM = true;
+function aaBtn(k, l){
+  if(!AJUSTE_ACUM || !l || l.libre || ed.estadoPrevio === 'Aprobado' || ed.estadoPrevio === 'Anulado') return '';
+  return '<button type="button" class="aa-ed" data-aa="'+escapeHtml(k)+'" title="Corregir el acumulado anterior (etapa de prueba)">✏️</button>';
+}
+async function aaInsertar(tabla, fila){
+  // Inserta quitando las columnas que la base no tenga (igual que el script del avance previo)
+  for(let i = 0; i < 8; i++){
+    const r = await sb.from(tabla).insert(fila).select('id').single();
+    if(!r.error) return r.data;
+    const m = /column "?([a-z_]+)"? .*does not exist|Could not find the '([a-z_]+)' column/i.exec(r.error.message||'');
+    const col = m && (m[1] || m[2]);
+    if(col && (col in fila)){ delete fila[col]; continue; }
+    throw r.error;
+  }
+  throw new Error('No se pudo guardar el ajuste');
+}
+async function ajustarAcum(k){
+  const l = (ed.lineas||[]).filter(function(x){ return keyLinea(x.rubro_codigo,x.codigo_insumo,x.descripcion,x.presupuesto) === k; })[0];
+  if(!l) return;
+  const contratista = String((document.getElementById('edContra')||{}).value||'').trim();
+  if(!contratista){ showToast('Primero elegí el contratista','warn'); return; }
+  const h = ed.hist[k] || { aprob:0, tramite:0 };
+  const ant = (Number(h.aprob)||0) + (Number(h.tramite)||0);
+  const base = l.contrato_item_id ? (Number(l.cant_contratada)||0) : (Number(l.cant_presup)||0);
+  const pu = Number(precioDeLinea(l, ed.med[k]||{}).pnum) || Number(l.precio_contrato) || 0;
+  const un = l.unidad || '';
+  const html =
+    '<div class="aa-box">'+
+      '<div class="aa-t">'+escapeHtml(l.rubro_codigo||'')+' · '+escapeHtml(l.descripcion||'')+'</div>'+
+      '<div class="aa-g">'+
+        '<div><span>'+(l.contrato_item_id ? 'Contratado' : 'Presupuestado')+'</span><b>'+qty(base)+' '+escapeHtml(un)+'</b></div>'+
+        '<div><span>Acum. anterior hoy</span><b>'+qty(ant)+' '+escapeHtml(un)+'</b><i>'+qty(h.aprob)+' aprobado · '+qty(h.tramite)+' en trámite</i></div>'+
+        '<div><span>Precio</span><b>'+gs(pu)+'</b></div>'+
+      '</div></div>'+
+    '<div style="margin-top:10px"><label class="ax-l">Acumulado anterior correcto * <small>en '+escapeHtml(un||'la unidad del trabajo')+'</small></label>'+
+      '<input id="aaVal" class="ax-in" type="number" min="0" step="any" value="'+(Math.round(ant*10000)/10000)+'"></div>'+
+    '<div class="aa-dif" id="aaDif"></div>'+
+    '<div style="margin-top:10px"><label class="ax-l">Justificación * <small>por qué se corrige: queda registrada</small></label>'+
+      '<textarea id="aaMot" class="ax-in" rows="3" placeholder="Ej. El contratista ya tenía 30 m² hechos antes de cargar el sistema; se verificó en obra el 06/10."></textarea></div>'+
+    '<div class="aa-nota">🧪 <b>Solo durante la etapa de prueba.</b> Se registra un ajuste aprobado marcado <b>PAGO PREVIO</b>: no se paga en ninguna orden. Corrige el acumulado de este certificado, de los próximos y el saldo del contrato. Queda registrado quién lo hizo, cuándo y por qué.</div>'+
+    '<div class="ax-hint" id="aaErr" style="color:#B42B2B;min-height:1em"></div>';
+  const r = await axcDialog({ tono:'warn', icono:'✏️', titulo:'Corregir el acumulado anterior', subtitulo:(l.contrato_numero ? l.contrato_numero+' · ' : '')+contratista,
+    html:html, ok:'Registrar el ajuste', cancelar:'Volver',
+    alRender:function(box){
+      const v = box.querySelector('#aaVal'), d = box.querySelector('#aaDif');
+      const pinta = function(){
+        const n = Number(v.value), dif = Math.round((n - ant)*10000)/10000;
+        if(v.value === '' || isNaN(n)){ d.innerHTML = ''; return; }
+        d.innerHTML = dif === 0 ? 'Sin cambios.'
+          : 'Diferencia: <b>'+(dif > 0 ? '+' : '')+qty(dif)+' '+escapeHtml(un)+'</b>'+(pu ? ' · '+(dif > 0 ? '+' : '')+gs(Math.round(dif*pu)) : '')+
+            ' · Acum. anterior: <b>'+qty(ant)+' → '+qty(n)+'</b>'+(base > 0 ? ' · disponible: <b>'+qty(Math.max(0, base - n))+'</b>' : '');
+      };
+      v.addEventListener('input', pinta); pinta(); v.focus(); v.select();
+    },
+    validar:function(box){
+      const vv = box.querySelector('#aaVal').value, n = Number(vv);
+      if(vv === '' || isNaN(n) || n < 0) return axMarcar(box,'#aaVal','#aaErr','<b>Acumulado:</b> escribí la cantidad correcta (0 o más).');
+      if(Math.abs(n - ant) < 0.00005) return axMarcar(box,'#aaVal','#aaErr','<b>Acumulado:</b> es igual al actual; no hay nada que corregir.');
+      if(base > 0 && n > base + 0.00005) return axMarcar(box,'#aaVal','#aaErr','<b>Acumulado:</b> no puede superar lo '+(l.contrato_item_id ? 'contratado' : 'presupuestado')+' ('+qty(base)+' '+escapeHtml(un)+').');
+      if((box.querySelector('#aaMot').value||'').trim().length < 10) return axMarcar(box,'#aaMot','#aaErr','<b>Justificación:</b> explicá por qué se corrige (al menos 10 caracteres). Queda registrada con tu nombre.');
+      return true;
+    } });
+  if(!r.ok) return;
+  const nuevo = Number(r.box.querySelector('#aaVal').value);
+  const motivo = r.box.querySelector('#aaMot').value.trim();
+  const delta = Math.round((nuevo - ant)*10000)/10000;
+  const quien = (typeof taQuien === 'function' ? taQuien() : '') || 'Usuario';
+  const fEd = String((document.getElementById('edFecha')||{}).value || hoyISO());
+  const fd = new Date(fEd+'T12:00:00'); fd.setDate(fd.getDate() - 1);
+  const fecha = fd.toISOString().slice(0,10);
+  const ci = l.contrato_item_id ? (CT.porId[l.contrato_item_id] || {}) : {};
+  const obra = l.obra || ci._obra || String((document.getElementById('edObraFiltro')||{}).value||'') || null;
+  const numero = 'PREVIO-AJ-'+String(l.contrato_numero || l.presupuesto || 'S').replace(/\s+/g,'')+'-'+String(l.rubro_codigo||'X')+'-'+String(Date.now()).slice(-5);
+  const obs = 'Ajuste de acumulado anterior (etapa de prueba): '+qty(ant)+' → '+qty(nuevo)+' '+un+' ('+(delta > 0 ? '+' : '')+qty(delta)+'). Registró '+quien+'. Motivo: '+motivo;
+  try{
+    const cab = await aaInsertar('certificados', {
+      numero:numero, contratista:contratista, obra:obra, sector:l.sector||null, presupuesto:l.presupuesto||null,
+      fecha:fecha, estado:'Aprobado', total:Math.round(delta*pu), orden_pago:'PAGO PREVIO',
+      observacion:obs, creado_por:quien+' (ajuste de acumulado)', medido_por:quien+' (ajuste de acumulado)',
+      aprobado_por:quien+' (ajuste de acumulado)', aprobado_en:new Date().toISOString(), contrato_id:ci.contrato_id || null });
+    await aaInsertar('certificado_items', {
+      certificado_id:cab.id, orden:0, presupuesto:l.presupuesto||null, obra:obra, sector:l.sector||null,
+      rubro_codigo:l.rubro_codigo||null, rubro_desc:l.rubro_desc||null, codigo_insumo:l.codigo_insumo||null,
+      descripcion:l.descripcion||null, unidad:un||null, cantidad:delta, precio_unit:pu, subtotal:Math.round(delta*pu),
+      cant_presup:l.cant_presup||null, contrato_item_id:l.contrato_item_id||null,
+      clasificacion:l.contrato_item_id ? 'contrato' : 'presupuesto', fuera_contrato:false, observacion:obs });
+  }catch(e){
+    await axcDialog({ tono:'danger', icono:'!', titulo:'No se pudo registrar el ajuste', mensaje:'La base no aceptó el ajuste: <b>'+escapeHtml(e.message||String(e))+'</b>. Si el mensaje habla de permisos, el ajuste lo tiene que hacer un usuario de administración.', ok:'Entendido', soloOk:true });
+    return;
+  }
+  ed.hist = {}; await ctHistorial();
+  CT.cargado = ''; await ctCargar(contratista, ed.id);
+  renderLineas();
+  showToast('Acumulado anterior corregido','success', qty(ant)+' → '+qty(nuevo)+' '+un+' · registrado como '+numero);
+}
+document.addEventListener('click', function(e){
+  const b = e.target && e.target.closest ? e.target.closest('[data-aa]') : null;
+  if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  ajustarAcum(b.dataset.aa);
+}, true);
+
 function lineaFila(l, contratista){
   const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
   const m = ed.med[k] || {};
@@ -4662,7 +4779,7 @@ function lineaFila(l, contratista){
       (m.obs?'<div class="pl-obs">'+escapeHtml(m.obs)+'</div>':'')+'</td>'+
     '<td class="c">'+escapeHtml(l.unidad||'')+'</td>'+
     '<td class="n">'+(base>0?qty(base):'—')+'</td>'+
-    '<td class="n ant">'+(ant?qty(ant):'—')+'</td>'+
+    '<td class="n ant">'+(ant?qty(ant):'—')+aaBtn(k, l)+'</td>'+
     '<td class="n dsp'+(disp!=null&&disp<=0?' sin':'')+'">'+(disp!=null?qty(disp):'—')+'</td>'+
     '<td class="pl-in"><input type="number" min="0" step="any" data-c="'+escapeHtml(k)+'" value="'+cant+'" placeholder="0" class="'+(cargada?'ok':'')+'"></td>'+
     '<td class="n act">'+(act?qty(act):'—')+'</td>'+
@@ -4752,7 +4869,7 @@ function lineaHTML(l, contratista){
         ' <i>'+(l.contrato_item_id ? 'control de obra: no frena el pago, muestra si la obra se pasa de lo previsto' : 'esto es lo que el sistema controla en este trabajo')+'</i></div>'+
       '<div class="lin-acum">'+
       '<div><span>Presupuestado</span><b>'+qty(l.cant_presup)+'</b>'+presupCol+'</div>'+
-      '<div class="ant"><span>Acum. anterior</span><b>'+qty(ant)+'</b>'+gsm(ant)+'</div>'+
+      '<div class="ant"><span>Acum. anterior</span><b>'+qty(ant)+aaBtn(k, l)+'</b>'+gsm(ant)+'</div>'+
       '<div class="nue"><span>Medición actual</span><b>'+(nue?qty(nue):'—')+'</b>'+(nue?gsm(nue):'<i>—</i>')+'</div>'+
       '<div class="act"><span>Acum. actual</span><b>'+qty(act)+'</b>'+gsm(act)+'</div>'+
       '<div class="pct"><span>% avance</span><b>'+pctA+'%</b><i>de lo presupuestado</i></div>'+
