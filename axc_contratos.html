@@ -439,7 +439,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.7 · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.8 · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -1594,7 +1594,7 @@ function pintarDetalle(){
   }
   if(c.estado==='Vigente'){
     if(S.puedeAprobar) a.push('<button class="btn btn-bad" id="acAnu">Anular</button>');
-    if(S.puedeAprobar) a.push('<button class="btn btn-gh" id="acCer">Cerrar contrato</button>');
+    if(S.puedeAprobar) a.push('<button class="btn btn-gh" id="acCer" title="Solo cuando el contratista TERMINÓ todo el contrato. Un contrato cerrado ya no aparece en Certificación">Cerrar contrato</button>');
     if(!c.firmado_path) a.push('<button class="btn btn-gh" id="acFirm" title="Opcional: guardar el contrato firmado escaneado">📎 Adjuntar firmado</button>');
     a.push('<button class="btn btn-pri" id="acAd">Nueva adenda</button>');
   }
@@ -1659,12 +1659,30 @@ async function verFirmado(c){
   window.open(url,'_blank');
 }
 async function cerrarContrato(c){
+  /* v2.8 · Cerrar explica qué significa, avisa si queda saldo y pide el motivo */
   const m=metricas(c);
-  const ok=await ask({ title:'Cerrar contrato', html:'<p>El contrato <b>'+esc(c.numero)+'</b> se da por terminado. No admite más certificados.</p>'+(m.saldo>0?'<div class="note note-w" style="margin-top:10px">Queda un saldo sin certificar de <b>Gs '+fmtGs(m.saldo)+'</b> ('+Math.round(100-m.avance)+' %). Se libera en el presupuesto.</div>':''), ok:'Cerrar contrato' });
-  if(!ok) return;
+  const conSaldo = m.saldo > 0;
+  const html =
+    '<div class="note" style="background:#EEF3FA;border:1px solid #C9D6EA;border-radius:10px;padding:12px 14px;line-height:1.55">'+
+      '<b>¿Qué significa cerrar un contrato?</b><br>Que el contratista <b>terminó todo el trabajo</b> de este contrato y no se le va a certificar nada más.'+
+      '<div style="margin-top:8px">Al cerrarlo:</div>'+
+      '<div>✗ <b>Deja de aparecer en Certificación</b>: no se pueden cargar más certificados contra él.</div>'+
+      '<div>✗ No admite adendas.</div>'+
+      '<div>✓ Los certificados ya cargados no cambian.</div>'+
+      '<div style="margin-top:8px;color:#8A3B12"><b>Si el trabajo sigue o falta medir algo, no lo cierres.</b></div>'+
+    '</div>'+
+    (conSaldo
+      ? '<div class="note note-w" style="margin-top:10px;background:#FDF1F1;border:1px solid #E7B7B7;color:#8A1F1F;border-radius:10px;padding:10px 14px">'+
+          '⚠ <b>Este contrato todavía tiene saldo sin certificar: Gs '+fmtGs(m.saldo)+'</b> ('+Math.round(100-m.avance)+' % del contrato, avance '+Math.round(m.avance)+' %).<br>'+
+          'Si lo cerrás, ese saldo ya no se podrá certificar y se libera en el presupuesto.</div>'
+      : '<div class="note" style="margin-top:10px;background:#EEF6F1;border:1px solid #9DB8A6;color:#1F5C3A;border-radius:10px;padding:10px 14px">✓ Todo el contrato está certificado (avance 100 %).</div>');
+  const mot = await ask({ title:'Cerrar contrato '+(c.numero||''), html:html, input:'textarea', required:true,
+                          label:'Motivo del cierre (queda registrado)' + (conSaldo ? ' · explicá por qué se cierra con saldo' : ''),
+                          ok: conSaldo ? 'Cerrar igual (tiene saldo)' : 'Cerrar contrato', okClass: conSaldo ? 'btn-bad' : 'btn-pri' });
+  if(!mot) return;
   const r=await sb.from('contratos').update({ estado:'Cerrado', cerrado_por:quien(), cerrado_en:new Date().toISOString() }).eq('id',c.id);
   if(r.error){ toast('No se pudo cerrar','error',errMsg(r.error)); return; }
-  audit(c.numero,'cerrar',{ saldo:m.saldo }); toast('Contrato cerrado','success'); refrescarDetalle();
+  audit(c.numero,'cerrar',{ saldo:m.saldo, motivo:mot }); toast('Contrato cerrado','success','Ya no aparece en Certificación. Si fue un error, se reabre con «⚙ Cambiar estado» → Vigente.'); refrescarDetalle();
 }
 async function anularContrato(c){
   const m=metricas(c);
@@ -1695,7 +1713,8 @@ async function cambiarEstadoAdmin(c){
     Borrador:'Vuelve a borrador para corregirlo. Conserva su número.',
     Emitido:'Queda aprobado y listo para firmar. Si no tiene número, se le asigna el próximo.',
     Vigente:'Queda firmado y se puede certificar contra él.',
-    Cerrado:'Se da por terminado: no admite más certificados.',
+    Cerrado:'El contratista TERMINÓ todo el trabajo: deja de aparecer en Certificación y no admite más certificados ni adendas. Si el trabajo sigue, no elijas este estado.'+
+            (m.saldo > 0 ? ' ⚠ Todavía tiene Gs '+fmtGs(m.saldo)+' sin certificar.' : ''),
     Anulado:'Queda anulado con su número. No se borra.'
   };
   setTimeout(function(){
