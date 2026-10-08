@@ -4306,7 +4306,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.0.11 · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.0.12 · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -13085,55 +13085,77 @@ async function generatePDF(oc, incluirAdjuntos){
       y += histLines.length * 5 + 4;
     }
 
-    // === v8.0.4 · Condiciones para el pago al proveedor (en toda OC) ===
+    // === v8.0.12 · Condiciones para el pago al proveedor (diseño sobrio, alineado con la OC) ===
     {
-      // v8.0.7 · Texto definido por AXC
+      const NAV = [31,56,100], TXT = [45,50,62], GR = [120,128,140];
+      const x0 = M, w0 = pageW - M*2, pad = 5, xt = x0 + pad, wt = w0 - pad*2;
+      const LH = 4.3;
+      // Texto con partes en negrita, con salto de línea por palabra. draw=false solo mide.
+      const rich = function(parts, x, y, maxW, draw){
+        let cx = x, cy = y;
+        parts.forEach(function(p){
+          doc.setFont('helvetica', p.b ? 'bold' : (p.i ? 'italic' : 'normal'));
+          String(p.t).split(/(\s+)/).forEach(function(w){
+            if(!w) return;
+            const ww = doc.getTextWidth(w);
+            if(/^\s+$/.test(w)){ if(cx > x) cx += ww; return; }
+            if(cx + ww > x + maxW && cx > x){ cx = x; cy += LH; }
+            if(draw) doc.text(w, cx, cy);
+            cx += ww;
+          });
+        });
+        doc.setFont('helvetica','normal');
+        return cy + LH;
+      };
+      const nro = numeroDisplay || 'esta OC';
       const items = [
-        'Factura contado / crédito indicando el Nro. de la Orden de Compra (' + (numeroDisplay || 'esta OC') + ') y/o copia de esta orden de compra.',
-        'Nota de recepción o remisión del material, firmada y aclarada por el responsable que recibió el material.'
+        [{t:'Factura contado / crédito', b:1}, {t:' indicando el Nro. de Orden de Compra ('}, {t:nro, b:1}, {t:') y/o copia de esta orden.'}],
+        [{t:'Nota de recepción o remisión', b:1}, {t:' del material, firmada y aclarada por el responsable que lo recibió.'}]
       ];
-      const ancho = pageW - M*2 - 10;
-      doc.setFontSize(8.6);
-      const intro = doc.splitTextToSize('Estimado proveedor: para gestionar el pago de esta orden de compra, presente la siguiente documentación:', ancho);
-      const lineasItems = items.map(function(t){ return doc.splitTextToSize(t, ancho - 6); });
-      const cierre = doc.splitTextToSize('Sin la documentación completa no se podrá procesar el pago.', ancho);
-      const alto = 9 + intro.length*4.2 + lineasItems.reduce(function(a,l){ return a + l.length*4.2 + 1; }, 0) + cierre.length*4.2 + 1.5 + 15;
+      const intro = [{t:'Estimado proveedor: para gestionar el pago de esta orden de compra, presente la siguiente documentación:'}];
+      const cierre = [{t:'Sin la documentación completa no se podrá procesar el pago.', i:1}];
+      const gracias = [{t:'Agradecemos su colaboración en este proceso de mejora continua.'}];
+      const cuerpo = function(y, draw){
+        doc.setFontSize(8.6); doc.setTextColor.apply(doc, TXT);
+        let yy = rich(intro, xt, y, wt, draw) + 1.6;
+        // etiqueta chica sobre las casillas
+        doc.setFontSize(6.8); doc.setTextColor.apply(doc, GR); doc.setFont('helvetica','bold');
+        if(draw) doc.text('DOCUMENTACIÓN RECIBIDA (USO INTERNO)', xt, yy);
+        doc.setFont('helvetica','normal'); yy += 3.6;
+        doc.setFontSize(8.6); doc.setTextColor.apply(doc, TXT);
+        items.forEach(function(parts){
+          if(draw){ doc.setDrawColor.apply(doc, NAV); doc.setLineWidth(0.35); doc.setFillColor(255,255,255); doc.rect(xt + 0.5, yy - 3.1, 3.4, 3.4, 'FD'); }
+          yy = rich(parts, xt + 6.5, yy, wt - 6.5, draw) + 1.2;
+        });
+        doc.setTextColor.apply(doc, TXT);
+        yy = rich(cierre, xt, yy + 0.4, wt, draw) + 1.4;
+        yy = rich(gracias, xt, yy, wt, draw) + 2.2;
+        if(draw){
+          const xR = x0 + w0 - pad;
+          doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, NAV);
+          doc.text('Arq. Vladimir Denis', xR, yy, { align:'right' });
+          doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor.apply(doc, GR);
+          doc.text('AXC Constructora', xR, yy + 4, { align:'right' });
+        }
+        return yy + 4 + 3;
+      };
+      const BAND = 7.5;
+      const alto = BAND + (cuerpo(0, false) - 0) + 4;
       if(y + alto > pageH - 14){
         doc.addPage(); y = 18;
         doc.setFontSize(7.5); doc.setTextColor(140,150,170); doc.setFont('helvetica','normal');
         doc.text(pdfSafe('AXC Constructora · Desarrollado por Conexdata · ' + new Date().toLocaleString('es-PY')), M, pageH - 8);
       }
       y += 2;
-      doc.setDrawColor(200,160,40); doc.setFillColor(255,250,235); doc.setLineWidth(0.4);
-      doc.roundedRect(M, y, pageW - M*2, alto, 2, 2, 'FD');
-      let yy = y + 6;
-      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(138,106,14);
-      doc.text('CONDICIONES PARA EL PAGO', M + 5, yy); yy += 5;
-      doc.setFont('helvetica','normal'); doc.setFontSize(8.6); doc.setTextColor(50,55,70);
-      intro.forEach(function(l){ doc.text(l, M + 5, yy); yy += 4.2; });
-      yy += 0.8;
-      // v8.0.9 · Casillas para tildar al presentar cada documento
-      lineasItems.forEach(function(ls){
-        doc.setDrawColor(120,100,40); doc.setLineWidth(0.35); doc.setFillColor(255,255,255);
-        doc.rect(M + 5.5, yy - 3.1, 3.4, 3.4, 'FD');
-        doc.setFont('helvetica','normal');
-        ls.forEach(function(l){ doc.text(l, M + 11.5, yy); yy += 4.2; });
-        yy += 1.2;
-      });
-      doc.setFont('helvetica','italic');
-      cierre.forEach(function(l){ doc.text(l, M + 5, yy); yy += 4.2; });
+      // Recuadro blanco con borde azul fino y franja de título azul
+      doc.setDrawColor.apply(doc, NAV); doc.setLineWidth(0.3); doc.setFillColor(255,255,255);
+      doc.roundedRect(x0, y, w0, alto, 1.5, 1.5, 'FD');
+      doc.setFillColor.apply(doc, NAV);
+      doc.roundedRect(x0, y, w0, BAND, 1.5, 1.5, 'F'); doc.rect(x0, y + BAND - 2, w0, 2, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(255,255,255);
+      doc.text('CONDICIONES PARA EL PAGO', xt, y + 5);
+      cuerpo(y + BAND + 5, true);
       doc.setFont('helvetica','normal');
-      // v8.0.11 · Agradecimiento y firma
-      yy += 1.5;
-      doc.setFontSize(8.6); doc.setTextColor(50,55,70);
-      doc.text('Agradecemos su colaboración en este proceso de mejora continua.', M + 5, yy);
-      yy += 6;
-      const xR = pageW - M - 6;
-      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(31,56,100);
-      doc.text('Arq. Vladimir Denis', xR, yy, { align:'right' });
-      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(110,110,110);
-      doc.text('AXC Constructora', xR, yy + 4, { align:'right' });
-
       y += alto + 4;
     }
 
