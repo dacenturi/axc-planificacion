@@ -727,7 +727,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.49 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.50 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -4823,6 +4823,13 @@ async function openPropuestasLista(){
   ov.querySelector('#plCerrar').onclick = ()=> ov.remove();
   ov.addEventListener('click', ev=>{ if(ev.target===ov) ov.remove(); });
 
+  /* v10.50 · Solo se puede aceptar la propuesta que coincide con el presupuesto
+     publicado (mismos rubros y mismo costo, con tolerancia de redondeo). */
+  const _refCosto = (ed.rubros||[]).reduce(function(s,r){ return s + (Number(r.precio_total)||0); }, 0);
+  const _refN = (ed.rubros||[]).length;
+  const _refTxt = ed.activo ? 'publicado' : 'actual (borrador)';
+  const _coincide = function(a){ return a && a.n === _refN && Math.abs((a.costo||0) - _refCosto) <= Math.max(5000, _refCosto*0.0005); };
+  let _AGG = {};
   const pintar = async function(){
     const box = ov.querySelector('#plBody');
     try{
@@ -4851,8 +4858,24 @@ async function openPropuestasLista(){
         }).length;
       });
 
+      _AGG = agg;
+      const coinc = cabs.filter(function(c){ return _coincide(agg[c.id]); });
+      const vCoinc = coinc.length ? coinc[coinc.length-1] : null;   // la última que coincide
       // Ficha de la propuesta vigente: lo que hay que mirar primero
       const acc = cabs.filter(function(c){ return c.aceptada; })[0];
+      const avisoRef = (function(){
+        const ref = 'Presupuesto '+_refTxt+': <b>'+_refN+' rubros · costo ₲ '+fmtGs(_refCosto)+'</b>.';
+        if(acc && !_coincide(agg[acc.id])){
+          const a = agg[acc.id] || { costo:0, n:0 };
+          return '<div style="border:1.5px solid #E7B7B7;background:#FDF1F1;color:#8A1F1F;border-radius:11px;padding:11px 14px;margin-bottom:12px;font-size:12.8px;line-height:1.55">'+
+            '⚠ <b>La propuesta aceptada (v'+acc.version+') no coincide con el presupuesto '+_refTxt+'.</b> '+
+            'v'+acc.version+': '+a.n+' rubros · costo ₲ '+fmtGs(a.costo)+' · '+ref+'<br>'+
+            (vCoinc ? 'La <b>v'+vCoinc.version+'</b> sí coincide: si es la que aceptó el cliente, marcala aceptada.'
+                    : 'Ninguna propuesta coincide con el presupuesto '+_refTxt+': <b>emití la propuesta nueva</b> y marcala aceptada cuando el cliente la apruebe.')+'</div>';
+        }
+        if(!acc) return '<div style="font-size:12px;color:#5a6377;margin:0 0 10px">'+ref+' Solo se puede marcar aceptada la propuesta que coincide con él'+(vCoinc?' (hoy: <b>v'+vCoinc.version+'</b>)':' (ninguna todavía: emití una nueva)')+'.</div>';
+        return '';
+      })();
       let ficha = '';
       if(acc){
         const a = agg[acc.id] || { costo:0, venta:0, n:0 };
@@ -4887,7 +4910,7 @@ async function openPropuestasLista(){
           'Ninguna versión está marcada como aceptada. Hasta que marques una, el comparativo de costo contra venta no tiene referencia.</div>';
       }
 
-      box.innerHTML = ficha +
+      box.innerHTML = avisoRef + ficha +
         '<style>#plBody .ins-tbl{font-size:12.5px}#plBody .ins-tbl th{position:sticky;top:0;z-index:3;background:#F0F3F8}'+
         '#plBody .ins-tbl td,#plBody .ins-tbl th{padding:6px 8px}'+
         '#plBody .pl-acc{width:150px;padding:6px 10px!important}'+
@@ -4923,12 +4946,15 @@ async function openPropuestasLista(){
               ? '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800">✓ ACEPTADA</span>'+
                 (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
                 (c.aceptada_obs?('<div style="font-size:11px;color:#8893a5">'+escapeHtml(c.aceptada_obs)+'</div>'):'')
-              : '<span style="color:#8893a5;font-size:12px">emitida</span>')+'</td>'+
+              : '<span style="color:#8893a5;font-size:12px">emitida</span>')+
+              (_coincide(a) ? '<div><span style="display:inline-block;margin-top:4px;background:#E8EEF8;color:#1F3864;border-radius:999px;padding:2px 8px;font-size:10.5px;font-weight:800">= '+(ed.activo?'PUBLICADO':'PRESUPUESTO ACTUAL')+'</span></div>' : '')+'</td>'+
             '<td class="pl-acc">'+
               '<button type="button" class="pl-b pl-b-pdf" data-plver="'+c.id+'" title="Ver o imprimir esta versión tal como se emitió">📄 <span>Ver PDF</span></button>'+
               (c.aceptada
                 ? '<span class="pl-b pl-b-ok" title="Es la versión vigente: contra esta se compara el costo">✓ <span>Aceptada</span></span>'
-                : '<button type="button" class="pl-b pl-b-mk" data-placep="'+c.version+'" title="Marcar esta versión como la que aceptó el cliente">✓ <span>Marcar aceptada</span></button>')+
+                : (_coincide(a)
+                    ? '<button type="button" class="pl-b pl-b-mk" data-placep="'+c.version+'" title="Coincide con el presupuesto '+_refTxt+': marcala si es la que aceptó el cliente">✓ <span>Marcar aceptada</span></button>'
+                    : '<span class="pl-b" style="cursor:default;color:#8893a5;border-style:dashed;white-space:normal;font-weight:600;font-size:11px" title="Solo se acepta la propuesta que coincide con el presupuesto '+_refTxt+'">No coincide con el '+(ed.activo?'publicado':'presupuesto actual')+'</span>'))+
             '</td></tr>';
         }).join('')+'</tbody></table>'+
         '<div style="font-size:11.5px;color:#8893a5;margin-top:10px">El coeficiente real es costo ÷ venta de toda la propuesta. '+
@@ -4944,6 +4970,7 @@ async function openPropuestasLista(){
     if(t.dataset.plver){ await verPropuestaVersion(t.dataset.plver); return; }
     if(t.dataset.placep){
       const v = Number(t.dataset.placep);
+      if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar: la propuesta aceptada tiene que coincidir con el presupuesto guardado.'); return; }
       const obs = prompt(
         'MARCAR LA PROPUESTA v'+v+' COMO ACEPTADA\n\n'+
         'La aceptada es la unica contra la que se comparan los costos reales.\n'+
