@@ -1022,7 +1022,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.32 · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.33 · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -1763,6 +1763,7 @@ async function cerrarEditor(){
 }
 
 async function abrirEditor(id){
+  try{ await catCargar(); }catch(e){}   // v11.33 · nombres de rubro del catálogo
   ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false; ed.ordenPrevio={}; ed.estadoPrevio=''; ed.motivoReapertura='';
   ed.buscar=''; ed.filtro=''; ed.ubicaciones=[]; ed.sel={}; ed.ctSel=[]; ed.contraPrevio='';
   const bq=document.getElementById('edBuscar'); if(bq) bq.value='';
@@ -4552,6 +4553,18 @@ document.addEventListener('click', function(ev){
 
 /* v11.11 · Si el contrato trae detalle del trabajo, ese es el texto principal:
    el código y el nombre del rubro pasan a una línea chica y discreta. */
+/* v11.33 · Descripciones genéricas («Mano de obra», «Gasto de reserva»…):
+   se muestra el nombre del rubro (del presupuesto o del catálogo). Solo cambia
+   lo que se ve; el dato guardado y la clave de la línea no se tocan. */
+const _DESC_GENERICA = /^\s*(m\.?\s*o\.?|mano\s+de\s+obra|gastos?\s+de\s+reserva|reserva|gastos?\s+indirectos?)\s*$/i;
+function esDescGenerica(d){ return _DESC_GENERICA.test(String(d||'')); }
+function nombreRubroDe(cod, desc, rubroDesc){
+  if(!esDescGenerica(desc)) return desc || '';
+  if(rubroDesc && !esDescGenerica(rubroDesc) && String(rubroDesc).trim() !== String(cod||'').trim()) return rubroDesc;
+  const base = String(cod||'').split('-')[0];
+  const r = ((typeof CAT !== 'undefined' && CAT.rubros) || []).filter(function(x){ return String(x.codigo) === base; })[0];
+  return (r && r.nombre) || desc || '';
+}
 function descLinea(desc, detalle, cod, ctNum){
   const d = String(detalle||'').trim();
   if(!d) return null;
@@ -4883,7 +4896,11 @@ function lineaFila(l, contratista){
   return '<tr class="pl-r'+(cargada?' ok':'')+(excedida?' exc':'')+'" data-fila="'+escapeHtml(k)+'">'+
     '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button>'+ordBtnsHtml(k)+'</td>'+
     (function(){
-      const dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
+      let dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
+      if(!dl && esDescGenerica(l.descripcion)){
+        const nr = nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc);
+        if(nr && !esDescGenerica(nr)) dl = { principal:nr, ref:[l.rubro_codigo, l.descripcion].filter(Boolean).join(' · ') + (l.contrato_numero ? ' · '+l.contrato_numero : '') };
+      }
       if(dl) return '<td class="pl-d"><div class="pl-cod">'+tags+'</div>'+
         '<div class="pl-desc pl-desdet" title="'+escapeHtml(dl.principal)+'">'+escapeHtml(dl.principal)+'</div>'+
         '<div class="pl-ref">'+escapeHtml(dl.ref)+'</div>';
@@ -5010,7 +5027,7 @@ function lineaHTML(l, contratista){
   const cantCambiada = !l.libre && cpCert != null && l.cant_presup > 0 && Math.abs(cpCert - l.cant_presup) > 0.001;
   return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
-      '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(String(l.contrato_detalle||'').trim() || l.descripcion)+
+      '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(String(l.contrato_detalle||'').trim() || nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc))+
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
           (l.libre?(l.rubro_codigo?'sin precio de referencia':'fuera de presupuesto'):(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr" title="La cantidad sí está presupuestada; lo que falta es la mano de obra en la composición del rubro. El pago se hace igual, con el precio del contrato o el que cargues.">sin mano de obra en el presupuesto</span>' : '')+
@@ -9724,6 +9741,7 @@ async function pedirPlanilla(c, its){
 }
 
 async function generarPlanillaPDF(c, its, opts){
+  try{ await catCargar(); }catch(e){}   // v11.33 · nombres de rubro del catálogo
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   showToast('Armando la planilla de avance…','info');
   const ant = await planillaAnterior(c, its);
@@ -9853,7 +9871,7 @@ async function generarPlanillaPDF(c, its, opts){
         { content:String(n), rowSpan: nota ? 2 : 1 },
         String(x.detalle||'').trim()
           ? { content: pdfSafe(String(x.detalle).trim()), styles:{ fontStyle:'bold' } }
-          : pdfSafe((cod ? cod+'  ' : '') + (x.descripcion||'')),
+          : pdfSafe((cod ? cod+'  ' : '') + nombreRubroDe(cod, x.descripcion||'', x.rubro_desc)),
         pdfSafe(x.unidad||''),
         libre ? '-' : q2(cp),
         g0(pu),
