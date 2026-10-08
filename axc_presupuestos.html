@@ -727,7 +727,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.47 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.48 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -1146,6 +1146,7 @@ html[data-theme="alto-contraste"]{
         <input id="crUni" class="pm-input" placeholder="m², m³, gl, UNID…" maxlength="20" style="max-width:170px">
       </div>
 
+      <div id="crDupInfo" style="display:none;margin-top:12px;background:#eef6f1;border:1px solid #9db8a6;border-left:4px solid #1f7a3f;border-radius:8px;padding:9px 12px;font-size:12.5px;color:#1c2333"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="crCancel">Cancelar</button><button type="button" class="pm-btn" id="crSave">Crear rubro</button></div>
     </div>
   </div>
@@ -9695,6 +9696,7 @@ function renderCompEditor(){
             (_valMode==='ref' ? '◆ volver al catálogo AXC' : 'ver precios de referencia')+
           '</button>'
         : '')+
+      (r.tiene_receta && _hayItems ? '<button type="button" id="compDupBtn" class="pm-btn-ghost" style="font-size:12.5px" title="Crea un rubro nuevo en el mismo capítulo con esta misma composición, para cambiar solo lo distinto">⧉ Duplicar como rubro nuevo</button>' : '')+
       '<span style="flex:1"></span>'+
       '<input id="compCopyFrom" list="compRubList" placeholder="Copiar componentes desde el rubro…" style="width:250px;border:1px solid #d3d9e3;border-radius:7px;padding:5px 9px;font-size:12.5px">'+
       '<button type="button" id="compCopyBtn" class="pm-btn-ghost" style="font-size:12.5px">Copiar</button>'+
@@ -9792,6 +9794,7 @@ function _bindEditor(){
   const vt=document.getElementById('valToggle');
   if(vt) vt.addEventListener('click', function(){ _valMode = (_valMode==='ref'?'cat':'ref'); renderCompEditor(); });
   const cb=document.getElementById('compCopyBtn'); if(cb) cb.addEventListener('click', copiarComponentesDesde);
+  const db=document.getElementById('compDupBtn'); if(db) db.addEventListener('click', duplicarRubroComp);
   document.getElementById('compAddMat').addEventListener('click', function(){ comp.items.push({id:null,tipo:'insumo',codigo_catalogo:'',material:'',unidad:'',coef1:1,coef2:1,merma_pct:0,precio_unit:null,producto_id:null,_removed:false}); renderCompEditor(); });
   document.getElementById('compAddMO').addEventListener('click', function(){ comp.items.push({id:null,tipo:'mano_obra',codigo_catalogo:'',material:'',unidad:'jor',coef1:1,coef2:1,merma_pct:0,precio_unit:0,producto_id:null,_removed:false}); renderCompEditor(); });
   document.getElementById('compCancel').addEventListener('click', function(){ selectCompRubro(comp.rubro.codigo); });
@@ -9972,9 +9975,30 @@ async function openNewRubro(){
   document.getElementById('compRubOverlay').classList.add('show');
   setTimeout(function(){ sel.focus(); }, 50);
 }
-function closeNewRubro(){ document.getElementById('compRubOverlay').classList.remove('show'); }
+function closeNewRubro(){ document.getElementById('compRubOverlay').classList.remove('show'); _dupDesde = null; const di=document.getElementById('crDupInfo'); if(di) di.style.display='none'; }
+/* v10.48 · Duplicar un rubro con su composición: abre el alta ya completa y, al crear, copia los componentes */
+let _dupDesde = null;
+async function duplicarRubroComp(){
+  const r = comp && comp.rubro; if(!r) return;
+  if(typeof _compBloqueada === 'function' && _compBloqueada()){ _avisoSinPermisoComp(); return; }
+  if(!comp.items.filter(function(x){ return !x._removed; }).length){ showToast('Esta composición no tiene componentes para duplicar','error'); return; }
+  await openNewRubro();
+  const capCod = String(r.codigo||'').split('.')[0] || (String(r.capitulo||'').match(/^\d+/)||[''])[0];
+  const sel = document.getElementById('crCapSel');
+  if(capCod && Array.from(sel.options).some(function(o){ return o.value === capCod; })){ sel.value = capCod; _onCapSelChange(); }
+  document.getElementById('crNom').value = (r.nombre||'') + ' (copia)';
+  document.getElementById('crUni').value = r.unidad || '';
+  _dupDesde = r.codigo;
+  const di = document.getElementById('crDupInfo');
+  di.innerHTML = '⧉ Se copia la composición de <b>'+escapeHtml(r.codigo)+'</b> · '+escapeHtml(r.nombre||'')+
+    '.<br>Cambiá el <b>nombre</b> por el del trabajo nuevo y tocá «Crear rubro». Después ajustá los materiales o la mano de obra que cambien y guardá.'+
+    '<br><span style="color:#6B7280">Se copia la última versión <b>guardada</b> del rubro de origen.</span>';
+  di.style.display = 'block';
+  setTimeout(function(){ const n = document.getElementById('crNom'); n.focus(); n.select(); }, 80);
+}
 
 async function saveNewRubro(){
+  const _dup = _dupDesde;   // v10.48 · rubro de origen si se está duplicando
   const selv=document.getElementById('crCapSel').value;
   let capCode='', capNom='';
   if(selv==='__new__'){
@@ -10012,8 +10036,19 @@ async function saveNewRubro(){
     _capCache=null;
     closeNewRubro();
     showToast('Rubro «'+cod+'» creado en '+capLabel, 'success');
-    _audit('rubro', cod, 'crear', {capitulo: capLabel, nombre: nom});
-    selectCompRubro(cod);
+    _audit('rubro', cod, 'crear', {capitulo: capLabel, nombre: nom, duplicado_de: _dup || null});
+    await selectCompRubro(cod);
+    if(_dup){   // trae la composición del rubro de origen para ajustarla
+      const cf = document.getElementById('compCopyFrom');
+      if(cf){ cf.value = _dup; await copiarComponentesDesde(); }
+      // también la observación de la composición (si el rubro nuevo no tiene una)
+      try{
+        const { data:rs } = await sb.from('recetas').select('observacion').eq('rubro_codigo', _dup).eq('activo', true).order('created_at').limit(1);
+        const ob = rs && rs[0] && rs[0].observacion;
+        const ta = document.getElementById('compObs');
+        if(ob && ta && !ta.value.trim()){ ta.value = ob; comp.observacion = ob; comp._tocado = true; }
+      }catch(e){}
+    }
   }catch(e){ console.warn('saveNewRubro', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
