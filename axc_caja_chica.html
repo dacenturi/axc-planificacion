@@ -430,7 +430,7 @@ tr:last-child td{border-bottom:none}
 .mix-t{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text2);font-weight:700;margin-bottom:6px}
 .mix-tbl{font-size:12.5px}
 .mix-flex{display:flex;gap:18px;align-items:center;flex-wrap:wrap}.mix-flex .mix-tbl{flex:1 1 340px;margin:0}
-.mix-pie{flex:0 0 auto;display:flex;align-items:center;justify-content:center;padding:4px}
+.mix-pie{flex:1 1 380px;max-width:520px;display:flex;align-items:center;justify-content:center;padding:4px;color:var(--text,#1C2333)}
 .mix-sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px;vertical-align:middle}
 .mix-bar{background:#e8e2d4;border-radius:5px;height:8px;overflow:hidden}
 .mix-bar i{display:block;height:100%;background:#8a6d10;border-radius:5px}
@@ -1087,7 +1087,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.45';
+const APP_VERSION='Caja Chica v7.46';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -4968,36 +4968,64 @@ function _rubroMix(list){
 /* v7.45 · Torta por rubro (misma paleta en pantalla y en PDF) */
 const RUBRO_PAL = ['#1F3864','#C8A028','#2E7D6B','#B5532A','#5B6FA8','#8A6A0E','#6E9A3A','#9C4F86','#3F8FA6','#A0A8B5','#D07A2E','#4B5563'];
 function _rubroColor(i){ return RUBRO_PAL[i % RUBRO_PAL.length]; }
+/* v7.46 · Torta con etiquetas: rubro, % y monto, con línea guía y sin superposición */
+function _pieLayout(mix, Wd, Hd, r, lineH){
+  const tot = mix.reduce((a,x)=>a+x.monto,0), cx = Wd/2, cy = Hd/2;
+  let ang = -Math.PI/2; const L = [];
+  mix.forEach((x,i)=>{ const a = x.monto/tot*Math.PI*2, m = ang + a/2;
+    L.push({ i:i, x:x, a0:ang, a1:ang+a, m:m, der: Math.cos(m) >= 0,
+      ex: cx + r*Math.cos(m), ey: cy + r*Math.sin(m), ky: cy + r*1.18*Math.sin(m) });
+    ang += a; });
+  // Solo se etiquetan las porciones de 2,5 % o más (el resto está en la tabla)
+  const vis = L.filter(o=>o.x.pct >= 2.5);
+  [true,false].forEach(function(der){
+    const lado = vis.filter(o=>o.der===der).sort((a,b)=>a.ky-b.ky);
+    for(let k=1;k<lado.length;k++){ if(lado[k].ky - lado[k-1].ky < lineH) lado[k].ky = lado[k-1].ky + lineH; }
+    const exceso = lado.length ? (lado[lado.length-1].ky - (Hd - lineH*0.6)) : 0;
+    if(exceso > 0) lado.forEach(o=>{ o.ky -= exceso; });
+    for(let k=lado.length-2;k>=0;k--){ if(lado[k+1].ky - lado[k].ky < lineH) lado[k].ky = lado[k+1].ky - lineH; }
+    lado.forEach(o=>{ o.kx = cx + (der ? 1 : -1)*(r*1.22); o.tx = cx + (der ? 1 : -1)*(r*1.32); });
+  });
+  return { cx:cx, cy:cy, L:L, vis:vis };
+}
+function _pieNom(t, n){ t = String(t||''); return t.length > n ? t.slice(0, n-1)+'…' : t; }
 function _rubroPieSVG(mix, size){
   const tot = mix.reduce((a,x)=>a+x.monto,0); if(!(tot>0)) return '';
-  const r = size/2, cx = r, cy = r; let ang = -Math.PI/2, out = '';
-  if(mix.length === 1){ out = '<circle cx="'+cx+'" cy="'+cy+'" r="'+(r-1)+'" fill="'+_rubroColor(0)+'"/>'; }
-  else mix.forEach((x,i)=>{
-    const a = x.monto/tot*Math.PI*2, a2 = ang + a, large = a > Math.PI ? 1 : 0;
-    const p1 = [cx + (r-1)*Math.cos(ang), cy + (r-1)*Math.sin(ang)], p2 = [cx + (r-1)*Math.cos(a2), cy + (r-1)*Math.sin(a2)];
-    out += '<path d="M'+cx+','+cy+' L'+p1[0].toFixed(2)+','+p1[1].toFixed(2)+' A'+(r-1)+','+(r-1)+' 0 '+large+' 1 '+p2[0].toFixed(2)+','+p2[1].toFixed(2)+' Z" fill="'+_rubroColor(i)+'" stroke="#fff" stroke-width="1.5"><title>'+_esc(x.rubro)+' · '+x.pct.toFixed(1)+'%</title></path>';
-    ang = a2;
-  });
-  // % dentro de las porciones grandes
-  ang = -Math.PI/2;
-  mix.forEach((x,i)=>{ const a = x.monto/tot*Math.PI*2, m = ang + a/2;
-    if(x.pct >= 7){ const tx = cx + r*0.62*Math.cos(m), ty = cy + r*0.62*Math.sin(m);
-      out += '<text x="'+tx.toFixed(1)+'" y="'+(ty+4).toFixed(1)+'" text-anchor="middle" font-size="'+Math.max(10, size/16).toFixed(0)+'" font-weight="700" fill="'+(i===1?'#1C2333':'#fff')+'">'+Math.round(x.pct)+'%</text>'; }
-    ang += a; });
-  return '<svg viewBox="0 0 '+size+' '+size+'" width="'+size+'" height="'+size+'" role="img" aria-label="Torta por rubro">'+out+'</svg>';
+  const Wd = 640, Hd = 250, r = 84, lineH = 34;
+  const P = _pieLayout(mix, Wd, Hd, r, lineH); let out = '';
+  if(mix.length === 1) out += '<circle cx="'+P.cx+'" cy="'+P.cy+'" r="'+r+'" fill="'+_rubroColor(0)+'"/>';
+  else P.L.forEach(o=>{ const large = (o.a1-o.a0) > Math.PI ? 1 : 0;
+    const p1 = [P.cx + r*Math.cos(o.a0), P.cy + r*Math.sin(o.a0)], p2 = [P.cx + r*Math.cos(o.a1), P.cy + r*Math.sin(o.a1)];
+    out += '<path d="M'+P.cx+','+P.cy+' L'+p1[0].toFixed(2)+','+p1[1].toFixed(2)+' A'+r+','+r+' 0 '+large+' 1 '+p2[0].toFixed(2)+','+p2[1].toFixed(2)+' Z" fill="'+_rubroColor(o.i)+'" stroke="#fff" stroke-width="1.5"><title>'+_esc(o.x.rubro)+' · '+o.x.pct.toFixed(1)+'% · ₲ '+fmt(o.x.monto)+'</title></path>'; });
+  P.vis.forEach(o=>{ const anc = o.der ? 'start' : 'end';
+    out += '<polyline points="'+o.ex.toFixed(1)+','+o.ey.toFixed(1)+' '+o.kx.toFixed(1)+','+o.ky.toFixed(1)+' '+(o.tx+(o.der?-4:4)).toFixed(1)+','+o.ky.toFixed(1)+'" fill="none" stroke="#9AA3B2" stroke-width="1"/>'+
+      '<circle cx="'+o.ex.toFixed(1)+'" cy="'+o.ey.toFixed(1)+'" r="2" fill="#9AA3B2"/>'+
+      '<text x="'+o.tx.toFixed(1)+'" y="'+(o.ky-2).toFixed(1)+'" text-anchor="'+anc+'" font-size="12.5" font-weight="700" fill="currentColor">'+_esc(_pieNom(o.x.rubro, 26))+'</text>'+
+      '<text x="'+o.tx.toFixed(1)+'" y="'+(o.ky+12).toFixed(1)+'" text-anchor="'+anc+'" font-size="11.5" fill="#8893A5"><tspan font-weight="700">'+o.x.pct.toFixed(1)+'%</tspan> · ₲ '+fmt(o.x.monto)+'</text>'; });
+  return '<svg viewBox="0 0 '+Wd+' '+Hd+'" width="100%" style="max-width:'+Wd+'px;overflow:visible" role="img" aria-label="Torta por rubro">'+out+'</svg>';
 }
 function _rubroPiePNG(mix, px){
   const tot = mix.reduce((a,x)=>a+x.monto,0); if(!(tot>0)) return null;
-  const c = document.createElement('canvas'); c.width = c.height = px; const g = c.getContext('2d');
-  const r = px/2 - 4, cx = px/2, cy = px/2; let ang = -Math.PI/2;
-  mix.forEach((x,i)=>{ const a = x.monto/tot*Math.PI*2;
-    g.beginPath(); g.moveTo(cx,cy); g.arc(cx,cy,r,ang,ang+a); g.closePath(); g.fillStyle = _rubroColor(i); g.fill();
-    if(mix.length > 1){ g.lineWidth = px/160; g.strokeStyle = '#fff'; g.stroke(); }
-    ang += a; });
-  ang = -Math.PI/2; g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = 'bold '+Math.round(px/15)+'px Helvetica, Arial, sans-serif';
-  mix.forEach((x,i)=>{ const a = x.monto/tot*Math.PI*2, m = ang + a/2;
-    if(x.pct >= 7){ g.fillStyle = (i===1)?'#1C2333':'#fff'; g.fillText(Math.round(x.pct)+'%', cx + r*0.62*Math.cos(m), cy + r*0.62*Math.sin(m)); }
-    ang += a; });
+  const Wd = 1900, Hd = 800, r = 255, lineH = 92;
+  const c = document.createElement('canvas'); c.width = Wd; c.height = Hd; const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0,0,Wd,Hd);
+  const P = _pieLayout(mix, Wd, Hd, r, lineH);
+  P.L.forEach(o=>{ g.beginPath(); g.moveTo(P.cx,P.cy); g.arc(P.cx,P.cy,r,o.a0,o.a1); g.closePath(); g.fillStyle = _rubroColor(o.i); g.fill();
+    if(mix.length > 1){ g.lineWidth = 5; g.strokeStyle = '#fff'; g.stroke(); } });
+  P.vis.forEach(o=>{
+    g.strokeStyle = '#9AA3B2'; g.lineWidth = 3; g.beginPath(); g.moveTo(o.ex,o.ey); g.lineTo(o.kx,o.ky); g.lineTo(o.tx+(o.der?-10:10),o.ky); g.stroke();
+    g.fillStyle = '#9AA3B2'; g.beginPath(); g.arc(o.ex,o.ey,6,0,Math.PI*2); g.fill();
+    g.textAlign = o.der ? 'left' : 'right'; g.textBaseline = 'alphabetic';
+    g.font = 'bold 40px Helvetica, Arial, sans-serif'; g.fillStyle = '#1F3864';
+    g.fillText(_pieNom(o.x.rubro, 24), o.tx, o.ky-6);
+    const pct = o.x.pct.toFixed(1)+'%', resto = '  ·  Gs '+fmt(o.x.monto);
+    g.font = 'bold 36px Helvetica, Arial, sans-serif'; const wP = g.measureText(pct).width;
+    g.font = '36px Helvetica, Arial, sans-serif'; const wR = g.measureText(resto).width;
+    const x0 = o.der ? o.tx : o.tx - (wP + wR);
+    g.textAlign = 'left';
+    g.font = 'bold 36px Helvetica, Arial, sans-serif'; g.fillStyle = '#5A6272'; g.fillText(pct, x0, o.ky+38);
+    g.font = '36px Helvetica, Arial, sans-serif'; g.fillText(resto, x0 + wP, o.ky+38);
+  });
   return c.toDataURL('image/png');
 }
 
@@ -5028,11 +5056,12 @@ function _pdfResumenRubro(doc, mix, M, W, sy, sanPdf, tituloDetalle){
     didDrawPage:()=>{}
   });
   const tEnd=doc.lastAutoTable.finalY, tH=tEnd-(sy+3);
-  const pS=Math.max(34, Math.min(62, tH));
-  const pX=M+tW+((W-M-(M+tW))-pS)/2;
-  const pie=_rubroPiePNG(mix, 600);
-  if(pie){ try{ doc.addImage(pie,'PNG',pX,sy+3+Math.max(0,(tH-pS)/2),pS,pS); }catch(e){} }
-  const detY=Math.max(tEnd, sy+3+pS)+9;
+  const aW=(W-M)-(M+tW)-6;                    // ancho disponible a la derecha de la tabla
+  const pW=Math.min(aW, 132), pH=pW*800/1900; // torta al centro, etiquetas a los costados
+  const pX=M+tW+6+(aW-pW)/2, pY=sy+3+Math.max(0,(tH-pH)/2);
+  const pie=_rubroPiePNG(mix);
+  if(pie){ try{ doc.addImage(pie,'PNG',pX,pY,pW,pH); }catch(e){} }
+  const detY=Math.max(tEnd, pY+pH)+9;
   doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(31,56,100);
   doc.text(tituloDetalle || 'Detalle', M, detY-3);
   doc.setFont('helvetica','normal');
@@ -5047,7 +5076,7 @@ function _rubroMixHTML(list){
     mix.map((x,i)=>'<tr><td><i class="mix-sw" style="background:'+_rubroColor(i)+'"></i>'+_esc(x.rubro)+'</td><td class="num">'+x.n+'</td><td class="num">'+fmt(x.monto)+'</td>'+
       '<td class="num"><b>'+x.pct.toFixed(1)+'%</b></td></tr>').join('')+
     '</tbody><tfoot><tr><td>TOTAL</td><td class="num">'+mix.reduce((a,x)=>a+x.n,0)+'</td><td class="num">'+fmt(tot)+'</td><td class="num">100%</td></tr></tfoot></table>'+
-    '<div class="mix-pie">'+_rubroPieSVG(mix, 170)+'</div></div></div>';
+    '<div class="mix-pie">'+_rubroPieSVG(mix)+'</div></div></div>';
 }
 
 function exportRendicionExcel(){
