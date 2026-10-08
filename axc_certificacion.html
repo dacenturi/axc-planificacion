@@ -1022,7 +1022,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.31 · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.32 · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -8127,6 +8127,50 @@ document.getElementById('edGuardar').onclick = ()=> guardar('Borrador');
 /* El certificado se guarda siempre como borrador. La aprobación es un acto
    aparte, del administrador, desde el detalle: ahí se revisa y recién ahí
    consume el presupuesto. */
+/* v11.32 · Control de líneas repetidas antes de guardar
+   Una misma línea (mismo trabajo del mismo contrato, o misma clave y sector)
+   no puede estar dos veces: comparte la medición y se pagaría doble. */
+function _claveDup(l, sector, ta){
+  return l.contrato_item_id ? 'ci:'+l.contrato_item_id
+       : 'k:'+keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto)+'|'+norm(sector||l.sector||'')+'|'+(ta||l.admin||'');
+}
+function lineasRepetidas(M){
+  const vistos = {}, rep = [];
+  M.forEach(function(x){
+    const k = _claveDup(x.linea, x.sector, x.trabajo_admin);
+    if(vistos[k]){ vistos[k].veces++; if(vistos[k].veces === 2) rep.push(vistos[k]); }
+    else vistos[k] = { x:x, veces:1 };
+  });
+  return rep;
+}
+async function controlRepetidas(M){
+  const rep = lineasRepetidas(M);
+  if(!rep.length) return true;
+  const filas = rep.map(function(r){
+    const l = r.x.linea;
+    return '<li><b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(l.descripcion||l.rubro_desc||'')+
+      ' · '+escapeHtml(r.x.sector||l.sector||'')+(l.contrato_numero ? ' · '+escapeHtml(l.contrato_numero) : '')+
+      ' — <b>'+r.veces+' veces</b> ('+qty(r.x.cantidad)+' '+escapeHtml(l.unidad||'')+' · '+gs(r.x.subtotal)+' cada una)</li>';
+  }).join('');
+  const extra = rep.reduce(function(a, r){ return a + r.x.subtotal*(r.veces-1); }, 0);
+  const r = await axcDialog({ tono:'danger', icono:'⧉', titulo:'Hay trabajos repetidos: no se guardó',
+    mensaje:'Estas líneas están <b>más de una vez</b> en el certificado. Comparten la misma medición, así que se pagarían dos veces (<b>'+gs(extra)+' de más</b>):',
+    html:'<ul style="margin:8px 0 4px 18px;padding:0;line-height:1.6">'+filas+'</ul>'+
+         '<div style="font-size:12.5px;color:#6B7280;margin-top:6px">«Quitar las repetidas» deja <b>una sola</b> de cada una, con su medición. Después revisá y volvé a guardar.</div>',
+    ok:'Quitar las repetidas', cancelar:'Volver' });
+  if(r){
+    const vistos = {};
+    ed.lineas = ed.lineas.filter(function(l){
+      const m = ed.med[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto)] || {};
+      const k = _claveDup(l, l.sector, m.ta || l.admin);
+      if(vistos[k]) return false; vistos[k] = 1; return true;
+    });
+    renderLineas();
+    showToast('Se quitaron las líneas repetidas','success','Revisá el certificado y volvé a tocar «Guardar».');
+  }
+  return false;
+}
+
 async function guardar(estado){
   if(ed.cargando) return;
   const obraElegida = String((document.getElementById('edObraFiltro')||{}).value || '').trim();
@@ -8137,6 +8181,7 @@ async function guardar(estado){
   /* v11.2 · Revisión completa antes de guardar: todo lo que falta, junto */
   const contratista = document.getElementById('edContra').value;
   const M = medidas();
+  if(!(await controlRepetidas(M))) return;   // v11.32 · no se guarda con líneas repetidas
   if(M.some(function(x){ return x.trabajo_admin; })) await taCargar(true);   // v11.20 · estado al día de cada trabajo
   const rev = revisarCertificado({ contratista:contratista, obraElegida:obraElegida, obras:obras, presus:presus, M:M });
   if(rev.bloquean.length){ await mostrarRevision(rev, true); return; }
@@ -8191,7 +8236,8 @@ async function guardar(estado){
       let { error } = await sb.from('certificados').update(cab).eq('id', certId);
       if(error && /contrato_id/i.test(error.message||'')){ const c2=Object.assign({},cab); delete c2.contrato_id; const r2=await sb.from('certificados').update(c2).eq('id',certId); error=r2.error; }
       if(error) throw error;
-      await sb.from('certificado_items').delete().eq('certificado_id', certId);
+      { const del = await sb.from('certificado_items').delete().eq('certificado_id', certId);
+        if(del.error) throw new Error('No se pudieron reemplazar las líneas anteriores del certificado: '+(del.error.message||del.error)); }
     }else{
       cab.creado_por = quien;
       cab.numero = await proximoNumero();
