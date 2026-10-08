@@ -571,13 +571,6 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .tae-n{border-style:dashed;background:#FBF6E6}
 .tae-fijo{display:flex;gap:12px;align-items:center;justify-content:space-between;background:#EEF6F1;border:1px solid #BFDCCB;border-radius:10px;padding:10px 12px}
 .tae-fijo b{display:block;color:#1F3864;font-size:14px}.tae-k{font-size:11px;font-weight:800;color:#1F5C3A;text-transform:uppercase;letter-spacing:.5px}
-.tar-h{font-size:11px;font-weight:800;color:#5A6272;letter-spacing:.3px;text-transform:uppercase;margin:6px 2px 2px}
-.tar-ya{font-style:normal;font-size:11px;color:#1F5C3A;background:#EEF6F1;border-radius:4px;padding:0 5px;margin-left:6px}
-.tar-comp{font-style:normal;font-size:11px;color:#1F3864;background:#E8EEF8;border-radius:4px;padding:0 5px;margin-left:6px}
-.tar-nuevo{border-style:dashed!important;border-color:#C8A028!important;background:#FFFBEA!important;color:#6B5310!important;margin-top:4px}
-.tar-cambiar{border:0;background:transparent;color:#2E6B45;text-decoration:underline;cursor:pointer;font-size:12px;font-family:inherit;padding:0 2px}
-.tar-mo{margin-top:4px;color:#1F3864}
-#scRubQ.ok{border-color:#1F7A3F;background:#F3FAF5;font-weight:600}
 .tar{background:#F4F7FB;border:1px solid #D6E0EE;border-radius:10px;padding:10px 12px;margin:10px 0}
 .tar-cat,.tar-new{margin-top:8px}.tar-cat[hidden],.tar-new[hidden]{display:none}
 .tar-res{display:grid;gap:4px;margin-top:6px;max-height:190px;overflow:auto}
@@ -1022,7 +1015,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.31 · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.30 · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -3389,27 +3382,12 @@ async function catCargar(){
   if(CAT.rubros) return;
   try{
     const [r, c] = await Promise.all([
-      sb.from('rubros').select('codigo,nombre,unidad,capitulo,activo,tiene_receta'),
+      sb.from('rubros').select('codigo,nombre,unidad,capitulo,activo'),
       sb.from('capitulos').select('codigo,nombre')
     ]);
     CAT.rubros = ((r && r.data) || []).filter(function(x){ return x.codigo && x.activo !== false; });
     ((c && c.data) || []).forEach(function(x){ CAT.caps[String(x.codigo).padStart(2,'0')] = x.nombre; });
   }catch(e){ CAT.rubros = []; }
-}
-/* v11.31 · Mano de obra por unidad según la composición del rubro (para sugerir el costo) */
-async function moDeComposicion(cod){
-  try{
-    const { data:rs } = await sb.from('recetas').select('id').eq('rubro_codigo', cod).eq('activo', true).order('created_at').limit(1);
-    const rid = rs && rs[0] && rs[0].id; if(!rid) return null;
-    const { data:its } = await sb.from('receta_items').select('tipo_componente,coef1,coef2,merma_pct,precio_unit,activo').eq('receta_id', rid);
-    let mo = 0, hay = false;
-    (its||[]).forEach(function(x){
-      if(x.activo === false || String(x.tipo_componente||'') !== 'mano_obra') return;
-      const c1 = Number(x.coef1)||0, c2 = Number(x.coef2)||1, m = Number(x.merma_pct)||0;
-      mo += (c1*(1+m/100)/(c2||1)) * (Number(x.precio_unit)||0); hay = true;
-    });
-    return hay ? Math.round(mo) : null;
-  }catch(e){ return null; }
 }
 function capDe(cod){
   const c = String(cod||'').split('.')[0].padStart(2,'0');
@@ -3816,9 +3794,16 @@ async function trabajoSinContrato(tipoFijo, taPre){
   let taRubs = [], prox99 = '99.001';
   if(esTA){ await catCargar(); if(taFijo){ taRubs = await taRubros(taFijo.codigo); } prox99 = proximo99(taRubs); }
   const rubHtml = esTA
-    ? '<div class="tar"><label class="ax-l">1 · ¿Qué trabajo se hizo? * <small>buscalo en las composiciones; si no está, usá lo que escribiste</small></label>'+
-        '<input id="scRubQ" class="ax-in" autocomplete="off" placeholder="Escribí el trabajo o el código · ej. revoque, mampostería, 07.004">'+
-        '<div class="tar-res" id="scRubRes"></div>'+
+    ? '<div class="tar"><label class="ax-l">Rubro del trabajo * <small>mismo trabajo, mismo rubro: así se acumula</small></label>'+
+        '<select id="scRubTA" class="ax-in">'+
+          (taRubs.length ? '<option value="">Elegí el rubro…</option><optgroup label="Ya cargados en '+escapeHtml(taFijo ? taFijo.codigo : '')+'">'+
+            taRubs.map(function(r){ return '<option value="ta:'+escapeHtml(r.cod)+'">'+escapeHtml(r.cod+' · '+r.nom+' · '+qty(r.cant)+' '+r.un+' cargado')+'</option>'; }).join('')+'</optgroup>' : '<option value="">Elegí cómo cargar el rubro…</option>')+
+          '<optgroup label="Rubro nuevo en este trabajo">'+
+          '<option value="__cat">🔎 Buscar en el catálogo de rubros…</option>'+
+          '<option value="__99">＋ Trabajo fuera de catálogo · se crea como '+prox99+'</option></optgroup></select>'+
+        '<div class="tar-cat" id="scCatBox" hidden><input id="scCatQ" class="ax-in" placeholder="Escribí el rubro o el código (ej. revoque · 07.004)"><div class="tar-res" id="scCatRes"></div></div>'+
+        '<div class="tar-new" id="scNewBox" hidden><label class="ax-l">Nombre del rubro '+prox99+' * <small>qué se hace y con qué</small></label>'+
+          '<input id="scRubNom" class="ax-in" placeholder="Ej. Encamisado de pilares con perfiles IPN"></div>'+
         '<div class="tar-ok" id="scRubInfo"></div></div>'
     : '';
   const taHtml = taFijo
@@ -3876,75 +3861,45 @@ async function trabajoSinContrato(tipoFijo, taPre){
     html:html, ok:'Agregar al certificado', cancelar:'Volver',
     alRender:function(box){
       ['#scCant','#scPre'].forEach(function(s){ box.querySelector(s).addEventListener('input', function(){ calc(box); }); });
-      // v11.31 · Trabajo: un solo buscador (ya cargados · composiciones · trabajo nuevo con texto libre)
+      // v11.25 · Rubro del trabajo (cada carga empieza sin rubro: la ventana se reutiliza)
       box._rub = null;
-      const rq = box.querySelector('#scRubQ');
-      if(rq){
-        const res = box.querySelector('#scRubRes'), inf = box.querySelector('#scRubInfo');
-        const un = box.querySelector('#scUn'), ds = box.querySelector('#scDesc'), pr = box.querySelector('#scPre');
-        let _prAuto = false;
-        const fijar = async function(r){
+      const rsel = box.querySelector('#scRubTA');
+      if(rsel){
+        const cb = box.querySelector('#scCatBox'), cq = box.querySelector('#scCatQ'), cr = box.querySelector('#scCatRes');
+        const nb = box.querySelector('#scNewBox'), nn = box.querySelector('#scRubNom'), inf = box.querySelector('#scRubInfo');
+        const un = box.querySelector('#scUn'), ds = box.querySelector('#scDesc');
+        const fijar = function(r){
           box._rub = r;
-          if(!r){ inf.innerHTML = ''; un.readOnly = false; un.classList.remove('ro'); rq.classList.remove('ok'); return; }
+          if(!r){ inf.innerHTML = ''; un.readOnly = false; un.classList.remove('ro'); return; }
           const cap = capDe(r.cod);
-          rq.value = (r.origen === 'nuevo' ? '' : r.cod+' · ') + r.nom; rq.classList.add('ok');
-          res.innerHTML = '';
-          inf.innerHTML = '✓ <b>'+escapeHtml(r.cod)+' · '+escapeHtml(r.nom)+'</b>'+(r.un ? ' · unidad <b>'+escapeHtml(r.un)+'</b>' : '')+
-            ' · capítulo '+escapeHtml((r.capLbl && /[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(r.capLbl)) ? r.capLbl : (cap.cod+' '+cap.nom))+
-            (r.origen === 'ta' ? ' · ya está en este trabajo: <b>se acumula</b> ('+qty(r.cant)+' '+escapeHtml(r.un||'')+' cargado)' :
-             r.origen === 'catalogo' ? ' · de las composiciones del catálogo' : ' · <b>trabajo nuevo</b> (no está en el catálogo)')+
-            ' <button type="button" class="tar-cambiar" id="scRubCambiar">cambiar</button>';
-          box.querySelector('#scRubCambiar').onclick = function(){ fijar(null); rq.value = ''; rq.classList.remove('ok'); buscar(); rq.focus(); };
+          inf.innerHTML = '✓ <b>'+escapeHtml(r.cod)+' · '+escapeHtml(r.nom||'(escribí el nombre)')+'</b> · capítulo '+cap.cod+' '+escapeHtml(cap.nom)+
+            (r.un ? ' · unidad <b>'+escapeHtml(r.un)+'</b>' : '')+(r.cant ? ' · ya cargado '+qty(r.cant)+' '+escapeHtml(r.un||'') : '')+
+            (r.origen === 'catalogo' ? ' · del catálogo' : r.origen === 'nuevo' ? ' · rubro nuevo fuera de catálogo' : ' · ya está en el trabajo: se acumula');
           if(r.un){ un.value = r.un; un.readOnly = true; un.classList.add('ro'); } else { un.readOnly = false; un.classList.remove('ro'); }
-          if(!ds.value.trim()) ds.value = r.nom;
-          // Composición con mano de obra: sugerir el costo unitario
-          if(r.origen !== 'nuevo' && r.receta){
-            const mo = await moDeComposicion(r.cod);
-            if(mo && box._rub === r){
-              if(!String(pr.value||'').trim() || _prAuto){ pr.value = Math.round(mo).toLocaleString('es-PY'); _prAuto = true; pr.dispatchEvent(new Event('input')); }
-              inf.innerHTML += '<div class="tar-mo">🧩 Mano de obra según la composición: <b>'+gs(mo)+'</b> por '+escapeHtml(r.un||'unidad')+' · se cargó como costo unitario (podés cambiarlo)</div>';
-            }
-          }
-        };
-        pr.addEventListener('input', function(e){ if(e.isTrusted) _prAuto = false; });
-        const item = function(r, tipo, extra){
-          return '<button type="button" class="tar-it" data-t="'+tipo+'" data-c="'+escapeHtml(r.cod)+'"><b>'+escapeHtml(r.cod)+'</b> · '+escapeHtml(r.nom)+
-            ' <span>'+escapeHtml(r.un||'')+'</span>'+(extra||'')+'</button>';
+          if(r.nom && !ds.value.trim()) ds.value = r.nom;
         };
         const buscar = function(){
-          const qv = (rq.value||'').trim(), q = norm(qv);
-          let html = '';
-          const ya = taRubs.filter(function(r){ return !q || norm(r.cod+' '+r.nom).indexOf(q) >= 0; });
-          if(ya.length) html += '<div class="tar-h">Ya cargados en '+escapeHtml(taFijo ? taFijo.codigo : 'este trabajo')+' · se acumulan</div>'+
-            ya.map(function(r){ return item(r, 'ta', '<i class="tar-ya">'+qty(r.cant)+' '+escapeHtml(r.un||'')+' cargado</i>'); }).join('');
-          if(q){
-            const yaCods = {}; taRubs.forEach(function(r){ yaCods[r.cod] = 1; });
-            const cat = (CAT.rubros||[]).filter(function(x){ return !yaCods[x.codigo] && norm(x.codigo+' '+x.nombre).indexOf(q) >= 0; })
-              .sort(function(a,b){ return (b.tiene_receta?1:0) - (a.tiene_receta?1:0) || String(a.codigo).localeCompare(String(b.codigo),'es',{numeric:true}); }).slice(0, 10);
-            html += '<div class="tar-h">Composiciones del catálogo</div>'+(cat.length
-              ? cat.map(function(x){ return item({ cod:x.codigo, nom:x.nombre, un:x.unidad }, 'cat', x.tiene_receta ? '<i class="tar-comp">🧩 composición</i>' : ''); }).join('')
-              : '<div class="tar-vac">No hay composiciones con «'+escapeHtml(qv)+'».</div>');
-            html += '<button type="button" class="tar-it tar-nuevo" data-t="nuevo">＋ Usar «<b>'+escapeHtml(qv)+'</b>» como trabajo nuevo <span>no está en el catálogo · código '+prox99+'</span></button>';
-          } else if(!ya.length){
-            html = '<div class="tar-vac">Escribí parte del nombre del trabajo (ej. «revoque») o su código (ej. 07.004).</div>';
-          }
-          res.innerHTML = html;
-          res.querySelectorAll('[data-t]').forEach(function(b){ b.onclick = function(){
-            const t = b.dataset.t;
-            if(t === 'nuevo'){
-              const nom = (rq.value||'').trim();
-              if(nom.length < 5){ axMarcar(box,'#scRubQ','#scErr','<b>Trabajo nuevo:</b> escribí qué se hizo y con qué (al menos 5 caracteres). Ese texto sale en la liquidación.'); return; }
-              fijar({ cod:prox99, nom:nom, un:'', origen:'nuevo' }); un.focus(); return;
-            }
-            if(t === 'ta'){ const r = taRubs.filter(function(x){ return x.cod === b.dataset.c; })[0]; const x = (CAT.rubros||[]).filter(function(y){ return y.codigo === r.cod; })[0];
-              fijar(Object.assign({ origen:'ta', receta: !!(x && x.tiene_receta), capLbl: x ? String(x.capitulo||'').trim() : '' }, r)); return; }
+          const q = norm(cq.value||'');
+          const L = (CAT.rubros||[]).filter(function(x){ return !q || norm(x.codigo+' '+x.nombre).indexOf(q) >= 0; }).slice(0, 8);
+          cr.innerHTML = L.length ? L.map(function(x){ return '<button type="button" class="tar-it" data-c="'+escapeHtml(x.codigo)+'"><b>'+escapeHtml(x.codigo)+'</b> · '+escapeHtml(x.nombre)+' <span>'+escapeHtml(x.unidad||'')+'</span></button>'; }).join('')
+            : '<div class="tar-vac">No está en el catálogo. Elegí «＋ Trabajo fuera de catálogo» en la lista de arriba.</div>';
+          cr.querySelectorAll('[data-c]').forEach(function(b){ b.onclick = function(){
             const x = (CAT.rubros||[]).filter(function(y){ return y.codigo === b.dataset.c; })[0];
-            fijar({ cod:x.codigo, nom:x.nombre, un:x.unidad||'', cant:0, origen:'catalogo', receta: !!x.tiene_receta, capLbl: String(x.capitulo||'').trim() });
+            const ya = taRubs.filter(function(r){ return r.cod === x.codigo; })[0];
+            cr.querySelectorAll('.tar-it').forEach(function(z){ z.classList.toggle('on', z === b); });
+            fijar({ cod:x.codigo, nom:x.nombre, un:x.unidad||'', cant: ya ? ya.cant : 0, origen: ya ? 'ta' : 'catalogo' });
           }; });
         };
-        rq.addEventListener('input', function(){ if(box._rub){ box._rub = null; inf.innerHTML = ''; rq.classList.remove('ok'); un.readOnly = false; un.classList.remove('ro'); } buscar(); });
-        rq.addEventListener('focus', function(){ if(!box._rub) buscar(); });
-        buscar();
+        rsel.addEventListener('change', function(){
+          cb.hidden = rsel.value !== '__cat'; nb.hidden = rsel.value !== '__99';
+          if(rsel.value.indexOf('ta:') === 0){ const r = taRubs.filter(function(x){ return 'ta:'+x.cod === rsel.value; })[0]; fijar(Object.assign({ origen:'ta' }, r)); }
+          else if(rsel.value === '__99'){ fijar({ cod:prox99, nom:'', un:'', origen:'nuevo' }); nn.focus(); }
+          else if(rsel.value === '__cat'){ fijar(null); cq.value = ''; buscar(); cq.focus(); }
+          else fijar(null);
+        });
+        cq.addEventListener('input', buscar);
+        nn.addEventListener('input', function(){ if(box._rub && box._rub.origen === 'nuevo'){ box._rub.nom = nn.value.trim(); fijar(box._rub); } });
+        if(!taRubs.length){ rsel.value = '__cat'; rsel.dispatchEvent(new Event('change')); }
       }
       const sta = box.querySelector('#scTa');
       const camb = box.querySelector('#scTaCambiar');
@@ -3989,8 +3944,10 @@ async function trabajoSinContrato(tipoFijo, taPre){
     validar:function(box){
       const e = box.querySelector('#scErr');
       const sta = box.querySelector('#scTa');
-      if(box.querySelector('#scRubQ')){
-        if(!box._rub) return axMarcar(box,'#scRubQ','#scErr','<b>¿Qué trabajo se hizo?</b> Buscalo y elegilo de la lista. Si no está en el catálogo, tocá «＋ Usar … como trabajo nuevo».');
+      if(box.querySelector('#scRubTA')){
+        const rb = box._rub;
+        if(!rb) return axMarcar(box,'#scRubTA','#scErr','<b>Rubro del trabajo:</b> elegí un rubro que ya tiene el trabajo, buscalo en el catálogo o creá uno fuera de catálogo.');
+        if(rb.origen === 'nuevo' && (rb.nom||'').length < 5) return axMarcar(box,'#scRubNom','#scErr','<b>Nombre del rubro '+escapeHtml(rb.cod)+':</b> escribí qué se hace y con qué (al menos 5 caracteres). Es el nombre que va a salir en la liquidación.');
       }
       if(sta){
         if(!sta.value) return axMarcar(box,'#scTa','#scErr','<b>Trabajo por administración:</b> elegí a qué trabajo se imputa el gasto.');
