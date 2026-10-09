@@ -1022,7 +1022,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.33 · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v11.34 · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -9757,9 +9757,9 @@ async function generarPlanillaPDF(c, its, opts){
       if(ids.length){
         const { data:ki } = await sb.from('contrato_items').select('id,contrato_id,cantidad,precio_pactado').in('id', ids);
         const cids = Array.from(new Set((ki||[]).map(function(x){ return x.contrato_id; })));
-        const { data:ks } = cids.length ? await sb.from('contratos').select('id,numero').in('id', cids) : { data:[] };
-        const num = {}; (ks||[]).forEach(function(k){ num[k.id] = k.numero; });
-        (ki||[]).forEach(function(x){ CTI[x.id] = { cant:Number(x.cantidad)||0, pu:Number(x.precio_pactado)||0, numero:num[x.contrato_id]||'' }; });
+        const { data:ks } = cids.length ? await sb.from('contratos').select('id,numero,presupuesto').in('id', cids) : { data:[] };
+        const num = {}, pres = {}; (ks||[]).forEach(function(k){ num[k.id] = k.numero; pres[k.id] = k.presupuesto || ''; });
+        (ki||[]).forEach(function(x){ CTI[x.id] = { cant:Number(x.cantidad)||0, pu:Number(x.precio_pactado)||0, numero:num[x.contrato_id]||'', pres:pres[x.contrato_id]||'' }; });
       }
     }catch(e){ console.warn('planilla por contrato', e); }
   }
@@ -9812,7 +9812,7 @@ async function generarPlanillaPDF(c, its, opts){
        ['PROPUESTA', (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]]
     : [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
-       porCt ? ['CONTRATOS', Array.from(new Set(Object.keys(CTI).map(function(k){ return CTI[k].numero; }).filter(Boolean))).join(', ') || '-']
+       porCt ? ['CONTRATOS', Array.from(new Set(Object.keys(CTI).map(function(k){ return CTI[k].numero ? (CTI[k].numero + (CTI[k].pres ? ' ('+CTI[k].pres+')' : '')) : ''; }).filter(Boolean))).join(', ') || '-']
              : ['PRESUPUESTOS', c.presupuesto||'-'],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]];
   const cw = (W-M*2)/info.length;
@@ -9879,7 +9879,7 @@ async function generarPlanillaPDF(c, its, opts){
         // v11.14 · Lo que no tiene presupuesto dice qué es, en lugar de un guion
         (function(){
           if(op.cliente) return pdfSafe((x.presupuesto||'-')+' v'+(op.propVersion||''));
-          if(porCt && ki) return pdfSafe(ki.numero || '-');
+          if(porCt && ki) return ki.pres ? { content:pdfSafe(ki.numero || '-'), _pp:ki.pres, styles:{ cellPadding:{ top:1.3, right:1, bottom:4.4, left:1 } } } : pdfSafe(ki.numero || '-');
           if(porCt && x.clasificacion !== 'a_presupuestar' && x.clasificacion !== 'indirecto') return { content:'Fuera de contrato', styles:{ textColor:[138,90,0], fontStyle:'bold' } };
           if(x.trabajo_admin) return { content:pdfSafe(x.trabajo_admin), styles:{ textColor:[31,92,58], fontStyle:'bold' } };
           if(x.clasificacion === 'a_presupuestar') return { content:'A presup.', styles:{ textColor:[138,90,0], fontStyle:'bold' } };
@@ -9960,10 +9960,16 @@ async function generarPlanillaPDF(c, its, opts){
     columnStyles:{
       0:{halign:'center',cellWidth:6}, 1:{cellWidth:'auto'},
       2:{halign:'center',cellWidth:10}, 3:{halign:'right',cellWidth:14}, 4:{halign:'right',cellWidth:16},
-      5:{halign:'right',cellWidth:20}, 6:{halign:'center',cellWidth:15,fontSize:6.2},
+      5:{halign:'right',cellWidth:20}, 6:{halign:'center',cellWidth:18,fontSize:6.2},
       7:{halign:'right',cellWidth:15}, 8:{halign:'right',cellWidth:15}, 9:{halign:'right',cellWidth:15},
       10:{halign:'right',cellWidth:20}, 11:{halign:'right',cellWidth:21}, 12:{halign:'right',cellWidth:21},
       13:{halign:'right',cellWidth:13}, 14:{halign:'right',cellWidth:20}
+    },
+    // v11.34 · Debajo del número de contrato, el presupuesto del que viene (discreto)
+    didDrawCell:function(d){
+      if(d.section !== 'body' || d.column.index !== 6 || !d.cell.raw || !d.cell.raw._pp) return;
+      doc.setFont('helvetica','normal').setFontSize(5.3).setTextColor(130,138,152);
+      doc.text(pdfSafe(d.cell.raw._pp), d.cell.x + d.cell.width/2, d.cell.y + d.cell.height - 1.4, { align:'center' });
     },
     margin:{ left:M, right:M, bottom:16 }
   });
