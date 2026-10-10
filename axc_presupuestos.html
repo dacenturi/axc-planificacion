@@ -727,7 +727,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.51 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.52 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -4949,7 +4949,8 @@ async function openPropuestasLista(){
               : '<span style="color:#8893a5;font-size:12px">emitida</span>')+
               (_coincide(a) ? '<div><span style="display:inline-block;margin-top:4px;background:#E8EEF8;color:#1F3864;border-radius:999px;padding:2px 8px;font-size:10.5px;font-weight:800">= '+(ed.activo?'PUBLICADO':'PRESUPUESTO ACTUAL')+'</span></div>' : '')+'</td>'+
             '<td class="pl-acc">'+
-              '<button type="button" class="pl-b pl-b-pdf" data-plver="'+c.id+'" title="Ver o imprimir esta versión tal como se emitió">📄 <span>Ver PDF</span></button>'+
+              '<div style="display:flex;gap:6px"><button type="button" class="pl-b pl-b-pdf" data-plver="'+c.id+'" title="Ver o imprimir esta versión tal como se emitió" style="flex:1">📄 <span>Ver PDF</span></button>'+
+              '<button type="button" class="pl-b pl-b-pdf" data-plxls="'+c.id+'" title="Descargar esta versión en Excel (solo precios de venta)" style="flex:1;color:#1F7A3F;border-color:#9DB8A6">📊 <span>Excel</span></button></div>'+
               (c.aceptada
                 ? '<span class="pl-b pl-b-ok" title="Es la versión vigente: contra esta se compara el costo">✓ <span>Aceptada</span></span>'
                 : (_coincide(a)
@@ -4968,6 +4969,7 @@ async function openPropuestasLista(){
   ov.addEventListener('click', async function(ev){
     const t = ev.target.closest('button'); if(!t) return;
     if(t.dataset.plver){ await verPropuestaVersion(t.dataset.plver); return; }
+    if(t.dataset.plxls){ await excelPropuestaVersion(t.dataset.plxls); return; }
     if(t.dataset.placep){
       const v = Number(t.dataset.placep);
       if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar: la propuesta aceptada tiene que coincidir con el presupuesto guardado.'); return; }
@@ -4996,6 +4998,68 @@ async function openPropuestasLista(){
 }
 
 /* Reimprime una versión ya emitida, con sus precios guardados. No crea otra. */
+/* v10.52 · Descargar la propuesta en Excel (mismos datos que el PDF; solo precios de venta) */
+async function excelPropuestaVersion(id){
+  try{
+    if(typeof XLSX === 'undefined') throw new Error('No se cargó la librería de Excel. Recargá la página (Ctrl + F5).');
+    const { data:c, error } = await sb.from('propuesta_cab').select('*').eq('id', id).single();
+    if(error) throw error;
+    const { data:its, error:e2 } = await sb.from('propuesta_items').select('*').eq('propuesta_id', id).order('orden');
+    if(e2) throw e2;
+    const N = function(v){ return Number(v)||0; };
+    const items = (its||[]).map(function(x){ return { sector:x.sector||'', capitulo:x.capitulo||'', cod:x.rubro_codigo||'', desc:x.descripcion||'',
+      un:x.unidad||'', cant:N(x.cantidad), pu:N(x.precio_unit), tot:N(x.precio_total), opc:!!x.opcional }; });
+    const fecha = c.emitido_en ? new Date(c.emitido_en).toLocaleDateString('es-PY') : '';
+    const A = [];   // filas
+    A.push(['AXC CONSTRUCTORA']);
+    A.push(['Propuesta económica · '+(c.codigo||c.presupuesto||'')+' · versión v'+(c.version||'')]);
+    A.push([]);
+    [['Obra', c.obra], ['Cliente', c.cliente], ['Atención', c.atencion], ['Referencia', c.referencia], ['Descripción', c.descripcion],
+     ['Fecha de emisión', fecha], ['Validez', c.validez_dias ? c.validez_dias+' días' : '']].forEach(function(p){ if(p[1]) A.push([p[0], String(p[1])]); });
+    A.push([]);
+    const hdr = A.length; A.push(['Ítem','Código','Descripción del trabajo','Unidad','Cantidad','Precio unitario (Gs)','Total (Gs)']);
+    const tipo = {};   // fila -> 'sec' | 'cap' | 'it' | 'tot'
+    let n = 0, sub = 0, opcTot = 0, secAnt = null, capAnt = null;
+    const base = items.filter(function(x){ return !x.opc; }), opc = items.filter(function(x){ return x.opc; });
+    const agregar = function(lista){
+      lista.forEach(function(x){
+        if(x.sector !== secAnt){ secAnt = x.sector; capAnt = null; tipo[A.length] = 'sec'; A.push(['SECTOR: '+(x.sector||'General')]); }
+        if(x.capitulo !== capAnt){ capAnt = x.capitulo; if(x.capitulo){ tipo[A.length] = 'cap'; A.push(['', '', x.capitulo]); } }
+        n++; tipo[A.length] = 'it';
+        A.push([n, x.cod, x.desc + (x.opc ? ' (opcional)' : ''), x.un, x.cant, x.pu, x.tot]);
+      });
+    };
+    agregar(base); sub = base.reduce(function(a,x){ return a + x.tot; }, 0);
+    A.push([]);
+    const iva = N(c.iva_pct), ivaM = Math.round(sub*iva/100);
+    tipo[A.length] = 'tot'; A.push(['', '', 'SUBTOTAL', '', '', '', sub]);
+    if(iva){ tipo[A.length] = 'tot'; A.push(['', '', 'IVA '+iva+' %', '', '', '', ivaM]); }
+    tipo[A.length] = 'tot'; A.push(['', '', iva ? 'TOTAL CON IVA' : 'TOTAL', '', '', '', sub + ivaM]);
+    if(opc.length){
+      A.push([]); tipo[A.length] = 'sec'; A.push(['TRABAJOS OPCIONALES (no incluidos en el total)']); secAnt = null; capAnt = null;
+      agregar(opc); opcTot = opc.reduce(function(a,x){ return a + x.tot; }, 0);
+      tipo[A.length] = 'tot'; A.push(['', '', 'TOTAL OPCIONALES', '', '', '', opcTot]);
+    }
+    if(c.condiciones){ A.push([]); A.push(['Condiciones']); String(c.condiciones).split(/\n+/).forEach(function(l){ if(l.trim()) A.push([l.trim()]); }); }
+    if(c.observaciones){ A.push([]); A.push(['Observaciones']); String(c.observaciones).split(/\n+/).forEach(function(l){ if(l.trim()) A.push([l.trim()]); }); }
+
+    const ws = XLSX.utils.aoa_to_sheet(A);
+    ws['!cols'] = [{wch:6},{wch:11},{wch:60},{wch:8},{wch:12},{wch:18},{wch:18}];
+    // formato de números: cantidades con decimales, guaraníes sin decimales
+    for(let r = hdr+1; r < A.length; r++){
+      ['E','F','G'].forEach(function(col, k){
+        const ref = col+(r+1); if(ws[ref] && typeof ws[ref].v === 'number') ws[ref].z = (k === 0) ? '#,##0.##' : '#,##0';
+      });
+    }
+    ws['!autofilter'] = { ref: 'A'+(hdr+1)+':G'+(hdr+1) };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Propuesta v'+(c.version||''));
+    const nom = ('Propuesta_'+(c.codigo||c.presupuesto||'')+'_v'+(c.version||'')+(c.obra ? '_'+c.obra : '')).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ]+/g,'_');
+    XLSX.writeFile(wb, nom+'.xlsx');
+    showToast('Excel descargado','success', nom+'.xlsx · solo precios de venta (sin costos ni márgenes)');
+  }catch(e){ showToast('No se pudo generar el Excel','error', e.message||String(e)); }
+}
+
 async function verPropuestaVersion(id){
   try{
     const { data:c, error } = await sb.from('propuesta_cab').select('*').eq('id', id).single();
