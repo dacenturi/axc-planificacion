@@ -455,6 +455,10 @@ tr:last-child td{border-bottom:none}
 .cr-gpos{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-left:4px}
 .cr-gpos select{font-size:12px;padding:3px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--text)}
 .cg-tabh{margin:18px 0 8px;font-size:15px;font-weight:700;color:var(--text)}
+/* v7.53: gráficos sin valores */
+.cg-card.nv .cg-row,.cg-card.nv .cg-row.p,.cg-bare.nv .cg-row,.cg-bare.nv .cg-row.p{grid-template-columns:minmax(90px,30%) 1fr}
+.cg-card.nv .cg-val,.cg-card.nv .cg-parts,.cg-bare.nv .cg-val,.cg-bare.nv .cg-parts{display:none}
+.cr-gval{border-style:dashed}
 .cg-bare .cg-row{grid-template-columns:minmax(90px,24%) 1fr 92px} .cg-bare .cg-row.p{grid-template-columns:minmax(90px,24%) 1fr 128px}
 /* v7.29: secciones por residente en el reporte de todos */
 .rt-res{border:1px solid var(--border);border-radius:10px;margin:10px 0;overflow:hidden;background:var(--card)}
@@ -1009,6 +1013,7 @@ tr:last-child td{border-bottom:none}
     <label class="cr-gopt" title="¿Qué compra cada residente?"><input type="checkbox" data-g="rubroRes" onchange="crGrafCambio()"> Rubros por residente</label>
     <label class="cr-gopt" title="¿Qué obra consume más caja chica?"><input type="checkbox" data-g="obra" onchange="crGrafCambio()"> Consumo por obra</label>
     <label class="cr-gopt" title="¿Quién tiene comprobantes o rendiciones atrasadas?"><input type="checkbox" data-g="aging" onchange="crGrafCambio()"> Antigüedad de pendientes</label>
+              <label class="cr-gopt cr-gval" title="Muestra montos y porcentajes en los gráficos, en pantalla y en el PDF"><input type="checkbox" id="cr-graf-val" checked onchange="crGrafCambio()"> Mostrar valores</label>
               <label class="cr-gpos" title="Dónde van los gráficos, en pantalla y en el PDF">Ubicación
                 <select id="cr-graf-pos" onchange="crGrafCambio()"><option value="antes">Gráficos arriba, tabla debajo</option><option value="despues">Tabla arriba, gráficos debajo</option></select></label>
             </div>
@@ -1244,7 +1249,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.52';
+const APP_VERSION='Caja Chica v7.53';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -4546,13 +4551,13 @@ function _crDetalleHTML(d,i){
     ${d.pendAntM?`<div class="cc-nota">Además tiene ₲ ${fmt(d.pendAntM)} en rendiciones presentadas antes del período que siguen sin aprobar (ya descontadas en el saldo inicial).</div>`:''}
     ${d.cuadreMsg?`<div class="cc-alerta">⚠ ${_esc(d.cuadreMsg)}</div>`:''}`;
   const rnd=d.rnds.length?`<table class="cc-sub">
-      <thead><tr><th>Rendición</th><th>Presentada</th><th>Estado</th><th class="n">Monto</th></tr></thead><tbody>
+      <thead><tr><th>Rendición</th><th>Período rendido</th><th>Presentada</th><th>Estado</th><th class="n">Monto</th></tr></thead><tbody>
       ${d.rnds.map((x,j)=>{ const dias=!x.apr?_ccDias(x.fP):null;
         return `<tr class="cc-rrow" onclick="event.stopPropagation();ccToggleRnd(${i},${j})" id="ccr-${i}-${j}">
-          <td class="nw"><span class="rc-caret">▶</span> ${_esc(x.nro)}</td><td class="nw">${_fd(x.fP)}</td>
+          <td class="nw"><span class="rc-caret">▶</span> ${_esc(x.nro)}</td><td class="nw">${_esc(x.periodo||'—')}</td><td class="nw">${_fd(x.fP)}</td>
           <td>${x.apr?'<span class="cc-chip ok">Aprobada</span>':'<span class="cc-chip aprob">En aprobación</span>'}${dias!=null&&dias>=1?`<span class="cc-dias">${dias} d</span>`:''}${x.ant?' <span class="cr-ant">antes del período</span>':''}</td>
           <td class="n b">${fmt(x.total)}</td></tr>
-        <tr class="cc-rdet" id="ccd-${i}-${j}" style="display:none"><td colspan="4">${_ccMovsHTML(x.movs)}
+        <tr class="cc-rdet" id="ccd-${i}-${j}" style="display:none"><td colspan="5">${_ccMovsHTML(x.movs)}
           <div class="cc-rpie">${x.periodo?('Período '+_esc(x.periodo)+' · '):''}${x.apr&&x.fA?('aprobada el '+_fd(x.fA)+' · '):''}<a href="#" onclick="event.preventDefault();event.stopPropagation();abrirDetalleRendicion('${x.id}')">Abrir planilla firmada</a></div></td></tr>`; }).join('')}
       </tbody></table>`
     : '<div class="rc-vacio">No presentó rendiciones en el período.</div>';
@@ -4650,17 +4655,34 @@ function exportCajaRendPDF(){
   const estH={fillColor:NAVY,textColor:[255,255,255],fontStyle:'bold',fontSize:7.8,halign:'center',valign:'middle'};
   const totRow=(c)=>{ c.cell.styles.fontStyle='bold'; c.cell.styles.fillColor=[240,236,225]; c.cell.styles.textColor=NAVY; };
 
-  encabezado('Estado de Caja Chica por rendiciones', `Período ${meta.perTxt}   ·   Emitido ${meta.emitido}`);
+  // v7.53: ficha que identifica residente y período en cada sección
+  const ficha=(y,campos,chips)=>{
+    const h=13.5, w=pageW-2*M, n=campos.length+(chips?1:0), cw=(w-6)/n;
+    doc.setFillColor(247,244,236); doc.setDrawColor(225,218,200); doc.setLineWidth(0.2); doc.roundedRect(M,y,w,h,1.5,1.5,'FD');
+    doc.setFillColor(...GOLD); doc.rect(M,y,1.4,h,'F');
+    campos.forEach((c,i)=>{ const x=M+5+i*cw;
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.4); doc.setTextColor(150,135,100); doc.text(san(c[0]).toUpperCase(),x,y+4.9);
+      doc.setFontSize(i===0?11:9.2); doc.setTextColor(...NAVY); doc.text(doc.splitTextToSize(san(c[1]),cw-4)[0],x,y+10.6); });
+    if(chips){ const x0=M+5+campos.length*cw; let cx=x0;
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.4); doc.setTextColor(150,135,100); doc.text('SITUACIÓN',x0,y+4.9);
+      doc.setFontSize(7); chips.forEach(c=>{ const t=san(c.l), tw=doc.getTextWidth(t)+5; if(cx+tw>M+w-2) return; const col=COL[c.c]||GRIS;
+        doc.setFillColor(col[0],col[1],col[2]); doc.roundedRect(cx,y+6.8,tw,4.8,2.3,2.3,'F'); doc.setTextColor(255,255,255); doc.text(t,cx+2.5,y+10.2); cx+=tw+1.5; }); }
+    return y+h;
+  };
+  const quien=meta.resF||`Todos los residentes (${rows.length})`;
+  const fichaCorta=(y)=>ficha(y,[['Residente',quien],['Período del reporte',meta.perTxt],['Fecha de corte',corte]]);
+  encabezado('Estado de Caja Chica por rendiciones', 'Acreditaciones por su fecha · rendiciones por su fecha de presentación');
+  const yFicha=ficha(26,[['Residente',quien],['Período del reporte',meta.perTxt],['Fecha de corte',corte],['Emitido',meta.emitido]]);
   const pl=(n,s1,s2)=>n+' '+(n===1?s1:s2);
   const kp=[['Efectivo en caja',T.efectivo,'al '+corte,'main'],['Acreditado',T.acred,pl(T.nAcr,'acreditación','acreditaciones')],['Rendido aprobado',T.rendApr,pl(T.nApr,'rendición','rendiciones')],
             ['En aprobación',T.rendPend,pl(T.nPend,'rendición','rendiciones'),'aprob'],['Sin rendir',T.sinRendir,'cargado, falta presentar','info']];
-  const gap=3, bw=(pageW-2*M-gap*(kp.length-1))/kp.length, by=27, bh=19;
+  const gap=3, bw=(pageW-2*M-gap*(kp.length-1))/kp.length, by=yFicha+3.5, bh=16.5;
   kp.forEach((k,ix)=>{ const x=M+ix*(bw+gap);
     doc.setFillColor(...(k[3]==='main'?NAVY:[247,244,236])); doc.setDrawColor(225,218,200); doc.setLineWidth(0.2); doc.roundedRect(x,by,bw,bh,1.6,1.6,'FD');
     if(k[3] && k[3]!=='main'){ doc.setFillColor(...COL[k[3]]); doc.rect(x,by+2,1.1,bh-4,'F'); }
-    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...(k[3]==='main'?[230,214,160]:GRIS)); doc.text(san(k[0]).toUpperCase(), x+3.5, by+5.5);
-    doc.setFontSize(12.5); doc.setTextColor(...(k[3]==='main'?[255,255,255]:(k[1]<0?COL.neg:[35,35,35]))); doc.text('Gs '+fmt(k[1]), x+3.5, by+12.2);
-    doc.setFont('helvetica','normal'); doc.setFontSize(6.8); doc.setTextColor(...(k[3]==='main'?[210,215,230]:[140,140,140])); doc.text(san(k[2]), x+3.5, by+16.6);
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(...(k[3]==='main'?[230,214,160]:GRIS)); doc.text(san(k[0]).toUpperCase(), x+3.5, by+4.9);
+    doc.setFontSize(12.5); doc.setTextColor(...(k[3]==='main'?[255,255,255]:(k[1]<0?COL.neg:[35,35,35]))); doc.text('Gs '+fmt(k[1]), x+3.5, by+10.9);
+    doc.setFont('helvetica','normal'); doc.setFontSize(6.6); doc.setTextColor(...(k[3]==='main'?[210,215,230]:[140,140,140])); doc.text(san(k[2]), x+3.5, by+14.6);
   });
   const head=[[{content:'',styles:{fillColor:[247,244,236]}},{content:'Cuenta del período · por fecha de acreditación y de rendición',colSpan:5,styles:{fillColor:[232,224,204],textColor:NAVY,fontSize:7.4}},
                {content:'Arqueo al '+corte,colSpan:2,styles:{fillColor:[222,206,160],textColor:NAVY,fontSize:7.4}},{content:'',styles:{fillColor:[247,244,236]}}],
@@ -4668,21 +4690,16 @@ function exportCajaRendPDF(){
   const body=rows.map(d=>[san(d.res),fmt(d.saldoIni),d.acred?fmt(d.acred):'-',d.rendApr?fmt(d.rendApr):'-',d.rendPend?fmt(d.rendPend):'-',fmt(d.saldo),d.sinRendir?fmt(d.sinRendir):'-',fmt(d.efectivo),san(d.chips.map(c=>c.l).join(' · '))]);
   const tIdx=body.length;
   body.push(['TOTAL',fmt(T.saldoIni),fmt(T.acred),fmt(T.rendApr),fmt(T.rendPend),fmt(T.saldo),fmt(T.sinRendir),'Gs '+fmt(T.efectivo),'']);
-  // v7.52: gráficos en grilla de dos columnas; arriba de la tabla o en hojas propias, según la ubicación elegida
-  const charts=_crChartSpecs(), gapC=6, cw=(pageW-2*M-gapC)/2;
-  const tituloBloque=(t,yv)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...NAVY); doc.text(san(t),M,yv+3.5); return yv+7; };
-  const grilla=(y0,tituloPag)=>{ let cy=y0, col=0, rowH=0;
-    charts.forEach(c=>{ const h=_crPdfChartH(doc,c,cw);
-      if(col===1 && cy+h>pageH-14){ cy+=rowH+gapC; col=0; rowH=0; }
-      if(col===0 && cy+h>pageH-14){ doc.addPage(); encabezado(tituloPag||'Análisis gráfico', `Período ${meta.perTxt}`); cy=28; }
-      _crPdfChart(doc,c,M+col*(cw+gapC),cy,cw,san); rowH=Math.max(rowH,h);
-      if(col===0) col=1; else { cy+=rowH+gapC; rowH=0; col=0; } });
-    return col===1?cy+rowH:cy-gapC; };
+  // v7.53: gráficos ejecutivos, hasta 4 por hoja (2 × 2)
+  const charts=_crChartSpecs(), conVal=CR_GRAF.vals!==false;
+  const tituloBloque=(t,yv)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(...NAVY); doc.text(san(t),M,yv+3.6); return yv+6.5; };
+  const hojaGraf=()=>{ doc.addPage(); encabezado('Análisis gráfico','Estado de Caja Chica por rendiciones'); return fichaCorta(26)+5; };
   let yTab=by+bh+5;
-  if(charts.length && CR_GRAF.pos==='antes'){
-    yTab=grilla(tituloBloque('Análisis gráfico',yTab),'Estado de Caja Chica por rendiciones')+6;
-    if(yTab>pageH-45){ doc.addPage(); yTab=28; }
-    yTab=tituloBloque('Detalle por residente',yTab);
+  if(charts.length && CR_GRAF.pos==='antes'){   // gráficos arriba: la hoja 1 es el tablero ejecutivo
+    const hojaCont=()=>{ doc.addPage(); encabezado('Estado de Caja Chica por rendiciones','Análisis gráfico · continuación'); return fichaCorta(26)+5; };
+    const yFin=_crPdfGrilla(doc,charts,tituloBloque('Análisis gráfico',by+bh+4),pageH-13,M,pageW,san,conVal,hojaCont);
+    if(pageH-14-yFin>=62) yTab=tituloBloque('Detalle por residente',yFin+7);     // si sobra lugar, la tabla sigue en la misma hoja
+    else { doc.addPage(); encabezado('Estado de Caja Chica por rendiciones','Detalle por residente'); yTab=tituloBloque('Detalle por residente',fichaCorta(26)+5); }
   }
   doc.autoTable({ head, body, startY:yTab, margin:{left:M,right:M,top:28,bottom:14},
     styles:Object.assign({},est,{fontSize:8.4,cellPadding:1.9}), headStyles:Object.assign({},estH,{fontSize:7.4}),
@@ -4718,17 +4735,14 @@ function exportCajaRendPDF(){
   doc.setFont('helvetica','normal'); doc.setFontSize(7.4); doc.setTextColor(...GRIS);
   ley.slice(1).forEach(t=>{ const sp=doc.splitTextToSize(san(t),pageW-2*M); doc.text(sp,M,y); y+=sp.length*3.5+0.6; });
 
-  // gráficos después de la tabla: en hojas propias
-  if(charts.length && CR_GRAF.pos!=='antes'){ doc.addPage(); encabezado('Análisis gráfico', `Período ${meta.perTxt}`); grilla(28); }
+  // gráficos después de la tabla: en hojas propias, 4 por hoja
+  if(charts.length && CR_GRAF.pos!=='antes') _crPdfGrilla(doc,charts,hojaGraf(),pageH-14,M,pageW,san,conVal,hojaGraf);
   const pdfSel=gs('r-pdf-detalle');
   if(!pdfSel || pdfSel.value!=='resumen'){
     rows.forEach(d=>{
       doc.addPage();
-      encabezado(d.res, `Caja chica por rendiciones · período ${meta.perTxt}`);
-      let cx=M; doc.setFontSize(7.6); doc.setFont('helvetica','bold');
-      d.chips.forEach(c=>{ const t=san(c.l), w=doc.getTextWidth(t)+6; const col=COL[c.c]||GRIS;
-        doc.setFillColor(col[0],col[1],col[2]); doc.roundedRect(cx,25.5,w,5,2.4,2.4,'F'); doc.setTextColor(255,255,255); doc.text(t,cx+3,29); cx+=w+2; });
-      const top=34, colW=(pageW-2*M-8)/2.6;
+      encabezado('Estado de Caja Chica por rendiciones', 'Hoja del residente');
+      const top=ficha(26,[['Residente',d.res],['Período del reporte',meta.perTxt],['Fecha de corte',corte]],d.chips)+5, colW=(pageW-2*M-8)/2.6;
       const casc=[[`Saldo al ${meta.D?_fd(meta.D):'inicio'}`,fmt(d.saldoIni)],[`+ Acreditaciones (${d.acrs.length})`,fmt(d.acred)],
         [`- Rendiciones aprobadas (${d.nApr})`,nf(-d.rendApr)],[`- Rendiciones en aprobación (${d.nPend})`,nf(-d.rendPend)],[`= Saldo según rendiciones al ${corte}`,'Gs '+fmt(d.saldo)]];
       doc.autoTable({ head:[['Cuenta del período','Gs']], body:casc, startY:top, margin:{left:M,top:28,bottom:14}, tableWidth:colW,
@@ -4744,19 +4758,19 @@ function exportCajaRendPDF(){
       notas.forEach(t=>{ const sp=doc.splitTextToSize(san(t),colW); doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(...(t.startsWith('Revisar')?COL.neg:GRIS)); doc.text(sp,M,yL+4); yL+=4+sp.length*3.2; });
       const xR=M+colW+8;
       const bodyR=d.rnds.map(x=>{ const dias=!x.apr?_ccDias(x.fP):null;
-        return [x.nro,_fd(x.fP),(x.apr?'Aprobada':'En aprobación')+(dias?` (${dias} d)`:'')+(x.ant?' - antes del período':''),fmt(x.total)]; });
-      if(!bodyR.length) bodyR.push([{content:'No presentó rendiciones en el período.',colSpan:4,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
-      else bodyR.push(['TOTAL','','',fmt(d.rnds.reduce((s,x)=>s+x.total,0))]);
-      doc.autoTable({ head:[['Rendición','Presentada','Estado','Monto']], body:bodyR, startY:top,
+        return [x.nro,san(x.periodo||'-'),_fd(x.fP),(x.apr?'Aprobada':'En aprobación')+(dias?` (${dias} d)`:'')+(x.ant?' - antes del período':''),fmt(x.total)]; });
+      if(!bodyR.length) bodyR.push([{content:'No presentó rendiciones en el período.',colSpan:5,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
+      else bodyR.push(['TOTAL','','','',fmt(d.rnds.reduce((s,x)=>s+x.total,0))]);
+      doc.autoTable({ head:[['Rendición','Período rendido','Presentada','Estado','Monto']], body:bodyR, startY:top,
         margin:{left:xR,right:M,top:28,bottom:14}, styles:est, headStyles:estH,
-        columnStyles:{0:{cellWidth:26},1:{cellWidth:24,halign:'center'},2:{cellWidth:'auto'},3:{cellWidth:30,halign:'right',fontStyle:'bold'}},
+        columnStyles:{0:{cellWidth:22},1:{cellWidth:40,halign:'center'},2:{cellWidth:22,halign:'center'},3:{cellWidth:'auto'},4:{cellWidth:28,halign:'right',fontStyle:'bold'}},
         didParseCell:(c)=>{ if(c.section!=='body') return; const x=d.rnds[c.row.index];
           if(!x){ if(d.rnds.length) totRow(c); return; }
-          if(c.column.index===2){ c.cell.styles.textColor=x.apr?COL.ok:COL.aprob; c.cell.styles.fontStyle='bold'; } } });
+          if(c.column.index===3){ c.cell.styles.textColor=x.apr?COL.ok:COL.aprob; c.cell.styles.fontStyle='bold'; } } });
       // v7.51: el gráfico de rubros del residente va en la columna derecha, debajo de sus rendiciones
       let yR=doc.lastAutoTable.finalY, grafPend=false;
-      if(CR_GRAF.on && CR_GRAF.sel.rubro){ const sp=_crRubroResSpec(d), cwR=pageW-M-xR, hC=_crPdfChartH(doc,sp,cwR);
-        if(yR+6+hC<=pageH-14){ _crPdfChart(doc,sp,xR,yR+6,cwR,san); yR+=6+hC; } else grafPend=true; }
+      if(CR_GRAF.on && CR_GRAF.sel.rubro){ const sp=_crRubroResSpec(d), cwR=pageW-M-xR, hC=_crPdfNatH(doc,sp,cwR,conVal);
+        if(yR+6+hC<=pageH-14){ _crPdfChartFit(doc,sp,xR,yR+6,cwR,hC,san,conVal); yR+=6+hC; } else grafPend=true; }
       let y2=Math.max(yL,yR)+6;
       const tituloSec=(t)=>{ if(y2>pageH-28){ doc.addPage(); y2=28; } doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...NAVY); doc.text(san(t),M,y2); y2+=2; };
       tituloSec(`Acreditaciones del período (${d.acrs.length})`);
@@ -4778,8 +4792,8 @@ function exportCajaRendPDF(){
         didParseCell:(c)=>{ if(c.section==='body' && d.sinRend.length && c.row.index===d.sinRend.length) totRow(c); } });
       if(grafPend){                                             // v7.51: si no entró arriba, va al final de la hoja
         const sp=_crRubroResSpec(d), cw=(pageW-2*M-6)/2; let yg=doc.lastAutoTable.finalY+6;
-        const h=_crPdfChartH(doc,sp,cw); if(yg+h>pageH-14){ doc.addPage(); yg=28; }
-        _crPdfChart(doc,sp,M,yg,cw,san);
+        const h=_crPdfNatH(doc,sp,cw,conVal); if(yg+h>pageH-14){ doc.addPage(); yg=28; }
+        _crPdfChartFit(doc,sp,M,yg,cw,h,san,conVal);
       }
     });
   }
@@ -4808,19 +4822,21 @@ const CR_GRAF_DEF=[
 ];
 const CR_PALETA=['#1f3864','#c8a028','#2a7f7f','#c2410c','#6b7d2a','#4f6fa8','#8a4f7d','#a0825a'];
 const CR_OTROS='#9a9a9a';
-let CR_GRAF={on:false, pos:'antes', sel:{rubro:true, fondos:true}};
+let CR_GRAF={on:false, pos:'antes', vals:true, sel:{rubro:true, fondos:true}};
 (function(){ try{ const v=JSON.parse(localStorage.getItem('axc_cc_graf')||'null');
-  if(v && typeof v==='object') CR_GRAF={on:!!v.on, pos:(v.pos==='despues'?'despues':'antes'), sel:Object.assign({rubro:true,fondos:true},v.sel||{})}; }catch(e){} })();
+  if(v && typeof v==='object') CR_GRAF={on:!!v.on, pos:(v.pos==='despues'?'despues':'antes'), vals:(v.vals!==false), sel:Object.assign({rubro:true,fondos:true},v.sel||{})}; }catch(e){} })();
 function _crGrafSync(){
   const on=gs('cr-graf-on'); if(!on) return;
   on.checked=CR_GRAF.on; gs('cr-graf-opts').style.display=CR_GRAF.on?'':'none';
   document.querySelectorAll('#cr-graf-opts input[data-g]').forEach(i=>{ i.checked=!!CR_GRAF.sel[i.dataset.g]; });
   const ps=gs('cr-graf-pos'); if(ps) ps.value=CR_GRAF.pos;
+  const pv=gs('cr-graf-val'); if(pv) pv.checked=CR_GRAF.vals!==false;
 }
 function crGrafCambio(){
   CR_GRAF.on=gs('cr-graf-on').checked;
   document.querySelectorAll('#cr-graf-opts input[data-g]').forEach(i=>{ CR_GRAF.sel[i.dataset.g]=i.checked; });
   const ps=gs('cr-graf-pos'); if(ps) CR_GRAF.pos=(ps.value==='despues'?'despues':'antes');
+  const pv=gs('cr-graf-val'); if(pv) CR_GRAF.vals=pv.checked;
   gs('cr-graf-opts').style.display=CR_GRAF.on?'':'none';
   try{ localStorage.setItem('axc_cc_graf',JSON.stringify(CR_GRAF)); }catch(e){}
   if(CR_DATA && rTipo()==='cajarend') _crRender();     // redibuja con los datos ya cargados, sin volver a consultar
@@ -4927,7 +4943,8 @@ function _crChartHTML(c,bare){
   }
   const head=bare?'':`<div class="cg-h"><b>${_esc(c.title)}</b><span>${_esc(c.sub||'')}</span></div>`;
   const pie=c.note?`<div class="cg-note">${_esc(c.note)}</div>`:'';
-  return bare?`<div class="cg-bare">${body}${pie}</div>`:`<div class="cg-card">${head}${body}${pie}</div>`;
+  const nv=(CR_GRAF.vals===false)?' nv':'';           // v7.53: sin valores
+  return bare?`<div class="cg-bare${nv}">${body}${pie}</div>`:`<div class="cg-card${nv}">${head}${body}${pie}</div>`;
 }
 function _crChartsSecHTML(){
   const ch=_crChartSpecs(); if(!ch.length) return '';
@@ -4936,71 +4953,146 @@ function _crChartsSecHTML(){
 
 // ---------- PDF (vectorial) ----------
 function _crHex(h){ h=String(h||'#999').replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; }
-function _crPdfGeo(c,w){ const P=3, labW=Math.min(46,w*0.3), valW=(c.kind==='bar'&&c.pct)?32:24; return {P,labW,valW,tW:w-2*P-labW-2-valW-2}; }
-function _crPdfLeg(doc,c,w){       // reparte la leyenda en líneas según el ancho
+function _crTxtSobre(h){ const [r,g,b]=_crHex(h); return (0.299*r+0.587*g+0.114*b)/255>0.62?[40,40,40]:[255,255,255]; }   // texto legible sobre cada color
+function _crCorto(v){ v=Number(v)||0; const a=Math.abs(v);
+  if(a>=1e6) return (v/1e6).toLocaleString('es-PY',{maximumFractionDigits:a>=1e7?0:1})+' M';
+  if(a>=1e3) return Math.round(v/1e3).toLocaleString('es-PY')+' mil'; return fmt(v); }
+// v7.53: geometría común (con o sin columna de valores)
+function _crPdfGeo(c,w,vals){
+  const P=3.2, labW=Math.min(44,w*0.3), numW=vals?21:0, pctW=(vals&&c.kind==='bar'&&c.pct)?10:0;
+  return {P,labW,numW,pctW,tW:w-2*P-labW-2-(vals?numW+pctW+2:0)};
+}
+function _crPdfLeg(doc,c,w){
   const ser=_crSerVis(c); if(!ser.length) return [];
   doc.setFont('helvetica','normal'); doc.setFontSize(6.6);
-  const lines=[[]]; let used=0; const max=w-6;
+  const lines=[[]]; let used=0; const max=w-7;
   ser.forEach(se=>{ const iw=3.6+doc.getTextWidth(String(se.l))+4;
     if(used+iw>max && lines[lines.length-1].length){ lines.push([]); used=0; }
     lines[lines.length-1].push(se); used+=iw; });
   return lines;
 }
-function _crPdfParts(doc,c,r,maxW){  // v7.52: monto de cada color de una barra apilada, en líneas
+function _crPdfParts(doc,c,r,maxW){
   const t=c.series.reduce((s,se)=>s+(Number(r.parts[se.k])||0),0);
-  doc.setFont('helvetica','normal'); doc.setFontSize(6.6);
+  doc.setFont('helvetica','bold'); doc.setFontSize(6.2);
   const items=_crSerVis(c).filter(se=>(Number(r.parts[se.k])||0)>0).map(se=>{ const v=Number(r.parts[se.k]); const tx=fmt(v), pc=_crPct(v,t);
-    return {se,tx,pc,w:2.4+1.2+doc.getTextWidth(tx)+1.2+doc.getTextWidth(pc)+4.5}; });
+    const w1=doc.getTextWidth(tx); doc.setFont('helvetica','normal'); const w2=doc.getTextWidth(pc); doc.setFont('helvetica','bold');
+    return {se,tx,pc,w:2.3+1.1+w1+1+w2+4}; });
   const lines=[[]]; let used=0;
   items.forEach(it=>{ if(used+it.w>maxW && lines[lines.length-1].length){ lines.push([]); used=0; } lines[lines.length-1].push(it); used+=it.w; });
   return items.length?lines:[];
 }
-function _crPdfRowH(doc,c,r,w){ if(c.kind!=='stack') return 6.4; const g=_crPdfGeo(c,w); return 6.4+_crPdfParts(doc,c,r,g.tW+g.valW+2).length*3.7+1; }
-function _crPdfChartH(doc,c,w){
-  const lg=_crPdfLeg(doc,c,w).length;
-  const filas=c.rows.length?c.rows.reduce((s,r)=>s+_crPdfRowH(doc,c,r,w),0):6.4;
-  return 12+lg*4.4+filas+3+(c.note?5:0);
+function _crPdfParts2(doc,c,r,maxW,corto){   // v7.53: versión compacta, solo montos
+  doc.setFont('helvetica','bold'); doc.setFontSize(5.6);
+  const items=_crSerVis(c).filter(se=>(Number(r.parts[se.k])||0)>0).map(se=>{ const v=Number(r.parts[se.k]); const tx=corto?_crCorto(v):fmt(v);
+    return {se,tx,pc:'',w:2+1+doc.getTextWidth(tx)+3.4}; });
+  const lines=[[]]; let used=0;
+  items.forEach(it=>{ if(used+it.w>maxW && lines[lines.length-1].length){ lines.push([]); used=0; } lines[lines.length-1].push(it); used+=it.w; });
+  return items.length?lines:[];
 }
-function _crPdfChart(doc,c,x,y,w,san){
-  const RH=6.4, BH=3.8, g=_crPdfGeo(c,w), P=g.P, labW=g.labW;
-  const h=_crPdfChartH(doc,c,w);
-  doc.setDrawColor(225,218,200); doc.setFillColor(252,250,245); doc.setLineWidth(0.2); doc.roundedRect(x,y,w,h,1.5,1.5,'FD');
-  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(31,56,100); doc.text(san(c.title),x+P,y+5.5);
-  doc.setFont('helvetica','normal'); doc.setFontSize(6.8); doc.setTextColor(120,120,120); doc.text(doc.splitTextToSize(san(c.sub||''),w-2*P)[0],x+P,y+9.6);
-  let yy=y+12;
+// Alto "natural" de un gráfico (sin comprimir)
+function _crPdfNatH(doc,c,w,vals){
+  const g=_crPdfGeo(c,w,vals); let hh=14.4+_crPdfLeg(doc,c,w).length*4.2;
+  if(!c.rows.length || (c.kind==='bar'&&!c.total)) hh+=8;
+  else if(c.kind==='stack'&&vals) hh+=c.rows.reduce((s,r)=>s+5.8+_crPdfParts(doc,c,r,g.tW+g.numW+g.pctW+2).length*3.4+0.9,0);
+  else hh+=c.rows.length*6.6;
+  return hh+3+(c.note?4.6:0);
+}
+// Alto mínimo en el que el gráfico todavía muestra todos sus valores
+function _crPdfMinH(doc,c,w,vals){
+  const g=_crPdfGeo(c,w,vals); let hh=14.4+_crPdfLeg(doc,c,w).length*4.2;
+  if(!c.rows.length || (c.kind==='bar'&&!c.total)) hh+=8;
+  else if(c.kind==='stack'&&vals) hh+=c.rows.reduce((s,r)=>s+4.4+_crPdfParts2(doc,c,r,g.tW+g.numW+g.pctW+2,false).length*2.75+0.45,0);
+  else hh+=c.rows.length*4.2;
+  return hh+3+(c.note?4.6:0);
+}
+// Dibuja un gráfico ocupando exactamente el recuadro (x,y,w,h): comprime filas si hace falta
+function _crPdfChartFit(doc,c,x,y,w,h,san,vals){
+  const g=_crPdfGeo(c,w,vals), P=g.P, labW=g.labW;
+  doc.setDrawColor(222,214,196); doc.setFillColor(255,255,255); doc.setLineWidth(0.25); doc.roundedRect(x,y,w,h,1.8,1.8,'FD');
+  doc.setFillColor(200,160,40); doc.rect(x+P,y+2.4,10,0.8,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9.6); doc.setTextColor(31,56,100); doc.text(san(c.title),x+P,y+7.8);
+  doc.setFont('helvetica','normal'); doc.setFontSize(6.8); doc.setTextColor(125,125,125); doc.text(doc.splitTextToSize(san(c.sub||''),w-2*P)[0],x+P,y+11.8);
+  let yy=y+14.4;
   _crPdfLeg(doc,c,w).forEach(line=>{ let lx=x+P; doc.setFont('helvetica','normal'); doc.setFontSize(6.6);
-    line.forEach(se=>{ const t=san(se.l); doc.setFillColor(..._crHex(se.c)); doc.rect(lx,yy+0.5,2.6,2.6,'F'); doc.setTextColor(80,80,80); doc.text(t,lx+3.6,yy+2.7); lx+=3.6+doc.getTextWidth(t)+4; });
-    yy+=4.4; });
+    line.forEach(se=>{ const t=san(se.l); doc.setFillColor(..._crHex(se.c)); doc.roundedRect(lx,yy+0.4,2.6,2.6,0.5,0.5,'F'); doc.setTextColor(80,80,80); doc.text(t,lx+3.6,yy+2.6); lx+=3.6+doc.getTextWidth(t)+4; });
+    yy+=4.2; });
+  const yFin=y+h-3-(c.note?4.6:0);
+  const nota=()=>{ if(c.note){ doc.setFont('helvetica','italic'); doc.setFontSize(6.4); doc.setTextColor(135,135,135); doc.text(doc.splitTextToSize(san(c.note),w-2*P)[0],x+P,y+h-3.2); } };
   const tot=(r)=>c.kind==='bar'?r.v:c.series.reduce((s,se)=>s+(Number(r.parts[se.k])||0),0);
   if(!c.rows.length || (c.kind==='bar' && !c.total)){
-    doc.setFont('helvetica','italic'); doc.setFontSize(7.4); doc.setTextColor(140,140,140); doc.text(san(c.empty||'Sin datos.'),x+P,yy+4); return h; }
-  const tX=x+P+labW+2, tW=g.tW, max=Math.max(...c.rows.map(tot),1), ser=_crSerVis(c);
-  c.rows.forEach(r=>{
-    doc.setFont('helvetica','normal'); doc.setFontSize(7.2); doc.setTextColor(50,50,50);
+    doc.setFont('helvetica','italic'); doc.setFontSize(7.4); doc.setTextColor(140,140,140); doc.text(san(c.empty||'Sin datos.'),x+P,yy+4); nota(); return; }
+  const A=Math.max(4,yFin-yy), tX=x+P+labW+2, tW=g.tW, ser=_crSerVis(c), anchoDet=tW+g.numW+g.pctW+2;
+  // Barras apiladas con valores: desglose debajo si entra; si no, el monto va dentro de cada color
+  // Modos de valores en barras apiladas, del más completo al más compacto
+  let modo='simple', corto=false;
+  if(c.kind==='stack' && vals){
+    const need=c.rows.reduce((s,r)=>s+5.8+_crPdfParts(doc,c,r,anchoDet).length*3.4+0.9,0);
+    if(need<=A) modo='det';
+    else {
+      const need2=c.rows.reduce((s,r)=>s+4.4+_crPdfParts2(doc,c,r,anchoDet,false).length*2.75+0.45,0);
+      const need3=c.rows.reduce((s,r)=>s+4.4+_crPdfParts2(doc,c,r,anchoDet,true).length*2.75+0.45,0);
+      if(need2<=A) modo='det2'; else if(need3<=A){ modo='det2'; corto=true; } else modo='dentro';
+    }
+  }
+  let filas=c.rows.slice(), resto=0;
+  if(modo==='simple'||modo==='dentro'){ const maxF=Math.max(1,Math.floor(A/3.9)); if(filas.length>maxF){ resto=filas.length-(maxF-1); filas=filas.slice(0,maxF-1); } }
+  const max=Math.max(...c.rows.map(tot),1);
+  const rhBase=Math.min(8.2,A/Math.max(1,filas.length+(resto?1:0)));
+  filas.forEach(r=>{
+    const lineas=(modo==='det')?_crPdfParts(doc,c,r,anchoDet):(modo==='det2')?_crPdfParts2(doc,c,r,anchoDet,corto):[];
+    const banda=(modo==='det')?5.8:(modo==='det2')?4.4:rhBase;
+    const rh=(modo==='det')?(5.8+lineas.length*3.4+0.9):(modo==='det2')?(4.4+lineas.length*2.75+0.45):rhBase;
+    const BH=Math.min(4.2,Math.max(2.4,banda*0.58)), by=yy+(banda-BH)/2, ty=yy+banda/2+1.1;
+    const fs=Math.max(6,Math.min(7.6,banda*1.45));
+    doc.setFont('helvetica','normal'); doc.setFontSize(fs); doc.setTextColor(50,50,50);
     let lab=san(r.l)+(r.warn?' (!)':'');
     if(doc.getTextWidth(lab)>labW){ while(lab.length>3 && doc.getTextWidth(lab+'...')>labW) lab=lab.slice(0,-1); lab+='...'; }
-    doc.text(lab,x+P,yy+RH/2+1.2);
-    const by=yy+(RH-BH)/2; doc.setFillColor(238,234,224); doc.rect(tX,by,tW,BH,'F');
-    if(c.kind==='bar'){ doc.setFillColor(..._crHex(r.c)); doc.rect(tX,by,Math.max(0.5,tW*r.v/max),BH,'F'); }
-    else { let sx=tX; ser.forEach(se=>{ const v=Number(r.parts[se.k])||0; if(v>0){ const sw=tW*v/max; doc.setFillColor(..._crHex(se.c)); doc.rect(sx,by,sw,BH,'F'); sx+=sw; } }); }
-    const t=tot(r); doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(40,40,40);
-    if(c.kind==='bar'&&c.pct&&c.total){
-      doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.text(_crPct(t,c.total),x+w-P,yy+RH/2+1.2,{align:'right'});
-      doc.setFont('helvetica','bold'); doc.setTextColor(40,40,40); doc.text(fmt(t),x+w-P-10,yy+RH/2+1.2,{align:'right'});
-    } else doc.text(fmt(t),x+w-P,yy+RH/2+1.2,{align:'right'});
-    if(c.kind==='stack'){
-      let ly=yy+RH+0.6;
-      _crPdfParts(doc,c,r,tW+g.valW+2).forEach(line=>{ let lx=tX;
-        line.forEach(it=>{ doc.setFillColor(..._crHex(it.se.c)); doc.rect(lx,ly+0.3,2.4,2.4,'F');
-          doc.setFont('helvetica','bold'); doc.setFontSize(6.6); doc.setTextColor(45,45,45); doc.text(it.tx,lx+3.6,ly+2.4);
-          const tw=doc.getTextWidth(it.tx); doc.setFont('helvetica','normal'); doc.setTextColor(130,130,130); doc.text(it.pc,lx+3.6+tw+1.2,ly+2.4);
+    doc.text(lab,x+P,ty);
+    doc.setFillColor(240,236,227); doc.roundedRect(tX,by,tW,BH,0.7,0.7,'F');
+    if(c.kind==='bar'){ doc.setFillColor(..._crHex(r.c)); doc.roundedRect(tX,by,Math.max(0.8,tW*r.v/max),BH,0.7,0.7,'F'); }
+    else { let sx=tX; ser.forEach(se=>{ const v=Number(r.parts[se.k])||0; if(v<=0) return; const sw=tW*v/max;
+        doc.setFillColor(..._crHex(se.c)); doc.rect(sx,by,sw,BH,'F');
+        if(modo==='dentro'){ doc.setFont('helvetica','bold'); doc.setFontSize(Math.min(6,fs-0.4));
+          let t=fmt(v); if(doc.getTextWidth(t)+1.6>sw) t=_crCorto(v);
+          if(doc.getTextWidth(t)+1.6<=sw && BH>=2.8){ doc.setTextColor(..._crTxtSobre(se.c)); doc.text(t,sx+sw/2,by+BH/2+0.9,{align:'center'}); } }
+        sx+=sw; }); }
+    if(vals){ const t=tot(r);
+      if(c.kind==='bar'&&c.pct&&c.total){
+        doc.setFont('helvetica','normal'); doc.setFontSize(fs-0.5); doc.setTextColor(125,125,125); doc.text(_crPct(t,c.total),x+w-P,ty,{align:'right'});
+        doc.setFont('helvetica','bold'); doc.setFontSize(fs); doc.setTextColor(40,40,40); doc.text(fmt(t),x+w-P-g.pctW-1,ty,{align:'right'});
+      } else { doc.setFont('helvetica','bold'); doc.setFontSize(fs); doc.setTextColor(40,40,40); doc.text(fmt(t),x+w-P,ty,{align:'right'}); } }
+    if(modo==='det2'){ let ly=yy+4.4;
+      lineas.forEach(line=>{ let lx=tX;
+        line.forEach(it=>{ doc.setFillColor(..._crHex(it.se.c)); doc.roundedRect(lx,ly+0.3,2,2,0.4,0.4,'F');
+          doc.setFont('helvetica','bold'); doc.setFontSize(5.6); doc.setTextColor(45,45,45); doc.text(it.tx,lx+3,ly+2.05); lx+=it.w; });
+        ly+=2.75; }); }
+    if(modo==='det'){ let ly=yy+5.8;
+      lineas.forEach(line=>{ let lx=tX;
+        line.forEach(it=>{ doc.setFillColor(..._crHex(it.se.c)); doc.roundedRect(lx,ly+0.35,2.3,2.3,0.4,0.4,'F');
+          doc.setFont('helvetica','bold'); doc.setFontSize(6.2); doc.setTextColor(45,45,45); doc.text(it.tx,lx+3.4,ly+2.35);
+          const tw=doc.getTextWidth(it.tx); doc.setFont('helvetica','normal'); doc.setTextColor(130,130,130); doc.text(it.pc,lx+3.4+tw+1,ly+2.35);
           lx+=it.w; });
-        ly+=3.7; });
-    }
-    yy+=_crPdfRowH(doc,c,r,w);
+        ly+=3.4; }); }
+    yy+=rh;
   });
-  if(c.note){ doc.setFont('helvetica','italic'); doc.setFontSize(6.6); doc.setTextColor(130,130,130); doc.text(doc.splitTextToSize(san(c.note),w-2*P)[0],x+P,yy+3.5); }
-  return h;
+  if(resto){ doc.setFont('helvetica','italic'); doc.setFontSize(6.4); doc.setTextColor(130,130,130); doc.text(`y ${resto} más (ver detalle por residente)`,x+P,yy+3); }
+  nota();
+}
+// Grilla ejecutiva: hasta 4 gráficos por hoja (2 × 2), con altos repartidos para que entren completos
+function _crPdfGrilla(doc,lista,yTop,yBottom,M,pageW,san,vals,nuevaHoja){
+  const gap=5, cw=(pageW-2*M-gap)/2; let i=0, y0=yTop, yUlt=yTop;
+  while(i<lista.length){
+    const pag=lista.slice(i,i+4), filas=[pag.slice(0,2),pag.slice(2,4)].filter(f=>f.length);
+    const nat=filas.map(f=>Math.max(...f.map(c=>_crPdfNatH(doc,c,cw,vals))));
+    const mn=filas.map(f=>Math.max(...f.map(c=>_crPdfMinH(doc,c,cw,vals))));
+    const area=yBottom-y0-gap*(filas.length-1), sN=nat.reduce((s,v)=>s+v,0), sM=mn.reduce((s,v)=>s+v,0);
+    const hs=(sN<=area)?nat:(sM<=area)?nat.map((n,fi)=>mn[fi]+((sN-sM)>0?(n-mn[fi])*(area-sM)/(sN-sM):0)):mn.map(m=>m*area/sM);
+    let yy=y0;
+    filas.forEach((f,fi)=>{ const hf=hs[fi]; f.forEach((c,j)=>_crPdfChartFit(doc,c,M+j*(cw+gap),yy,cw,hf,san,vals)); yy+=hf+gap; });
+    i+=pag.length; yUlt=yy-gap;
+    if(i<lista.length) y0=nuevaHoja();
+  }
+  return yUlt;
 }
 
 // v7.29: P0/doc0 permiten reutilizar esta función para cada residente dentro de un PDF único.
