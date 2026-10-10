@@ -727,7 +727,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.52 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.53 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -4998,65 +4998,216 @@ async function openPropuestasLista(){
 }
 
 /* Reimprime una versión ya emitida, con sus precios guardados. No crea otra. */
-/* v10.52 · Descargar la propuesta en Excel (mismos datos que el PDF; solo precios de venta) */
+/* v10.53 · Propuesta en Excel con el mismo formato del PDF (logo, colores, totales). Usa ExcelJS. */
+function _cargarExcelJS(){
+  if(window.ExcelJS) return Promise.resolve();
+  return new Promise(function(res, rej){
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    s.onload = function(){ res(); }; s.onerror = function(){ rej(new Error('No se pudo cargar el generador de Excel (revisá la conexión).')); };
+    document.head.appendChild(s);
+  });
+}
+function _tamImg(src){ return new Promise(function(res){ const i = new Image(); i.onload = function(){ res({ w:i.naturalWidth||1, h:i.naturalHeight||1 }); }; i.onerror = function(){ res({ w:3, h:1 }); }; i.src = src; }); }
 async function excelPropuestaVersion(id){
   try{
-    if(typeof XLSX === 'undefined') throw new Error('No se cargó la librería de Excel. Recargá la página (Ctrl + F5).');
+    await _cargarExcelJS();
     const { data:c, error } = await sb.from('propuesta_cab').select('*').eq('id', id).single();
     if(error) throw error;
     const { data:its, error:e2 } = await sb.from('propuesta_items').select('*').eq('propuesta_id', id).order('orden');
     if(e2) throw e2;
     const N = function(v){ return Number(v)||0; };
-    const items = (its||[]).map(function(x){ return { sector:x.sector||'', capitulo:x.capitulo||'', cod:x.rubro_codigo||'', desc:x.descripcion||'',
+    const items = (its||[]).map(function(x){ return { sector:x.sector||'(Sin sector)', capitulo:x.capitulo||'', desc:x.descripcion||'',
       un:x.unidad||'', cant:N(x.cantidad), pu:N(x.precio_unit), tot:N(x.precio_total), opc:!!x.opcional }; });
-    const fecha = c.emitido_en ? new Date(c.emitido_en).toLocaleDateString('es-PY') : '';
-    const A = [];   // filas
-    A.push(['AXC CONSTRUCTORA']);
-    A.push(['Propuesta económica · '+(c.codigo||c.presupuesto||'')+' · versión v'+(c.version||'')]);
-    A.push([]);
-    [['Obra', c.obra], ['Cliente', c.cliente], ['Atención', c.atencion], ['Referencia', c.referencia], ['Descripción', c.descripcion],
-     ['Fecha de emisión', fecha], ['Validez', c.validez_dias ? c.validez_dias+' días' : '']].forEach(function(p){ if(p[1]) A.push([p[0], String(p[1])]); });
-    A.push([]);
-    const hdr = A.length; A.push(['Ítem','Código','Descripción del trabajo','Unidad','Cantidad','Precio unitario (Gs)','Total (Gs)']);
-    const tipo = {};   // fila -> 'sec' | 'cap' | 'it' | 'tot'
-    let n = 0, sub = 0, opcTot = 0, secAnt = null, capAnt = null;
-    const base = items.filter(function(x){ return !x.opc; }), opc = items.filter(function(x){ return x.opc; });
-    const agregar = function(lista){
-      lista.forEach(function(x){
-        if(x.sector !== secAnt){ secAnt = x.sector; capAnt = null; tipo[A.length] = 'sec'; A.push(['SECTOR: '+(x.sector||'General')]); }
-        if(x.capitulo !== capAnt){ capAnt = x.capitulo; if(x.capitulo){ tipo[A.length] = 'cap'; A.push(['', '', x.capitulo]); } }
-        n++; tipo[A.length] = 'it';
-        A.push([n, x.cod, x.desc + (x.opc ? ' (opcional)' : ''), x.un, x.cant, x.pu, x.tot]);
+    const base = items.filter(function(x){ return !x.opc; }), opcs = items.filter(function(x){ return x.opc; });
+    const emit = c.emitido_en ? new Date(c.emitido_en) : new Date();
+    const vto = new Date(emit.getTime() + (N(c.validez_dias)||15)*86400000);
+    const fd = function(d){ return d.toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'numeric'}); };
+    const cod = c.codigo || c.presupuesto || '';
+
+    const NAVY='FF1F3864', GOLD='FFC9A961', SEC='FFCFDDEF', CAP='FFEDF3FB', LINE='FFD3D8E1', ZEBRA='FFFAFBFD';
+    const fill = function(argb){ return { type:'pattern', pattern:'solid', fgColor:{ argb:argb } }; };
+    const fino = { style:'thin', color:{ argb:LINE } };
+    const bordes = { top:fino, left:fino, bottom:fino, right:fino };
+
+    const wb = new ExcelJS.Workbook(); wb.creator = 'AXC Constructora';
+    const ws = wb.addWorksheet('Propuesta v'+(c.version||''), {
+      pageSetup:{ paperSize:9, orientation:'portrait', fitToPage:true, fitToWidth:1, fitToHeight:0,
+                  margins:{ left:0.4, right:0.4, top:0.45, bottom:0.55, header:0.2, footer:0.25 } },
+      headerFooter:{ oddFooter:'&8&K8893A5AXC Constructora · Propuesta '+cod+' v'+(c.version||'')+'&R&8&K8893A5Página &P de &N' },
+      views:[{ showGridLines:false }]
+    });
+    ws.columns = [ {width:19}, {width:54}, {width:8}, {width:11}, {width:16}, {width:17} ];
+    const fuente = function(cell, o){ cell.font = Object.assign({ name:'Calibri', size:10, color:{ argb:'FF1A1F2B' } }, o||{}); };
+
+    // Cinta azul y dorada
+    ws.getRow(1).height = 6;
+    ['A','B','C','D'].forEach(function(k){ ws.getCell(k+'1').fill = fill(NAVY); });
+    ['E','F'].forEach(function(k){ ws.getCell(k+'1').fill = fill(GOLD); });
+
+    // Logo + título + datos de la versión
+    try{
+      const t = await _tamImg(AXC_LOGO_DATA_URL);
+      const img = wb.addImage({ base64: AXC_LOGO_DATA_URL, extension:'png' });
+      const h = 40, w = Math.min(128, Math.round(h * t.w / t.h));
+      ws.addImage(img, { tl:{ col:0.15, row:1.25 }, ext:{ width:w, height:h }, editAs:'oneCell' });
+    }catch(e){}
+    [2,3,4].forEach(function(r){ ws.getRow(r).height = 17; });
+    ws.mergeCells('B2:D2'); ws.getCell('B2').value = 'PROPUESTA ECONÓMICA '+cod;
+    fuente(ws.getCell('B2'), { size:15, bold:true, color:{ argb:NAVY } });
+    ws.getCell('B2').alignment = { indent:1, vertical:'middle' };
+    if(c.descripcion){ ws.mergeCells('B3:D3'); ws.getCell('B3').value = c.descripcion; fuente(ws.getCell('B3'), { size:10, color:{ argb:'FF5A6677' } }); ws.getCell('B3').alignment = { indent:1 }; }
+    [['Fecha: ', fd(emit)], ['Válida hasta: ', fd(vto)], ['Versión: ', 'v'+(c.version||'')]].forEach(function(p, i){
+      const r = 2+i; ws.mergeCells('E'+r+':F'+r);
+      const cell = ws.getCell('E'+r);
+      cell.value = { richText:[ { text:p[0], font:{ size:9, color:{ argb:'FF5A6677' } } }, { text:p[1], font:{ size:9, bold:true, color:{ argb:'FF1A1F2B' } } } ] };
+      cell.alignment = { horizontal:'right', vertical:'middle' };
+    });
+    ws.getRow(5).height = 6;
+    ['A','B','C','D','E','F'].forEach(function(k){ ws.getCell(k+'5').border = { bottom:{ style:'thin', color:{ argb:'FFE3E8F0' } } }; });
+
+    // Ficha
+    let r = 7;
+    const ficha = [['ATENCIÓN', c.atencion || c.cliente || '—']];
+    if(c.cliente) ficha.push(['CLIENTE', c.cliente]);
+    ficha.push(['REFERENCIA', c.referencia || c.descripcion || '—'], ['OBRA', c.obra || '—']);
+    if(c.profesional) ficha.push(['PROFESIONAL', c.profesional]);
+    ficha.push(['CONSTRUCTORA', 'AXC CONSTRUCTORA']);
+    const fb = { style:'thin', color:{ argb:'FFC4D4E8' } };
+    ficha.forEach(function(p){
+      const a = ws.getCell('A'+r); a.value = p[0]; a.fill = fill(CAP); fuente(a, { size:9, bold:true, color:{ argb:NAVY } });
+      a.border = { top:fb, left:fb, bottom:fb, right:fb }; a.alignment = { vertical:'middle', indent:1 };
+      ws.mergeCells('B'+r+':F'+r); const b = ws.getCell('B'+r); b.value = String(p[1]); fuente(b, { size:9.5 });
+      b.border = { top:fb, left:fb, bottom:fb, right:fb }; b.alignment = { vertical:'middle', indent:1 };
+      r++;
+    });
+    if(c.alcance){ r++; ws.mergeCells('A'+r+':F'+r); const al = ws.getCell('A'+r); al.value = String(c.alcance);
+      fuente(al, { size:9, color:{ argb:'FF3A4560' } }); al.fill = fill('FFF7F9FC'); al.alignment = { wrapText:true, vertical:'top', indent:1 };
+      al.border = { left:{ style:'thick', color:{ argb:'FFC8A028' } } }; ws.getRow(r).height = Math.min(90, 15 * Math.ceil(String(c.alcance).length / 110)); r++; }
+    r++;
+
+    // Encabezado de la tabla
+    const encabezado = function(row){
+      const h = ['Ítem','Descripción','Unid.','Cant.','Precio Unit.','Precio Total'];
+      h.forEach(function(t, i){ const cell = ws.getRow(row).getCell(i+1); cell.value = t; cell.fill = fill(NAVY);
+        fuente(cell, { size:9.5, bold:true, color:{ argb:'FFFFFFFF' } }); cell.alignment = { horizontal:'center', vertical:'middle' };
+        cell.border = { top:{style:'thin',color:{argb:NAVY}}, left:{style:'thin',color:{argb:NAVY}}, bottom:{style:'thin',color:{argb:NAVY}}, right:{style:'thin',color:{argb:NAVY}} }; });
+      ws.getRow(row).height = 18;
+    };
+    const filaItem = function(ref, x, zebra){
+      const row = ws.getRow(r);
+      row.values = [ref, x.desc, x.un, x.cant, x.pu, x.tot];
+      row.eachCell({ includeEmpty:true }, function(cell, ci){ fuente(cell, { size:9.5 }); cell.border = bordes; if(zebra) cell.fill = fill(ZEBRA); });
+      row.getCell(1).alignment = { horizontal:'right', vertical:'middle' }; fuente(row.getCell(1), { size:9.5, bold:true, color:{ argb:'FF5A6677' } });
+      row.getCell(2).alignment = { wrapText:true, vertical:'middle' };
+      row.getCell(3).alignment = { horizontal:'center', vertical:'middle' }; row.getCell(4).alignment = { horizontal:'center', vertical:'middle' };
+      row.getCell(5).alignment = { vertical:'middle' }; row.getCell(6).alignment = { vertical:'middle' };
+      row.getCell(4).numFmt = '#,##0.00'; row.getCell(5).numFmt = '#,##0'; row.getCell(6).numFmt = '#,##0';
+      row.height = String(x.desc).length > 58 ? 13 * Math.ceil(String(x.desc).length / 58) : 15;
+      r++;
+    };
+    const agrupar = function(lista){ const g = {}; lista.forEach(function(x){ (g[x.sector] = g[x.sector] || []).push(x); }); return g; };
+    const capsDe = function(lista){ const g = {}; lista.forEach(function(x){ (g[x.capitulo] = g[x.capitulo] || []).push(x); }); return g; };
+    const suma = function(l){ return l.reduce(function(a,x){ return a + x.tot; }, 0); };
+    const filaCap = function(ref, cap, sub, opc){
+      ws.mergeCells('B'+r+':E'+r);
+      const row = ws.getRow(r); row.getCell(1).value = ref; row.getCell(2).value = String(cap).replace(/^\d+\s*/,'').toUpperCase(); row.getCell(6).value = sub;
+      const fc = opc ? 'FFFDF7E8' : CAP, tc = opc ? 'FF8A6D10' : NAVY;
+      [1,2,6].forEach(function(i){ const cell = row.getCell(i); cell.fill = fill(fc); fuente(cell, { size:9.5, bold:true, color:{ argb:tc } }); cell.border = bordes; });
+      row.getCell(1).alignment = { horizontal:'right' }; row.getCell(6).numFmt = '#,##0'; r++;
+    };
+    const ivaP = N(c.iva_pct);
+    const totales = function(neto, etFin, opc){
+      const filas = ivaP > 0
+        ? [[(opc?'SUBTOTAL SIN IVA':'TOTAL GENERAL SIN IVA'), neto, 'FF2CA8E0', 'FF0D2B3D'], ['IVA '+ivaP+' %', Math.round(neto*ivaP/100), 'FFDCE1F2', 'FF1A2236'],
+           [etFin + ' IVA INCLUIDO', neto + Math.round(neto*ivaP/100), 'FF8CD44A', 'FF12300A']]
+        : [[etFin + ' SIN IVA', neto, 'FF8CD44A', 'FF12300A']];
+      filas.forEach(function(f, i){
+        ws.mergeCells('C'+r+':E'+r);
+        const row = ws.getRow(r); row.getCell(3).value = f[0]; row.getCell(6).value = f[1];
+        [3,6].forEach(function(k){ const cell = row.getCell(k); cell.fill = fill(f[2]);
+          fuente(cell, { size: i === filas.length-1 ? 10.5 : 10, bold:true, color:{ argb:f[3] } });
+          cell.border = { top:{style:'thin',color:{argb:'FF3A4560'}}, left:{style:'thin',color:{argb:'FF3A4560'}}, bottom:{style:'thin',color:{argb:'FF3A4560'}}, right:{style:'thin',color:{argb:'FF3A4560'}} }; });
+        row.getCell(3).alignment = { horizontal:'right' }; row.getCell(6).numFmt = '#,##0'; row.height = 17; r++;
       });
     };
-    agregar(base); sub = base.reduce(function(a,x){ return a + x.tot; }, 0);
-    A.push([]);
-    const iva = N(c.iva_pct), ivaM = Math.round(sub*iva/100);
-    tipo[A.length] = 'tot'; A.push(['', '', 'SUBTOTAL', '', '', '', sub]);
-    if(iva){ tipo[A.length] = 'tot'; A.push(['', '', 'IVA '+iva+' %', '', '', '', ivaM]); }
-    tipo[A.length] = 'tot'; A.push(['', '', iva ? 'TOTAL CON IVA' : 'TOTAL', '', '', '', sub + ivaM]);
-    if(opc.length){
-      A.push([]); tipo[A.length] = 'sec'; A.push(['TRABAJOS OPCIONALES (no incluidos en el total)']); secAnt = null; capAnt = null;
-      agregar(opc); opcTot = opc.reduce(function(a,x){ return a + x.tot; }, 0);
-      tipo[A.length] = 'tot'; A.push(['', '', 'TOTAL OPCIONALES', '', '', '', opcTot]);
-    }
-    if(c.condiciones){ A.push([]); A.push(['Condiciones']); String(c.condiciones).split(/\n+/).forEach(function(l){ if(l.trim()) A.push([l.trim()]); }); }
-    if(c.observaciones){ A.push([]); A.push(['Observaciones']); String(c.observaciones).split(/\n+/).forEach(function(l){ if(l.trim()) A.push([l.trim()]); }); }
 
-    const ws = XLSX.utils.aoa_to_sheet(A);
-    ws['!cols'] = [{wch:6},{wch:11},{wch:60},{wch:8},{wch:12},{wch:18},{wch:18}];
-    // formato de números: cantidades con decimales, guaraníes sin decimales
-    for(let r = hdr+1; r < A.length; r++){
-      ['E','F','G'].forEach(function(col, k){
-        const ref = col+(r+1); if(ws[ref] && typeof ws[ref].v === 'number') ws[ref].z = (k === 0) ? '#,##0.##' : '#,##0';
+    // Cuerpo (precio firme)
+    let nCap = 0, z = 0;
+    if(base.length){
+      const hdrRow = r; encabezado(r); r++;
+      ws.pageSetup.printTitlesRow = hdrRow+':'+hdrRow;
+      const porSec = agrupar(base);
+      Object.keys(porSec).sort().forEach(function(sec){
+        const filas = porSec[sec];
+        ws.mergeCells('A'+r+':D'+r);
+        const row = ws.getRow(r); row.getCell(1).value = (c.obra ? c.obra+' — ' : '') + sec; row.getCell(5).value = 'SUB-TOTAL'; row.getCell(6).value = suma(filas);
+        [1,5,6].forEach(function(i){ const cell = row.getCell(i); cell.fill = fill(SEC); fuente(cell, { size:10, bold:true, color:{ argb:'FF14284D' } });
+          cell.border = { top:{style:'thin',color:{argb:NAVY}}, bottom:{style:'thin',color:{argb:'FFA9C1DE'}}, left:fino, right:fino }; });
+        row.getCell(5).alignment = { horizontal:'right' }; row.getCell(6).numFmt = '#,##0'; row.height = 17; r++;
+        const porCap = capsDe(filas);
+        Object.keys(porCap).sort().forEach(function(cap){
+          nCap++; filaCap(nCap, cap, suma(porCap[cap]), false);
+          porCap[cap].forEach(function(x, i){ filaItem(nCap+'.'+(i+1), x, (z++ % 2) === 1); });
+        });
       });
+      r++; totales(suma(base), 'TOTAL GENERAL', false);
     }
-    ws['!autofilter'] = { ref: 'A'+(hdr+1)+':G'+(hdr+1) };
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Propuesta v'+(c.version||''));
-    const nom = ('Propuesta_'+(c.codigo||c.presupuesto||'')+'_v'+(c.version||'')+(c.obra ? '_'+c.obra : '')).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ]+/g,'_');
-    XLSX.writeFile(wb, nom+'.xlsx');
-    showToast('Excel descargado','success', nom+'.xlsx · solo precios de venta (sin costos ni márgenes)');
+
+    // Trabajos opcionales (aparte; no suman al total)
+    if(opcs.length){
+      r++;
+      ws.mergeCells('A'+r+':F'+r);
+      const t = ws.getCell('A'+r); t.value = 'TRABAJOS OPCIONALES · a decisión del cliente, no incluidos en el total';
+      t.fill = fill('FFFBF6E6'); fuente(t, { size:10, bold:true, color:{ argb:'FF8A6D10' } }); t.border = { left:{ style:'thick', color:{ argb:'FFC9A227' } } };
+      r++; encabezado(r); r++;
+      let nO = 0; z = 0;
+      const porSecO = agrupar(opcs);
+      Object.keys(porSecO).sort().forEach(function(sec){
+        const porCapO = capsDe(porSecO[sec]);
+        Object.keys(porCapO).sort().forEach(function(cap){
+          nO++; filaCap('O'+nO, cap, suma(porCapO[cap]), true);
+          porCapO[cap].forEach(function(x, i){ filaItem('O'+nO+'.'+(i+1), x, (z++ % 2) === 1); });
+        });
+      });
+      r++; totales(suma(opcs), 'TOTAL OPCIONALES', true);
+      ws.mergeCells('A'+r+':F'+r); const nt = ws.getCell('A'+r);
+      nt.value = 'Estos trabajos se cotizan por separado y quedan a decisión del cliente. Confirmados, se incorporan al contrato mediante adenda con su propio plazo de ejecución.';
+      fuente(nt, { size:8.5, italic:true, color:{ argb:'FF6B7280' } }); nt.alignment = { wrapText:true }; ws.getRow(r).height = 24; r++;
+    }
+
+    // Observaciones y condiciones
+    r++;
+    const obs = (typeof _obsCliente === 'function') ? _obsCliente(c.observaciones) : c.observaciones;
+    const lineas = String(obs||'').split('\n').filter(function(l){ return l.trim(); });
+    if(c.condiciones) lineas.push('Condiciones de pago: ' + c.condiciones);
+    lineas.push('Oferta válida por ' + (N(c.validez_dias)||15) + ' días.');
+    ws.mergeCells('A'+r+':F'+r); const oh = ws.getCell('A'+r); oh.value = 'OBSERVACIONES';
+    fuente(oh, { size:9, bold:true, color:{ argb:NAVY } }); oh.fill = fill(ZEBRA); oh.border = { top:fino, left:fino, right:fino }; r++;
+    lineas.forEach(function(l, i){
+      ws.mergeCells('A'+r+':F'+r); const cell = ws.getCell('A'+r); cell.value = l;
+      fuente(cell, { size:9, color:{ argb:'FF4A5468' } }); cell.fill = fill(ZEBRA); cell.alignment = { wrapText:true, indent:1 };
+      cell.border = { left:fino, right:fino, bottom: i === lineas.length-1 ? fino : undefined };
+      if(l.length > 120) ws.getRow(r).height = 13 * Math.ceil(l.length / 120);
+      r++;
+    });
+
+    // Firmas
+    if(base.length){
+      r += 4;
+      const fl = { top:{ style:'thin', color:{ argb:'FF8893A5' } } };
+      const fc = ws.getCell('B'+r); fc.value = 'POR EL CLIENTE'; fc.border = fl; fuente(fc, { size:9, bold:true }); fc.alignment = { horizontal:'center' };
+      ws.mergeCells('D'+r+':F'+r); const fa = ws.getCell('D'+r); fa.value = 'POR AXC CONSTRUCTORA'; fa.border = fl; fuente(fa, { size:9, bold:true }); fa.alignment = { horizontal:'center' };
+      r++;
+    }
+
+    const buf = await wb.xlsx.writeBuffer();
+    const nom = ('Propuesta_'+cod+'_v'+(c.version||'')+(c.obra ? '_'+c.obra : '')).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ]+/g,'_');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    a.download = nom + '.xlsx'; document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    showToast('Excel descargado','success', nom+'.xlsx · mismo formato que el PDF, solo precios de venta');
   }catch(e){ showToast('No se pudo generar el Excel','error', e.message||String(e)); }
 }
 
