@@ -1249,7 +1249,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.53';
+const APP_VERSION='Caja Chica v7.54';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -3950,7 +3950,7 @@ async function reporteConsolidado(){
   catch(e){ acr=await _ccFetchAll(qA('id,residente,fecha,monto,medio,referencia,rendicion_id')); }
   // 2) Comprobantes válidos hasta la fecha de corte
   const movs=await _ccFetchAll(()=>{ let q=_SB.from('caja_chica_movimientos')
-      .select('id,residente,fecha,total,estado,rendicion_id,numero_orden,nro_factura,proveedor,obra,rubro')
+      .select('id,residente,fecha,total,estado,rendicion_id,numero_orden,nro_factura,proveedor,obra,rubro,caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
       .in('estado',CC_GASTO_EST).order('fecha',{ascending:true});
     if(H) q=q.lte('fecha',H); if(resF) q=q.eq('residente',resF); return q; });
   // 3) Rendiciones presentadas en adelante
@@ -4341,7 +4341,10 @@ function exportConsolidadoPDF(){
     doc.text('Resumen elaborado por Conexdata', pageW/2, pageH-6, {align:'center'});
     doc.text(`Página ${p} de ${n}`, pageW-M, pageH-6, {align:'right'});
   }
-  doc.save(`caja_chica_consolidado_${todayISO()}.pdf`);
+  const _fnC=`caja_chica_consolidado_${todayISO()}.pdf`;
+  if(gs('r-pdf-adjuntos') && gs('r-pdf-adjuntos').checked){      // v7.54: anexo agrupado por rendición
+    _exportarAnexoGrupos(doc, _anexoGrupos(rows, corteTxt, x=>({ fecha:_fd(x.fPres), estado:(CC_REST[x.est]||{l:x.est}).l })), _fnC);
+  } else doc.save(_fnC);
 }
 
 
@@ -4389,7 +4392,7 @@ async function reporteCajaRend(){
   catch(e){ acr=await _ccFetchAll(qA('id,residente,fecha,monto,medio,referencia,rendicion_id')); }
   // Todos los comprobantes válidos: la fecha de la rendición manda, no la de la factura
   const movs=await _ccFetchAll(()=>{ let q=_SB.from('caja_chica_movimientos')
-      .select('id,residente,fecha,total,estado,rendicion_id,numero_orden,nro_factura,proveedor,obra,rubro')
+      .select('id,residente,fecha,total,estado,rendicion_id,numero_orden,nro_factura,proveedor,obra,rubro,caja_chica_adjuntos(id,storage_path,nombre,tipo_mime)')
       .in('estado',CC_GASTO_EST).order('fecha',{ascending:true});
     if(resF) q=q.eq('residente',resF); return q; });
   const rends=await _ccFetchAll(()=>{ let q=_SB.from('caja_chica_rendiciones')
@@ -4806,7 +4809,10 @@ function exportCajaRendPDF(){
     doc.text('Resumen elaborado por Conexdata', pageW/2, pageH-6, {align:'center'});
     doc.text(`Página ${p} de ${n}`, pageW-M, pageH-6, {align:'right'});
   }
-  doc.save(`caja_chica_por_rendiciones_${todayISO()}.pdf`);
+  const _fnR=`caja_chica_por_rendiciones_${todayISO()}.pdf`;
+  if(gs('r-pdf-adjuntos') && gs('r-pdf-adjuntos').checked){      // v7.54: anexo agrupado por rendición
+    _exportarAnexoGrupos(doc, _anexoGrupos(rows, corte, x=>({ fecha:_fd(x.fP), estado:x.apr?'Aprobada':'En aprobación' })), _fnR);
+  } else doc.save(_fnR);
 }
 
 
@@ -5543,6 +5549,127 @@ async function _exportarConAdjuntos(jsDoc, rows, filename){
     toast('No se pudo anexar los comprobantes ('+(e.message||e)+'). Descargo el reporte solo.','err');
     jsDoc.save(filename);
   }
+}
+
+
+// ===== v7.54 · ANEXO DE COMPROBANTES AGRUPADO POR RENDICIÓN (Consolidado y Por rendiciones) =====
+// Cada rendición arranca en hoja nueva con una cabecera que dice de quién es, qué período rinde,
+// cuándo se presentó, su estado y su total; después van sus comprobantes en la grilla elegida (2, 4 o 6 por hoja).
+function _wa(t){ return String(t==null?'':t).replace(/₲/g,'Gs').replace(/[−–—]/g,'-').replace(/…/g,'...').replace(/[“”]/g,'"').replace(/[‘’]/g,"'")
+  .replace(/[^\x20-\x7E\u00A0-\u00FF]/g,''); }          // las fuentes estándar del PDF solo admiten Latin-1
+function _adjFit(font,size,txt,maxW){ let t=_wa(txt); if(font.widthOfTextAtSize(t,size)<=maxW) return t;
+  while(t.length>3 && font.widthOfTextAtSize(t+'...',size)>maxW) t=t.slice(0,-1); return t+'...'; }
+function _adjCeldasDesde(topY){
+  const G=adjGrid(), cw=(G.W-G.M*2-G.GAP*(G.COLS-1))/G.COLS, ch=(topY-G.M-G.GAP*(G.ROWS-1))/G.ROWS, out=[];
+  for(let r=0;r<G.ROWS;r++) for(let c=0;c<G.COLS;c++) out.push({ x:G.M+c*(cw+G.GAP), yTop:topY-r*(ch+G.GAP), w:cw, h:ch, cap:G.CAP });
+  return out;
+}
+function _adjGrupoHoja(pdf,font,fontB,g,cont){
+  const { rgb }=PDFLib, W=ADJ_G.W, H=ADJ_G.H, M=ADJ_G.M, bandY=H-74, bandH=54;
+  const page=pdf.addPage([W,H]);
+  page.drawRectangle({ x:M, y:bandY, width:W-2*M, height:bandH, color:rgb(0.969,0.957,0.925), borderColor:rgb(0.88,0.85,0.78), borderWidth:.6 });
+  page.drawRectangle({ x:M, y:bandY, width:3.5, height:bandH, color:rgb(0.784,0.627,0.157) });
+  const izqW=W-2*M-150;
+  page.drawText(_adjFit(fontB,7,(g.tipo||'COMPROBANTES ANEXOS')+(cont?'  ·  CONTINUACIÓN':''),izqW),{ x:M+12, y:bandY+bandH-13, size:7, font:fontB, color:rgb(0.59,0.53,0.39) });
+  page.drawText(_adjFit(fontB,12.5,g.titulo,izqW),{ x:M+12, y:bandY+bandH-29, size:12.5, font:fontB, color:rgb(0.12,0.22,0.39) });
+  page.drawText(_adjFit(font,8,g.sub,izqW),{ x:M+12, y:bandY+9, size:8, font, color:rgb(0.36,0.36,0.36) });
+  if(g.der){ const t=_wa(g.der), tw=fontB.widthOfTextAtSize(t,11); page.drawText(t,{ x:W-M-10-tw, y:bandY+bandH-29, size:11, font:fontB, color:rgb(0.12,0.22,0.39) }); }
+  if(g.der2){ const t=_wa(g.der2), tw=font.widthOfTextAtSize(t,7.5); page.drawText(t,{ x:W-M-10-tw, y:bandY+9, size:7.5, font, color:rgb(0.45,0.45,0.45) }); }
+  return page;
+}
+// Baja un adjunto y lo ubica en la(s) celda(s) que entregue nuevaCelda(); devuelve true si quedó anexado
+async function _adjAgregarArchivo(merged,font,fontB,it,nuevaCelda){
+  const { PDFDocument, degrees }=PDFLib, a=it.a;
+  const { data:su, error }=await _SB.storage.from('caja-chica').createSignedUrl(a.storage_path, 3600);
+  if(error || !su || !su.signedUrl) return false;
+  const buf=await (await fetch(su.signedUrl)).arrayBuffer();
+  const mime=(a.tipo_mime||'').toLowerCase() || _mimeFromName(a.nombre||'');
+  const lab=_wa(it.label), sub=_wa(it.sub), ext=_wa(it.extra||'');
+  if(mime.includes('pdf') || /\.pdf$/i.test(a.nombre||'')){
+    const src=await PDFDocument.load(buf,{ignoreEncryption:true});
+    const idx=src.getPageIndices(), rots=idx.map(k=>{ try{ return src.getPage(k).getRotation().angle; }catch(e){ return 0; } });
+    const embs=await merged.embedPdf(src, idx);
+    embs.forEach((emb,k)=>{
+      const { page, celda }=nuevaCelda();
+      const area=_adjGridCaja(page,font,fontB,celda,it.item,lab,sub, embs.length>1?('pag. '+(k+1)+' de '+embs.length+(ext?(' · '+ext):'')):ext);
+      const r=((Number(rots[k])||0)%360+360)%360, vert=(r===90||r===270);
+      const dw=vert?emb.height:emb.width, dh=vert?emb.width:emb.height, sc=Math.min(area.w/dw, area.h/dh), w=dw*sc, h=dh*sc;
+      const x0=area.x+(area.w-w)/2, y0=area.y+(area.h-h)/2;
+      if(r===90)       page.drawPage(emb,{x:x0+w, y:y0,   xScale:sc, yScale:sc, rotate:degrees(90)});
+      else if(r===180) page.drawPage(emb,{x:x0+w, y:y0+h, xScale:sc, yScale:sc, rotate:degrees(180)});
+      else if(r===270) page.drawPage(emb,{x:x0,   y:y0+h, xScale:sc, yScale:sc, rotate:degrees(270)});
+      else             page.drawPage(emb,{x:x0,   y:y0,   xScale:sc, yScale:sc});
+    });
+    return true;
+  }
+  let img=null;
+  try{ img=(mime.includes('png')||/\.png$/i.test(a.nombre||'')) ? await merged.embedPng(buf) : await merged.embedJpg(buf); }
+  catch(e){ try{ img=await merged.embedPng(buf); }catch(e2){ img=null; } }
+  if(!img) return false;
+  const { page, celda }=nuevaCelda();
+  const area=_adjGridCaja(page,font,fontB,celda,it.item,lab,sub,ext);
+  const sc=Math.min(area.w/img.width, area.h/img.height), w=img.width*sc, h=img.height*sc;
+  page.drawImage(img,{ x:area.x+(area.w-w)/2, y:area.y+(area.h-h)/2, width:w, height:h });
+  return true;
+}
+async function _exportarAnexoGrupos(jsDoc, grupos, filename){
+  const info=gs('rep-info');
+  if(!window.PDFLib){ toast('No cargó la librería para anexar. Se descarga el reporte sin adjuntos.','err'); jsDoc.save(filename); return; }
+  const gs2=(grupos||[]).filter(g=>g.items && g.items.length);
+  const total=gs2.reduce((s,g)=>s+g.items.length,0);
+  if(!total){ toast('Los comprobantes de este reporte no tienen archivos adjuntos para anexar.','err'); jsDoc.save(filename); if(info) info.textContent=''; return; }
+  const { PDFDocument, StandardFonts }=PDFLib;
+  try{
+    if(info) info.textContent='Preparando adjuntos…';
+    const merged=await PDFDocument.load(jsDoc.output('arraybuffer'));
+    const font=await merged.embedFont(StandardFonts.Helvetica), fontB=await merged.embedFont(StandardFonts.HelveticaBold);
+    const celdas=_adjCeldasDesde(ADJ_G.H-84);
+    let ok=0, fail=0, n=0; const fallidos=[];
+    for(const g of gs2){
+      let page=null, i=celdas.length, cont=false;
+      const nuevaCelda=()=>{ if(!page || i>=celdas.length){ page=_adjGrupoHoja(merged,font,fontB,g,cont); cont=true; i=0; } return { page, celda:celdas[i++] }; };
+      for(const it of g.items){
+        n++; if(info) info.textContent=`Anexando comprobante ${n} de ${total}…`;
+        let bien=false; try{ bien=await _adjAgregarArchivo(merged,font,fontB,it,nuevaCelda); }catch(e){ bien=false; }
+        if(bien) ok++; else { fail++; fallidos.push(`${_wa(g.titulo)} · ${_wa(it.label)} (${_wa(it.a.nombre||'archivo')})`); }
+      }
+    }
+    if(fallidos.length){       // hoja final con lo que no se pudo anexar, para que nada quede sin explicar
+      const { rgb }=PDFLib; let p=merged.addPage([ADJ_G.W,ADJ_G.H]), y=ADJ_G.H-50;
+      p.drawText('Comprobantes que no se pudieron anexar',{x:ADJ_G.M,y,size:12,font:fontB,color:rgb(0.7,0.2,0.2)}); y-=18;
+      fallidos.forEach(t=>{ if(y<40){ p=merged.addPage([ADJ_G.W,ADJ_G.H]); y=ADJ_G.H-50; } p.drawText(_adjFit(font,8.5,'• '+t,ADJ_G.W-2*ADJ_G.M),{x:ADJ_G.M,y,size:8.5,font,color:rgb(0.3,0.3,0.3)}); y-=13; });
+    }
+    _descargarBlob(await merged.save(), filename, 'application/pdf');
+    if(info) info.textContent='';
+    toast(`PDF con ${ok} comprobante(s) anexado(s)`+(fail?` · ${fail} no se pudo(ieron) anexar`:''), fail?'err':'ok');
+  }catch(e){
+    if(info) info.textContent='';
+    toast('No se pudo anexar los comprobantes ('+(e.message||e)+'). Descargo el reporte solo.','err');
+    jsDoc.save(filename);
+  }
+}
+// Arma los grupos del anexo: una rendición por grupo + los comprobantes sin rendir de cada residente
+function _anexoItems(movs){
+  const out=[];
+  (movs||[]).slice().sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||(Number(a.numero_orden)||0)-(Number(b.numero_orden)||0)).forEach(m=>{
+    (m.caja_chica_adjuntos||[]).forEach(a=>out.push({ a, item:(m.numero_orden!=null?m.numero_orden:''),
+      label:'Fact. '+(m.nro_factura||'s/n'), sub:`${m.proveedor||''} · ${_fd(m.fecha)} · Gs ${fmt(m.total)}`, extra:[m.obra,m.rubro].filter(Boolean).join(' · ') }));
+  });
+  return out;
+}
+function _anexoGrupos(rows, corte, rndInfo){
+  const grupos=[];
+  rows.forEach(d=>{
+    (d.rnds||[]).forEach(x=>{ const ri=rndInfo(x), items=_anexoItems(x.movs), conArch=new Set(items.map(t=>t.label+t.item)).size;
+      grupos.push({ tipo:'RENDICIÓN DE CAJA CHICA', titulo:`${x.nro}  ·  ${d.res}`,
+        sub:`Período rendido: ${x.periodo||'-'}  ·  Presentada: ${ri.fecha}  ·  Estado: ${ri.estado}`,
+        der:'Gs '+fmt(x.total), der2:`${x.movs.length} comprobante(s) · ${conArch} con archivo`, items }); });
+    if(d.sinRend && d.sinRend.length){ const items=_anexoItems(d.sinRend), conArch=new Set(items.map(t=>t.label+t.item)).size;
+      grupos.push({ tipo:'COMPROBANTES SIN RENDIR', titulo:`${d.res}  ·  sin rendir`,
+        sub:`Cargados que todavía no se presentaron en una rendición  ·  al ${corte}`,
+        der:'Gs '+fmt(d.sinRend.reduce((s,m)=>s+Number(m.total||0),0)), der2:`${d.sinRend.length} comprobante(s) · ${conArch} con archivo`, items }); }
+  });
+  return grupos;
 }
 
 function exportarReporte(){
