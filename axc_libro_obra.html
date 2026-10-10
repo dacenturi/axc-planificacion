@@ -473,7 +473,7 @@ input[type=file]{display:none}
    señal), catálogos compartidos (tabla listas) y PDF con el formato
    del Informe Diario de Trabajo.
    ================================================================ */
-const VERSION = 'v2.1.1-integracion';
+const VERSION = 'v2.1.2-integracion';
 
 /* ---- CONFIG: copiar los dos valores de axc_residente.html ------ */
 const SB_URL   = 'https://zvucnezwhgfgupasgqnd.supabase.co';
@@ -2192,14 +2192,34 @@ function wire(){
 /* ================================================================
    INICIO
    ================================================================ */
+/* Si la clave no está configurada, se toma la anon key pública de los
+   otros HTML del mismo sitio (solo lectura: no se modifica ningún archivo).
+   Se valida que sea del mismo proyecto Supabase y de rol anon. */
+function claveValida(k){
+  try { const pl = JSON.parse(atob(k.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return pl.role === 'anon' && (!pl.ref || SB_URL.includes(pl.ref)); } catch (e) { return false; }
+}
+async function buscarClave(){
+  for (const f of ['index.html', 'axc_residente.html', 'axc_contratista.html']){
+    try {
+      const t = await (await fetch(f, { cache: 'no-store' })).text();
+      const m = t.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g) || [];
+      const k = m.find(claveValida);
+      if (k) return k;
+    } catch (e) {}
+  }
+  return null;
+}
+let CLAVE = SB_KEY;
 (async function init(){
-  if (SB_KEY === 'PEGAR_AQUI_LA_ANON_KEY'){
-    $('lg-err').textContent = 'Falta configurar SB_KEY: copiá la anon key desde axc_residente.html.';
+  if (SB_KEY === 'PEGAR_AQUI_LA_ANON_KEY' || !claveValida(SB_KEY)) CLAVE = (await buscarClave()) || SB_KEY;
+  if (!claveValida(CLAVE)){
+    $('lg-err').textContent = 'No se encontró la clave de conexión. Pegá la anon key en SB_KEY (axc_libro_obra.html).';
     $('lg-err').hidden = false;
   }
-  sb = window.supabase.createClient(SB_URL, SB_KEY);
+  sb = window.supabase.createClient(SB_URL, CLAVE);
   wire();
-  if (SB_KEY === 'PEGAR_AQUI_LA_ANON_KEY'){
+  if (!claveValida(CLAVE)){
     const ab = $('aviso-base');
     ab.innerHTML = '<b>Falta configurar la clave de conexión.</b> En axc_libro_obra.html reemplazá PEGAR_AQUI_LA_ANON_KEY por la anon key de axc_residente.html.';
     ab.hidden = false;
