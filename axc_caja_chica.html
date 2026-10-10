@@ -327,7 +327,7 @@ tr:last-child td{border-bottom:none}
 .cc-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:18px 0 10px}
 .cc-head h3{margin:0 0 2px;font-size:16px;font-weight:700;color:var(--text)}
 .cc-head .per{font-size:12px;color:var(--text2)}
-.cc-kpis{display:grid;grid-template-columns:1.5fr repeat(5,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px}
+.cc-kpis{display:grid;grid-template-columns:1.5fr repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px}
 @media(max-width:980px){.cc-kpis{grid-template-columns:repeat(2,1fr)}}
 .cc-kpi{background:var(--bg2);padding:11px 13px;position:relative}
 .cc-kpi .l{font-size:11.5px;color:var(--text2);font-weight:600}
@@ -1181,7 +1181,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.48';
+const APP_VERSION='Caja Chica v7.49';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -3703,7 +3703,7 @@ window.toggleRepDetalle=toggleRepDetalle;
 // Una sola pantalla con el estado real de cada caja:
 //   Saldo al inicio + Acreditado − Gastado = Saldo en caja (lo que el residente debería tener).
 // "Gastado" = todo comprobante cargado (solicitado, observado o aprobado): la plata ya salió.
-// Además muestra en qué etapa está lo gastado: sin rendir, en aprobación o aprobado sin reponer,
+// Además muestra en qué etapa está lo gastado: sin rendir o en aprobación (v7.49: sin "falta reponer"),
 // y concilia contra el saldo del sistema (caja_chica_saldos, que solo descuenta lo aprobado).
 const CC_GASTO_EST=['solicitado','observado','aprobado'];
 let CC_DATA=null;
@@ -3722,9 +3722,7 @@ function _ccDias(iso){ if(!iso) return null; const t=new Date(String(iso).slice(
 // Estados de rendición tal como se muestran en el reporte
 const CC_REST={
   presentada:{l:'En aprobación',c:'aprob'},
-  aguardando_acreditacion:{l:'Aprobada · falta reponer',c:'repo'},
-  parcial:{l:'Repuesta parcial',c:'repo'},
-  cerrada_sin:{l:'Cerrada · sin reposición',c:'repo'},
+  aprobada:{l:'Aprobada',c:'ok'},
   repuesta:{l:'Repuesta',c:'ok'},
   cerrada:{l:'Cerrada',c:'ok'}
 };
@@ -3744,10 +3742,8 @@ const CC_DEF={
     d:'Muestra todo lo pendiente a la fecha de corte, sin importar el mes del comprobante. Incluye cargados, observados (devueltos para corregir) y aprobados sueltos.'},
   enAprob:{t:'En aprobación',f:'Suma de las rendiciones presentadas que todavía no se aprobaron',
     d:'Lo que espera la revisión de la supervisión, a la fecha de corte.'},
-  faltaRep:{t:'Falta reponer',f:'Suma de (rendido − ya repuesto) de cada rendición aprobada',
-    d:'Lo que la empresa todavía tiene que transferirle al residente. Lo repuesto sale de las acreditaciones imputadas a cada rendición.'},
   situacion:{t:'Situación',f:'Etiquetas automáticas',
-    d:'<ul><li><b>Saldo negativo:</b> el saldo en caja es menor a 0.</li><li><b>Revisar cuadre:</b> el cálculo no coincide con el saldo oficial del sistema.</li><li><b>Saldo bajo:</b> el saldo es igual o menor al porcentaje de alerta del último fondo.</li><li><b>Falta reponer, En aprobación, Por rendir:</b> la columna correspondiente tiene monto.</li><li><b>Al día:</b> no se cumple ninguna de las anteriores.</li></ul>'}
+    d:'<ul><li><b>Saldo negativo:</b> el saldo en caja es menor a 0.</li><li><b>Revisar cuadre:</b> el cálculo no coincide con el saldo oficial del sistema.</li><li><b>Saldo bajo:</b> el saldo es igual o menor al porcentaje de alerta del último fondo.</li><li><b>En aprobación, Por rendir:</b> la columna correspondiente tiene monto.</li><li><b>Al día:</b> no se cumple ninguna de las anteriores.</li></ul>'}
 };
 function _ccPopEl(){
   let p=document.getElementById('cc-pop');
@@ -3839,12 +3835,6 @@ function ccCalculo(i){
     ? _ccLista(['Rendición','Presentada','Espera','Monto'], pres.map(x=>{ const n=_ccDias(x.fPres); return [_esc(x.nro),_fd(x.fPres),n!=null?(n+' días'):'—',fmt(x.enAprob)]; }), d.enAprob, 10, 2)
     : '<p class="ccx-nota">No tiene rendiciones esperando aprobación.</p>'));
 
-  // 7) Falta reponer
-  const rep=d.rnds.filter(x=>x.pend>0);
-  sec.push(_ccSec('faltaRep',d.faltaRep, rep.length
-    ? _ccLista(['Rendición','Rendido','− Ya repuesto','= Pendiente'], rep.map(x=>[`${_esc(x.nro)}<div class="ccx-mini">${x.est==='cerrada_sin'?'cerrada sin reposición registrada':('aprobada '+_fd(x.fApr||x.fPres))}</div>`,fmt(x.total),fmt(x.total-x.pend),fmt(x.pend)]), d.faltaRep, 10, 3)
-    : '<p class="ccx-nota">No tiene rendiciones aprobadas pendientes de reposición.</p>'));
-
   // 8) Situación
   sec.push(_ccSec('situacion',null,`<ul class="ccx-chips">${d.chips.map(c=>`<li><span class="cc-chip ${c.c}">${_esc(c.l)}</span> ${_esc(c.w||'')}</li>`).join('')}</ul>`));
 
@@ -3895,12 +3885,10 @@ async function reporteConsolidado(){
       .select('id,residente,numero,estado,total_rendido,fecha_desde,fecha_hasta,fecha_corte,presentada_en,aprobada_en,cerrada_en,creado_en,reposicion_solicitada')
       .in('estado',['presentada','aguardando_acreditacion','repuesta','cerrada']);
     if(resF) q=q.eq('residente',resF); return q; });
-  // 4) Reposiciones: imputaciones (v7.43) + vínculo viejo por rendicion_id — mismo criterio que el Tablero
-  const impOk=await _impDisponible(); const imp={}, legacy={};
+  // 4) Imputaciones (v7.43): solo para distinguir "Aprobada" de "Repuesta" (v7.49: no se muestran montos de reposición)
+  const impOk=await _impDisponible(); const imp={};
   if(impOk){ const im=await _ccFetchAll(()=>_SB.from('caja_chica_imputaciones').select('rendicion_id,monto'));
     im.forEach(i=>{ imp[i.rendicion_id]=(imp[i.rendicion_id]||0)+Number(i.monto||0); }); }
-  { const lg=await _ccFetchAll(()=>_SB.from('caja_chica_acreditaciones').select('rendicion_id,monto').not('rendicion_id','is',null));
-    lg.forEach(a=>{ legacy[a.rendicion_id]=(legacy[a.rendicion_id]||0)+Number(a.monto||0); }); }
 
   // ---- armado por residente ----
   const R={};
@@ -3924,16 +3912,15 @@ async function reporteConsolidado(){
   rends.forEach(r=>{ const d=R[r.residente]; if(!d) return;
     const ms=(movByR[r.id]||[]).slice().sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||''));
     const total=ms.length?ms.reduce((s,m)=>s+Number(m.total||0),0):Number(r.total_rendido||0);
-    const im=imp[r.id]||0, lg=legacy[r.id]||0, tieneRepo=(im>0||lg>0);
-    let est=r.estado, pend=0;
-    if(r.estado==='aguardando_acreditacion'){ pend=impOk?Math.max(0,total-im):total; est=pend<=0?'repuesta':(im>0?'parcial':'aguardando_acreditacion'); }
-    else if(r.estado==='cerrada' && !tieneRepo){ pend=total; est='cerrada_sin'; }
+    // v7.49: el reporte ya no muestra reposiciones pendientes; una rendición aprobada figura como "Aprobada"
+    const im=imp[r.id]||0;
+    let est=r.estado;
+    if(r.estado==='aguardando_acreditacion') est=(impOk && total-im<=0)?'repuesta':'aprobada';
     const enAprob=(r.estado==='presentada')?total:0;
-    const repuesto=(impOk&&im>0)?im:lg;
     const fPres=String(r.presentada_en||'').slice(0,10), fApr=String(r.aprobada_en||'').slice(0,10);
     const enPer=((!D||fPres>=D)&&(!H||fPres<=H)) || ms.some(m=>!D||(m.fecha||'')>=D);
-    if(!(enAprob>0||pend>0) && !enPer) return;      // ya resuelta y fuera del período: no suma información
-    d.rnds.push({id:r.id,nro:_rndNum(r),est,total,repuesto,pend,enAprob,fPres,fApr,
+    if(!(enAprob>0) && !enPer) return;      // ya aprobada y fuera del período: no suma información
+    d.rnds.push({id:r.id,nro:_rndNum(r),est,total,enAprob,fPres,fApr,
       periodo:(r.fecha_desde&&r.fecha_hasta)?(_fd(r.fecha_desde)+' al '+_fd(r.fecha_hasta)):(r.fecha_corte?('corte '+_fd(r.fecha_corte)):''),
       solic:Number(r.reposicion_solicitada||0), movs:ms});
   });
@@ -3947,10 +3934,8 @@ async function reporteConsolidado(){
     d.sinRendir=d.sinRend.reduce((s,m)=>s+Number(m.total||0),0);
     d.sinRendNoAprob=d.sinRend.filter(m=>m.estado!=='aprobado').reduce((s,m)=>s+Number(m.total||0),0);
     d.enAprob=d.rnds.reduce((s,x)=>s+x.enAprob,0);
-    d.faltaRep=d.rnds.reduce((s,x)=>s+x.pend,0);
     d.oficial=d.acrTot-d.aprobTot;                       // lo que muestra el sistema (solo descuenta lo aprobado)
     d.otros=d.oficial-d.sinRendNoAprob-d.enAprob-d.saldo; // debería ser 0
-    d.trasReponer=d.saldo+d.sinRendir+d.enAprob+d.faltaRep;
     // Control de cuadre contra la vista oficial (solo tiene sentido con corte al día)
     d.cuadra=true; d.cuadreMsg='';
     const S=SALDOS[d.res];
@@ -3965,11 +3950,10 @@ async function reporteConsolidado(){
     if(d.saldo<0) ch.push({c:'neg',l:'Saldo negativo',w:`El saldo en caja es ₲ ${fmt(d.saldo)}: se gastó más de lo que se le acreditó.`});
     if(!d.cuadra) ch.push({c:'warn',l:'Revisar cuadre',w:d.cuadreMsg});
     if(S && S.ultimo>0 && d.saldo>=0 && alDia && d.saldo<=S.ultimo*((S.pct||20)/100)) ch.push({c:'warn',l:'Saldo bajo',w:`El saldo (₲ ${fmt(d.saldo)}) es igual o menor al ${S.pct||20}% del último fondo acreditado (₲ ${fmt(S.ultimo)}).`});
-    if(d.faltaRep>0) ch.push({c:'repo',l:'Falta reponer',w:`Tiene ₲ ${fmt(d.faltaRep)} en rendiciones aprobadas que todavía no se repusieron.`});
     if(d.enAprob>0) ch.push({c:'aprob',l:'En aprobación',w:`Tiene ₲ ${fmt(d.enAprob)} en rendiciones presentadas que esperan aprobación.`});
     if(d.sinRendir>0) ch.push({c:'info',l:'Por rendir',w:`Tiene ₲ ${fmt(d.sinRendir)} en comprobantes que todavía no presentó en una rendición.`});
     const sinActividad=(!d.acrTot && !d.nGas && !d.saldoIni && !d.rnds.length && !d.sinRend.length);
-    if(!ch.length) ch.push({c:'ok',l:'Al día',w:'Saldo no negativo, sin comprobantes por rendir, sin rendiciones en aprobación y sin reposiciones pendientes.'});
+    if(!ch.length) ch.push({c:'ok',l:'Al día',w:'Saldo no negativo, sin comprobantes por rendir y sin rendiciones esperando aprobación.'});
     d.S=S||null; d.alDia=alDia;
     d.chips=ch;
     if(sinActividad && !resF){ sinMov++; return; }
@@ -3977,9 +3961,9 @@ async function reporteConsolidado(){
   });
   rows.sort((a,b)=>a.res.localeCompare(b.res));
 
-  const T={saldoIni:0,acred:0,gasto:0,saldo:0,sinRendir:0,enAprob:0,faltaRep:0,trasReponer:0,nAcr:0,nGas:0};
+  const T={saldoIni:0,acred:0,gasto:0,saldo:0,sinRendir:0,enAprob:0,nAcr:0,nGas:0};
   rows.forEach(d=>{ T.saldoIni+=d.saldoIni; T.acred+=d.acred; T.gasto+=d.gasto; T.saldo+=d.saldo; T.sinRendir+=d.sinRendir;
-    T.enAprob+=d.enAprob; T.faltaRep+=d.faltaRep; T.trasReponer+=d.trasReponer; T.nAcr+=d.acrs.length; T.nGas+=d.nGas; });
+    T.enAprob+=d.enAprob; T.nAcr+=d.acrs.length; T.nGas+=d.nGas; });
 
   // Puntos de atención (los más antiguos primero)
   const aten=[];
@@ -3988,7 +3972,6 @@ async function reporteConsolidado(){
     if(!d.cuadra) aten.push({p:1,d:9998,t:`${d.res}: ${d.cuadreMsg}`});
     d.rnds.forEach(x=>{
       if(x.est==='presentada'){ const n=_ccDias(x.fPres); if(n!=null && n>=7) aten.push({p:2,d:n,t:`${d.res}: ${x.nro} lleva ${n} días esperando aprobación (₲ ${fmt(x.enAprob)}).`}); }
-      else if(x.pend>0){ const n=_ccDias(x.fApr||x.fPres); if(n!=null && n>=10) aten.push({p:3,d:n,t:`${d.res}: ${x.nro} aprobada hace ${n} días, falta reponer ₲ ${fmt(x.pend)}.`}); }
     });
     const viejo=d.sinRend.find(m=>m.estado!=='aprobado'); const nv=viejo?_ccDias(viejo.fecha):null;
     if(nv!=null && nv>=30) aten.push({p:4,d:nv,t:`${d.res}: tiene comprobantes sin rendir desde hace ${nv} días (₲ ${fmt(d.sinRendir)} en total).`});
@@ -4002,9 +3985,9 @@ async function reporteConsolidado(){
 
   // Excel (misma estructura que la tabla)
   const aoa=[['Caja Chica — Estado consolidado'],['Período: '+meta.perTxt],[],
-    ['Residente','Saldo inicial','Acreditado','Gastado','Saldo en caja','Sin rendir','En aprobación','Falta reponer','Caja tras reponer','Situación']];
-  rows.forEach(d=>aoa.push([d.res,d.saldoIni,d.acred,d.gasto,d.saldo,d.sinRendir,d.enAprob,d.faltaRep,d.trasReponer,d.chips.map(c=>c.l).join(' · ')]));
-  aoa.push(['TOTAL',T.saldoIni,T.acred,T.gasto,T.saldo,T.sinRendir,T.enAprob,T.faltaRep,T.trasReponer,'']);
+    ['Residente','Saldo inicial','Acreditado','Gastado','Saldo en caja','Sin rendir','En aprobación','Situación']];
+  rows.forEach(d=>aoa.push([d.res,d.saldoIni,d.acred,d.gasto,d.saldo,d.sinRendir,d.enAprob,d.chips.map(c=>c.l).join(' · ')]));
+  aoa.push(['TOTAL',T.saldoIni,T.acred,T.gasto,T.saldo,T.sinRendir,T.enAprob,'']);
   REPORTE_DATA={ aoa, filename:`caja_chica_consolidado_${todayISO()}.xlsx`, sheet:'Consolidado' };
   REPORTE_PDF={ mode:'consolidado' };
   gs('r-export').disabled=false; gs('r-export-pdf').disabled=false;
@@ -4023,7 +4006,6 @@ function _ccRender(){
     ${kp('Gastado',T.gasto,`${T.nGas} comprobante${T.nGas===1?'':'s'} en el período`)}
     ${kp('Sin rendir',T.sinRendir,'cargado, falta presentar','k-info')}
     ${kp('En aprobación',T.enAprob,'presentado, falta aprobar','k-aprob')}
-    ${kp('Falta reponer',T.faltaRep,'aprobado, falta transferir','k-repo')}
   </div>`;
   const atenHTML=aten.length?`<div class="cc-aten"><b>Requiere atención</b><ul>${aten.slice(0,8).map(a=>`<li>${_esc(a.t)}</li>`).join('')}</ul>${aten.length>8?`<div class="mas">y ${aten.length-8} punto(s) más en el detalle de cada residente.</div>`:''}</div>`:'';
 
@@ -4036,9 +4018,8 @@ function _ccRender(){
       <td class="num cc-saldo${d.saldo<0?' neg':''}">${fmt(d.saldo)}</td>
       <td class="num">${d.sinRendir?fmt(d.sinRendir):'<span class="cc-cero">—</span>'}</td>
       <td class="num">${d.enAprob?fmt(d.enAprob):'<span class="cc-cero">—</span>'}</td>
-      <td class="num">${d.faltaRep?fmt(d.faltaRep):'<span class="cc-cero">—</span>'}</td>
       <td>${_ccChips(d.chips)}</td></tr>
-    <tr class="rc-detalle" id="rc-d${i}" style="display:none"><td colspan="9">${_ccDetalleHTML(d,i)}</td></tr>`).join('');
+    <tr class="rc-detalle" id="rc-d${i}" style="display:none"><td colspan="8">${_ccDetalleHTML(d,i)}</td></tr>`).join('');
 
   const nota=[];
   if(!meta.alDia) nota.push('El corte es anterior a hoy: los montos se calculan a esa fecha, pero el estado de cada rendición es el actual.');
@@ -4049,14 +4030,14 @@ function _ccRender(){
       <div class="per">Emitido ${_esc(meta.emitido)}</div></div>
     ${kpis}${atenHTML}
     <div class="rep-scroll"><table class="rep-table cc-table">
-      <colgroup><col style="width:19%"><col style="width:9%"><col style="width:9.5%"><col style="width:9.5%"><col style="width:10.5%"><col style="width:9%"><col style="width:9.5%"><col style="width:9.5%"><col style="width:14%"></colgroup>
-      <thead><tr><th>Residente</th><th class="num">Saldo inicial<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'saldoIni')" onkeydown="if(event.key==='Enter')ccInfo(event,'saldoIni')">i</span></th><th class="num">+ Acreditado<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'acred')" onkeydown="if(event.key==='Enter')ccInfo(event,'acred')">i</span></th><th class="num">− Gastado<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'gasto')" onkeydown="if(event.key==='Enter')ccInfo(event,'gasto')">i</span></th><th class="num">= Saldo en caja<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'saldo')" onkeydown="if(event.key==='Enter')ccInfo(event,'saldo')">i</span></th><th class="num">Sin rendir<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'sinRendir')" onkeydown="if(event.key==='Enter')ccInfo(event,'sinRendir')">i</span></th><th class="num">En aprobación<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'enAprob')" onkeydown="if(event.key==='Enter')ccInfo(event,'enAprob')">i</span></th><th class="num">Falta reponer<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'faltaRep')" onkeydown="if(event.key==='Enter')ccInfo(event,'faltaRep')">i</span></th><th>Situación<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'situacion')" onkeydown="if(event.key==='Enter')ccInfo(event,'situacion')">i</span></th></tr></thead>
-      <tbody>${body||'<tr><td colspan="9" class="empty">Sin datos para el período.</td></tr>'}</tbody>
-      <tfoot><tr class="rep-total"><td>TOTAL</td><td class="num">${fmt(T.saldoIni)}</td><td class="num">${fmt(T.acred)}</td><td class="num">${fmt(T.gasto)}</td><td class="num">${fmt(T.saldo)}</td><td class="num">${fmt(T.sinRendir)}</td><td class="num">${fmt(T.enAprob)}</td><td class="num">${fmt(T.faltaRep)}</td><td></td></tr></tfoot>
+      <colgroup><col style="width:21%"><col style="width:10%"><col style="width:11%"><col style="width:11%"><col style="width:12%"><col style="width:10%"><col style="width:10.5%"><col style="width:14.5%"></colgroup>
+      <thead><tr><th>Residente</th><th class="num">Saldo inicial<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'saldoIni')" onkeydown="if(event.key==='Enter')ccInfo(event,'saldoIni')">i</span></th><th class="num">+ Acreditado<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'acred')" onkeydown="if(event.key==='Enter')ccInfo(event,'acred')">i</span></th><th class="num">− Gastado<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'gasto')" onkeydown="if(event.key==='Enter')ccInfo(event,'gasto')">i</span></th><th class="num">= Saldo en caja<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'saldo')" onkeydown="if(event.key==='Enter')ccInfo(event,'saldo')">i</span></th><th class="num">Sin rendir<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'sinRendir')" onkeydown="if(event.key==='Enter')ccInfo(event,'sinRendir')">i</span></th><th class="num">En aprobación<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'enAprob')" onkeydown="if(event.key==='Enter')ccInfo(event,'enAprob')">i</span></th><th>Situación<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'situacion')" onkeydown="if(event.key==='Enter')ccInfo(event,'situacion')">i</span></th></tr></thead>
+      <tbody>${body||'<tr><td colspan="8" class="empty">Sin datos para el período.</td></tr>'}</tbody>
+      <tfoot><tr class="rep-total"><td>TOTAL</td><td class="num">${fmt(T.saldoIni)}</td><td class="num">${fmt(T.acred)}</td><td class="num">${fmt(T.gasto)}</td><td class="num">${fmt(T.saldo)}</td><td class="num">${fmt(T.sinRendir)}</td><td class="num">${fmt(T.enAprob)}</td><td></td></tr></tfoot>
     </table></div>
     <div class="cc-leyenda"><b>Cómo se lee:</b> Saldo en caja = saldo inicial + acreditado − gastado, contando todo comprobante cargado aunque no esté aprobado, porque la plata ya salió.
-    Las tres columnas siguientes muestran en qué etapa está ese gasto: <i>sin rendir</i> (cargado, falta presentarlo), <i>en aprobación</i> (presentado, falta aprobarlo) y <i>falta reponer</i> (aprobado, falta transferir la reposición).
-    Las tres reflejan la situación completa a la fecha de corte, sin importar en qué mes se cargó el comprobante.${nota.length?('<br>'+nota.map(_esc).join(' ')):''}</div>`;
+    Las dos columnas siguientes muestran en qué etapa está ese gasto: <i>sin rendir</i> (cargado, falta presentarlo) y <i>en aprobación</i> (presentado, falta aprobarlo).
+    Las dos reflejan la situación completa a la fecha de corte, sin importar en qué mes se cargó el comprobante.${nota.length?('<br>'+nota.map(_esc).join(' ')):''}</div>`;
 }
 
 function _ccDetalleHTML(d,i){
@@ -4074,20 +4055,18 @@ function _ccDetalleHTML(d,i){
     ${d.enAprob?L('− Presentado en aprobación',-d.enAprob):''}
     ${Math.abs(d.otros)>1?L('− Diferencia a revisar',-d.otros):''}
     ${L('= Saldo en caja',d.saldo,'tot')}</table>
-    <div class="cc-nota">Cuando se rinda, apruebe y reponga todo lo pendiente, la caja vuelve a <b>₲ ${fmt(d.trasReponer)}</b>.</div>
     ${d.cuadreMsg?`<div class="cc-alerta">⚠ ${_esc(d.cuadreMsg)}</div>`:''}`;
 
   const rnd=d.rnds.length?`<table class="cc-sub">
-      <thead><tr><th>Rendición</th><th>Presentada</th><th>Estado</th><th class="n">Rendido</th><th class="n">Repuesto</th><th class="n">Pendiente</th></tr></thead><tbody>
+      <thead><tr><th>Rendición</th><th>Presentada</th><th>Estado</th><th class="n">Rendido</th></tr></thead><tbody>
       ${d.rnds.map((x,j)=>{ const st=CC_REST[x.est]||{l:x.est,c:'mut'};
-        const dias=(x.est==='presentada')?_ccDias(x.fPres):(x.pend>0?_ccDias(x.fApr||x.fPres):null);
-        const pendCell=x.enAprob?fmt(x.enAprob):(x.pend?fmt(x.pend):'—');
+        const dias=(x.est==='presentada')?_ccDias(x.fPres):null;
         return `<tr class="cc-rrow" onclick="event.stopPropagation();ccToggleRnd(${i},${j})" id="ccr-${i}-${j}">
           <td class="nw"><span class="rc-caret">▶</span> ${_esc(x.nro)}</td><td class="nw">${_fd(x.fPres)}</td>
           <td><span class="cc-chip ${st.c}">${st.l}</span>${dias!=null&&dias>=1?`<span class="cc-dias">${dias} d</span>`:''}</td>
-          <td class="n">${fmt(x.total)}</td><td class="n">${x.repuesto?fmt(x.repuesto):'—'}</td><td class="n b">${pendCell}</td></tr>
-        <tr class="cc-rdet" id="ccd-${i}-${j}" style="display:none"><td colspan="6">${_ccMovsHTML(x.movs)}
-          <div class="cc-rpie">${x.periodo?('Período '+_esc(x.periodo)+' · '):''}${x.solic?('reposición solicitada ₲ '+fmt(x.solic)+' · '):''}<a href="#" onclick="event.preventDefault();event.stopPropagation();abrirDetalleRendicion('${x.id}')">Abrir planilla firmada</a></div></td></tr>`; }).join('')}
+          <td class="n b">${fmt(x.total)}</td></tr>
+        <tr class="cc-rdet" id="ccd-${i}-${j}" style="display:none"><td colspan="4">${_ccMovsHTML(x.movs)}
+          <div class="cc-rpie">${x.periodo?('Período '+_esc(x.periodo)+' · '):''}<a href="#" onclick="event.preventDefault();event.stopPropagation();abrirDetalleRendicion('${x.id}')">Abrir planilla firmada</a></div></td></tr>`; }).join('')}
       </tbody></table>`
     : '<div class="rc-vacio">Sin rendiciones abiertas ni presentadas en el período.</div>';
 
@@ -4151,8 +4130,8 @@ function exportConsolidadoPDF(){
   encabezado('Estado consolidado de Caja Chica', `Período ${meta.perTxt}   ·   Emitido ${meta.emitido}`);
   // KPIs
   const kp=[['Saldo en caja',T.saldo,'al '+corteTxt,'main'],['Acreditado',T.acred,T.nAcr+' acreditaciones'],['Gastado',T.gasto,T.nGas+' comprobantes'],
-            ['Sin rendir',T.sinRendir,'cargado, falta presentar','info'],['En aprobación',T.enAprob,'falta aprobar','aprob'],['Falta reponer',T.faltaRep,'falta transferir','repo']];
-  const gap=3, bw=(pageW-2*M-gap*5)/6, by=27, bh=19;
+            ['Sin rendir',T.sinRendir,'cargado, falta presentar','info'],['En aprobación',T.enAprob,'presentado, falta aprobar','aprob']];
+  const gap=3, bw=(pageW-2*M-gap*(kp.length-1))/kp.length, by=27, bh=19;
   kp.forEach((k,ix)=>{
     const x=M+ix*(bw+gap);
     doc.setFillColor(...(k[3]==='main'?NAVY:[247,244,236])); doc.setDrawColor(225,218,200); doc.setLineWidth(0.2);
@@ -4166,21 +4145,21 @@ function exportConsolidadoPDF(){
     doc.text(san(k[2]), x+3.5, by+16.6);
   });
   // Tabla principal
-  const head=[['Residente','Saldo inicial','+ Acreditado','- Gastado','= Saldo en caja','Sin rendir','En aprobación','Falta reponer','Situación']];
-  const body=rows.map(d=>[san(d.res),fmt(d.saldoIni),fmt(d.acred),fmt(d.gasto),fmt(d.saldo),d.sinRendir?fmt(d.sinRendir):'-',d.enAprob?fmt(d.enAprob):'-',d.faltaRep?fmt(d.faltaRep):'-',san(d.chips.map(c=>c.l).join(' · '))]);
+  const head=[['Residente','Saldo inicial','+ Acreditado','- Gastado','= Saldo en caja','Sin rendir','En aprobación','Situación']];
+  const body=rows.map(d=>[san(d.res),fmt(d.saldoIni),fmt(d.acred),fmt(d.gasto),fmt(d.saldo),d.sinRendir?fmt(d.sinRendir):'-',d.enAprob?fmt(d.enAprob):'-',san(d.chips.map(c=>c.l).join(' · '))]);
   const tIdx=body.length;
-  body.push(['TOTAL',fmt(T.saldoIni),fmt(T.acred),fmt(T.gasto),'Gs '+fmt(T.saldo),fmt(T.sinRendir),fmt(T.enAprob),fmt(T.faltaRep),'']);
+  body.push(['TOTAL',fmt(T.saldoIni),fmt(T.acred),fmt(T.gasto),'Gs '+fmt(T.saldo),fmt(T.sinRendir),fmt(T.enAprob),'']);
   doc.autoTable({ head, body, startY:by+bh+5, margin:{left:M,right:M,top:28,bottom:14},
     styles:Object.assign({},est,{fontSize:8.6,cellPadding:2}), headStyles:Object.assign({},estH,{fontSize:8}),
-    columnStyles:{0:{cellWidth:'auto',fontStyle:'bold'},1:{cellWidth:26,halign:'right'},2:{cellWidth:27,halign:'right'},3:{cellWidth:27,halign:'right'},
-      4:{cellWidth:30,halign:'right',fontStyle:'bold'},5:{cellWidth:25,halign:'right'},6:{cellWidth:26,halign:'right'},7:{cellWidth:26,halign:'right'},8:{cellWidth:46,fontSize:7.4}},
+    columnStyles:{0:{cellWidth:'auto',fontStyle:'bold'},1:{cellWidth:28,halign:'right'},2:{cellWidth:30,halign:'right'},3:{cellWidth:30,halign:'right'},
+      4:{cellWidth:33,halign:'right',fontStyle:'bold'},5:{cellWidth:28,halign:'right'},6:{cellWidth:29,halign:'right'},7:{cellWidth:50,fontSize:7.4}},
     didParseCell:(c)=>{
       if(c.section!=='body') return;
       if(c.row.index===tIdx){ totRow(c); return; }
       const d=rows[c.row.index]; if(!d) return;
       if(c.column.index===1) c.cell.styles.textColor=[120,120,120];
       if(c.column.index===4){ c.cell.styles.fillColor=[246,242,232]; if(d.saldo<0) c.cell.styles.textColor=COL.neg; }
-      if(c.column.index===8){ const p=d.chips[0]; c.cell.styles.textColor=COL[p.c]||GRIS; c.cell.styles.fontStyle='bold'; }
+      if(c.column.index===7){ const p=d.chips[0]; c.cell.styles.textColor=COL[p.c]||GRIS; c.cell.styles.fontStyle='bold'; }
     }
   });
   let y=doc.lastAutoTable.finalY+6;
@@ -4201,8 +4180,8 @@ function exportConsolidadoPDF(){
     'Saldo inicial = acreditaciones anteriores a la fecha Desde - comprobantes anteriores a la fecha Desde (0 si no hay fecha Desde).',
     'Acreditado = suma de las acreditaciones del período.   Gastado = suma de los comprobantes del período cargados, observados o aprobados (no cuenta rechazados ni anulados).',
     'Saldo en caja = saldo inicial + acreditado - gastado: es el efectivo que el residente debería tener en mano a la fecha de corte.',
-    'Sin rendir = comprobantes que no están en una rendición presentada.   En aprobación = rendiciones presentadas sin aprobar.   Falta reponer = suma de (rendido - ya repuesto) de cada rendición aprobada.',
-    'Estas tres últimas columnas muestran todo lo pendiente a la fecha de corte, sin importar en qué mes se cargó el comprobante.'];
+    'Sin rendir = comprobantes que no están en una rendición presentada.   En aprobación = rendiciones presentadas que todavía no se aprobaron.',
+    'Estas dos últimas columnas muestran todo lo pendiente a la fecha de corte, sin importar en qué mes se cargó el comprobante.'];
   if(!meta.alDia) ley.push('El corte es anterior a la fecha de emisión: los montos se calculan a esa fecha y el estado de cada rendición es el actual.');
   if(y+ley.length*4+4>pageH-14){ doc.addPage(); y=28; }
   doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...NAVY); doc.text(ley[0],M,y); y+=4.2;
@@ -4231,24 +4210,22 @@ function exportConsolidadoPDF(){
       if(d.enAprob) conc.push(['- Presentado en aprobación',fmt(-d.enAprob)]);
       if(Math.abs(d.otros)>1) conc.push(['- Diferencia a revisar',fmt(-d.otros)]);
       conc.push(['= Saldo en caja','Gs '+fmt(d.saldo)]);
-      conc.push(['Caja tras reponer todo lo pendiente','Gs '+fmt(d.trasReponer)]);
-      const cTot=conc.length-2;
+      const cTot=conc.length-1;
       doc.autoTable({ head:[['Conciliación con el sistema','Gs']], body:conc, startY:doc.lastAutoTable.finalY+4, margin:{left:M,top:28,bottom:14}, tableWidth:colW,
         styles:est, headStyles:Object.assign({},estH,{halign:'left'}), columnStyles:{0:{cellWidth:'auto'},1:{cellWidth:30,halign:'right'}},
-        didParseCell:(c)=>{ if(c.section!=='body') return; if(c.row.index===cTot) totRow(c);
-          if(c.row.index===conc.length-1){ c.cell.styles.fontStyle='italic'; c.cell.styles.textColor=[90,90,90]; } } });
+        didParseCell:(c)=>{ if(c.section!=='body') return; if(c.row.index===cTot) totRow(c); } });
       let yL=doc.lastAutoTable.finalY;
       if(d.cuadreMsg){ const sp=doc.splitTextToSize('Revisar: '+san(d.cuadreMsg),colW); doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(...COL.neg); doc.text(sp,M,yL+4); yL+=4+sp.length*3.2; }
       // Rendiciones (columna derecha)
       const xR=M+colW+8;
       const bodyR=d.rnds.map(x=>{ const st=CC_REST[x.est]||{l:x.est};
-        const dias=(x.est==='presentada')?_ccDias(x.fPres):(x.pend>0?_ccDias(x.fApr||x.fPres):null);
-        return [x.nro,_fd(x.fPres),san(st.l)+(dias?` (${dias} d)`:''),fmt(x.total),x.repuesto?fmt(x.repuesto):'-',x.enAprob?fmt(x.enAprob):(x.pend?fmt(x.pend):'-')]; });
-      if(!bodyR.length) bodyR.push([{content:'Sin rendiciones abiertas ni presentadas en el período.',colSpan:6,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
-      else bodyR.push(['TOTAL','','',fmt(d.rnds.reduce((s,x)=>s+x.total,0)),fmt(d.rnds.reduce((s,x)=>s+x.repuesto,0)),fmt(d.enAprob+d.faltaRep)]);
-      doc.autoTable({ head:[['Rendición','Presentada','Estado','Rendido','Repuesto','Pendiente']], body:bodyR, startY:top,
+        const dias=(x.est==='presentada')?_ccDias(x.fPres):null;
+        return [x.nro,_fd(x.fPres),san(st.l)+(dias?` (${dias} d)`:''),fmt(x.total)]; });
+      if(!bodyR.length) bodyR.push([{content:'Sin rendiciones abiertas ni presentadas en el período.',colSpan:4,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
+      else bodyR.push(['TOTAL','','',fmt(d.rnds.reduce((s,x)=>s+x.total,0))]);
+      doc.autoTable({ head:[['Rendición','Presentada','Estado','Rendido']], body:bodyR, startY:top,
         margin:{left:xR,right:M,top:28,bottom:14}, styles:est, headStyles:estH,
-        columnStyles:{0:{cellWidth:22},1:{cellWidth:20,halign:'center'},2:{cellWidth:'auto'},3:{cellWidth:24,halign:'right'},4:{cellWidth:24,halign:'right'},5:{cellWidth:24,halign:'right',fontStyle:'bold'}},
+        columnStyles:{0:{cellWidth:26},1:{cellWidth:24,halign:'center'},2:{cellWidth:'auto'},3:{cellWidth:30,halign:'right',fontStyle:'bold'}},
         didParseCell:(c)=>{ if(c.section!=='body') return; const x=d.rnds[c.row.index];
           if(!x){ if(d.rnds.length) totRow(c); return; }
           if(c.column.index===2){ const st=CC_REST[x.est]; c.cell.styles.textColor=COL[st?st.c:'mut']||GRIS; c.cell.styles.fontStyle='bold'; } } });
@@ -4265,14 +4242,14 @@ function exportConsolidadoPDF(){
         columnStyles:{0:{cellWidth:22,halign:'center'},1:{cellWidth:34},2:{cellWidth:'auto'},3:{cellWidth:22,halign:'center'},4:{cellWidth:30,halign:'right'}},
         didParseCell:(c)=>{ if(c.section==='body' && d.acrs.length && c.row.index===d.acrs.length) totRow(c); if(c.section==='body'&&c.column.index===3&&c.cell.raw==='Excepción'){ c.cell.styles.textColor=COL.neg; c.cell.styles.fontStyle='bold'; } } });
       y2=doc.lastAutoTable.finalY+6;
-      // Comprobantes pendientes: sin rendir + los de rendiciones abiertas
+      // Comprobantes pendientes: sin rendir + los de rendiciones en aprobación
       const pend=[];
       d.sinRend.forEach(m=>pend.push({m,et:'Sin rendir · '+(CC_MEST[m.estado]||m.estado)}));
-      d.rnds.filter(x=>x.enAprob>0||x.pend>0).forEach(x=>{ const st=CC_REST[x.est]||{l:x.est}; x.movs.forEach(m=>pend.push({m,et:x.nro+' · '+st.l})); });
+      d.rnds.filter(x=>x.enAprob>0).forEach(x=>{ const st=CC_REST[x.est]||{l:x.est}; x.movs.forEach(m=>pend.push({m,et:x.nro+' · '+st.l})); });
       pend.sort((a,b)=>(a.m.fecha||'').localeCompare(b.m.fecha||''));
-      tituloSec(`Comprobantes pendientes de cerrar el ciclo (${pend.length})`);
+      tituloSec(`Comprobantes sin rendir o en aprobación (${pend.length})`);
       const bodyP=pend.map(p=>[_fd(p.m.fecha),String(p.m.numero_orden||''),san(p.m.nro_factura||''),san(p.m.proveedor||''),san([p.m.obra,p.m.rubro].filter(Boolean).join(' · ')),san(p.et),fmt(p.m.total)]);
-      if(!bodyP.length) bodyP.push([{content:'No tiene comprobantes pendientes: todo lo gastado está rendido, aprobado y repuesto.',colSpan:7,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
+      if(!bodyP.length) bodyP.push([{content:'No tiene comprobantes pendientes: todo lo gastado está rendido y aprobado.',colSpan:7,styles:{textColor:[140,140,140],fontStyle:'italic'}}]);
       else bodyP.push(['TOTAL','','','','','',fmt(pend.reduce((s,p)=>s+Number(p.m.total||0),0))]);
       doc.autoTable({ head:[['Fecha','Nº','Factura','Proveedor','Obra · rubro','Situación','Total']], body:bodyP, startY:y2+1,
         margin:{left:M,right:M,top:28,bottom:14}, styles:Object.assign({},est,{fontSize:7.6}), headStyles:estH,
