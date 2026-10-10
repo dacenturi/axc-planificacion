@@ -445,6 +445,16 @@ tr:last-child td{border-bottom:none}
 .cg-empty{font-size:12px;color:var(--text3);font-style:italic;padding:6px 0}
 .cg-warn{color:var(--red);font-weight:800;cursor:help}
 .cc-box.cg-inbox{grid-column:1/-1}
+/* v7.52: monto de cada color en las barras apiladas y ubicación de los gráficos */
+.cg-srow{padding:5px 0 7px;row-gap:4px;border-bottom:1px dashed var(--border2)}
+.cg-srow:last-child{border-bottom:0}
+.cg-parts{grid-column:2 / 4;display:flex;flex-wrap:wrap;gap:3px 14px;font-size:11.5px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.cg-parts span{white-space:nowrap}
+.cg-parts i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.cg-parts em{font-style:normal;font-weight:500;color:var(--text2);margin-left:4px;font-size:10.5px}
+.cr-gpos{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-left:4px}
+.cr-gpos select{font-size:12px;padding:3px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--text)}
+.cg-tabh{margin:18px 0 8px;font-size:15px;font-weight:700;color:var(--text)}
 .cg-bare .cg-row{grid-template-columns:minmax(90px,24%) 1fr 92px} .cg-bare .cg-row.p{grid-template-columns:minmax(90px,24%) 1fr 128px}
 /* v7.29: secciones por residente en el reporte de todos */
 .rt-res{border:1px solid var(--border);border-radius:10px;margin:10px 0;overflow:hidden;background:var(--card)}
@@ -999,6 +1009,8 @@ tr:last-child td{border-bottom:none}
     <label class="cr-gopt" title="¿Qué compra cada residente?"><input type="checkbox" data-g="rubroRes" onchange="crGrafCambio()"> Rubros por residente</label>
     <label class="cr-gopt" title="¿Qué obra consume más caja chica?"><input type="checkbox" data-g="obra" onchange="crGrafCambio()"> Consumo por obra</label>
     <label class="cr-gopt" title="¿Quién tiene comprobantes o rendiciones atrasadas?"><input type="checkbox" data-g="aging" onchange="crGrafCambio()"> Antigüedad de pendientes</label>
+              <label class="cr-gpos" title="Dónde van los gráficos, en pantalla y en el PDF">Ubicación
+                <select id="cr-graf-pos" onchange="crGrafCambio()"><option value="antes">Gráficos arriba, tabla debajo</option><option value="despues">Tabla arriba, gráficos debajo</option></select></label>
             </div>
           </div>
           <div id="rep-result"><div class="empty">Elegí un residente y tocá Generar.</div></div>
@@ -1232,7 +1244,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.51';
+const APP_VERSION='Caja Chica v7.52';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -4501,6 +4513,7 @@ function _crRender(){
       <div class="per">Del ${_esc(meta.perTxt)}${meta.resF?(' · '+_esc(meta.resF)):''} · acreditaciones por su fecha y rendiciones por su fecha de presentación · tocá un residente para ver su detalle</div></div>
       <div class="per">Emitido ${_esc(meta.emitido)}</div></div>
     ${kpis}${atenHTML}
+    ${CR_GRAF.pos==='antes'?_crChartsSecHTML():''}${(CR_GRAF.pos==='antes' && _crGrafActivos().length)?'<h4 class="cg-tabh">Detalle por residente</h4>':''}
     <div class="rep-scroll"><table class="rep-table cc-table cr-table">
       <colgroup><col style="width:16%"><col style="width:9%"><col style="width:9.5%"><col style="width:10%"><col style="width:9.5%"><col style="width:10.5%"><col style="width:9%"><col style="width:10.5%"><col style="width:16%"></colgroup>
       <thead>
@@ -4514,7 +4527,7 @@ function _crRender(){
     <div class="cc-leyenda"><b>Cómo se lee:</b> las acreditaciones cuentan por su fecha y los gastos por la fecha en que se <i>presentó la rendición</i>, no por la fecha de cada factura.
     Saldo según rendiciones = saldo inicial + acreditado − rendido aprobado − en aprobación. El arqueo resta los comprobantes cargados que todavía no se rindieron y da el <b>efectivo en caja</b>,
     que es el mismo resultado que el «Saldo en caja» del reporte Consolidado.${nota.length?('<br>'+nota.map(_esc).join(' ')):''}</div>
-    ${_crChartsSecHTML()}`;
+    ${CR_GRAF.pos!=='antes'?_crChartsSecHTML():''}`;
 }
 
 function _crDetalleHTML(d,i){
@@ -4655,7 +4668,23 @@ function exportCajaRendPDF(){
   const body=rows.map(d=>[san(d.res),fmt(d.saldoIni),d.acred?fmt(d.acred):'-',d.rendApr?fmt(d.rendApr):'-',d.rendPend?fmt(d.rendPend):'-',fmt(d.saldo),d.sinRendir?fmt(d.sinRendir):'-',fmt(d.efectivo),san(d.chips.map(c=>c.l).join(' · '))]);
   const tIdx=body.length;
   body.push(['TOTAL',fmt(T.saldoIni),fmt(T.acred),fmt(T.rendApr),fmt(T.rendPend),fmt(T.saldo),fmt(T.sinRendir),'Gs '+fmt(T.efectivo),'']);
-  doc.autoTable({ head, body, startY:by+bh+5, margin:{left:M,right:M,top:28,bottom:14},
+  // v7.52: gráficos en grilla de dos columnas; arriba de la tabla o en hojas propias, según la ubicación elegida
+  const charts=_crChartSpecs(), gapC=6, cw=(pageW-2*M-gapC)/2;
+  const tituloBloque=(t,yv)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...NAVY); doc.text(san(t),M,yv+3.5); return yv+7; };
+  const grilla=(y0,tituloPag)=>{ let cy=y0, col=0, rowH=0;
+    charts.forEach(c=>{ const h=_crPdfChartH(doc,c,cw);
+      if(col===1 && cy+h>pageH-14){ cy+=rowH+gapC; col=0; rowH=0; }
+      if(col===0 && cy+h>pageH-14){ doc.addPage(); encabezado(tituloPag||'Análisis gráfico', `Período ${meta.perTxt}`); cy=28; }
+      _crPdfChart(doc,c,M+col*(cw+gapC),cy,cw,san); rowH=Math.max(rowH,h);
+      if(col===0) col=1; else { cy+=rowH+gapC; rowH=0; col=0; } });
+    return col===1?cy+rowH:cy-gapC; };
+  let yTab=by+bh+5;
+  if(charts.length && CR_GRAF.pos==='antes'){
+    yTab=grilla(tituloBloque('Análisis gráfico',yTab),'Estado de Caja Chica por rendiciones')+6;
+    if(yTab>pageH-45){ doc.addPage(); yTab=28; }
+    yTab=tituloBloque('Detalle por residente',yTab);
+  }
+  doc.autoTable({ head, body, startY:yTab, margin:{left:M,right:M,top:28,bottom:14},
     styles:Object.assign({},est,{fontSize:8.4,cellPadding:1.9}), headStyles:Object.assign({},estH,{fontSize:7.4}),
     columnStyles:{0:{cellWidth:'auto',fontStyle:'bold'},1:{cellWidth:23,halign:'right'},2:{cellWidth:24,halign:'right'},3:{cellWidth:25,halign:'right'},4:{cellWidth:24,halign:'right'},
       5:{cellWidth:27,halign:'right',fontStyle:'bold'},6:{cellWidth:22,halign:'right'},7:{cellWidth:27,halign:'right',fontStyle:'bold'},8:{cellWidth:44,fontSize:7.2}},
@@ -4689,21 +4718,8 @@ function exportCajaRendPDF(){
   doc.setFont('helvetica','normal'); doc.setFontSize(7.4); doc.setTextColor(...GRIS);
   ley.slice(1).forEach(t=>{ const sp=doc.splitTextToSize(san(t),pageW-2*M); doc.text(sp,M,y); y+=sp.length*3.5+0.6; });
 
-  // v7.51: análisis gráfico (solo si el usuario lo activó)
-  const charts=_crChartSpecs();
-  if(charts.length){
-    const gapC=6, cw=(pageW-2*M-gapC)/2; let cy=28, col=0, rowH=0;
-    const nuevaPag=()=>{ doc.addPage(); encabezado('Análisis gráfico', `Período ${meta.perTxt}`); cy=28; col=0; rowH=0; };
-    nuevaPag();
-    charts.forEach(c=>{
-      const h=_crPdfChartH(doc,c,cw);
-      if(col===1 && cy+h>pageH-14){ cy+=rowH+gapC; col=0; rowH=0; }
-      if(col===0 && cy>28 && cy+h>pageH-14) nuevaPag();
-      _crPdfChart(doc,c,M+col*(cw+gapC),cy,cw,san);
-      rowH=Math.max(rowH,h);
-      if(col===0) col=1; else { cy+=rowH+gapC; rowH=0; col=0; }
-    });
-  }
+  // gráficos después de la tabla: en hojas propias
+  if(charts.length && CR_GRAF.pos!=='antes'){ doc.addPage(); encabezado('Análisis gráfico', `Período ${meta.perTxt}`); grilla(28); }
   const pdfSel=gs('r-pdf-detalle');
   if(!pdfSel || pdfSel.value!=='resumen'){
     rows.forEach(d=>{
@@ -4792,17 +4808,19 @@ const CR_GRAF_DEF=[
 ];
 const CR_PALETA=['#1f3864','#c8a028','#2a7f7f','#c2410c','#6b7d2a','#4f6fa8','#8a4f7d','#a0825a'];
 const CR_OTROS='#9a9a9a';
-let CR_GRAF={on:false, sel:{rubro:true, fondos:true}};
+let CR_GRAF={on:false, pos:'antes', sel:{rubro:true, fondos:true}};
 (function(){ try{ const v=JSON.parse(localStorage.getItem('axc_cc_graf')||'null');
-  if(v && typeof v==='object') CR_GRAF={on:!!v.on, sel:Object.assign({rubro:true,fondos:true},v.sel||{})}; }catch(e){} })();
+  if(v && typeof v==='object') CR_GRAF={on:!!v.on, pos:(v.pos==='despues'?'despues':'antes'), sel:Object.assign({rubro:true,fondos:true},v.sel||{})}; }catch(e){} })();
 function _crGrafSync(){
   const on=gs('cr-graf-on'); if(!on) return;
   on.checked=CR_GRAF.on; gs('cr-graf-opts').style.display=CR_GRAF.on?'':'none';
   document.querySelectorAll('#cr-graf-opts input[data-g]').forEach(i=>{ i.checked=!!CR_GRAF.sel[i.dataset.g]; });
+  const ps=gs('cr-graf-pos'); if(ps) ps.value=CR_GRAF.pos;
 }
 function crGrafCambio(){
   CR_GRAF.on=gs('cr-graf-on').checked;
   document.querySelectorAll('#cr-graf-opts input[data-g]').forEach(i=>{ CR_GRAF.sel[i.dataset.g]=i.checked; });
+  const ps=gs('cr-graf-pos'); if(ps) CR_GRAF.pos=(ps.value==='despues'?'despues':'antes');
   gs('cr-graf-opts').style.display=CR_GRAF.on?'':'none';
   try{ localStorage.setItem('axc_cc_graf',JSON.stringify(CR_GRAF)); }catch(e){}
   if(CR_DATA && rTipo()==='cajarend') _crRender();     // redibuja con los datos ya cargados, sin volver a consultar
@@ -4883,21 +4901,29 @@ function _crRubroResSpec(d){
 }
 
 // ---------- pantalla ----------
+function _crSerVis(c){ return c.kind==='stack'?c.series.filter(se=>c.rows.some(r=>(Number(r.parts[se.k])||0)>0)):[]; }   // v7.52: solo colores con monto
+function _crPct(v,t){ if(!t) return ''; const p=v*100/t; return (p<10?p.toFixed(1):String(Math.round(p)))+'%'; }
 function _crChartHTML(c,bare){
   let body='';
   const tot=(r)=>c.kind==='bar'?r.v:c.series.reduce((s,se)=>s+(Number(r.parts[se.k])||0),0);
   const sinDatos=!c.rows.length || (c.kind==='bar' && !c.total);
   if(sinDatos) body=`<div class="cg-empty">${_esc(c.empty||'Sin datos.')}</div>`;
   else {
-    const max=Math.max(...c.rows.map(tot),1);
-    if(c.kind==='stack') body+=`<div class="cg-leg">${c.series.map(se=>`<span><i style="background:${se.c}"></i>${_esc(se.l)}</span>`).join('')}</div>`;
+    const max=Math.max(...c.rows.map(tot),1), ser=_crSerVis(c);
+    if(c.kind==='stack') body+=`<div class="cg-leg">${ser.map(se=>`<span><i style="background:${se.c}"></i>${_esc(se.l)}</span>`).join('')}</div>`;
     body+=c.rows.map(r=>{ const t=tot(r);
-      const barra=c.kind==='bar'
-        ? `<div class="cg-fill" style="width:${(t*100/max).toFixed(2)}%;background:${r.c}"></div>`
-        : c.series.map(se=>{ const v=Number(r.parts[se.k])||0; return v>0?`<div class="cg-seg" style="width:${(v*100/max).toFixed(2)}%;background:${se.c}" title="${_esc(se.l)}: ₲ ${fmt(v)} (${Math.round(v*100/(t||1))}%)"></div>`:''; }).join('');
-      const pct=(c.kind==='bar'&&c.pct&&c.total)?`<span>${(t*100/c.total).toFixed(t*100/c.total<10?1:0)}%</span>`:'';
-      return `<div class="cg-row${pct?' p':''}"${c.kind==='bar'?` title="${_esc(r.l)}: ₲ ${fmt(t)}"`:''}><div class="cg-lab">${_esc(r.l)}${r.warn?` <b class="cg-warn" title="${_esc(r.warn)}">!</b>`:''}</div>
-        <div class="cg-track">${barra}</div><div class="cg-val">${fmt(t)}${pct}</div></div>`; }).join('');
+      if(c.kind==='bar'){
+        const pct=(c.pct&&c.total)?`<span>${_crPct(t,c.total)}</span>`:'';
+        return `<div class="cg-row${pct?' p':''}" title="${_esc(r.l)}: ₲ ${fmt(t)}"><div class="cg-lab">${_esc(r.l)}</div>
+          <div class="cg-track"><div class="cg-fill" style="width:${(t*100/max).toFixed(2)}%;background:${r.c}"></div></div><div class="cg-val">${fmt(t)}${pct}</div></div>`;
+      }
+      // v7.52: barra apilada + el monto de cada color debajo
+      const vis=ser.filter(se=>(Number(r.parts[se.k])||0)>0);
+      const segs=vis.map(se=>{ const v=Number(r.parts[se.k]); return `<div class="cg-seg" style="width:${(v*100/max).toFixed(2)}%;background:${se.c}" title="${_esc(se.l)}: ₲ ${fmt(v)} (${_crPct(v,t)})"></div>`; }).join('');
+      const det=vis.map(se=>{ const v=Number(r.parts[se.k]); return `<span title="${_esc(se.l)}"><i style="background:${se.c}"></i>${fmt(v)}<em>${_crPct(v,t)}</em></span>`; }).join('');
+      return `<div class="cg-row cg-srow"><div class="cg-lab">${_esc(r.l)}${r.warn?` <b class="cg-warn" title="${_esc(r.warn)}">!</b>`:''}</div>
+        <div class="cg-track">${segs}</div><div class="cg-val">${fmt(t)}</div><div class="cg-parts">${det}</div></div>`;
+    }).join('');
   }
   const head=bare?'':`<div class="cg-h"><b>${_esc(c.title)}</b><span>${_esc(c.sub||'')}</span></div>`;
   const pie=c.note?`<div class="cg-note">${_esc(c.note)}</div>`:'';
@@ -4910,18 +4936,33 @@ function _crChartsSecHTML(){
 
 // ---------- PDF (vectorial) ----------
 function _crHex(h){ h=String(h||'#999').replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; }
+function _crPdfGeo(c,w){ const P=3, labW=Math.min(46,w*0.3), valW=(c.kind==='bar'&&c.pct)?32:24; return {P,labW,valW,tW:w-2*P-labW-2-valW-2}; }
 function _crPdfLeg(doc,c,w){       // reparte la leyenda en líneas según el ancho
-  if(c.kind!=='stack') return [];
+  const ser=_crSerVis(c); if(!ser.length) return [];
   doc.setFont('helvetica','normal'); doc.setFontSize(6.6);
   const lines=[[]]; let used=0; const max=w-6;
-  c.series.forEach(se=>{ const iw=3.6+doc.getTextWidth(String(se.l))+4;
+  ser.forEach(se=>{ const iw=3.6+doc.getTextWidth(String(se.l))+4;
     if(used+iw>max && lines[lines.length-1].length){ lines.push([]); used=0; }
     lines[lines.length-1].push(se); used+=iw; });
   return lines;
 }
-function _crPdfChartH(doc,c,w){ const lg=_crPdfLeg(doc,c,w).length; return 12+lg*4.4+Math.max(1,c.rows.length)*6.4+3+(c.note?5:0); }
+function _crPdfParts(doc,c,r,maxW){  // v7.52: monto de cada color de una barra apilada, en líneas
+  const t=c.series.reduce((s,se)=>s+(Number(r.parts[se.k])||0),0);
+  doc.setFont('helvetica','normal'); doc.setFontSize(6.6);
+  const items=_crSerVis(c).filter(se=>(Number(r.parts[se.k])||0)>0).map(se=>{ const v=Number(r.parts[se.k]); const tx=fmt(v), pc=_crPct(v,t);
+    return {se,tx,pc,w:2.4+1.2+doc.getTextWidth(tx)+1.2+doc.getTextWidth(pc)+4.5}; });
+  const lines=[[]]; let used=0;
+  items.forEach(it=>{ if(used+it.w>maxW && lines[lines.length-1].length){ lines.push([]); used=0; } lines[lines.length-1].push(it); used+=it.w; });
+  return items.length?lines:[];
+}
+function _crPdfRowH(doc,c,r,w){ if(c.kind!=='stack') return 6.4; const g=_crPdfGeo(c,w); return 6.4+_crPdfParts(doc,c,r,g.tW+g.valW+2).length*3.7+1; }
+function _crPdfChartH(doc,c,w){
+  const lg=_crPdfLeg(doc,c,w).length;
+  const filas=c.rows.length?c.rows.reduce((s,r)=>s+_crPdfRowH(doc,c,r,w),0):6.4;
+  return 12+lg*4.4+filas+3+(c.note?5:0);
+}
 function _crPdfChart(doc,c,x,y,w,san){
-  const RH=6.4, BH=3.8, P=3, labW=Math.min(46,w*0.3), valW=(c.kind==='bar'&&c.pct)?32:24;
+  const RH=6.4, BH=3.8, g=_crPdfGeo(c,w), P=g.P, labW=g.labW;
   const h=_crPdfChartH(doc,c,w);
   doc.setDrawColor(225,218,200); doc.setFillColor(252,250,245); doc.setLineWidth(0.2); doc.roundedRect(x,y,w,h,1.5,1.5,'FD');
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(31,56,100); doc.text(san(c.title),x+P,y+5.5);
@@ -4933,7 +4974,7 @@ function _crPdfChart(doc,c,x,y,w,san){
   const tot=(r)=>c.kind==='bar'?r.v:c.series.reduce((s,se)=>s+(Number(r.parts[se.k])||0),0);
   if(!c.rows.length || (c.kind==='bar' && !c.total)){
     doc.setFont('helvetica','italic'); doc.setFontSize(7.4); doc.setTextColor(140,140,140); doc.text(san(c.empty||'Sin datos.'),x+P,yy+4); return h; }
-  const tX=x+P+labW+2, tW=w-2*P-labW-2-valW-2, max=Math.max(...c.rows.map(tot),1);
+  const tX=x+P+labW+2, tW=g.tW, max=Math.max(...c.rows.map(tot),1), ser=_crSerVis(c);
   c.rows.forEach(r=>{
     doc.setFont('helvetica','normal'); doc.setFontSize(7.2); doc.setTextColor(50,50,50);
     let lab=san(r.l)+(r.warn?' (!)':'');
@@ -4941,14 +4982,22 @@ function _crPdfChart(doc,c,x,y,w,san){
     doc.text(lab,x+P,yy+RH/2+1.2);
     const by=yy+(RH-BH)/2; doc.setFillColor(238,234,224); doc.rect(tX,by,tW,BH,'F');
     if(c.kind==='bar'){ doc.setFillColor(..._crHex(r.c)); doc.rect(tX,by,Math.max(0.5,tW*r.v/max),BH,'F'); }
-    else { let sx=tX; c.series.forEach(se=>{ const v=Number(r.parts[se.k])||0; if(v>0){ const sw=tW*v/max; doc.setFillColor(..._crHex(se.c)); doc.rect(sx,by,sw,BH,'F'); sx+=sw; } }); }
+    else { let sx=tX; ser.forEach(se=>{ const v=Number(r.parts[se.k])||0; if(v>0){ const sw=tW*v/max; doc.setFillColor(..._crHex(se.c)); doc.rect(sx,by,sw,BH,'F'); sx+=sw; } }); }
     const t=tot(r); doc.setFont('helvetica','bold'); doc.setFontSize(7.2); doc.setTextColor(40,40,40);
     if(c.kind==='bar'&&c.pct&&c.total){
-      doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); const pc=(t*100/c.total).toFixed(t*100/c.total<10?1:0)+'%';
-      doc.text(pc,x+w-P,yy+RH/2+1.2,{align:'right'});
+      doc.setFont('helvetica','normal'); doc.setTextColor(120,120,120); doc.text(_crPct(t,c.total),x+w-P,yy+RH/2+1.2,{align:'right'});
       doc.setFont('helvetica','bold'); doc.setTextColor(40,40,40); doc.text(fmt(t),x+w-P-10,yy+RH/2+1.2,{align:'right'});
     } else doc.text(fmt(t),x+w-P,yy+RH/2+1.2,{align:'right'});
-    yy+=RH;
+    if(c.kind==='stack'){
+      let ly=yy+RH+0.6;
+      _crPdfParts(doc,c,r,tW+g.valW+2).forEach(line=>{ let lx=tX;
+        line.forEach(it=>{ doc.setFillColor(..._crHex(it.se.c)); doc.rect(lx,ly+0.3,2.4,2.4,'F');
+          doc.setFont('helvetica','bold'); doc.setFontSize(6.6); doc.setTextColor(45,45,45); doc.text(it.tx,lx+3.6,ly+2.4);
+          const tw=doc.getTextWidth(it.tx); doc.setFont('helvetica','normal'); doc.setTextColor(130,130,130); doc.text(it.pc,lx+3.6+tw+1.2,ly+2.4);
+          lx+=it.w; });
+        ly+=3.7; });
+    }
+    yy+=_crPdfRowH(doc,c,r,w);
   });
   if(c.note){ doc.setFont('helvetica','italic'); doc.setFontSize(6.6); doc.setTextColor(130,130,130); doc.text(doc.splitTextToSize(san(c.note),w-2*P)[0],x+P,yy+3.5); }
   return h;
