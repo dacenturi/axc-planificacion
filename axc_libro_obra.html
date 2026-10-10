@@ -214,9 +214,10 @@ input[type=file]{display:none}
 
 <main>
   <div class="bar">
-    <div class="f md"><label for="sel-proy">Proyecto</label><select id="sel-proy"></select></div>
+    <div class="f md"><label for="sel-proy">Obra</label><div style="display:flex;gap:6px"><select id="sel-proy"></select>
+      <button id="bt-cfg" class="mini" title="Datos de la obra" hidden>Configurar</button></div></div>
     <div class="f sm"><label for="in-fecha">Fecha</label><input id="in-fecha" type="date"></div>
-    <div class="f md"><label for="in-resp">Residente responsable</label><input id="in-resp" list="dl-res" placeholder="Residente"></div>
+    <div class="f md"><label for="in-resp">Residente responsable</label><select id="in-resp"></select></div>
     <div class="f"><label>Asiento</label><div style="padding-top:5px;white-space:nowrap">
       <b id="lb-num" style="font-size:16px">—</b> <span id="lb-estado" class="badge b-bor">borrador</span></div></div>
     <span id="sv-st"></span>
@@ -231,6 +232,7 @@ input[type=file]{display:none}
   <datalist id="dl-cat"></datalist>
   <datalist id="dl-tit"></datalist>
 
+  <div id="aviso-base" class="aviso a-bad" hidden></div>
   <div id="aviso-cerrado" class="aviso a-ok" hidden></div>
   <div id="aviso-cola" class="aviso a-warn" hidden></div>
 
@@ -443,6 +445,24 @@ input[type=file]{display:none}
   <div class="foot"><button id="al-can">Cancelar</button><button id="al-ok" class="btn-p">Agregar</button></div>
 </div></div>
 
+<!-- ===== HOJA: DATOS DE LA OBRA (admin) ===== -->
+<div class="sheet" id="sh-cfg"><div class="pn">
+  <h2>Datos de la obra</h2>
+  <p class="hint">Estos datos salen en la cabecera del informe. Las obras vienen de la lista compartida del sistema: si un libro agrupa varias obras (por ejemplo Orquídea, Omni y Top en Top Internacional), tildalas acá.</p>
+  <div class="grid g2">
+    <div class="f"><label for="cf-nombre">Nombre del libro</label><input id="cf-nombre"></div>
+    <div class="f"><label for="cf-cliente">Cliente</label><input id="cf-cliente"></div>
+    <div class="f"><label for="cf-local">Local</label><input id="cf-local"></div>
+    <div class="f"><label for="cf-contrato">Contrato</label><input id="cf-contrato"></div>
+    <div class="f"><label for="cf-ini">Inicio de obra</label><input id="cf-ini" type="date"></div>
+    <div class="f"><label for="cf-fin">Fin contractual</label><input id="cf-fin" type="date"></div>
+    <div class="f"><label for="cf-dir">Director de obra</label><input id="cf-dir"></div>
+    <div class="f"><label for="cf-fis">Fiscalización</label><input id="cf-fis"></div>
+  </div>
+  <div class="cgrp" style="margin-top:14px"><span class="lbl">Obras que van en este libro</span><div class="chips" id="cf-obras"></div></div>
+  <div class="foot"><button id="cf-can">Cancelar</button><button id="cf-ok" class="btn-p">Guardar</button></div>
+</div></div>
+
 <div id="toast" role="status" aria-live="polite"></div>
 <script>
 /* ================================================================
@@ -453,7 +473,7 @@ input[type=file]{display:none}
    señal), catálogos compartidos (tabla listas) y PDF con el formato
    del Informe Diario de Trabajo.
    ================================================================ */
-const VERSION = 'v2.0-libro-fotos';
+const VERSION = 'v2.1-integracion';
 
 /* ---- CONFIG: copiar los dos valores de axc_residente.html ------ */
 const SB_URL   = 'https://zvucnezwhgfgupasgqnd.supabase.co';
@@ -498,6 +518,16 @@ const dtLocal = d => isoLocal(d) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMi
 const fmtFH = iso => { const d = new Date(iso); return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 const fmtH = iso => { const d = new Date(iso); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const esAdmin = () => !!(PERFIL && PERFIL.rol === 'admin');
+/* residente: siempre de la lista compartida (tabla listas, tipo residentes) */
+function setResp(v){
+  const sel = $('in-resp'), lista = LISTAS.residentes.slice();
+  const hit = lista.find(x => norm(x) === norm(v));
+  if (v && !hit) lista.push(v);
+  sel.innerHTML = '<option value="">— Elegir residente —</option>' +
+    lista.map(r => '<option value="' + esc(r) + '">' + esc(r) + '</option>').join('');
+  sel.value = hit || v || '';
+}
 const nombreUsuario = () => (PERFIL && (PERFIL.nombre || PERFIL.residente)) || (USER && USER.email) || '';
 const lsKey = k => 'axc_lo_' + k + '_' + (PROY ? PROY.id : '0');
 const lsGet = (k, d) => { try { const v = localStorage.getItem(lsKey(k)); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
@@ -563,9 +593,11 @@ async function bootApp(){
   PERFIL = pf || {};
   $('hd-user').textContent = nombreUsuario() + (PERFIL.rol ? ' · ' + PERFIL.rol : '');
   $('in-fecha').value = hoyISO();
-  $('in-resp').value = PERFIL.residente || PERFIL.nombre || '';
   $('dl-cat').innerHTML = CATEGORIAS.map(c => '<option value="' + esc(c) + '">').join('');
   await cargarListas();
+  setResp(PERFIL.residente || '');
+  $('bt-cfg').hidden = !esAdmin();
+  try { await sb.rpc('libro_sincronizar_obras'); } catch (e) {}
   await cargarProyectos();
   await cambiarProyecto();
   await colaCargar();
@@ -593,9 +625,12 @@ async function cargarListas(){
 
 async function cargarProyectos(){
   const { data, error } = await sb.from('libro_proyectos').select('*').eq('activo', true).order('nombre');
-  if (error){ toast('No se pudieron leer los proyectos: ' + error.message, 6000); return; }
+  const ab = $('aviso-base'); ab.hidden = true;
+  if (error){ ab.innerHTML = '<b>No se pudieron leer las obras del libro.</b> ' + esc(error.message) +
+    '. Falta correr el SQL del Libro de Obra (libro_obra.sql y libro_obra_v21_integracion.sql).'; ab.hidden = false; return; }
   PROYECTOS = data || [];
-  if (!PROYECTOS.length){ toast('No hay proyectos cargados en libro_proyectos.', 8000); return; }
+  if (!PROYECTOS.length){ ab.innerHTML = '<b>No hay obras disponibles en el libro.</b> Corré el bloque 3 de libro_obra_v21_integracion.sql: ' +
+    'toma las obras de la lista compartida del sistema.'; ab.hidden = false; return; }
   const ult = localStorage.getItem('axc_lo_proy');
   $('sel-proy').innerHTML = PROYECTOS.map(p => '<option value="' + p.id + '"' + (String(p.id) === ult ? ' selected' : '') + '>' + esc(p.nombre) + '</option>').join('');
 }
@@ -672,6 +707,7 @@ async function cargarAsiento(){
   if (ASIENTO) await cargarHijas();
   DIRTY = false;
   pintarTodo();
+  cargarPlanif();
 }
 
 async function cargarHijas(){
@@ -812,30 +848,51 @@ function ubicDeObraSector(obra, sector){
             UBIC.find(x => claveObra(x.obra) === k && !sector);
   return u ? u.label : etiquetaSector(obra, sector);
 }
-async function traerDePlanificacion(){
-  const fecha = $('in-fecha').value, obras = obrasDelProyecto();
-  $('act-diag').hidden = true;
-  if (!obras.length){ $('act-diag').textContent = 'El proyecto no tiene obras mapeadas en libro_sectores.obras_planif.'; $('act-diag').hidden = false; return; }
+/* Lee la planificación vigente en la fecha para las obras del libro.
+   Devuelve las del día marcadas; si ninguna tiene el día marcado, todas las vigentes. */
+async function leerPlanificacion(fecha){
+  const obras = obrasDelProyecto();
+  if (!obras.length) return { error: 'La obra no tiene nombres de planificación asociados.' };
   await detectarColumnas();
-  if (!COLS.obra || !COLS.titulo){ $('act-diag').textContent = 'No se reconocieron las columnas de public.actividades.'; $('act-diag').hidden = false; return; }
+  if (!COLS.obra || !COLS.titulo) return { error: 'No se reconocieron las columnas de public.actividades.' };
   let q = sb.from('actividades').select('*').in(COLS.obra, obras).limit(3000);
   if (COLS.borrado) q = q.is(COLS.borrado, null);
   if (COLS.ini) q = q.lte(COLS.ini, fecha);
   if (COLS.fin) q = q.gte(COLS.fin, fecha);
   const { data, error } = await q;
-  if (error){ $('act-diag').textContent = 'Error leyendo planificación: ' + error.message; $('act-diag').hidden = false; return; }
+  if (error) return { error: 'Error leyendo planificación: ' + error.message };
   const filas = data || [], conMarca = filas.filter(r => marcadoEseDia(r, fecha) === true);
-  const usadas = conMarca.length ? conMarca : filas, yaEstan = {};
+  const usadas = (conMarca.length ? conMarca : filas).map(r => {
+    const obra = r[COLS.obra], sec = COLS.sector ? r[COLS.sector] : '';
+    return { plan: true, id: null, actividad_id: String(r.id), titulo: r[COLS.titulo] || '(sin descripción)',
+      sector: ubicDeObraSector(obra, sec), obra_planif: obra,
+      contratista: COLS.contratista ? (r[COLS.contratista] || '') : '',
+      residente: COLS.residente ? (r[COLS.residente] || '') : '',
+      descripcion: '', observacion: '', avance_pct: null, dotacion: 0, estado: 'En proceso' };
+  });
+  return { filas, conMarca, usadas };
+}
+let PLANIF = [];
+async function cargarPlanif(){
+  PLANIF = [];
+  if (!PROY) return;
+  const r = await leerPlanificacion($('in-fecha').value);
+  if (!r.error) PLANIF = r.usadas;
+}
+const planDisponibles = () => PLANIF.filter(p => !ACTS.some(a => a.actividad_id && a.actividad_id === p.actividad_id));
+
+async function traerDePlanificacion(){
+  const fecha = $('in-fecha').value;
+  $('act-diag').hidden = true;
+  const r = await leerPlanificacion(fecha);
+  if (r.error){ $('act-diag').textContent = r.error; $('act-diag').hidden = false; return; }
+  const filas = r.filas, conMarca = r.conMarca, yaEstan = {};
   ACTS.forEach(a => { if (a.actividad_id) yaEstan[a.actividad_id] = true; });
   let nuevas = 0;
-  usadas.forEach(r => {
-    const rid = String(r.id); if (yaEstan[rid]) return;
-    const obra = r[COLS.obra], sec = COLS.sector ? r[COLS.sector] : '';
-    ACTS.push({ id: null, actividad_id: rid, titulo: r[COLS.titulo] || '(sin descripción)',
-      sector: ubicDeObraSector(obra, sec), obra_planif: obra,
-      contratista: COLS.contratista ? r[COLS.contratista] : '', descripcion: '', observacion: '',
-      avance_pct: null, dotacion: 0, estado: 'En proceso' });
-    nuevas++;
+  r.usadas.forEach(x => {
+    if (yaEstan[x.actividad_id]) return;
+    const a = Object.assign({}, x); delete a.plan; delete a.residente;
+    ACTS.push(a); nuevas++;
   });
   pintarActs(); marcarSucio();
   $('act-info').textContent = nuevas + ' traída(s) · ' + filas.length + ' vigentes en la fecha' +
@@ -1153,6 +1210,13 @@ function abrirEdicion(ref){
   $('sh-foto').classList.add('on');
 }
 
+function planOrdenadas(S){
+  const resp = norm($('in-resp').value);
+  const l = PLANIF.map((p, i) => ({ p, i, m: !!(S.ubic && p.sector === S.ubic), r: !!(resp && norm(p.residente) === resp) }))
+    .filter(x => !ACTS.some(a => a.actividad_id && a.actividad_id === x.p.actividad_id));
+  l.sort((x, y) => (y.m - x.m) || (y.r - x.r) || (x.i - y.i));
+  return l.slice(0, 40);
+}
 function pintarHoja(){
   const S = SH, it = S.items[S.ver] || S.items[0], nuevo = S.modo === 'nuevo';
   $('sh-tit').textContent = nuevo ? (S.items.length > 1 ? 'Clasificar ' + S.items.length + ' fotos' : 'Clasificar foto') : 'Editar foto ' + (S.foto.codigo || '');
@@ -1181,6 +1245,10 @@ function pintarHoja(){
   $('sh-act').innerHTML = acts.map(({ a, i, m }) =>
     '<button type="button" class="chip" aria-pressed="' + (S.act === a && !S.nuevaAct) + '" data-ai="' + i + '"' + (S.ubic && !m ? ' style="opacity:.7"' : '') + '>' +
     esc(a.titulo) + (a.sector && a.sector !== S.ubic ? '<small>' + esc(a.sector) + '</small>' : '') + '</button>').join('') +
+    planOrdenadas(S).map(({ p, i, m }) =>
+      '<button type="button" class="chip" aria-pressed="' + (S.act === p) + '" data-pi="' + i + '"' + (S.ubic && !m ? ' style="opacity:.7"' : '') + '>' +
+      esc(p.titulo) + '<small>Planificada' + (p.sector && p.sector !== S.ubic ? ' · ' + esc(p.sector) : '') +
+      (p.contratista ? ' · ' + esc(p.contratista) : '') + '</small></button>').join('') +
     '<button type="button" class="chip' + (S.nuevaAct ? '' : ' add') + '" aria-pressed="' + S.nuevaAct + '" id="sh-addact">+ Nueva actividad</button>';
   $('sh-newact').style.display = S.nuevaAct ? '' : 'none';
   // contratista: primero los del día
@@ -1223,6 +1291,10 @@ function hojaClick(e){
     if (S.act.sector) S.ubic = S.act.sector;
     if (S.act.contratista && !S.con) S.con = S.act.contratista;
     pintarHoja(); return; }
+  if (b.dataset.pi != null){ S.act = PLANIF[+b.dataset.pi]; S.nuevaAct = false;
+    if (S.act.sector) S.ubic = S.act.sector;
+    if (S.act.contratista && !S.con) S.con = S.act.contratista;
+    pintarHoja(); return; }
   if (b.id === 'sh-addact'){ S.nuevaAct = true; S.act = null; pintarHoja(); setTimeout(() => $('sh-newtit').focus(), 50); return; }
   if (b.dataset.co != null){ S.con = S.con === b.dataset.co ? '' : b.dataset.co; pintarHoja(); return; }
   if (b.id === 'sh-allcon'){ S.verTodosCon = true; pintarHoja(); return; }
@@ -1262,6 +1334,17 @@ async function guardarHoja(){
       if (!act){
         const r = await sb.from('libro_actividades').insert({ asiento_id: ASIENTO.id, titulo: tit, sector: ub.label,
           obra_planif: ub.obra, contratista: S.con || '', descripcion: '', estado: 'En proceso',
+          dotacion: S.per === '' ? 0 : S.per, orden: ACTS.length }).select().single();
+        if (r.error) throw r.error;
+        act = r.data; ACTS.push(act);
+      }
+    } else if (act && act.plan){
+      const ya = ACTS.find(a => a.actividad_id && a.actividad_id === act.actividad_id);
+      if (ya) act = ya;
+      else {
+        const r = await sb.from('libro_actividades').insert({ asiento_id: ASIENTO.id, actividad_id: act.actividad_id,
+          titulo: act.titulo, sector: act.sector || ub.label, obra_planif: act.obra_planif || ub.obra,
+          contratista: act.contratista || S.con || '', descripcion: '', estado: 'En proceso',
           dotacion: S.per === '' ? 0 : S.per, orden: ACTS.length }).select().single();
         if (r.error) throw r.error;
         act = r.data; ACTS.push(act);
@@ -1671,7 +1754,7 @@ function pintarClima(){
 }
 function pintarTodo(){
   const a = ASIENTO;
-  $('in-resp').value = a ? (a.responsable || '') : ($('in-resp').value || PERFIL.residente || PERFIL.nombre || '');
+  setResp(a ? (a.responsable || '') : ($('in-resp').value || PERFIL.residente || ''));
   CLIMA = { m: (a && a.clima_manana) || 'Despejado', t: (a && a.clima_tarde) || 'Despejado',
     cm: (a && a.cond_manana) || 'Practicable', ct: (a && a.cond_tarde) || 'Practicable' };
   $('cl-mm').value = a ? a.lluvia_mm : 0;
@@ -1699,6 +1782,88 @@ function mostrarTab(t){
   if (t === 'cierre'){ leerTablas(); pintarCierre(); }
   if (t === 'fotos') pintarFotos();
   if (DIRTY && ASIENTO) guardar(true);
+}
+
+/* ================================================================
+   DATOS DE LA OBRA (solo admin): cabecera del informe y agrupación
+   de obras de la lista compartida dentro de un mismo libro.
+   ================================================================ */
+let CFG = null;
+async function abrirConfig(){
+  if (!esAdmin() || !PROY) return;
+  const { data: todos } = await sb.from('libro_sectores').select('id,proyecto_id,nombre,obras_planif,orden');
+  const filas = todos || [];
+  const obras = [];
+  LISTAS.obras.concat(...filas.map(f => f.obras_planif || [])).forEach(o => {
+    if (o && !obras.some(x => claveObra(x) === claveObra(o))) obras.push(o);
+  });
+  obras.sort((a, b) => a.localeCompare(b));
+  const enEste = new Set();
+  filas.filter(f => f.proyecto_id === PROY.id).forEach(f => (f.obras_planif || []).forEach(o => enEste.add(claveObra(o))));
+  CFG = { filas, obras, sel: enEste };
+  $('cf-nombre').value = PROY.nombre || ''; $('cf-cliente').value = PROY.cliente || '';
+  $('cf-local').value = PROY.local || ''; $('cf-contrato').value = PROY.contrato || '';
+  $('cf-ini').value = PROY.fecha_inicio || ''; $('cf-fin').value = PROY.fecha_fin || '';
+  $('cf-dir').value = PROY.director || ''; $('cf-fis').value = PROY.fiscalizacion || '';
+  pintarCfgObras();
+  $('sh-cfg').classList.add('on');
+}
+function pintarCfgObras(){
+  const nomProy = id => (PROYECTOS.find(p => p.id === id) || {}).nombre || '';
+  $('cf-obras').innerHTML = CFG.obras.map(o => {
+    const k = claveObra(o), fila = CFG.filas.find(f => (f.obras_planif || []).some(x => claveObra(x) === k));
+    const otro = fila && fila.proyecto_id !== PROY.id && !CFG.sel.has(k) ? nomProy(fila.proyecto_id) : '';
+    return '<button type="button" class="chip" aria-pressed="' + CFG.sel.has(k) + '" data-ck="' + esc(k) + '">' + esc(o) +
+      (otro && norm(otro) !== norm(o) ? '<small>hoy en ' + esc(otro) + '</small>' : '') + '</button>';
+  }).join('');
+}
+async function guardarConfig(){
+  const nombre = $('cf-nombre').value.trim();
+  if (!nombre){ toast('El libro necesita un nombre.'); return; }
+  if (!CFG.sel.size){ toast('Elegí al menos una obra.'); return; }
+  $('cf-ok').disabled = true;
+  try {
+    const cab = { nombre, cliente: $('cf-cliente').value.trim() || null, local: $('cf-local').value.trim() || null,
+      contrato: $('cf-contrato').value.trim() || null, fecha_inicio: $('cf-ini').value || null, fecha_fin: $('cf-fin').value || null,
+      director: $('cf-dir').value.trim() || null, fiscalizacion: $('cf-fis').value.trim() || null };
+    let r = await sb.from('libro_proyectos').update(cab).eq('id', PROY.id);
+    if (r.error) throw r.error;
+    const origenes = new Set();
+    let orden = 1;
+    for (const k of CFG.sel){
+      const fila = CFG.filas.find(f => (f.obras_planif || []).some(x => claveObra(x) === k));
+      const variantes = LISTAS.obras.filter(o => claveObra(o) === k);
+      if (fila && fila.proyecto_id === PROY.id){ orden++; continue; }
+      if (fila){
+        origenes.add(fila.proyecto_id);
+        r = await sb.from('libro_sectores').update({ proyecto_id: PROY.id, orden: ++orden, activo: true }).eq('id', fila.id);
+      } else {
+        r = await sb.from('libro_sectores').insert({ proyecto_id: PROY.id, nombre: variantes[0] || CFG.obras.find(o => claveObra(o) === k),
+          obras_planif: variantes.length ? variantes : CFG.obras.filter(o => claveObra(o) === k), orden: ++orden, activo: true });
+      }
+      if (r.error) throw r.error;
+    }
+    // obras destildadas: vuelven a tener su propio libro
+    const quitar = CFG.filas.filter(f => f.proyecto_id === PROY.id && !(f.obras_planif || []).some(x => CFG.sel.has(claveObra(x))));
+    if (quitar.length){
+      r = await sb.from('libro_sectores').delete().in('id', quitar.map(f => f.id));
+      if (r.error) throw r.error;
+      await sb.rpc('libro_sincronizar_obras');
+    }
+    // libros que quedaron vacíos y sin asientos: se desactivan
+    for (const pid of origenes){
+      const [{ count: ns }, { count: na }] = await Promise.all([
+        sb.from('libro_sectores').select('id', { count: 'exact', head: true }).eq('proyecto_id', pid),
+        sb.from('libro_asientos').select('id', { count: 'exact', head: true }).eq('proyecto_id', pid)]);
+      if (!ns && !na) await sb.from('libro_proyectos').update({ activo: false }).eq('id', pid);
+    }
+    $('sh-cfg').classList.remove('on');
+    toast('Datos de la obra guardados');
+    await cargarProyectos();
+    $('sel-proy').value = String(PROY.id);
+    await cambiarProyecto();
+  } catch (e){ toast('No se pudo guardar: ' + (e.message || e), 7000); }
+  finally { $('cf-ok').disabled = false; }
 }
 
 /* ================================================================
@@ -1994,6 +2159,13 @@ function wire(){
   $('al-ok').onclick = confirmarAlta;
   $('al-can').onclick = () => $('sh-alta').classList.remove('on');
   $('al-val').onkeydown = e => { if (e.key === 'Enter') confirmarAlta(); };
+
+  // datos de la obra (admin)
+  $('bt-cfg').onclick = abrirConfig;
+  $('cf-can').onclick = () => $('sh-cfg').classList.remove('on');
+  $('cf-ok').onclick = guardarConfig;
+  $('cf-obras').onclick = e => { const b = e.target.closest('[data-ck]'); if (!b) return;
+    const k = b.dataset.ck; CFG.sel.has(k) ? CFG.sel.delete(k) : CFG.sel.add(k); pintarCfgObras(); };
 
   // planos
   $('bt-planos').onclick = () => { pintarListaPlanos(); $('pl-est').textContent = ''; $('sh-planos').classList.add('on'); };
