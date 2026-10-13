@@ -440,7 +440,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.0 · orden de servicio opcional · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.1 · orden de servicio para pedidos sin presupuesto · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -574,6 +574,8 @@ html[data-theme="alto-contraste"]{
    Lectura: presupuesto_cab · presupuesto_rubros · presupuesto_insumos
             rubros · recetas · receta_items · capitulos · listas
             certificado_items (contrato_item_id) + certificados (estado)
+   v3.1 · La orden de servicio se vincula solo en contratos SIN presupuesto
+          (pedido excepcional); desde la orden el contrato sale sin presupuesto.
    v3.0 · Orden de servicio (opcional): contratos.orden_servicio_id vincula el
           contrato con el pedido del cliente (axc_orden_servicio.html).
           Atajo: axc_contratos.html?os=ID. Ver axc_orden_servicio_fase1.sql
@@ -1160,6 +1162,8 @@ function pasoDatos(){
 /* v3.0 · Orden de servicio de origen (opcional) */
 function bloqueOS(c){
   if(!S.osOk) return '';
+  // v3.1 · La orden de servicio respalda pedidos excepcionales SIN presupuesto
+  if(E.tipo==='presupuesto') return '<div class="hint" style="margin:-8px 0 16px">Las órdenes de servicio se vinculan solo en contratos <b>sin presupuesto</b>: son el respaldo de un pedido excepcional. <a href="axc_orden_servicio.html?guia=1" target="axc_os">¿Cuándo corresponde?</a></div>';
   const actual = osDe(c.orden_servicio_id);
   const L = S.os.filter(function(o){ return (o.estado==='Emitida' || o.estado==='Firmada' || o.estado==='En ejecución') && c.obra && norm(o.obra)===norm(c.obra); });
   if(actual && L.indexOf(actual)<0) L.unshift(actual);
@@ -1170,13 +1174,13 @@ function bloqueOS(c){
       (actual.firma_path?' Firmada por el solicitante.':' <b>Todavía no tiene la firma del solicitante:</b> conviene conseguirla cuanto antes.')+
       ' <a href="axc_orden_servicio.html?ver='+actual.id+'" target="axc_os">Ver la orden</a></div>';
   } else if(c.obra && !L.length){
-    info = '<div class="hint">No hay órdenes de servicio abiertas para esta obra. Si el trabajo es parte del plan, seguí sin orden. Si lo pidió el cliente y no estaba acordado, primero cargá la orden en <a href="axc_orden_servicio.html?nueva=1&obra='+encodeURIComponent(c.obra)+'" target="axc_os">Órdenes de servicio</a>.</div>';
+    info = '<div class="hint">No hay órdenes de servicio abiertas para esta obra. Si es un pedido excepcional, conviene cargar primero la orden como respaldo en <a href="axc_orden_servicio.html?nueva=1&obra='+encodeURIComponent(c.obra)+'" target="axc_os">Órdenes de servicio</a>.</div>';
   } else if(!c.obra){
     info = '<div class="hint">Elegí la obra para ver sus órdenes de servicio.</div>';
   } else {
-    info = '<div class="hint">Elegí la orden solo si el trabajo lo pidió alguien que no ejecuta la obra y no estaba en lo acordado. Si es parte del plan de obra, dejalo en «Sin orden de servicio».</div>';
+    info = '<div class="hint">Si este trabajo sin presupuesto es un pedido excepcional, elegí la orden de servicio que lo respalda.</div>';
   }
-  return '<div class="sect">Orden de servicio <small>Opcional · solo para pedidos de alguien que no ejecuta la obra · <a href="axc_orden_servicio.html?guia=1" target="axc_os">¿Cuándo corresponde?</a></small></div>'+
+  return '<div class="sect">Orden de servicio <small>Respaldo del pedido excepcional sin presupuesto · <a href="axc_orden_servicio.html?guia=1" target="axc_os">¿Cuándo corresponde?</a></small></div>'+
     '<div class="grid g4" style="margin-bottom:18px"><div class="span2"><label class="lbl">Orden de servicio de origen</label><select class="sel" data-k="orden_servicio_id"'+(c.obra?'':' disabled')+'>'+ops+'</select>'+info+'</div></div>';
 }
 function elegirOS(id){
@@ -1193,13 +1197,15 @@ function nuevoDesdeOS(id){
   if(!S.osOk){ toast('Falta preparar la base de datos de órdenes de servicio','error','Corré axc_orden_servicio_fase1.sql en Supabase'); return; }
   if(!o){ toast('No se encontró la orden de servicio','error'); return; }
   if(o.estado==='Anulada' || o.estado==='Cerrada' || o.estado==='Borrador'){ toast('La orden '+(o.numero||'')+' está '+o.estado.toLowerCase(),'error','Solo se generan contratos desde órdenes emitidas, firmadas o en ejecución'); return; }
-  nuevoContrato({ tipo:'presupuesto' });
+  nuevoContrato({ tipo:'sin_presupuesto' });
   E.cab.obra = o.obra; E.cab.orden_servicio_id = o.id; E.cab.alcance = o.descripcion||'';
+  E.cab.motivo_detalle = ('Pedido excepcional sin presupuesto, respaldado por la orden de servicio '+o.numero+' (pedido de '+o.solicitante_nombre+(osCargo(o)?', '+osCargo(o):'')+').').slice(0,300);
   renderEd();
-  toast('Nuevo contrato desde '+o.numero, 'info', 'Obra, orden de servicio y descripción ya cargadas. Elegí el contratista y el presupuesto, o pasá a «Sin presupuesto».');
+  toast('Contrato sin presupuesto desde '+o.numero, 'info', 'Obra, orden y descripción ya cargadas. Elegí el contratista y el motivo (urgencia, obra menor, por administración…) y cargá los trabajos.');
 }
 function cambiarTipo(t){
   if(t===E.tipo) return;
+  if(t==='presupuesto' && E.cab.orden_servicio_id){ const os=osDe(E.cab.orden_servicio_id); E.cab.orden_servicio_id=null; toast('Se quitó la orden de servicio','info','La orden '+((os&&os.numero)||'')+' respalda trabajos sin presupuesto. Con presupuesto, el respaldo es el presupuesto.'); }
   if(t==='sin_presupuesto'){
     Object.keys(E.sel).forEach(function(k){ const l=E.sel[k]; l.presupuesto=null; l.referencia_origen=l.precio_referencia?'catalogo':null; E.libres.unshift(l); });
     E.sel={}; E.cab.presupuesto=''; if(!E.cab.motivo_sp) E.cab.motivo_sp='en_elaboracion';
@@ -1538,7 +1544,7 @@ async function guardarEd(aprobar){
       plazo_dias:c.plazo_dias===''||c.plazo_dias==null?null:Number(c.plazo_dias), anticipo:Number(c.anticipo)||0, forma_pago:c.forma_pago||null,
       materiales:c.materiales||'contratado', mat_det:c.materiales==='mixto'?(c.mat_det||null):null, garantia:c.garantia||null, alcance:c.alcance||null,
       representante:c.representante||null, ruc:c.ruc||null, observaciones:c.observaciones||null, monto_estimado:totalE(), actualizado_por:u, actualizado_en:now };
-    if(S.osOk) cab.orden_servicio_id = c.orden_servicio_id ? Number(c.orden_servicio_id) : null;   // v3.0
+    if(S.osOk) cab.orden_servicio_id = (E.tipo!=='presupuesto' && c.orden_servicio_id) ? Number(c.orden_servicio_id) : null;   // v3.1 · solo sin presupuesto
     let id=E.id;
     if(!id){ cab.creado_por=u; cab.creado_en=now; const r=await sb.from('contratos').insert(cab).select('id').single(); if(r.error) throw r.error; id=r.data.id; E.id=id; }
     else { const r=await sb.from('contratos').update(cab).eq('id',id); if(r.error) throw r.error; }
