@@ -54,6 +54,9 @@ a{color:inherit}
 .btn-primary{background:var(--navy);border-color:var(--navy);color:#fff}
 .btn-primary:hover{filter:brightness(1.12)}
 .btn-sm{padding:5px 10px;font-size:12px}
+.btn-danger{background:transparent;color:var(--red);border-color:var(--red)}
+.btn-danger:hover:not(:disabled){background:var(--red);border-color:var(--red);color:#fff}
+.btn:disabled{opacity:.6;cursor:wait}
 
 .wrap{max-width:1080px;width:100%;margin:0 auto;padding:22px;flex:1}
 
@@ -86,7 +89,8 @@ a{color:inherit}
 .perm-item .pl{font-weight:600;font-size:13px}
 .perm-item .pd{font-size:11px;color:var(--text2);display:block}
 .perm-item.dis{opacity:.65;cursor:not-allowed}
-.user-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.user-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+.user-actions .btn-danger{margin-right:auto}
 
 .searchbar{margin-bottom:16px}
 .searchbar input{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;color:var(--text);font-size:14px;font-family:inherit}
@@ -183,7 +187,7 @@ tr:hover td{background:var(--bg3)}
   </div>
 </div>
 
-<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.5</div>
+<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.6</div>
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -329,11 +333,14 @@ function renderPermisos(){
     const meta = [u.residente?('Residente: '+u.residente):'', u.id?('ID '+String(u.id).slice(0,8)+'…'):''].filter(Boolean).join(' · ');
 
     if(esSuper){
+      // Al admin no se le ofrece: entra a todo por su rol y las casillas no le cambian nada.
+      const btnQuitar = (u.rol==='supervisor_caja') ? btnQuitarTodos(u.id) : '';
       return `<div class="user-card">
         <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
         <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. ${u.rol==='admin'?'Como administrador también entra a todos los módulos del portal sin tildar nada.':'Los módulos de abajo sí se habilitan con estas casillas.'}</div>
         ${permGrid(u, {excluirGrupos:GRUPOS_CC})}
         <div class="user-actions">
+          ${btnQuitar}
           <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
         </div>
       </div>`;
@@ -345,6 +352,7 @@ function renderPermisos(){
       <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
       ${grid}
       <div class="user-actions">
+        ${btnQuitarTodos(u.id)}
         <button class="btn btn-sm" onclick="resetPermisos('${u.id}')">Restablecer</button>
         <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
       </div>
@@ -357,6 +365,84 @@ function resetPermisos(uid){
   const perm=u.permisos||{};
   PERMISOS_CC.forEach(p=>{ const el=gs('chk_'+uid+'_'+p.key); if(el) el.checked = perm[p.key]===true; });
   toast('Cambios sin guardar descartados','ok');
+}
+
+// ===== Quitar todos los accesos =====
+function btnQuitarTodos(uid){
+  return `<button class="btn btn-sm btn-danger" onclick="quitarTodosLosAccesos('${uid}',this)">Quitar todos los accesos</button>`;
+}
+
+function _nombreUsuario(u){
+  const n=u.nombre||'', r=u.residente||'';
+  if(n && r && n!==r) return n+' ('+r+')';
+  return n || r || String(u.id);
+}
+
+function _hoyISO(){
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+// Coberturas de Asignación de Residentes que todavía corren (vigentes o programadas).
+// Viven en el mismo jsonb `permisos`, pero se otorgan y se quitan desde su propia pantalla.
+function _coberturasActivas(perm){
+  const lista = Array.isArray(perm && perm.cobertura) ? perm.cobertura : [];
+  const hoy = _hoyISO();
+  return lista.filter(c=>{
+    if(!c) return false;
+    const h = String(c.hasta||'').slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(h)) return true; // fecha ilegible: mejor avisar
+    return h >= hoy;
+  });
+}
+
+// Destilda todas las casillas de una persona y lo guarda en el momento (pide confirmación).
+// Igual que guardarPermisos, fusiona sobre el jsonb: las claves que no son casillas
+// (las coberturas, por ejemplo) quedan intactas.
+async function quitarTodosLosAccesos(uid, btn){
+  const u=USERS.find(x=>String(x.id)===String(uid)); if(!u) return;
+  const perm=u.permisos||{};
+  const nombre=_nombreUsuario(u);
+  const esSup=(u.rol==='supervisor_caja');
+  const destildar=()=>PERMISOS_CC.forEach(p=>{ const el=gs('chk_'+uid+'_'+p.key); if(el) el.checked=false; });
+
+  // Lo que tiene guardado. Al supervisor no se le listan los de Caja Chica: los tiene por su rol.
+  const guardados=PERMISOS_CC.filter(p=>perm[p.key]===true);
+  const visibles=guardados.filter(p=>!(esSup && GRUPOS_CC.includes(p.grupo||'General')));
+  if(!visibles.length){
+    destildar();   // si había casillas tildadas sin guardar, también se destildan
+    toast(nombre+' no tiene accesos guardados para quitar','ok');
+    return;
+  }
+
+  const porGrupo={};
+  visibles.forEach(p=>{ const g=p.grupo||'General'; (porGrupo[g]=porGrupo[g]||[]).push(p.label); });
+  const lineas=Object.keys(porGrupo).map(g=>'• '+g+': '+porGrupo[g].join(', '));
+  const avisos=[ esSup ? 'Caja Chica la mantiene por su rol de supervisor.'
+                       : 'Puede seguir entrando al portal con lo básico de su rol.' ];
+  const cob=_coberturasActivas(perm).length;
+  if(cob) avisos.push(`Tiene ${cob} cobertura(s) activa(s) en Asignación de Residentes: esas se manejan desde esa pantalla, no desde acá.`);
+  const msg=`¿Quitar todos los accesos de ${nombre}?\n\nSe destildan y se guardan ahora mismo:\n${lineas.join('\n')}\n\n${avisos.join('\n')}`;
+  if(!confirm(msg)) return;
+
+  const nuevos=Object.assign({}, perm);
+  PERMISOS_CC.forEach(p=>{ nuevos[p.key]=false; });
+  const txt=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='Quitando…'; }
+  const { error } = await _SB.from('perfiles').update({ permisos:nuevos }).eq('id',uid);
+  if(btn){ btn.disabled=false; btn.textContent=txt; }
+  if(error){ toast('No se pudo quitar: '+error.message,'err'); return; }
+  u.permisos=nuevos;
+  destildar();
+  // Auditoría: queda registrado lo que tenía, para poder devolvérselo si hace falta
+  try{
+    await _SB.from('caja_chica_historial').insert({
+      accion:'permisos', estado_nuevo:null,
+      detalle:`Quitó todos los accesos de ${nombre}. Tenía: ${visibles.map(p=>p.label).join(', ')}`,
+      hecho_por:CURRENT_USER.email
+    });
+  }catch(e){}
+  toast('Accesos quitados a '+nombre,'ok');
 }
 
 async function guardarPermisos(uid){
