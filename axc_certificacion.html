@@ -974,6 +974,7 @@ html[data-theme="alto-contraste"]{
 .tema-mini i{width:15px;height:26px;border-radius:4px;display:block}
 .tema-op b{font-size:12.5px;color:#1a2236;display:block}
 .tema-op small{font-size:10.5px;color:#8893a5}
+.ta-os-auto{background:#EEF4FC!important;color:#15427A!important;font-weight:600}
 </style></style>
 </head>
 <body>
@@ -1570,6 +1571,17 @@ async function loadProfileAndApp(){
   document.getElementById('userRole').textContent = profile.rol || '';
   await Promise.all([loadListas(), loadPresupuestos()]);
   await loadList();
+  taDesdeOrdenServicio();
+}
+/* Atajo desde Órdenes de servicio: ?ta_os=ID abre el trabajo por administración
+   con la obra, el pedido y el solicitante de la orden ya cargados */
+async function taDesdeOrdenServicio(){
+  const id = new URLSearchParams(location.search).get('ta_os'); if(!id) return;
+  try{ history.replaceState(null, '', location.pathname); }catch(e){}
+  await taAbrir();
+  if(!TA.osOk){ showToast('No se pudo leer la orden de servicio','error','Revisá que la orden exista y que tengas sesión'); return; }
+  if(!taOsDe(id)){ showToast('No se encontró la orden de servicio','error'); return; }
+  if(await taForm(null, '', { os:Number(id) })) taPintar(false);
 }
 
 (async()=>{
@@ -2977,7 +2989,21 @@ function adendaCandidatos(c){
    coeficiente = 1 − margen/100; precio de venta = costo ÷ coeficiente.
    Presupuestos no cambia: es un registro aparte (tabla trabajos_admin).
    ═══════════════════════════════════════════════════════════════════════ */
-const TA = { lista:[], cargado:false, falta:false };
+const TA = { lista:[], cargado:false, falta:false, os:[], osOk:false };
+/* Órdenes de servicio (respaldo de pedidos excepcionales sin presupuesto).
+   Si la orden existe, el solicitante del trabajo por administración se toma de ella. */
+async function taCargarOS(){
+  try{
+    const r = await sb.from('ordenes_servicio').select('id,numero,estado,obra,sector,asunto,descripcion,observaciones,solicitante_nombre,solicitante_cargo,solicitante_cargo_det,fecha_pedido,firma_path').not('numero','is',null).order('id',{ ascending:false });
+    if(r.error) throw r.error;
+    TA.os = r.data || []; TA.osOk = true;
+  }catch(e){ TA.os = []; TA.osOk = false; }
+}
+function taOsDe(id){ return id ? (TA.os||[]).filter(function(o){ return o.id === Number(id); })[0] || null : null; }
+function taOsCargo(o){ return o ? (o.solicitante_cargo === 'Otro' ? (o.solicitante_cargo_det||'') : (o.solicitante_cargo||'')) : ''; }
+function taSolDeOS(o){ return o.solicitante_nombre + (taOsCargo(o) ? ' ('+taOsCargo(o)+')' : ''); }
+/* Texto «pidió…» con el número de orden de servicio, si tiene */
+function taSolTxt(t){ const o = taOsDe(t && t.orden_servicio_id); return (t.solicitado_por||'') + (o && o.numero ? ' · '+o.numero : ''); }
 function taQuien(){ return (state.profile && (state.profile.residente||state.profile.nombre)) || (state.user && state.user.email) || ''; }
 async function taCargar(force){
   if(TA.cargado && !force) return TA.lista;
@@ -2985,6 +3011,7 @@ async function taCargar(force){
     const { data, error } = await sb.from('trabajos_admin').select('*').order('codigo');
     if(error) throw error;
     TA.lista = data || []; TA.falta = false;
+    await taCargarOS();
   }catch(e){
     TA.lista = [];
     TA.falta = /trabajos_admin|relation|does not exist|schema cache|not find/i.test(String((e && e.message) || e));
@@ -3049,6 +3076,7 @@ async function taForm(t, obraPref, op){
       '<div class="ta-nueva-f"><input id="taObraNom" class="ax-in" placeholder="Nombre de la obra nueva (ej. SAN TELMO - AMPLIACION)">'+
       '<button type="button" class="btn-nav" id="taObraOk">Agregar</button><button type="button" class="btn-g" id="taObraNo">Cancelar</button></div>'+
       '<div class="ax-hint ta-hint" id="taObraHint">Escribila tal como se la conoce en la empresa: queda en la lista de obras de todo el sistema.</div></div>'+
+    '<div id="taOsW"'+(TA.osOk?'':' hidden')+'><label class="ax-l">Orden de servicio de origen <small>opcional · si el pedido tiene orden, el solicitante se carga solo</small></label><select id="taOs" class="ax-in"></select><div class="ax-hint" id="taOsInfo"></div></div>'+
     '<div><label class="ax-l">Trabajo por administración * <small>qué se va a hacer</small></label><input id="taNom" class="ax-in" value="'+escapeHtml(t.nombre||'')+'" placeholder="Ej. Demolición y refuerzo de pilares del Nivel 2"></div>'+
     '<div><label class="ax-l">Alcance <small>qué incluye, para que todos lo entiendan igual</small></label><textarea id="taDesc" class="ax-in" rows="2" placeholder="Ej. Demoler revoque dañado, reforzar con perfiles IPN y volver a revocar.">'+escapeHtml(t.descripcion||'')+'</textarea></div>'+
     '<div class="ta-g2"><div><label class="ax-l">Solicitado por *</label><input id="taSol" class="ax-in" value="'+escapeHtml(t.solicitado_por||'')+'" placeholder="Ej. Cliente · Ing. Pérez"></div>'+
@@ -3069,6 +3097,43 @@ async function taForm(t, obraPref, op){
     alRender:function(box){
       // ＋ Obra nueva, sin salir del formulario
       const sel = box.querySelector('#taObra'), nb = box.querySelector('#taObraNueva'), nm = box.querySelector('#taObraNom'), hi = box.querySelector('#taObraHint');
+      // Orden de servicio de origen: completa el solicitante desde la orden
+      const osSel = box.querySelector('#taOs'), osInfo = box.querySelector('#taOsInfo'), solIn = box.querySelector('#taSol');
+      const osActual = t.orden_servicio_id || null;
+      function llenarOS(){
+        const ob = sel.value, prev = osSel.value;
+        const L = (TA.os||[]).filter(function(o){ return (o.estado==='Emitida' || o.estado==='Firmada' || o.estado==='En ejecución' || o.id===osActual) && ob && norm(o.obra||'')===norm(ob); });
+        osSel.innerHTML = '<option value="">'+(!ob ? 'Elegí la obra primero' : (L.length ? 'Sin orden de servicio' : 'No hay órdenes de servicio abiertas en esta obra'))+'</option>'+
+          L.map(function(o){ return '<option value="'+o.id+'">'+escapeHtml(o.numero+' · '+o.asunto+' · '+o.solicitante_nombre)+'</option>'; }).join('');
+        osSel.disabled = !L.length;
+        if(prev && L.some(function(o){ return String(o.id)===prev; })) osSel.value = prev;
+      }
+      function aplicarOS(id, inicial){
+        const o = taOsDe(id);
+        if(!o){ solIn.readOnly = false; solIn.classList.remove('ta-os-auto'); osInfo.innerHTML = ''; return; }
+        solIn.value = taSolDeOS(o); solIn.readOnly = true; solIn.classList.add('ta-os-auto');
+        if(!inicial){
+          const nom = box.querySelector('#taNom'), des = box.querySelector('#taDesc'), obs = box.querySelector('#taObs');
+          if(!(nom.value||'').trim()) nom.value = (o.asunto||'').slice(0,120);
+          if(!(des.value||'').trim()) des.value = o.descripcion||'';
+          if(!(obs.value||'').trim() && o.observaciones) obs.value = o.observaciones;
+        }
+        osInfo.innerHTML = '✔ <b>'+escapeHtml(o.numero)+'</b> · pedido de '+escapeHtml(taSolDeOS(o))+(o.fecha_pedido?' el '+fmtFecha(o.fecha_pedido):'')+
+          (o.firma_path ? ' · firmada por el solicitante.' : ' · <b style="color:#8A6A0E">todavía sin la firma del solicitante.</b>')+' El «Solicitado por» se toma de la orden.';
+      }
+      if(TA.osOk){
+        llenarOS();
+        if(op.os){
+          const o = taOsDe(op.os);
+          if(o){
+            if(![...sel.options].some(function(x){ return norm(x.value)===norm(o.obra); })){ const x=document.createElement('option'); x.value=x.textContent=o.obra; sel.appendChild(x); }
+            sel.value = [...sel.options].filter(function(x){ return norm(x.value)===norm(o.obra); })[0].value;
+            llenarOS(); osSel.value = String(o.id); aplicarOS(o.id, false);
+          }
+        } else if(osActual){ osSel.value = String(osActual); aplicarOS(osActual, true); }
+        sel.addEventListener('change', function(){ const antes = osSel.value; llenarOS(); if(antes && !osSel.value){ solIn.value=''; aplicarOS(null); } });
+        osSel.onchange = function(){ if(!osSel.value) solIn.value = ''; aplicarOS(osSel.value, false); };
+      }
       box.querySelector('#taObraMas').onclick = function(){ nb.hidden = false; nm.value = ''; nm.focus(); };
       box.querySelector('#taObraNo').onclick = function(){ nb.hidden = true; };
       box.querySelector('#taObraOk').onclick = async function(){
@@ -3110,6 +3175,7 @@ async function taForm(t, obraPref, op){
     estimado: parseNum(b.querySelector('#taEst').value) > 0 ? Math.round(parseNum(b.querySelector('#taEst').value)) : null,
     observaciones: (b.querySelector('#taObs').value||'').trim() || null
   };
+  if(TA.osOk){ const ov = (b.querySelector('#taOs')||{}).value; fila.orden_servicio_id = ov ? Number(ov) : null; }
   try{
     let res;
     if(nuevo){
@@ -3118,6 +3184,12 @@ async function taForm(t, obraPref, op){
     }else{
       fila.actualizado_por = taQuien(); fila.actualizado_en = new Date().toISOString();
       res = await sb.from('trabajos_admin').update(fila).eq('id', t.id).select('*').single();
+    }
+    // Sin la columna orden_servicio_id (script axc_orden_servicio_fase1c.sql): se guarda igual y se avisa
+    if(res.error && /orden_servicio_id/i.test(res.error.message||'') && 'orden_servicio_id' in fila){
+      delete fila.orden_servicio_id;
+      res = nuevo ? await sb.from('trabajos_admin').insert(fila).select('*').single() : await sb.from('trabajos_admin').update(fila).eq('id', t.id).select('*').single();
+      if(!res.error) showToast('El vínculo con la orden de servicio no se guardó','error','Falta correr axc_orden_servicio_fase1c.sql en Supabase');
     }
     if(res.error) throw res.error;
     await taCargar(true);
@@ -3167,7 +3239,7 @@ async function taPintar(recargar){
       const cargados = C.items.length
         ? '<b class="ta-cnt">'+nR+' rubro'+(nR===1?'':'s')+'</b><div class="op-sub">'+C.items.length+' imputación'+(C.items.length===1?'':'es')+' · '+nCert+' certificado'+(nCert===1?'':'s')+'</div>'
         : '<span class="ta-vacia">Sin trabajos todavía</span><div class="op-sub">Se cargan desde el certificado</div>';
-      return '<tr><td><span class="ta-cab">CABECERA</span> <b class="op-num">'+escapeHtml(t.codigo)+'</b><div>'+escapeHtml(t.nombre)+'</div><div class="op-sub">Desde '+fmtFecha(t.fecha_inicio)+' · pidió '+escapeHtml(t.solicitado_por||'—')+'</div></td>'+
+      return '<tr><td><span class="ta-cab">CABECERA</span> <b class="op-num">'+escapeHtml(t.codigo)+'</b><div>'+escapeHtml(t.nombre)+'</div><div class="op-sub">Desde '+fmtFecha(t.fecha_inicio)+' · pidió '+escapeHtml(taSolTxt(t)||'—')+'</div></td>'+
         '<td>'+escapeHtml(t.obra||'—')+'</td><td>'+escapeHtml(t.responsable||'—')+'</td><td>'+cargados+'</td>'+
         '<td class="r"><b>'+gs(C.aprob)+'</b></td><td class="r">'+(C.tramite ? gs(C.tramite) : '—')+'</td><td>'+barra+'</td>'+
         '<td><span class="ta-est '+(t.estado==='Abierto'?'ab':'ce')+'">'+escapeHtml(t.estado)+'</span></td>'+
@@ -3305,7 +3377,7 @@ function taPDF(t, C, tipo, conTramite){
   doc.autoTable({ startY:32, margin:{ left:M, right:M }, theme:'grid',
     styles:{ fontSize:8.5, cellPadding:1.5, lineColor:[225,229,236], lineWidth:0.15, textColor:[30,30,30] },
     columnStyles:{ 0:{ fontStyle:'bold', textColor:NAVY, cellWidth:32, fillColor:[244,247,251] }, 2:{ fontStyle:'bold', textColor:NAVY, cellWidth:28, fillColor:[244,247,251] } },
-    body:[['TRABAJO', s(t.nombre), 'OBRA', s(t.obra)], ['SOLICITADO POR', s(t.solicitado_por||'-'), 'RESPONSABLE', s(t.responsable||'-')],
+    body:[['TRABAJO', s(t.nombre), 'OBRA', s(t.obra)], ['SOLICITADO POR', s(taSolTxt(t)||'-'), 'RESPONSABLE', s(t.responsable||'-')],
           ['INICIO', fmtFecha(t.fecha_inicio), 'ESTADO', s(t.estado)]]
       .concat(t.descripcion ? [[{ content:'ALCANCE', styles:{ fontStyle:'bold', textColor:NAVY, fillColor:[244,247,251] } }, { content:s(t.descripcion), colSpan:3 }]] : []) });
   const its = C.items.filter(function(i){ return conTramite || i._cert.estado === 'Aprobado'; });
@@ -3470,7 +3542,7 @@ async function taElegir(obraCtx){
       '<input type="radio" name="taeSel" value="'+escapeHtml(t.codigo)+'">'+
       '<span class="tae-b">'+
         '<span class="tae-h"><b>'+escapeHtml(t.codigo)+'</b> · '+escapeHtml(t.nombre)+'</span>'+
-        '<span class="tae-m">🏗 <b>'+escapeHtml(t.obra)+'</b> · 👷 responsable '+escapeHtml(t.responsable||'—')+' · pidió '+escapeHtml(t.solicitado_por||'—')+'</span>'+
+        '<span class="tae-m">🏗 <b>'+escapeHtml(t.obra)+'</b> · 👷 responsable '+escapeHtml(t.responsable||'—')+' · pidió '+escapeHtml(taSolTxt(t)||'—')+'</span>'+
         '<span class="tae-m">✍ creado por <b>'+escapeHtml(t.creado_por||'—')+'</b> el '+fmtFecha(String(t.creado_en||'').slice(0,10))+' · inicio '+fmtFecha(t.fecha_inicio)+'</span>'+
         (t.descripcion ? '<span class="tae-a">'+escapeHtml(String(t.descripcion).slice(0,160))+(String(t.descripcion).length > 160 ? '…' : '')+'</span>' : '')+
         '<span class="tae-m">Cargado '+gs(usado)+(c.tramite ? ' ('+gs(c.tramite)+' sin aprobar)' : '')+' · '+c.items.length+' gasto(s)'+
@@ -3975,7 +4047,7 @@ async function trabajoSinContrato(tipoFijo, taPre){
         const info = function(){
           if(sta.value === '__nuevo'){ window.__taCrear = true; const no = document.getElementById('dlgNo'); if(no) no.click(); return; }
           const t = taPorCodigo(sta.value), el = box.querySelector('#scTaInfo');
-          el.innerHTML = t ? ('Obra <b>'+escapeHtml(t.obra)+'</b> · responsable '+escapeHtml(t.responsable||'—')+' · pidió '+escapeHtml(t.solicitado_por||'—')+' · creado por '+escapeHtml(t.creado_por||'—')+' el '+fmtFecha(String(t.creado_en||'').slice(0,10))+
+          el.innerHTML = t ? ('Obra <b>'+escapeHtml(t.obra)+'</b> · responsable '+escapeHtml(t.responsable||'—')+' · pidió '+escapeHtml(taSolTxt(t)||'—')+' · creado por '+escapeHtml(t.creado_por||'—')+' el '+fmtFecha(String(t.creado_en||'').slice(0,10))+
             (t.estimado ? ' · estimado '+gs(t.estimado) : '')) : 'Elegí a qué trabajo se imputa este gasto.';
           sectores(t);
         };
