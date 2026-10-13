@@ -416,6 +416,7 @@ html[data-theme="alto-contraste"]{
       <div><div class="brand-t1">Contratos</div><div class="brand-t2">AXC Constructora</div></div>
     </div>
     <div class="hdr-actions">
+      <a href="axc_orden_servicio.html" class="btn-back">Órdenes de servicio</a>
       <a href="axc_presupuestos.html" class="btn-back">Presupuestos</a>
       <a href="index.html" class="btn-back">← Portal</a>
       <button type="button" class="tema-btn" id="btnTema" title="Tema de colores · se elige en Perfiles">🎨</button>
@@ -439,7 +440,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v2.9 · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.0 · orden de servicio opcional · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -573,6 +574,9 @@ html[data-theme="alto-contraste"]{
    Lectura: presupuesto_cab · presupuesto_rubros · presupuesto_insumos
             rubros · recetas · receta_items · capitulos · listas
             certificado_items (contrato_item_id) + certificados (estado)
+   v3.0 · Orden de servicio (opcional): contratos.orden_servicio_id vincula el
+          contrato con el pedido del cliente (axc_orden_servicio.html).
+          Atajo: axc_contratos.html?os=ID. Ver axc_orden_servicio_fase1.sql
    Reglas: la numeración CT-AAAA-0001 la asigna la base al aprobar
            (rpc aprobar_contrato). Lo aprobado no se edita ni se borra:
            los cambios van por adenda. Ver axc_contratos_fase1.sql
@@ -601,7 +605,7 @@ const DET_GUIA = ['ALCANCE:','MATERIALES (provee AXC / provee el contratista):',
 
 const S = { user:null, profile:null, isAdmin:false, puedeAprobar:false,
   contratos:[], items:[], adendas:[], cert:{}, certOk:true, contratistas:[], obras:[], sectoresLista:[], ppCab:[],
-  rubCat:null, capNom:{}, filtroEst:'' };
+  rubCat:null, capNom:{}, filtroEst:'', os:[], osOk:false };
 
 /* ── Utilidades ───────────────────────────────────────────── */
 function esc(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -725,7 +729,8 @@ async function arrancar(){
   await cargarTodo();
   // Atajo desde Presupuestos: axc_contratos.html?pp=PP75-2
   const q = new URLSearchParams(location.search);
-  if(q.get('pp')) nuevoContrato({ tipo:'presupuesto', presupuesto:q.get('pp') });
+  if(q.get('os')) nuevoDesdeOS(Number(q.get('os')));   // v3.0 · desde Órdenes de servicio
+  else if(q.get('pp')) nuevoContrato({ tipo:'presupuesto', presupuesto:q.get('pp') });
   else if(q.get('ver')) abrirDetalle(Number(q.get('ver')));
   // v2.6 · Atajo desde Certificación: axc_contratos.html?nuevo=1&contratista=…&obra=…
   else if(q.get('nuevo')){
@@ -759,6 +764,7 @@ async function cargarTodo(){
     S.obras = Object.keys(obras).map(function(k){ return obras[k]; }).sort(function(a,b){ return a.localeCompare(b,'es'); });
     S.sectoresLista = (lis.data||[]).filter(function(l){ return l.tipo==='sectores_presu' && l.activo!==false; });
     await cargarCertificado();
+    await cargarOS();
   }catch(e){
     console.error(e);
     const falta = /relation .*contratos|does not exist|schema cache/i.test(errMsg(e));
@@ -767,6 +773,25 @@ async function cargarTodo(){
     $('pageSub').textContent=''; return;
   }
   llenarFiltros(); render();
+}
+/* v3.0 · Órdenes de servicio: solo lectura. Si la tabla todavía no existe,
+   todo funciona como antes y el vínculo no se muestra. */
+async function cargarOS(){
+  S.os=[]; S.osOk=false;
+  try{
+    const r = await sbTodo(function(){ return sb.from('ordenes_servicio').select('id,numero,estado,obra,sector,asunto,descripcion,solicitante_nombre,solicitante_cargo,solicitante_cargo_det,fecha_pedido,firma_path').order('id',{ascending:false}); });
+    if(r.error) throw r.error;
+    S.os = r.data||[]; S.osOk = true;
+  }catch(e){ console.warn('ordenes de servicio', e); }
+}
+function osDe(id){ return id ? S.os.find(function(o){ return o.id===Number(id); }) : null; }
+function osCargo(o){ return o ? (o.solicitante_cargo==='Otro' ? (o.solicitante_cargo_det||'') : (o.solicitante_cargo||'')) : ''; }
+function osTag(c){
+  const o = osDe(c.orden_servicio_id); if(!o) return '';
+  return ' <span class="tag tag-ad" title="Orden de servicio · pedido de '+esc(o.solicitante_nombre)+'">'+esc(o.numero||'OS borrador')+'</span>';
+}
+function osOrigenTxt(o){
+  return 'Orden de servicio N° '+(o.numero||'(borrador)')+', solicitada por '+o.solicitante_nombre+(osCargo(o)?' ('+osCargo(o)+')':'')+(o.fecha_pedido?' el '+fmtF(o.fecha_pedido):'');
 }
 async function cargarCertificado(){
   S.cert={}; S.certOk=true;
@@ -798,7 +823,8 @@ function metricas(c){
 }
 function esSP(c){ return c.tipo!=='presupuesto' && !c.presupuesto; }
 function spVencido(c){ return esSP(c) && c.regularizacion==='pendiente' && c.regularizar_hasta && c.regularizar_hasta < hoyISO(); }
-function origenTag(c){
+function origenTag(c){ return origenTagBase(c) + osTag(c); }
+function origenTagBase(c){
   if(c.tipo==='urgente') return '<span class="tag tag-urg">Urgente'+(c.presupuesto?' · '+esc(c.presupuesto):'')+'</span>';
   if(c.tipo==='sin_presupuesto') return c.presupuesto ? '<span class="tag tag-pp">'+esc(c.presupuesto)+'</span> <span class="tag tag-lib">vinculado</span>' : '<span class="tag tag-sp">Sin presupuesto</span>';
   return '<span class="tag tag-pp">'+esc(c.presupuesto||'—')+'</span>';
@@ -823,7 +849,7 @@ function render(){
     if(ob && norm(c.obra)!==norm(ob)) return false;
     if(co && String(c.contratista_id)!==co) return false;
     if(es && c.estado!==es) return false;
-    if(bus){ const h=norm([c.numero,c.obra,c.presupuesto,contratistaDe(c.contratista_id).nombre,c.creado_por,c.aprobado_por,c.id].join(' ')); if(h.indexOf(bus)<0) return false; }
+    if(bus){ const o=osDe(c.orden_servicio_id); const h=norm([c.numero,c.obra,c.presupuesto,contratistaDe(c.contratista_id).nombre,c.creado_por,c.aprobado_por,c.id,o?o.numero:'',o?o.solicitante_nombre:''].join(' ')); if(h.indexOf(bus)<0) return false; }
     return true;
   });
   // KPIs sobre lo que no está anulado ni en borrador
@@ -942,7 +968,7 @@ function lineaVacia(extra){ return Object.assign({ key:nk(), id:null, presupuest
 function cabVacia(){
   return { contratista_id:null, obra:'', presupuesto:'', motivo_sp:'', motivo_detalle:'', regularizar_hasta:'', fecha:hoyISO(), lugar:DEF.lugar, localidad:'',
     encargado:userName(), inicio:'', plazo_dias:'', anticipo:0, forma_pago:DEF.forma_pago, materiales:'contratado', mat_det:'', garantia:'',
-    representante:DEF.representante, ruc:DEF.ruc, observaciones:'', alcance:'', modalidad:'precio_unitario' };
+    representante:DEF.representante, ruc:DEF.ruc, observaciones:'', alcance:'', modalidad:'precio_unitario', orden_servicio_id:null };
 }
 /* v1.6 · Todo lo que se contrata tiene que estar en el presupuesto. El paso de
    adicionales se quitó: si el trabajo no está presupuestado, primero se carga el
@@ -1090,6 +1116,7 @@ function pasoDatos(){
             '<div><label class="lbl">Regularizar antes del</label><input class="inp" type="date" data-k="regularizar_hasta" value="'+esc(c.regularizar_hasta||'')+'"></div>'+
             '<div class="spanall"><label class="lbl">Por qué no hay presupuesto *</label><input class="inp" data-k="motivo_detalle" maxlength="300" value="'+esc(c.motivo_detalle)+'" placeholder="Ej. filtración en losa del Nivel 5, se resuelve en el día"></div>')+
     '</div>'+
+    bloqueOS(c)+
     '<div class="sect">Condiciones del contrato <small>Lo que quede vacío sale como línea punteada para completar a mano</small></div>'+
     '<div class="grid g4">'+
       '<div><label class="lbl">Fecha del contrato</label><input class="inp" type="date" data-k="fecha" value="'+esc(c.fecha||'')+'"></div>'+
@@ -1117,15 +1144,59 @@ function pasoDatos(){
     el.addEventListener(ev, function(){
       const k=el.getAttribute('data-k'); let v=el.value;
       if(el.getAttribute('data-gs')) v=parseGs(v);
+      if(k==='orden_servicio_id'){ elegirOS(v?Number(v):null); return; }
       if(k==='contratista_id'){ v=v?Number(v):null; const kk=contratistaDe(v); E.con={ci:kk.ci_ruc||'',profesion:kk.profesion||''}; E.cab[k]=v; renderEd(); return; }
       E.cab[k]=v;
-      if(k==='obra'){ const p=S.ppCab.find(function(x){ return x.codigo===E.cab.presupuesto; }); if(p && norm(p.obra)!==norm(v)) E.cab.presupuesto=''; renderEd(); }
+      if(k==='obra'){ const p=S.ppCab.find(function(x){ return x.codigo===E.cab.presupuesto; }); if(p && norm(p.obra)!==norm(v)) E.cab.presupuesto='';
+        const os=osDe(E.cab.orden_servicio_id); if(os && norm(os.obra)!==norm(v)){ E.cab.orden_servicio_id=null; toast('Se quitó la orden de servicio','info','La orden '+(os.numero||'')+' es de otra obra'); }
+        renderEd(); }
       if(k==='materiales') renderEd();
     });
     if(el.getAttribute('data-gs')) el.addEventListener('blur', function(){ el.value = parseGs(el.value) ? fmtGs(parseGs(el.value)) : ''; });
   });
   B.querySelectorAll('[data-con]').forEach(function(el){ el.addEventListener('input', function(){ E.con[el.getAttribute('data-con')]=el.value; }); });
   $('btnNewCon').addEventListener('click', function(){ nuevoContratista(function(k){ E.cab.contratista_id=k.id; E.con={ci:k.ci_ruc||'',profesion:k.profesion||''}; renderEd(); }); });
+}
+/* v3.0 · Orden de servicio de origen (opcional) */
+function bloqueOS(c){
+  if(!S.osOk) return '';
+  const actual = osDe(c.orden_servicio_id);
+  const L = S.os.filter(function(o){ return (o.estado==='Emitida' || o.estado==='Firmada' || o.estado==='En ejecución') && c.obra && norm(o.obra)===norm(c.obra); });
+  if(actual && L.indexOf(actual)<0) L.unshift(actual);
+  const ops = '<option value="">Sin orden de servicio</option>'+L.map(function(o){ return opt(o.id, (o.numero||'Borrador')+' · '+o.asunto+' · '+o.solicitante_nombre, c.orden_servicio_id); }).join('');
+  let info = '';
+  if(actual){
+    info = '<div class="note '+(actual.firma_path?'note-i':'note-w')+'" style="margin-top:8px"><b>'+esc(actual.numero||'')+' · '+esc(actual.asunto)+'</b><br>Pedido de '+esc(actual.solicitante_nombre)+(osCargo(actual)?' ('+esc(osCargo(actual))+')':'')+(actual.fecha_pedido?' el '+fmtF(actual.fecha_pedido):'')+(actual.sector?' · '+esc(actual.sector):'')+'.'+
+      (actual.firma_path?' Firmada por el solicitante.':' <b>Todavía no tiene la firma del solicitante:</b> conviene conseguirla cuanto antes.')+
+      ' <a href="axc_orden_servicio.html?ver='+actual.id+'" target="axc_os">Ver la orden</a></div>';
+  } else if(c.obra && !L.length){
+    info = '<div class="hint">No hay órdenes de servicio abiertas para esta obra. Si el trabajo es parte del plan, seguí sin orden. Si lo pidió el cliente y no estaba acordado, primero cargá la orden en <a href="axc_orden_servicio.html?nueva=1&obra='+encodeURIComponent(c.obra)+'" target="axc_os">Órdenes de servicio</a>.</div>';
+  } else if(!c.obra){
+    info = '<div class="hint">Elegí la obra para ver sus órdenes de servicio.</div>';
+  } else {
+    info = '<div class="hint">Elegí la orden solo si el trabajo lo pidió alguien que no ejecuta la obra y no estaba en lo acordado. Si es parte del plan de obra, dejalo en «Sin orden de servicio».</div>';
+  }
+  return '<div class="sect">Orden de servicio <small>Opcional · solo para pedidos de alguien que no ejecuta la obra · <a href="axc_orden_servicio.html?guia=1" target="axc_os">¿Cuándo corresponde?</a></small></div>'+
+    '<div class="grid g4" style="margin-bottom:18px"><div class="span2"><label class="lbl">Orden de servicio de origen</label><select class="sel" data-k="orden_servicio_id"'+(c.obra?'':' disabled')+'>'+ops+'</select>'+info+'</div></div>';
+}
+function elegirOS(id){
+  E.cab.orden_servicio_id = id;
+  const o = osDe(id);
+  if(o && !String(E.cab.alcance||'').trim()){
+    E.cab.alcance = o.descripcion||'';
+    toast('Orden '+(o.numero||'')+' vinculada','info','Se copió la descripción del pedido en «Descripción general del trabajo». Ajustala si hace falta.');
+  }
+  renderEd();
+}
+function nuevoDesdeOS(id){
+  const o = osDe(id);
+  if(!S.osOk){ toast('Falta preparar la base de datos de órdenes de servicio','error','Corré axc_orden_servicio_fase1.sql en Supabase'); return; }
+  if(!o){ toast('No se encontró la orden de servicio','error'); return; }
+  if(o.estado==='Anulada' || o.estado==='Cerrada' || o.estado==='Borrador'){ toast('La orden '+(o.numero||'')+' está '+o.estado.toLowerCase(),'error','Solo se generan contratos desde órdenes emitidas, firmadas o en ejecución'); return; }
+  nuevoContrato({ tipo:'presupuesto' });
+  E.cab.obra = o.obra; E.cab.orden_servicio_id = o.id; E.cab.alcance = o.descripcion||'';
+  renderEd();
+  toast('Nuevo contrato desde '+o.numero, 'info', 'Obra, orden de servicio y descripción ya cargadas. Elegí el contratista y el presupuesto, o pasá a «Sin presupuesto».');
 }
 function cambiarTipo(t){
   if(t===E.tipo) return;
@@ -1467,6 +1538,7 @@ async function guardarEd(aprobar){
       plazo_dias:c.plazo_dias===''||c.plazo_dias==null?null:Number(c.plazo_dias), anticipo:Number(c.anticipo)||0, forma_pago:c.forma_pago||null,
       materiales:c.materiales||'contratado', mat_det:c.materiales==='mixto'?(c.mat_det||null):null, garantia:c.garantia||null, alcance:c.alcance||null,
       representante:c.representante||null, ruc:c.ruc||null, observaciones:c.observaciones||null, monto_estimado:totalE(), actualizado_por:u, actualizado_en:now };
+    if(S.osOk) cab.orden_servicio_id = c.orden_servicio_id ? Number(c.orden_servicio_id) : null;   // v3.0
     let id=E.id;
     if(!id){ cab.creado_por=u; cab.creado_en=now; const r=await sb.from('contratos').insert(cab).select('id').single(); if(r.error) throw r.error; id=r.data.id; E.id=id; }
     else { const r=await sb.from('contratos').update(cab).eq('id',id); if(r.error) throw r.error; }
@@ -1499,6 +1571,11 @@ async function guardarEd(aprobar){
 }
 
 /* ════════════ DETALLE DEL CONTRATO ════════════ */
+function osNota(c){
+  const o=osDe(c.orden_servicio_id); if(!o) return '';
+  return '<div class="note note-i" style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:240px"><b>Origen: '+esc(o.numero||'orden de servicio')+' · '+esc(o.asunto)+'</b><br>Pedido de '+esc(o.solicitante_nombre)+(osCargo(o)?' ('+esc(osCargo(o))+')':'')+(o.fecha_pedido?' el '+fmtF(o.fecha_pedido):'')+'. '+(o.firma_path?'Firmada por el solicitante.':'Sin firma registrada del solicitante.')+'</div>'+
+    '<a class="btn btn-gh btn-sm" href="axc_orden_servicio.html?ver='+o.id+'" target="axc_os">Ver la orden</a></div>';
+}
 let D = null;
 function abrirDetalle(id){
   const c=contratoDe(id); if(!c){ toast('No se encontró el contrato','error'); return; }
@@ -1559,7 +1636,7 @@ function pintarDetalle(){
       '</div>'+
     '</div>'+
     '<div class="tl">'+tl.map(function(x){ return '<div class="'+(x.bad?'bad':(x.on?'on':''))+'"><b>'+esc(x.t)+'</b>'+esc(x.s)+'</div>'; }).join('')+'</div>'+
-    reg+
+    reg+osNota(c)+
     '<div class="kpis" style="margin-bottom:14px">'+
       '<div class="kpi"><div class="kpi-l">Contratado</div><div class="kpi-v" style="font-size:20px">Gs '+fmtGs(m.monto)+'</div><div class="kpi-s">'+(m.adic?'Incluye Gs '+fmtGs(m.adic)+' de adicionales y adendas':'Solo contrato original')+'</div></div>'+
       '<div class="kpi k-ok"><div class="kpi-l">Certificado aprobado</div><div class="kpi-v" style="font-size:20px">Gs '+fmtGs(m.cert)+'</div><div class="kpi-s">'+(S.certOk?'Certificados aprobados vinculados':'Certificación todavía sin vincular')+'</div></div>'+
@@ -2113,6 +2190,7 @@ function pdfContrato(c, items, adendas, opts){
   '<div><i>Obra</i><b>'+esc(c.obra||'—')+'</b></div><div><i>Localidad</i>'+_v(c.localidad)+'</div><div><i>Inicio previsto</i>'+_v(c.inicio?fmtF(c.inicio):'')+'</div>'+
 '</div>'+
 (c.alcance ? '<div class="alc"><h5>TRABAJO CONTRATADO</h5><p>'+esc(c.alcance).replace(/\n/g,'<br>')+'</p></div>' : '')+
+(osDe(c.orden_servicio_id) ? '<div class="alc" style="border-left-color:#C8A028;background:#FCFAF3"><h5>ORIGEN DEL TRABAJO</h5><p>'+esc(osOrigenTxt(osDe(c.orden_servicio_id)))+'.</p></div>' : '')+
 '<table><thead>'+
   '<tr><th rowspan="2" style="width:6%">N°</th><th rowspan="2" style="width:46%;text-align:left">Detalle del trabajo a realizar</th>'+
   '<th colspan="4" class="grp">Detalle cantidad a ejecutar</th></tr>'+
@@ -2152,7 +2230,7 @@ function pdfContrato(c, items, adendas, opts){
 _v(k.nombre)+' con CI N.° '+_v(k.ci_ruc)+', mayor de edad, de profesión '+_v(k.profesion)+', ahora en más denominado <b>CONTRATADO</b>; convienen celebrar el presente Contrato de Construcción N° <b>'+esc(num)+'</b>, que se regirá por las siguientes cláusulas y condiciones.</p>'+
 '<h4>Cláusula 01, OBJETO:</h4><p>El presente tiene como objeto establecer el alcance de los servicios contratados, así también los derechos y obligaciones de ambas partes y las formas de aplicación de las cláusulas que rigen el mismo.</p>'+
 '<h4>Cláusula 02, SERVICIO:</h4><p>El CONTRATADO asume el servicio de construcción encomendado por el CONTRATANTE según presupuesto anexo ('+(c.presupuesto?'Presupuesto N° <b>'+esc(c.presupuesto)+'</b>, ':'')+'Contrato N° <b>'+esc(num)+'</b>, obra <b>'+esc(c.obra||'—')+'</b>'+
-(c.localidad?', localidad '+_v(c.localidad):'')+'), debiendo realizar las tareas según el detalle del mismo.</p>'+
+(c.localidad?', localidad '+_v(c.localidad):'')+'), debiendo realizar las tareas según el detalle del mismo.'+(osDe(c.orden_servicio_id)?' El trabajo se origina en la '+esc(osOrigenTxt(osDe(c.orden_servicio_id)))+'.':'')+'</p>'+
 (c.alcance ? '<p style="margin-top:4px"><b>Descripción del trabajo:</b> '+esc(c.alcance).replace(/\n/g,'<br>')+'</p>' : '')+
 '<h4>Cláusula 03, MODIFICACIONES:</h4><p>Cualquier modificación en el proyecto original o ampliación de las órdenes de trabajo, así como cualquier servicio fuera del perímetro de la OBRA, deberán ser comunicados por escrito, formando parte de este acuerdo como ANEXO I.</p>'+
 '<h4>Cláusula 04, PLAZO:</h4><p>La obra tendrá inicio en la fecha '+_v(c.inicio?fmtF(c.inicio):'')+' y la misma tendrá un plazo de entrega de '+_v(c.plazo_dias)+' días hábiles. Para las obras cuya realización estuviere condicionada a factores climáticos, los plazos serán analizados y prorrogados según la incidencia de los factores.</p>'+
