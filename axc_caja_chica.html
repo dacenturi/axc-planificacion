@@ -1249,7 +1249,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.54';
+const APP_VERSION='Caja Chica v7.55';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -3133,6 +3133,7 @@ function onTipoReporte(){
   if(esCons){ const _d=gs('r-desde'); if(_d){ const h=todayISO(); _d.value=h.slice(0,8)+'01'; } }
   gs('f-res').style.display = esCons?'none':'';
   gs('f-res-cons').style.display = esCons?'':'none';   // v7.28: filtro de residente para el consolidado
+  if(esCons) _crFiltroResidente(esCR);                 // v7.55: en Por rendiciones el residente queda fijo en su caja
   gs('f-rnd').style.display = esCons?'none':'';
   // v7.28: en consolidado el selector de detalle sigue visible, con otras etiquetas
   const pdfSel=gs('r-pdf-detalle');
@@ -3147,6 +3148,17 @@ function onTipoReporte(){
   gs('rep-result').innerHTML='<div class="empty">'+(esCR?'Prueba: acreditaciones por su fecha y gastos por la fecha en que se presentó la rendición, con arqueo del efectivo en caja. Elegí el período y tocá Generar.'
     :esCons?'Estado consolidado de cada caja: cuánto se acreditó, cuánto se gastó, qué falta rendir o aprobar y el saldo final. Elegí el período y tocá Generar.':'Elegí un residente y tocá Generar.')+'</div>';
   if(!esCons) onResReporte();
+}
+// v7.55 · Por rendiciones: un residente (con o sin cc_ver_todas) solo ve su propia caja.
+// Admin y supervisora de caja siguen eligiendo cualquier residente o todos.
+function _crSoloPropio(){ return !!IS_RESIDENTE; }
+function _crFiltroResidente(esCR){
+  const sel=gs('r-res-cons'); if(!sel) return;
+  if(esCR && _crSoloPropio()){ lockSelectTo(sel, MI_RESIDENTE||''); return; }
+  if(sel.disabled){   // volver al listado completo (consolidado de quien tiene cc_ver_todas)
+    sel.disabled=false;
+    sel.innerHTML='<option value="">Todos los residentes</option>'+RESIDENTES.map(r=>`<option value="${r.residente}">${r.residente}</option>`).join('');
+  }
 }
 async function onResReporte(){
   if(rTipo()==='consolidado' || rTipo()==='cajarend') return;
@@ -4379,7 +4391,9 @@ function _crFechaApr(r){ if(r.estado==='presentada') return ''; return String(r.
 function _crInfoIco(k){ return `<span class="cc-i" role="button" tabindex="0" aria-label="Cómo se calcula" onclick="ccInfo(event,'${k}','cr')" onkeydown="if(event.key==='Enter')ccInfo(event,'${k}','cr')">i</span>`; }
 
 async function reporteCajaRend(){
-  const resF=gs('r-res-cons')?gs('r-res-cons').value:'';
+  // v7.55: el residente nunca consulta datos de otras cajas, aunque se manipule el selector
+  if(_crSoloPropio() && !MI_RESIDENTE){ toast('Tu usuario no tiene una caja chica asignada','err'); gs('rep-info').textContent=''; return; }
+  const resF=_crSoloPropio()?MI_RESIDENTE:(gs('r-res-cons')?gs('r-res-cons').value:'');
   const D=gs('r-desde').value||'', H=gs('r-hasta').value||'';
   const hoy=todayISO(), alDia=(!H || H>=hoy), Hc=H||hoy;
   if(D && H && D>H){ toast('La fecha Desde es posterior a Hasta','err'); gs('rep-info').textContent=''; return; }
@@ -6812,7 +6826,7 @@ function aplicarModoResidente(){
     // Puede ver/elegir todas las cajas: no se bloquean los selectores
     loadRendicionData(); onResReporte();
     const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='';
-    const rtR=gs('rt-cajarend'); if(rtR) rtR.style.display='';
+    const rtR=gs('rt-cajarend'); if(rtR) rtR.style.display=MI_RESIDENTE?'':'none';   // v7.55: aun con cc_ver_todas, solo su caja
     const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='';
   } else {
     // Residente común: fijado a su propia caja
@@ -6820,7 +6834,7 @@ function aplicarModoResidente(){
     lockSelectTo(gs('rd-res'), MI_RESIDENTE); loadRendicionData();
     gs('r-res').innerHTML=`<option value="${String(MI_RESIDENTE).replace(/"/g,'&quot;')}">${MI_RESIDENTE}</option>`; gs('r-res').value=MI_RESIDENTE; gs('r-res').disabled=true; onResReporte();
     const rtC=gs('rt-consolidado'); if(rtC) rtC.style.display='none';
-    const rtR=gs('rt-cajarend'); if(rtR) rtR.style.display='none';
+    const rtR=gs('rt-cajarend'); if(rtR) rtR.style.display=MI_RESIDENTE?'':'none';   // v7.55: el residente ve su propia caja
     const cfRes=gs('cf-res'); if(cfRes) cfRes.style.display='none';
   }
   gs('mi-saldo').style.display='flex';
