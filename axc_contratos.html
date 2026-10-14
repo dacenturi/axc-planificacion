@@ -440,7 +440,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.1 · orden de servicio para pedidos sin presupuesto · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.3 · orden de servicio y su trabajo por administración · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -574,6 +574,8 @@ html[data-theme="alto-contraste"]{
    Lectura: presupuesto_cab · presupuesto_rubros · presupuesto_insumos
             rubros · recetas · receta_items · capitulos · listas
             certificado_items (contrato_item_id) + certificados (estado)
+   v3.3 · Informa el trabajo por administración de la orden de servicio: la
+          imputación se decide línea por línea en Certificación (v13.0).
    v3.1 · La orden de servicio se vincula solo en contratos SIN presupuesto
           (pedido excepcional); desde la orden el contrato sale sin presupuesto.
    v3.0 · Orden de servicio (opcional): contratos.orden_servicio_id vincula el
@@ -607,7 +609,7 @@ const DET_GUIA = ['ALCANCE:','MATERIALES (provee AXC / provee el contratista):',
 
 const S = { user:null, profile:null, isAdmin:false, puedeAprobar:false,
   contratos:[], items:[], adendas:[], cert:{}, certOk:true, contratistas:[], obras:[], sectoresLista:[], ppCab:[],
-  rubCat:null, capNom:{}, filtroEst:'', os:[], osOk:false };
+  rubCat:null, capNom:{}, filtroEst:'', os:[], osOk:false, tas:[] };
 
 /* ── Utilidades ───────────────────────────────────────────── */
 function esc(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -779,7 +781,9 @@ async function cargarTodo(){
 /* v3.0 · Órdenes de servicio: solo lectura. Si la tabla todavía no existe,
    todo funciona como antes y el vínculo no se muestra. */
 async function cargarOS(){
-  S.os=[]; S.osOk=false;
+  S.os=[]; S.osOk=false; S.tas=[];
+  // v3.3 · Trabajos por administración de cada orden (solo para informar: la imputación se decide en Certificación)
+  try{ const ta=await sb.from('trabajos_admin').select('codigo,nombre,obra,estado,orden_servicio_id').not('orden_servicio_id','is',null); if(!ta.error) S.tas=ta.data||[]; }catch(e){}
   try{
     const r = await sbTodo(function(){ return sb.from('ordenes_servicio').select('id,numero,estado,obra,sector,asunto,descripcion,solicitante_nombre,solicitante_cargo,solicitante_cargo_det,fecha_pedido,firma_path').order('id',{ascending:false}); });
     if(r.error) throw r.error;
@@ -791,6 +795,11 @@ function osCargo(o){ return o ? (o.solicitante_cargo==='Otro' ? (o.solicitante_c
 function osTag(c){
   const o = osDe(c.orden_servicio_id); if(!o) return '';
   return ' <span class="tag tag-ad" title="Orden de servicio · pedido de '+esc(o.solicitante_nombre)+'">'+esc(o.numero||'OS borrador')+'</span>';
+}
+function taDeOS(osId){ return osId ? S.tas.filter(function(x){ return Number(x.orden_servicio_id)===Number(osId) && x.estado==='Abierto'; })[0] || null : null; }
+function taNotaHTML(osId){
+  const ta = taDeOS(osId); if(!ta) return '';
+  return '<div class="hint" style="margin-top:6px">🛠 Esta orden tiene el trabajo por administración <b>'+esc(ta.codigo)+' · '+esc(ta.nombre||'')+'</b>. Al certificar este contrato, sus líneas se proponen para ese trabajo: se le pagan al contratista y además suman a su costo, que se liquida al cliente. El residente lo confirma en cada certificado.</div>';
 }
 function osOrigenTxt(o){
   return 'Orden de servicio N° '+(o.numero||'(borrador)')+', solicitada por '+o.solicitante_nombre+(osCargo(o)?' ('+osCargo(o)+')':'')+(o.fecha_pedido?' el '+fmtF(o.fecha_pedido):'');
@@ -1172,7 +1181,7 @@ function bloqueOS(c){
   if(actual){
     info = '<div class="note '+(actual.firma_path?'note-i':'note-w')+'" style="margin-top:8px"><b>'+esc(actual.numero||'')+' · '+esc(actual.asunto)+'</b><br>Pedido de '+esc(actual.solicitante_nombre)+(osCargo(actual)?' ('+esc(osCargo(actual))+')':'')+(actual.fecha_pedido?' el '+fmtF(actual.fecha_pedido):'')+(actual.sector?' · '+esc(actual.sector):'')+'.'+
       (actual.firma_path?' Firmada por el solicitante.':' <b>Todavía no tiene la firma del solicitante:</b> conviene conseguirla cuanto antes.')+
-      ' <a href="axc_orden_servicio.html?ver='+actual.id+'" target="axc_os">Ver la orden</a></div>';
+      ' <a href="axc_orden_servicio.html?ver='+actual.id+'" target="axc_os">Ver la orden</a></div>'+taNotaHTML(actual.id);
   } else if(c.obra && !L.length){
     info = '<div class="hint">No hay órdenes de servicio abiertas para esta obra. Si es un pedido excepcional, conviene cargar primero la orden como respaldo en <a href="axc_orden_servicio.html?nueva=1&obra='+encodeURIComponent(c.obra)+'" target="axc_os">Órdenes de servicio</a>.</div>';
   } else if(!c.obra){
@@ -1580,7 +1589,8 @@ async function guardarEd(aprobar){
 function osNota(c){
   const o=osDe(c.orden_servicio_id); if(!o) return '';
   return '<div class="note note-i" style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:240px"><b>Origen: '+esc(o.numero||'orden de servicio')+' · '+esc(o.asunto)+'</b><br>Pedido de '+esc(o.solicitante_nombre)+(osCargo(o)?' ('+esc(osCargo(o))+')':'')+(o.fecha_pedido?' el '+fmtF(o.fecha_pedido):'')+'. '+(o.firma_path?'Firmada por el solicitante.':'Sin firma registrada del solicitante.')+'</div>'+
-    '<a class="btn btn-gh btn-sm" href="axc_orden_servicio.html?ver='+o.id+'" target="axc_os">Ver la orden</a></div>';
+    '<a class="btn btn-gh btn-sm" href="axc_orden_servicio.html?ver='+o.id+'" target="axc_os">Ver la orden</a></div>'+
+    (taDeOS(o.id) ? '<div style="margin:-8px 0 16px">'+taNotaHTML(o.id)+'</div>' : '');
 }
 let D = null;
 function abrirDetalle(id){
