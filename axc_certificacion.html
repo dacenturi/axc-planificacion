@@ -2132,19 +2132,29 @@ function obrasDelCertificado(){
     const p = state.presupuestos.filter(x=>x.codigo===cod)[0];
     if(p) add(p.obra);
   });
+  // v12.1 · Las líneas de contrato se reconocen por su ítem (contrato_item_id) o
+  // por el número del contrato: antes se buscaba un contrato_id que esas líneas no
+  // tienen, y un contrato SIN presupuesto quedaba sin obra («No se pudo determinar
+  // la obra del certificado») aunque el contrato sí la tuviera.
   (CT.contratos||[]).forEach(function(c){
     const usa = (ed.lineas||[]).some(function(l){
       const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)];
-      return l.contrato_id === c.id && m && Number(m.cant) > 0;
+      if(!(m && Number(m.cant) > 0)) return false;
+      if(l.contrato_id === c.id) return true;
+      if(l.contrato_numero && c.numero && l.contrato_numero === c.numero) return true;
+      const ci = l.contrato_item_id && CT.porId ? CT.porId[l.contrato_item_id] : null;
+      return !!(ci && ci.contrato_id === c.id);
     });
     if(usa) add(c.obra);
   });
-  // v10.0 · Trabajos fuera del contrato o sin contrato: su obra también cuenta
+  // Trabajos del contrato, fuera del contrato o sin contrato: su obra también cuenta
   (ed.lineas||[]).forEach(function(l){
-    if(!l.libre || !l.obra) return;
+    if(!(l.libre || l.contrato_item_id) || !l.obra) return;
     const m = ed.med[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)];
     if(m && Number(m.cant) > 0) add(l.obra);
   });
+  // Último recurso: la obra de los contratos elegidos en el paso 2
+  if(!out.length && typeof ctSelContratos === 'function') ctSelContratos().forEach(function(c){ add(c.obra); });
   return out;
 }
 function obrasDePresus(){
