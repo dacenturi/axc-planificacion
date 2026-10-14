@@ -4834,6 +4834,11 @@ body{
                 <textarea class="step-textarea" id="fldPresuMotivo" rows="2" maxlength="240" placeholder="Indicar lugar de donde será aplicado. Ej. mocheta, mampostería, relleno de..."></textarea>
               </div>
               <div class="step-help" id="fldPresupuestoHelp">Presupuesto de la obra elaborado por la constructora</div>
+              <div id="dstResumen" class="dst-res" style="display:none"></div>
+              <div id="wrapExceso" style="display:none;margin-top:8px">
+                <label class="req" for="fldExceso" style="font-size:11px">Justificación del exceso de presupuesto</label>
+                <textarea class="step-textarea" id="fldExceso" rows="2" maxlength="400" placeholder="Ej. El revoque del Nivel 3 consumió más cemento por mayor espesor en la medianera. Lo aprobó el Arq. responsable."></textarea>
+              </div>
               <!-- Modo prueba: solo visible para admin y solo si la columna es_prueba existe -->
               <div class="prueba-box" id="rowPrueba" style="display:none">
                 <label>
@@ -4925,6 +4930,18 @@ body{
       <!-- Selector de presupuesto del carrito: pertenece al módulo de Presupuestos,
            todavía sin producción. Se oculta con PRESU_CARRITO_VISIBLE (abajo) para no
            confundir con el campo "N° de presupuesto" del Paso 2. -->
+      <!-- v2 · Destino por defecto de la OC (presupuesto · trabajo por administración · sin presupuesto) -->
+      <div class="dst-bar" id="dstBar">
+        <div class="dst-tit">¿Para qué es esta compra? <small>Destino por defecto · se puede cambiar en cada material</small></div>
+        <div class="dst-modes" id="dstModes">
+          <label class="dst-m" data-m="presupuesto"><input type="radio" name="dstMode" value="presupuesto"><span><b>Presupuesto</b><small>Descuenta del saldo</small></span></label>
+          <label class="dst-m" data-m="ta"><input type="radio" name="dstMode" value="ta"><span><b>Trabajo por adm.</b><small>Se cobra al cliente</small></span></label>
+          <label class="dst-m on" data-m="sin"><input type="radio" name="dstMode" value="sin" checked><span><b>Sin presupuesto</b><small>Gasto de la obra</small></span></label>
+        </div>
+        <select id="dstPP" class="dst-sel" style="display:none"></select>
+        <select id="dstTA" class="dst-sel" style="display:none"></select>
+        <div class="dst-hint" id="dstHint"></div>
+      </div>
       <div class="cb-bar" id="cbBar" style="display:none">
         <div class="cb-modes">
           <label class="cb-opt"><input type="radio" name="cbMode" id="cbNo" value="no" checked> Sin presupuesto</label>
@@ -7404,7 +7421,7 @@ function closeWizard(force=false){
   localStorage.removeItem(LS_DRAFT_KEY + '_' + (state.user?.id || 'anon'));
   wizard.cart = [];
   wizard.attachments = [];
-  wizard.form = { fecha:'', rubro:'', obra:'', sector:'', residente:'', contratista:'', proveedor:'', vendedor:'', tipo_compra:'', presupuesto:'', observacion:'', es_prueba:false };
+  wizard.form = { fecha:'', rubro:'', obra:'', sector:'', residente:'', contratista:'', proveedor:'', vendedor:'', tipo_compra:'', presupuesto:'', observacion:'', es_prueba:false, destino:'sin', trabajo_admin:'', justificacion_exceso:'' };
   try{ const _cp=document.getElementById('chkPrueba'); if(_cp) _cp.checked=false; }catch(e){}
   cartBudget.pp=''; cartBudget.mats=null; cartBudget.ocItems=[]; cartBudget.collapsed=true;
   wizard.catalog.items = [];
@@ -7867,6 +7884,7 @@ document.getElementById('prodModalRemove').addEventListener('click', ()=>{
 function renderCart(){
   const wrap = document.getElementById('cartItems');
   try{ cartBudgetInit(); }catch(e){}
+  try{ dstAplicarDefecto(); }catch(e){}
   const total = wizard.cart.reduce((acc,it)=>acc + Number(it.subtotal||0), 0);
   document.getElementById('cartTotal').textContent = fmtMoney(total);
   document.getElementById('cartCountPill').textContent = wizard.cart.length;
@@ -7949,6 +7967,7 @@ function renderCart(){
           <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
         </div>
       </div>
+      ${dstItemHTML(it, idx)}
       ${renderRubroApChips(it, idx)}
       <div class="cart-item-bottom">
         <span class="cart-item-calc">Monto del servicio</span>
@@ -7970,7 +7989,8 @@ function renderCart(){
           <button class="cart-btn-icon danger" data-cart-action="remove" title="Quitar">×</button>
         </div>
       </div>
-      ${_cbActive ? `<div class="cart-item-presu"><span class="cip-lbl"${_lblStyle}>${_lblTxt}</span><select class="cb-isel"${_selStyle} data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>${_badge}` : ''}
+      ${dstItemHTML(it, idx)}
+      ${(_cbActive && !it.trabajo_admin && !it.sin_presupuesto) ? `<div class="cart-item-presu"><span class="cip-lbl"${_lblStyle}>${_lblTxt}</span><select class="cb-isel"${_selStyle} data-cart-idx="${idx}">${cbItemOptions(it)}</select></div>${_badge}` : (_cbActive ? _badge : '')}
       ${renderRubroApChips(it, idx)}
       <div class="cart-item-bottom">
         <span class="cart-item-calc">Subtotal</span>
@@ -8850,7 +8870,7 @@ function consolidarItems(items){
     if(it.sin_presupuesto || it._extraPresu) c.extra = true;
     if(it._excedente) c.excedente = true;
     // Desglose: un renglón por rubro donde se aplica
-    const rubros = _consRubros(it);
+    const rubros = it.trabajo_admin ? [String(it.trabajo_admin)] : _consRubros(it);   // v2 · el TA va como lugar de aplicación
     const parte = rubros.length ? (cant / rubros.length) : cant;   // si va a 2 rubros, se reparte
     rubros.forEach(function(r){
       const rk = String(r);
@@ -9522,6 +9542,9 @@ const PRESU_SIN_PREFIJO = 'Sin presupuesto';
    - sin presupuesto  -> "Sin presupuesto — <motivo>"  (queda visible en el PDF y
      en los listados, que es donde control de obra necesita leerlo) */
 function presuCompose(){
+  // v2 · Con destino elegido en el paso 1, el valor sale de ahí
+  if(wizard && wizard.form && wizard.form.destino === 'presupuesto' && wizard.form._pp) return wizard.form._pp;
+  if(wizard && wizard.form && wizard.form.destino === 'ta' && wizard.form.trabajo_admin) return 'Por administración — ' + wizard.form.trabajo_admin;
   const chk = document.getElementById('chkSinPresupuesto');
   const num = document.getElementById('fldPresupuesto');
   const mot = document.getElementById('fldPresuMotivo');
@@ -9898,8 +9921,10 @@ async function cartBudgetLoad(pp){
     (ocs.data||[]).forEach(function(o){ estadoById[o.id] = _presuNorm(o.estado); ids.push(o.id); ocById[o.id] = o; });
     let ocItems = [];
     if(ids.length){
-      const it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
-      ocItems = (it.data||[]).map(function(x){
+      // v2 · Los ítems imputados a un trabajo por administración o marcados sin presupuesto no consumen saldo
+      let it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin').in('oc_id', ids);
+      if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
+      ocItems = (it.data||[]).filter(function(x){ return !x.trabajo_admin && !x.sin_presupuesto; }).map(function(x){
         const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0;
         const o = ocById[x.oc_id] || {};
         return { producto_id:x.producto_id, producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p,
@@ -9941,7 +9966,7 @@ function _cbAgg(codigoInsumo, rubroCodigo){
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
   });
-  (wizard.cart||[]).forEach(function(it){ if(_cbInsDeItem(it) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_cbInsDeItem(it) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -9953,7 +9978,7 @@ function _cbAggMoney(rubroKey){
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.subtotal;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.subtotal;
   });
-  (wizard.cart||[]).forEach(function(it){ if(_cbResolveRubro(it.producto_id) === rubroKey) carr += Number(it.subtotal)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_cbResolveRubro(it.producto_id) === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -10013,6 +10038,7 @@ function _cbAutoImputar(){
 }
 /* Destino de débito EFECTIVO de un ítem del carrito (para el badge). Devuelve {txt,color,excede} */
 function _cbItemDestino(it){
+  if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
   if(!cartBudget.pp) return null;
   const curIns=_cbInsDeItem(it);
   const curRub=curIns ? '' : _cbResolveRubro(it.producto_id);
@@ -10304,6 +10330,12 @@ function validateStep2(showErrors){
     }
     _motSin && _motSin.classList.remove('error');
   }
+
+  // v2 · Destino: la obra tiene que coincidir con la del presupuesto o del TA elegido
+  try{
+    const _dErr = dstValidarPaso2();
+    if(_dErr){ if(showErrors){ showToast(_dErr.msg, 'error'); const _e = document.getElementById(_dErr.id); if(_e){ _e.classList.add('error'); _e.focus(); } } return false; }
+  }catch(eD){ console.warn('validar destino', eD); }
 
   // Área de aplicación: todos los materiales del carrito deben tener al menos una.
   if(OC_RUBRO_APLICACION && OC_RUBRO_OBLIGATORIO){
@@ -10823,11 +10855,24 @@ async function submitOC(){
       ocPayload.motivo_decision = 'Aprobada automáticamente al crearla (admin).';
     }
 
-    const {data: ocData, error: ocError} = await sb
+    // v2 · Destino, trabajo por administración y justificación del exceso
+    ocPayload.destino = wizard.form.destino || 'sin';
+    ocPayload.trabajo_admin = (wizard.form.destino === 'ta' && wizard.form.trabajo_admin) ? wizard.form.trabajo_admin : null;
+    const _just = (wizard.form.justificacion_exceso || '').trim();
+    if(_just) ocPayload.justificacion_exceso = _just;
+    let {data: ocData, error: ocError} = await sb
       .from('ordenes_compra')
       .insert(ocPayload)
       .select()
       .single();
+    if(ocError && /destino|trabajo_admin|justificacion_exceso/i.test(ocError.message || '')){
+      // Sin las columnas nuevas (falta axc_fase2_oc_destino.sql): la OC se guarda igual y el exceso queda en la observación
+      delete ocPayload.destino; delete ocPayload.trabajo_admin; delete ocPayload.justificacion_exceso;
+      if(_just) ocPayload.observacion = ((ocPayload.observacion||'') + ' · Exceso de presupuesto: ' + _just).replace(/^ · /,'');
+      const r2 = await sb.from('ordenes_compra').insert(ocPayload).select().single();
+      ocData = r2.data; ocError = r2.error;
+      if(!ocError) showToast('La OC se guardó, pero falta correr axc_fase2_oc_destino.sql en la base. Avisá a Conexdata.', 'error');
+    }
     if(ocError) throw ocError;
 
     const ocId = ocData.id;
@@ -10844,6 +10889,7 @@ async function submitOC(){
     }catch(e){ console.warn('auto-imputar pre-guardado', e); }
     const _hayMO = wizard.cart.some(it => it.es_mano_obra);
     const _haySinPres = wizard.cart.some(it => it.sin_presupuesto);
+    const _hayTA = wizard.cart.some(it => it.trabajo_admin);
     const _hayProdReal = wizard.cart.some(it => it.producto_real);
     const _haySector = wizard.cart.some(it => it.sector);
     // Fallback de rubro: si el ítem no recibió rubro del presupuesto, hereda el
@@ -10865,6 +10911,7 @@ async function submitOC(){
       };
       if(_hayMO) row.es_mano_obra = !!it.es_mano_obra;
       if(_haySinPres) row.sin_presupuesto = !!it.sin_presupuesto;
+      if(_hayTA) row.trabajo_admin = it.trabajo_admin || null;   // v2 · destino por ítem
       if(_hayProdReal) row.producto_real = it.producto_real || null;
       // Sector y unidad SIEMPRE: son la base del mapeo por sector y de que el
       // proveedor lea la unidad correcta, sin tener que reconstruirlo después.
@@ -10900,6 +10947,12 @@ async function submitOC(){
         if(!itemsError){
           showToast('La OC se guardó, pero faltan las columnas "sector" y "unidad" en ordenes_compra_items. Avisá a Conexdata.', 'error');
         }
+      }
+      if(itemsError && /trabajo_admin/i.test(itemsError.message || '')){
+        const sinTA = itemsPayload.map(r => { const c = {...r}; delete c.trabajo_admin; return c; });
+        const retry3 = await sb.from('ordenes_compra_items').insert(sinTA);
+        itemsError = retry3.error;
+        if(!itemsError) showToast('La OC se guardó, pero el trabajo por administración de los materiales no: falta correr axc_fase2_oc_destino.sql. Avisá a Conexdata.', 'error');
       }
       if(itemsError) throw itemsError;
     }
@@ -11598,6 +11651,7 @@ function renderItemsSection(editing){
             <div style="min-width:0">
               <div class="detail-item-name">${escapeHtml(it.producto_nombre||'—')}</div>
               ${nombreSub}
+              ${editing ? '' : dstDetalleChip(it)}
             </div>
           </div>
         </td>`;
@@ -12906,7 +12960,7 @@ async function generatePDF(oc, incluirAdjuntos){
       ['Proveedor', oc.proveedor||'-'],
       ['Vendedor', oc.vendedor||'-'],
       ['Tipo de compra', oc.tipo_compra||'-'],
-      ['Presupuesto', oc.presupuesto||'-'],
+      ['Destino', ocDestinoTxt(oc)],
     );
 
     fields.forEach((f, idx) => {
@@ -16429,7 +16483,7 @@ function _pdRender(pp, obra, filtro){
 /* ★ INTERRUPTOR: true para activar el modo "Desde presupuesto".
    15/08/2026: apagado — el módulo de Presupuestos todavía no está en producción
    y la pestaña confundía a los residentes. Poner en true cuando se publique. */
-const OC_PRESUP_ENABLED = false;
+let OC_PRESUP_ENABLED = false;   // v2 · se enciende sola cuando el destino de la OC es «Presupuesto»
 
 const pbtUI = {
   inited: false,
@@ -17246,5 +17300,281 @@ function pbtAddNoPresup(pid){
 
 </script>
 
+<style>
+/* v2 · destino del gasto en la OC */
+.dst-bar{margin:10px 16px 4px;border:1px solid #DDE2EA;border-radius:12px;padding:10px 12px;background:#F7F9FC}
+.dst-tit{font-size:12.5px;font-weight:800;color:#1F3864;margin-bottom:8px}.dst-tit small{font-weight:500;color:#6B7486;margin-left:4px}
+.dst-modes{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.dst-m{display:flex;gap:6px;align-items:flex-start;border:1px solid #DDE2EA;border-radius:9px;padding:7px 8px;background:#fff;cursor:pointer;font-size:12px}
+.dst-m input{margin-top:2px}.dst-m b{display:block;font-size:12px;color:#1A2236}.dst-m small{display:block;font-size:10.5px;color:#6B7486}
+.dst-m.on{border-color:#1F3864;background:#EEF3FB}
+.dst-m[data-m="ta"].on{border-color:#8A6A0E;background:#FBF6E6}
+.dst-sel{width:100%;margin-top:8px;padding:7px 9px;border:1px solid #C9D0DC;border-radius:8px;font-size:12.5px}
+.dst-hint{margin-top:7px;font-size:11.5px;color:#4B5568;line-height:1.45}.dst-hint i{color:#8893a5}
+.dst-item{display:flex;gap:6px;align-items:center;margin:6px 0 2px;font-size:11px;font-weight:700;color:#4B5568}
+.dst-item select{flex:1;min-width:0;font-size:11.5px;padding:3px 6px;border:1px solid #C9D0DC;border-radius:6px;background:#fff}
+.dst-item.ta select{border-color:#C8A028;background:#FBF6E6;color:#7A5F0E;font-weight:700}
+.dst-item.pp select{border-color:#9EC1EA;background:#EEF4FC;color:#15427A}
+.dst-item i{font-style:normal;font-size:10px;background:#FFF4DC;color:#8A5A00;border-radius:4px;padding:1px 5px}
+.dst-res{margin-top:8px;font-size:12px;color:#15427A;background:#EEF4FC;border:1px solid #9EC1EA;border-radius:8px;padding:7px 10px;line-height:1.45}
+@media (max-width:520px){.dst-modes{grid-template-columns:1fr}}
+.dst-chip{margin-top:4px;font-size:11px;color:#4B5568}.dst-chip b{font-weight:700}
+.dst-chip.ta b{color:#7A5F0E}.dst-chip.pp b{color:#15427A}
+.dst-cambiar{margin-left:6px;font-size:10.5px;font-weight:700;border:1px solid #C9D0DC;background:#fff;border-radius:6px;padding:1px 7px;cursor:pointer;color:#1F3864}
+.dst-ov{position:fixed;inset:0;background:rgba(12,30,60,.55);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px}
+.dst-dlg{background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3);font-size:13px}
+.dst-dlg h3{margin:0 0 2px;font-size:16px;color:#1F3864}.dst-sub{margin:0 0 12px;color:#6B7486;font-size:12px}
+.dst-dlg label{display:block;font-size:11.5px;font-weight:700;color:#4B5568;margin:10px 0 4px}
+.dst-dlg select,.dst-dlg textarea{width:100%;box-sizing:border-box;padding:8px 9px;border:1px solid #C9D0DC;border-radius:8px;font:inherit}
+.dst-nota{margin-top:10px;font-size:11.5px;color:#15427A;background:#EEF4FC;border:1px solid #9EC1EA;border-radius:8px;padding:7px 9px;line-height:1.45}
+.dst-err{color:#B42B2B;font-size:12px;min-height:16px;margin-top:6px}
+.dst-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}.dst-btns button{border:1px solid #C9D0DC;background:#fff;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer}
+.dst-btns .pri{background:#1F3864;border-color:#1F3864;color:#fff}
+
+</style>
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   v2 · DESTINO DEL GASTO EN LA ORDEN DE COMPRA · Conexdata · 14/10/2026
+   Cada ítem se imputa a: el PRESUPUESTO aprobado de la obra (descuenta su
+   saldo), un TRABAJO POR ADMINISTRACIÓN abierto (suma a su costo, que se
+   liquida al cliente) o SIN PRESUPUESTO (gasto de la obra, con lugar de
+   aplicación). La cabecera fija el destino por defecto; cada material lo
+   puede cambiar. Regla: un ítem que va a un TA no consume presupuesto.
+   ────────────────────────────────────────────────────────────────── */
+const DST = { pp:[], ta:[], loaded:false, loading:false };
+function dstNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function dstEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+async function dstLoad(){
+  if(DST.loaded || DST.loading) return; DST.loading = true;
+  try{
+    const r = await sb.from('presupuesto_cab').select('codigo,nombre,obra,activo').order('codigo');
+    DST.pp = (r.data||[]).filter(function(x){ return x.activo !== false; });
+  }catch(e){ DST.pp = []; }
+  try{
+    const r2 = await sb.from('trabajos_admin').select('codigo,nombre,obra,estado').eq('estado','Abierto').order('codigo');
+    DST.ta = r2.error ? [] : (r2.data||[]);
+  }catch(e){ DST.ta = []; }
+  DST.loaded = true; DST.loading = false;
+  dstRender(); try{ renderCart(); }catch(e){}
+}
+function dstPP(c){ return DST.pp.filter(function(x){ return x.codigo === c; })[0] || null; }
+function dstTA(c){ return DST.ta.filter(function(x){ return x.codigo === c; })[0] || null; }
+function dstRender(){
+  const f = wizard.form || {}; const m = f.destino || 'sin';
+  const bar = document.getElementById('dstBar'); if(!bar) return;
+  bar.querySelectorAll('.dst-m').forEach(function(l){ const on = l.getAttribute('data-m') === m; l.classList.toggle('on', on); const i = l.querySelector('input'); if(i) i.checked = on; });
+  const sp = document.getElementById('dstPP'), st = document.getElementById('dstTA'), h = document.getElementById('dstHint');
+  sp.innerHTML = '<option value="">Elegí el presupuesto aprobado…</option>' + DST.pp.map(function(x){ return '<option value="'+dstEsc(x.codigo)+'"'+(f._pp===x.codigo?' selected':'')+'>'+dstEsc(x.codigo+' · '+(x.obra||'')+(x.nombre?' · '+x.nombre:''))+'</option>'; }).join('');
+  st.innerHTML = '<option value="">Elegí el trabajo por administración…</option>' + DST.ta.map(function(x){ return '<option value="'+dstEsc(x.codigo)+'"'+(f.trabajo_admin===x.codigo?' selected':'')+'>'+dstEsc(x.codigo+' · '+(x.nombre||'')+' · '+(x.obra||''))+'</option>'; }).join('');
+  sp.style.display = m === 'presupuesto' ? '' : 'none';
+  st.style.display = m === 'ta' ? '' : 'none';
+  if(m === 'presupuesto') h.innerHTML = f._pp ? '✔ Los materiales descuentan del saldo de <b>'+dstEsc(f._pp)+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.' : 'Elegí el presupuesto de la obra. <i>Ej.: cemento para el revoque del Nivel 3.</i>' + (DST.loaded && !DST.pp.length ? ' <b>No hay presupuestos aprobados cargados.</b>' : '');
+  else if(m === 'ta') h.innerHTML = f.trabajo_admin ? '✔ Los materiales suman al costo de <b>'+dstEsc(f.trabajo_admin)+'</b>, que se liquida al cliente. No descuentan del presupuesto.' : 'Elegí el trabajo por administración. <i>Ej.: porcelanato para el TA-0001 · Renovación del piso.</i>' + (DST.loaded && !DST.ta.length ? ' <b>No hay trabajos por administración abiertos: se crean en Certificación o desde la orden de servicio.</b>' : '');
+  else h.innerHTML = 'Gasto de la obra sin presupuesto. En el paso 2 se indica el lugar de aplicación. <i>Ej.: bolsas de residuos para la limpieza general.</i>';
+}
+async function dstSet(m, val){
+  const f = wizard.form;
+  f.destino = m;
+  if(m === 'presupuesto'){
+    f.trabajo_admin = '';
+    if(val !== undefined) f._pp = val || '';
+    await setPresupuesto(f._pp || '', true);
+    const p = dstPP(f._pp); if(p && p.obra) dstFijarObra(p.obra);
+  } else {
+    if(m === 'ta'){ if(val !== undefined) f.trabajo_admin = val || ''; const t0 = dstTA(f.trabajo_admin); if(t0 && t0.obra) dstFijarObra(t0.obra); }
+    else f.trabajo_admin = '';
+    f._pp = '';
+    if(cartBudget.pp) await setPresupuesto('', true);
+  }
+  dstTabArbol();
+  (wizard.cart||[]).forEach(function(it){ if(!it._dstManual){ it.trabajo_admin = (m === 'ta') ? (f.trabajo_admin || '') : ''; if(m !== 'presupuesto') it.sin_presupuesto = false; } });
+  dstRender(); dstSyncPaso2();
+  try{ renderCart(); }catch(e){}
+  try{ if(typeof saveDraft === 'function') saveDraft(); }catch(e){}
+}
+function dstFijarObra(obra){
+  const sel = document.getElementById('fldObra'); if(!sel) return;
+  const op = Array.prototype.slice.call(sel.options).filter(function(o){ return dstNorm(o.value) === dstNorm(obra); })[0];
+  if(op){ sel.value = op.value; wizard.form.obra = op.value; try{ sel.dispatchEvent(new Event('change')); }catch(e){} }
+  else { wizard.form.obra = obra; }
+}
+/* La pestaña «Desde presupuesto» solo aparece con destino Presupuesto */
+function dstTabArbol(){
+  const conPP = wizard.form.destino === 'presupuesto' && !!wizard.form._pp;
+  try{
+    if(conPP){ OC_PRESUP_ENABLED = true; if(!pbtUI.inited) pbtInit(); }
+    const tab = document.getElementById('pbtTab'); if(tab) tab.style.display = conPP ? '' : 'none';
+    if(!conPP && pbtUI.inited && pbtUI.active) pbtSetMode(false);
+  }catch(e){ console.warn('pestaña presupuesto', e); }
+}
+function dstAplicarDefecto(){
+  if(!DST.loaded) dstLoad();
+  const f = wizard.form || {};
+  if(!f.destino) f.destino = 'sin';
+  if(f.destino === 'presupuesto' && f._pp && cartBudget.pp !== f._pp){ setPresupuesto(f._pp, true); }
+  (wizard.cart||[]).forEach(function(it){
+    if(it._dstManual) return;
+    it.trabajo_admin = (f.destino === 'ta') ? (f.trabajo_admin || '') : '';
+  });
+  dstRender(); dstSyncPaso2();
+}
+function dstItemValor(it){
+  if(it.trabajo_admin) return 'ta:' + it.trabajo_admin;
+  if(wizard.form.destino === 'presupuesto' && !it.sin_presupuesto) return 'pp';
+  return 'sin';
+}
+function dstItemHTML(it, idx){
+  const f = wizard.form || {};
+  if(f.destino === 'sin' && !DST.ta.length && !it.trabajo_admin) return '';
+  const v = dstItemValor(it);
+  const ops = [];
+  if(f.destino === 'presupuesto' && f._pp) ops.push(['pp', 'Presupuesto '+f._pp]);
+  ops.push(['sin', f.destino === 'presupuesto' ? 'Sin presupuesto (material no presupuestado)' : 'Sin presupuesto']);
+  DST.ta.forEach(function(t){ ops.push(['ta:'+t.codigo, 'Trabajo por adm. '+t.codigo+' · '+(t.nombre||'')]); });
+  if(it.trabajo_admin && !dstTA(it.trabajo_admin)) ops.push(['ta:'+it.trabajo_admin, 'Trabajo por adm. '+it.trabajo_admin]);
+  const cls = v === 'pp' ? 'pp' : (v === 'sin' ? 'sin' : 'ta');
+  return '<div class="dst-item '+cls+'"><span>Destino:</span><select class="dst-isel" data-cart-idx="'+idx+'" title="A dónde se imputa este material">'+
+    ops.map(function(o){ return '<option value="'+dstEsc(o[0])+'"'+(o[0]===v?' selected':'')+'>'+dstEsc(o[1])+'</option>'; }).join('')+'</select>'+
+    (it._dstManual ? '<i title="Cambiado respecto del destino de la orden">cambiado</i>' : '')+'</div>';
+}
+document.addEventListener('change', function(e){
+  const s = e.target.closest && e.target.closest('select.dst-isel'); if(!s) return;
+  const it = (wizard.cart||[])[Number(s.getAttribute('data-cart-idx'))]; if(!it) return;
+  const v = s.value;
+  if(v === 'pp'){ it.trabajo_admin = ''; it.sin_presupuesto = false; }
+  else if(v === 'sin'){ it.trabajo_admin = ''; it.sin_presupuesto = (wizard.form.destino === 'presupuesto'); }
+  else { it.trabajo_admin = v.slice(3); it.sin_presupuesto = false; }
+  it._dstManual = (dstItemValor(it) !== (wizard.form.destino === 'ta' ? 'ta:'+wizard.form.trabajo_admin : (wizard.form.destino === 'presupuesto' ? 'pp' : 'sin')));
+  try{ renderCart(); }catch(err){}
+  try{ if(typeof saveDraft === 'function') saveDraft(); }catch(err){}
+});
+document.addEventListener('change', function(e){
+  if(e.target && e.target.name === 'dstMode'){ dstSet(e.target.value); }
+  else if(e.target && e.target.id === 'dstPP'){ dstSet('presupuesto', e.target.value); }
+  else if(e.target && e.target.id === 'dstTA'){ dstSet('ta', e.target.value); }
+});
+function dstExcede(){
+  if(!cartBudget.pp) return [];
+  return (wizard.cart||[]).filter(function(it){ if(it.trabajo_admin || it.sin_presupuesto || it.es_mano_obra) return false; try{ const d = _cbItemDestino(it); return !!(d && d.excede); }catch(e){ return false; } });
+}
+/* Paso 2: el N° de presupuesto refleja el destino; justificación si hay exceso */
+function dstSyncPaso2(){
+  const f = wizard.form || {}, m = f.destino || 'sin';
+  const chk = document.getElementById('chkSinPresupuesto'), num = document.getElementById('fldPresupuesto');
+  const res = document.getElementById('dstResumen'), wex = document.getElementById('wrapExceso'), ex = document.getElementById('fldExceso');
+  if(!chk || !num) return;
+  const lblChk = chk.closest('label');
+  if(m === 'sin'){
+    if(!chk.checked){ chk.checked = true; try{ presuToggleSin(); }catch(e){} }
+    num.readOnly = false; if(lblChk) lblChk.style.display = 'none';
+    if(res){ res.style.display = ''; res.innerHTML = '<b>Destino: sin presupuesto.</b> Indicá el lugar de aplicación: es lo que le permite a control de obra ubicar la compra.'; }
+  } else {
+    if(chk.checked){ chk.checked = false; try{ presuToggleSin(); }catch(e){} }
+    num.value = m === 'presupuesto' ? (f._pp || '') : (f.trabajo_admin ? 'Por administración — ' + f.trabajo_admin : '');
+    num.readOnly = true; if(lblChk) lblChk.style.display = 'none';
+    if(res){ res.style.display = ''; res.innerHTML = m === 'presupuesto'
+      ? '<b>Destino: presupuesto '+dstEsc(f._pp||'—')+'.</b> Los materiales descuentan del saldo. Se cambia en el paso 1.'
+      : '<b>Destino: trabajo por administración '+dstEsc(f.trabajo_admin||'—')+'.</b> Los materiales suman a su costo y se liquidan al cliente. Se cambia en el paso 1.'; }
+  }
+  const exc = dstExcede();
+  if(wex) wex.style.display = exc.length ? '' : 'none';
+  if(ex){ ex.oninput = function(){ wizard.form.justificacion_exceso = ex.value; }; if(!exc.length){ ex.value = ''; wizard.form.justificacion_exceso = ''; } }
+}
+function dstValidarPaso2(){
+  const f = wizard.form || {}, m = f.destino || 'sin';
+  const obra = (document.getElementById('fldObra')||{}).value || f.obra || '';
+  if(m === 'presupuesto'){
+    if(!f._pp) return { msg:'Elegí el presupuesto en el paso 1 (¿Para qué es esta compra?)', id:'fldObra' };
+    const p = dstPP(f._pp);
+    if(p && p.obra && dstNorm(p.obra) !== dstNorm(obra)) return { msg:'La obra no coincide con el presupuesto '+f._pp+' (es de '+p.obra+'). Elegí la misma obra o cambiá el destino.', id:'fldObra' };
+  }
+  if(m === 'ta'){
+    if(!f.trabajo_admin) return { msg:'Elegí el trabajo por administración en el paso 1', id:'fldObra' };
+    const t0 = dstTA(f.trabajo_admin);
+    if(t0 && t0.obra && dstNorm(t0.obra) !== dstNorm(obra)) return { msg:'La obra no coincide con el '+f.trabajo_admin+' (es de '+t0.obra+'). Elegí la misma obra o cambiá el destino.', id:'fldObra' };
+  }
+  const exc = dstExcede();
+  if(exc.length){
+    const j = ((document.getElementById('fldExceso')||{}).value || '').trim();
+    wizard.form.justificacion_exceso = j;
+    if(j.length < 10) return { msg:exc.length+' material(es) se pasan del saldo del presupuesto: escribí la justificación del exceso (mínimo 10 letras)', id:'fldExceso' };
+  }
+  return null;
+}
+/* Texto del destino para el PDF y los listados (OC viejas: su N° de presupuesto tal cual) */
+function ocDestinoTxt(oc){
+  if(!oc) return '-';
+  if(oc.destino === 'ta' || oc.trabajo_admin) return 'Trabajo por administracion ' + (oc.trabajo_admin || '');
+  if(oc.destino === 'presupuesto') return 'Presupuesto ' + (oc.presupuesto || '');
+  return oc.presupuesto || '-';
+}
+
+/* ── v2 · Destino de cada ítem en el detalle y cambio después de solicitada ──
+   Mismas reglas que la edición de la OC: quien la creó, mientras está
+   Solicitada u Observada; un administrador, en cualquier estado salvo Archivada,
+   con motivo obligatorio si ya fue aprobada. Todo queda en el historial. */
+function dstItemDestinoTxt(oc, it){
+  if(it.trabajo_admin) return { cls:'ta', txt:'Trabajo por adm. '+it.trabajo_admin };
+  if(it.sin_presupuesto) return { cls:'sin', txt:'Sin presupuesto' };
+  if(oc && oc.destino === 'presupuesto') return { cls:'pp', txt:'Presupuesto '+(oc.presupuesto||'') };
+  if(oc && (oc.destino === 'sin' || oc.destino === 'ta')) return { cls:'sin', txt:'Sin presupuesto' };
+  return null;
+}
+function dstDetalleChip(it){
+  const oc = detail.oc || {}; const d = dstItemDestinoTxt(oc, it);
+  if(!d) return '';
+  const puede = it.id != null && !/^tmp/i.test(String(it.id)) && _puedeEditarOC(oc);
+  return '<div class="dst-chip '+d.cls+'">Destino: <b>'+dstEsc(d.txt)+'</b>'+
+    (puede ? ' <button type="button" class="dst-cambiar" data-oci="'+dstEsc(it.id)+'">Cambiar</button>' : '')+'</div>';
+}
+document.addEventListener('click', function(e){
+  const b = e.target.closest && e.target.closest('.dst-cambiar'); if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const it = (detail.items||[]).filter(function(x){ return String(x.id) === b.getAttribute('data-oci'); })[0];
+  if(it) dstCambiarItem(it);
+});
+async function dstCambiarItem(it){
+  const oc = detail.oc || {};
+  if(!DST.loaded) await dstLoad();
+  const est = String(oc.estado||'');
+  const pideMotivo = !(est === 'Solicitado' || est === 'Observado');
+  const actual = it.trabajo_admin ? 'ta:'+it.trabajo_admin : ((it.sin_presupuesto || oc.destino !== 'presupuesto') ? 'sin' : 'pp');
+  const ops = [];
+  if(oc.destino === 'presupuesto') ops.push(['pp','Presupuesto '+(oc.presupuesto||'')+' (descuenta del saldo)']);
+  ops.push(['sin', oc.destino === 'presupuesto' ? 'Sin presupuesto (material no presupuestado)' : 'Sin presupuesto (gasto de la obra)']);
+  DST.ta.filter(function(t0){ return !oc.obra || dstNorm(t0.obra) === dstNorm(oc.obra); }).forEach(function(t0){ ops.push(['ta:'+t0.codigo, 'Trabajo por adm. '+t0.codigo+' · '+(t0.nombre||'')+' (suma a su costo)']); });
+  if(it.trabajo_admin && !ops.some(function(o){ return o[0] === 'ta:'+it.trabajo_admin; })) ops.push(['ta:'+it.trabajo_admin, 'Trabajo por adm. '+it.trabajo_admin]);
+  const ov = document.createElement('div'); ov.className = 'dst-ov';
+  ov.innerHTML = '<div class="dst-dlg"><h3>Cambiar el destino del material</h3><p class="dst-sub">'+dstEsc(it.producto_nombre||'')+' · '+dstEsc(oc.numero_oc||'')+' · '+dstEsc(est)+'</p>'+
+    '<label>Nuevo destino</label><select id="dstNuevo">'+ops.map(function(o){ return '<option value="'+dstEsc(o[0])+'"'+(o[0]===actual?' selected':'')+'>'+dstEsc(o[1])+'</option>'; }).join('')+'</select>'+
+    '<label>Motivo '+(pideMotivo?'<span style="color:#B42B2B">*</span>':'(opcional)')+'</label><textarea id="dstMotivo" rows="3" maxlength="300" placeholder="Ej. El porcelanato era para el pedido de la propietaria (TA-0001), no para el presupuesto."></textarea>'+
+    '<div class="dst-nota">'+(pideMotivo?'La OC ya fue aprobada: el cambio queda registrado en el historial con tu nombre y el motivo.':'El cambio queda registrado en el historial de la OC.')+' Si va a un trabajo por administración, deja de descontar del presupuesto y suma al costo del trabajo.</div>'+
+    '<div class="dst-err" id="dstErr"></div><div class="dst-btns"><button type="button" id="dstNo">Cancelar</button><button type="button" id="dstSi" class="pri">Guardar el cambio</button></div></div>';
+  document.body.appendChild(ov);
+  const cerrar = function(){ ov.remove(); };
+  ov.querySelector('#dstNo').onclick = cerrar;
+  ov.addEventListener('click', function(ev){ if(ev.target === ov) cerrar(); });
+  ov.querySelector('#dstSi').onclick = async function(){
+    const btn = this, v = ov.querySelector('#dstNuevo').value, mot = ov.querySelector('#dstMotivo').value.trim(), er = ov.querySelector('#dstErr');
+    if(v === actual){ er.textContent = 'Elegí un destino distinto del actual.'; return; }
+    if(pideMotivo && mot.length < 10){ er.textContent = 'Escribí el motivo del cambio (mínimo 10 letras).'; return; }
+    const upd = v === 'pp' ? { trabajo_admin:null, sin_presupuesto:false } : (v === 'sin' ? { trabajo_admin:null, sin_presupuesto:(oc.destino === 'presupuesto') } : { trabajo_admin:v.slice(3), sin_presupuesto:false });
+    btn.disabled = true;
+    const r = await sb.from('ordenes_compra_items').update(upd).eq('id', it.id);
+    if(r.error){ btn.disabled = false; er.textContent = /trabajo_admin/i.test(r.error.message||'') ? 'Falta correr axc_fase2_oc_destino.sql en la base. Avisá a Conexdata.' : ('No se pudo guardar: '+(r.error.message||'')); return; }
+    const antes = (dstItemDestinoTxt(oc, it)||{txt:'Sin presupuesto'}).txt;
+    Object.assign(it, upd);
+    const despues = (dstItemDestinoTxt(oc, it)||{txt:'Sin presupuesto'}).txt;
+    try{
+      await sb.from('oc_historial').insert({ oc_id:oc.id, tipo:'cambio_destino', usuario:(state.profile && state.profile.nombre) || (state.user && state.user.email) || '',
+        detalle:(it.producto_nombre||'')+': '+antes+' → '+despues+(mot?' · Motivo: '+mot:''), total_anterior:oc.valor_total ?? null, total_nuevo:oc.valor_total ?? null,
+        estado_anterior:est, estado_nuevo:est });
+    }catch(eh){ console.warn('historial cambio de destino', eh); }
+    cerrar();
+    try{ showToast('Destino cambiado', 'success'); }catch(e2){}
+    try{ openDetail(oc); }catch(e3){}
+  };
+}
+</script>
 </body>
 </html>
