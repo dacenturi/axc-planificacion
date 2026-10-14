@@ -9558,6 +9558,7 @@ function presuCompose(){
   // v2 · Con destino elegido en el paso 1, el valor sale de ahí
   if(wizard && wizard.form && wizard.form.destino === 'presupuesto' && wizard.form._pp) return wizard.form._pp;
   if(wizard && wizard.form && wizard.form.destino === 'ta' && wizard.form.trabajo_admin) return 'Por administración — ' + wizard.form.trabajo_admin;
+  if(wizard && wizard.form && wizard.form.destino === 'sin'){ const n0 = document.getElementById('fldPresupuesto'); const v0 = (n0 && n0.value || '').trim(); return v0 || PRESU_SIN_PREFIJO; }   // v2.4
   const chk = document.getElementById('chkSinPresupuesto');
   const num = document.getElementById('fldPresupuesto');
   const mot = document.getElementById('fldPresuMotivo');
@@ -9614,6 +9615,7 @@ function onPresuInputChange(){
 
 function onPresuSinChange(){
   presuToggleSin();
+  try{ if((wizard.form||{}).destino === 'sin'){ const n = document.getElementById('fldPresupuesto'); if(n){ n.disabled = false; n.style.opacity = ''; } } }catch(e){}
   onPresuInputChange();
   const mot = document.getElementById('fldPresuMotivo');
   const chk = document.getElementById('chkSinPresupuesto');
@@ -17399,7 +17401,7 @@ function dstRender(){
   st.style.display = m === 'ta' ? '' : 'none';
   if(m === 'presupuesto') h.innerHTML = f._pp ? '✔ Los materiales descuentan del saldo de <b>'+dstEsc(f._pp)+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.' : 'Elegí el presupuesto de la obra. <i>Ej.: cemento para el revoque del Nivel 3.</i>' + (DST.loaded && !DST.pp.length ? ' <b>No hay presupuestos aprobados cargados.</b>' : '');
   else if(m === 'ta') h.innerHTML = f.trabajo_admin ? '✔ Los materiales suman al costo de <b>'+dstEsc(f.trabajo_admin)+'</b>, que se liquida al cliente. No descuentan del presupuesto.' : 'Elegí el trabajo por administración. <i>Ej.: porcelanato para el TA-0001 · Renovación del piso.</i>' + (DST.loaded && !DST.ta.length ? ' <b>No hay trabajos por administración abiertos: se crean en Certificación o desde la orden de servicio.</b>' : '');
-  else if(m === 'sin') h.innerHTML = 'Gasto de la obra sin presupuesto. En el paso 2 se indica el lugar de aplicación. <i>Ej.: bolsas de residuos para la limpieza general.</i>';
+  else if(m === 'sin') h.innerHTML = 'No descuenta saldo. Si hay un presupuesto hecho fuera del sistema, en el paso 2 se anota su N° como referencia. <i>Ej.: bolsas de residuos para la limpieza general.</i>';
   else h.innerHTML = '';
 }
 /* v2.1 · Qué se ve según la pregunta 1 */
@@ -17535,17 +17537,37 @@ function dstSyncPaso2(){
   if(!chk || !num) return;
   const lblChk = chk.closest('label');
   if(m === 'sin'){
-    if(!chk.checked){ chk.checked = true; try{ presuToggleSin(); }catch(e){} }
-    num.readOnly = false; if(lblChk) lblChk.style.display = 'none';
-    if(res){ res.style.display = ''; res.innerHTML = '<b>Destino: sin presupuesto.</b> Indicá el lugar de aplicación: es lo que le permite a control de obra ubicar la compra.'; }
+    /* v2.4 · Sin presupuesto: solo el N° de presupuesto de referencia (opcional), para
+       presupuestos que se hicieron fuera del sistema. Ya no se pide el lugar de aplicación:
+       cada material ya lleva su rubro de aplicación. No descuenta saldo. */
+    if(chk.checked){ chk.checked = false; try{ presuToggleSin(); }catch(e){} }
+    const wrapM = document.getElementById('wrapPresuMotivo'); if(wrapM) wrapM.style.display = 'none';
+    const conNro = !!(num.value || '').trim();
+    num.disabled = false; num.readOnly = false; num.style.opacity = '';
+    num.placeholder = 'Ej. 1234 · opcional';
+    if(lblChk) lblChk.style.display = 'none';
+    if(!num._dstRef){ num._dstRef = true; num.addEventListener('input', function(){ if((wizard.form||{}).destino === 'sin') dstSyncPaso2(); }); }
+    const help = document.getElementById('fldPresupuestoHelp');
+    if(help){ help.textContent = 'Presupuesto hecho fuera del sistema. Queda anotado como referencia y no descuenta saldo.'; help.style.color = '#6B7486'; }
+    if(res){ res.style.display = ''; res.innerHTML = conNro
+      ? '<b>Destino: sin presupuesto, con N° de referencia.</b> Queda anotado el presupuesto <b>'+dstEsc(num.value.trim())+'</b> para identificar la compra.'
+      : '<b>Destino: sin presupuesto.</b> Si la compra corresponde a un presupuesto hecho fuera del sistema, anotá su N° como referencia.'; }
   } else {
     if(chk.checked){ chk.checked = false; try{ presuToggleSin(); }catch(e){} }
     num.value = m === 'presupuesto' ? (f._pp || '') : (f.trabajo_admin ? 'Por administración — ' + f.trabajo_admin : '');
-    num.readOnly = true; if(lblChk) lblChk.style.display = 'none';
+    num.readOnly = true; num.disabled = false; if(lblChk) lblChk.style.display = 'none';
+    // v2.3 · Se ve claramente de solo lectura y con la etiqueta que corresponde al destino
+    num.style.opacity = ''; num.style.background = '#F1F3F7'; num.style.color = '#1F3864'; num.style.fontWeight = '700'; num.style.cursor = 'not-allowed';
+    num.title = 'Se completa con el destino elegido en el paso 1';
+    const help2 = document.getElementById('fldPresupuestoHelp');
+    if(help2){ help2.textContent = m === 'presupuesto' ? 'Presupuesto aprobado elegido en el paso 1. Para cambiarlo, volvé al paso 1.' : 'Trabajo por administración elegido en el paso 1. Para cambiarlo, volvé al paso 1.'; help2.style.color = '#6B7486'; }
     if(res){ res.style.display = ''; res.innerHTML = m === 'presupuesto'
       ? '<b>Destino: presupuesto '+dstEsc(f._pp||'—')+'.</b> Los materiales descuentan del saldo. Se cambia en el paso 1.'
       : '<b>Destino: trabajo por administración '+dstEsc(f.trabajo_admin||'—')+'.</b> Los materiales suman a su costo y se liquidan al cliente. Se cambia en el paso 1.'; }
   }
+  const lblN = document.querySelector('label[for="fldPresupuesto"]');
+  if(lblN) lblN.textContent = m === 'ta' ? 'Trabajo por administración' : (m === 'presupuesto' ? 'Presupuesto' : 'N° de presupuesto de referencia');
+  if(m === 'sin'){ num.style.background = ''; num.style.color = ''; num.style.fontWeight = ''; num.style.cursor = ''; num.title = ''; }
   const exc = dstExcede();
   if(wex) wex.style.display = exc.length ? '' : 'none';
   if(ex){ ex.oninput = function(){ wizard.form.justificacion_exceso = ex.value; }; if(!exc.length){ ex.value = ''; wizard.form.justificacion_exceso = ''; } }
