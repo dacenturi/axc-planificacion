@@ -1038,7 +1038,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.0 · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.1 · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -3092,6 +3092,30 @@ async function taCostos(codigos){
     if(c.estado === 'Aprobado') o.aprob += v; else o.tramite += v;
     o.items.push(Object.assign({}, it, { _cert:c }));
   });
+  // v13.1 · Materiales de órdenes de compra imputados al TA (fase 2). Si la columna
+  // todavía no existe, el TA sigue mostrando solo los certificados.
+  try{
+    const ri = await sb.from('ordenes_compra_items')
+      .select('id,trabajo_admin,rubro_codigo,producto_nombre,unidad,cantidad,precio_unit,subtotal,sector,oc_id')
+      .in('trabajo_admin', codigos);
+    if(!ri.error && (ri.data||[]).length){
+      const ids = Array.from(new Set(ri.data.map(function(x){ return x.oc_id; })));
+      const ro = await sb.from('ordenes_compra').select('id,numero_oc,fecha,estado,proveedor,es_prueba').in('id', ids);
+      const cab = {}; (ro.data||[]).forEach(function(o){ cab[o.id] = o; });
+      ri.data.forEach(function(x){
+        const oc = cab[x.oc_id]; if(!oc || oc.es_prueba) return;
+        const est = norm(oc.estado||'');
+        if(est === 'RECHAZADO' || est === 'ANULADO') return;
+        const aprobada = (est === 'APROBADO' || est === 'ARCHIVADO' || est === 'RECIBIDO');
+        const o = out[x.trabajo_admin] = out[x.trabajo_admin] || { aprob:0, tramite:0, items:[] };
+        const v = Number(x.subtotal) || (Number(x.cantidad)||0) * (Number(x.precio_unit)||0);
+        if(aprobada) o.aprob += v; else o.tramite += v;
+        o.items.push({ id:'oc'+x.id, trabajo_admin:x.trabajo_admin, rubro_codigo:x.rubro_codigo||'', rubro_desc:'', descripcion:x.producto_nombre||'',
+          unidad:x.unidad||'', cantidad:x.cantidad, precio_unit:x.precio_unit, subtotal:v, sector:x.sector||'', observacion:'Proveedor: '+(oc.proveedor||''),
+          _oc:true, _cert:{ numero:oc.numero_oc, fecha:oc.fecha, estado:aprobada ? 'Aprobado' : 'Borrador', contratista:oc.proveedor } });
+      });
+    }
+  }catch(eOC){ console.warn('materiales de OC en el TA', eOC); }
   Object.keys(out).forEach(function(k){ out[k].items.sort(function(a,b){ return String(a._cert.fecha||'').localeCompare(String(b._cert.fecha||'')); }); });
   return out;
 }
@@ -3277,9 +3301,10 @@ async function taPintar(recargar){
         : '<div class="ta-bar"><i style="width:'+Math.min(100,pct)+'%;background:'+(pct>100?'#B42B2B':(pct>=85?'#C8A028':'#2E7D4F'))+'"></i></div><span class="ta-mut">'+pct+' % de '+gs(t.estimado)+'</span>';
       // v11.26 · Qué tiene adentro la cabecera: rubros e imputaciones
       const nR = Object.keys(C.items.reduce(function(a,i){ a[i.rubro_codigo || ('99.000|'+norm(i.descripcion||''))] = 1; return a; }, {})).length;
-      const nCert = Object.keys(C.items.reduce(function(a,i){ a[(i._cert||{}).numero||i.certificado_id] = 1; return a; }, {})).length;
+      const nCert = Object.keys(C.items.reduce(function(a,i){ if(!i._oc) a[(i._cert||{}).numero||i.certificado_id] = 1; return a; }, {})).length;
+      const nOC = Object.keys(C.items.reduce(function(a,i){ if(i._oc) a[(i._cert||{}).numero] = 1; return a; }, {})).length;   // v13.1
       const cargados = C.items.length
-        ? '<b class="ta-cnt">'+nR+' rubro'+(nR===1?'':'s')+'</b><div class="op-sub">'+C.items.length+' imputación'+(C.items.length===1?'':'es')+' · '+nCert+' certificado'+(nCert===1?'':'s')+'</div>'
+        ? '<b class="ta-cnt">'+nR+' rubro'+(nR===1?'':'s')+'</b><div class="op-sub">'+C.items.length+' imputación'+(C.items.length===1?'':'es')+' · '+(nCert?nCert+' certificado'+(nCert===1?'':'s'):'')+(nCert&&nOC?' · ':'')+(nOC?nOC+' compra'+(nOC===1?'':'s'):'')+'</div>'
         : '<span class="ta-vacia">Sin trabajos todavía</span><div class="op-sub">Se cargan desde el certificado</div>';
       return '<tr><td><span class="ta-cab">CABECERA</span> <b class="op-num">'+escapeHtml(t.codigo)+'</b><div>'+escapeHtml(t.nombre)+'</div><div class="op-sub">Desde '+fmtFecha(t.fecha_inicio)+' · pidió '+escapeHtml(taSolTxt(t)||'—')+'</div></td>'+
         '<td>'+escapeHtml(t.obra||'—')+'</td><td>'+escapeHtml(t.responsable||'—')+'</td><td>'+cargados+'</td>'+
@@ -3341,7 +3366,7 @@ async function taVer(codigo){
         rs.forEach(function(rc){
           const r = c.rubros[rc], cu = r.cant ? (r.mo + r.mat)/r.cant : 0;
           body += '<tr><td class="tb-cod">'+escapeHtml(r.cod)+'</td><td>'+escapeHtml(r.nom)+'</td><td>'+escapeHtml(r.un)+'</td><td class="r">'+qty(r.cant)+'</td>'+
-            '<td class="r">'+(r.mat ? gs(Math.round(r.mat/r.cant)) : '—')+'</td><td class="r">'+gs(Math.round(r.mo/(r.cant||1)))+'</td><td class="r">'+gs(Math.round(cu))+'</td>'+
+            '<td class="r">'+(r.mat ? gs(Math.round(r.mat/r.cant)) : '—')+'</td><td class="r">'+(r.mo ? gs(Math.round(r.mo/(r.cant||1))) : '—')+'</td><td class="r">'+gs(Math.round(cu))+'</td>'+
             '<td class="r"><b>'+gs(r.mo + r.mat)+'</b></td><td class="tb-docs">'+Object.keys(r.docs).join(', ')+'</td></tr>';
         });
       });
@@ -3437,7 +3462,7 @@ function taPDF(t, C, tipo, conTramite){
         const r = c.rubros[rc], par = r.mo + r.mat, cu = r.cant ? par / r.cant : 0;
         body.push(cli
           ? [s(r.cod), s(r.nom), s(r.un), qty(r.cant), gsPdf(V(cu)), gsPdf(V(par))]
-          : [s(r.cod), s(r.nom), s(r.un), qty(r.cant), r.mat ? gsPdf(Math.round(r.mat/r.cant)) : '-', gsPdf(Math.round(r.mo/(r.cant||1))), gsPdf(Math.round(cu)), gsPdf(par)]);
+          : [s(r.cod), s(r.nom), s(r.un), qty(r.cant), r.mat ? gsPdf(Math.round(r.mat/r.cant)) : '-', (r.mo ? gsPdf(Math.round(r.mo/(r.cant||1))) : '-'), gsPdf(Math.round(cu)), gsPdf(par)]);
       });
     });
   });
@@ -3566,10 +3591,10 @@ function taBolsa(items){
     const s = S[sec] = S[sec] || {};
     const c = s[cap.cod] = s[cap.cod] || { cap:cap, rubros:{} };
     // v13.0 · Sin rubro (p. ej. contrato sin presupuesto): una fila por trabajo, no todo junto en 99.000
-    const rk = it.rubro_codigo ? cod : cod+'|'+norm(it.descripcion||'');
+    const rk = it._oc ? 'MAT|'+norm(it.descripcion||'') : (it.rubro_codigo ? cod : cod+'|'+norm(it.descripcion||''));
     const r = c.rubros[rk] = c.rubros[rk] || { cod:cod, nom:(it.rubro_codigo ? (it.rubro_desc || it.descripcion) : it.descripcion) || '', un:it.unidad||'', cant:0, mo:0, mat:0, n:0, docs:{} };
-    r.cant += Number(it.cantidad)||0; r.mo += Number(it.subtotal)||0; r.n++;
-    if(it._cert && it._cert.numero) r.docs[it._cert.numero + (it.contrato_item_id ? ' · contrato' : '')] = 1;
+    r.cant += Number(it.cantidad)||0; if(it._oc) r.mat += Number(it.subtotal)||0; else r.mo += Number(it.subtotal)||0; r.n++;
+    if(it._cert && it._cert.numero) r.docs[it._cert.numero + (it.contrato_item_id ? ' · contrato' : (it._oc ? ' · compra' : ''))] = 1;
   });
   return S;
 }
