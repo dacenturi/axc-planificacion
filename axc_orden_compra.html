@@ -8883,7 +8883,8 @@ function consolidarItems(items){
     if(it.sin_presupuesto || it._extraPresu) c.extra = true;
     if(it._excedente) c.excedente = true;
     // Desglose: un renglón por rubro donde se aplica
-    const rubros = it.trabajo_admin ? [String(it.trabajo_admin)] : _consRubros(it);   // v2 · el TA va como lugar de aplicación
+    const rubros = _consRubros(it);   // v2.7 · siempre el rubro de aplicación (el TA va en «Destino»)
+    if(it.trabajo_admin){ c.tas = c.tas || {}; c.tas[String(it.trabajo_admin)] = 1; }
     const parte = rubros.length ? (cant / rubros.length) : cant;   // si va a 2 rubros, se reparte
     rubros.forEach(function(r){
       const rk = String(r);
@@ -10873,6 +10874,11 @@ async function submitOC(){
     // v2 · Destino, trabajo por administración y justificación del exceso
     ocPayload.destino = wizard.form.destino || 'sin';
     ocPayload.trabajo_admin = (wizard.form.destino === 'ta' && wizard.form.trabajo_admin) ? wizard.form.trabajo_admin : null;
+    if(wizard.form.destino === 'ta' && !ocPayload.trabajo_admin){   // v2.7 · respaldo: el TA de los materiales
+      const _tas = Array.from(new Set((wizard.cart||[]).map(it => it.trabajo_admin).filter(Boolean)));
+      if(_tas.length === 1) ocPayload.trabajo_admin = _tas[0];
+    }
+    if(wizard.form.destino === 'ta' && ocPayload.trabajo_admin && !/TA-/i.test(ocPayload.presupuesto || '')) ocPayload.presupuesto = 'Por administración — ' + ocPayload.trabajo_admin;
     const _just = (wizard.form.justificacion_exceso || '').trim();
     if(_just) ocPayload.justificacion_exceso = _just;
     let {data: ocData, error: ocError} = await sb
@@ -12975,7 +12981,7 @@ async function generatePDF(oc, incluirAdjuntos){
       ['Proveedor', oc.proveedor||'-'],
       ['Vendedor', oc.vendedor||'-'],
       ['Tipo de compra', oc.tipo_compra||'-'],
-      ['Destino', ocDestinoTxt(oc)],
+      ['Destino', ocDestinoTxt(oc, items)],
     );
 
     fields.forEach((f, idx) => {
@@ -13039,7 +13045,7 @@ async function generatePDF(oc, incluirAdjuntos){
 
     const rows = _consol.map((it, idx) => [
       String(idx + 1),
-      pdfSafe(it.producto_nombre || '-'),
+      pdfSafe((it.producto_nombre || '-') + (function(){ const ks = Object.keys(it.tas||{}); const cab = ocTAdeOC(oc, items); return (ks.length && ks.join(', ') !== cab) ? '  (Destino: ' + ks.join(', ') + ')' : ''; })()),
       (consAplicTexto(it) || '-').split('\n').map(pdfSafe).join('\n'),
       pdfSafe(it.unidad || '-'),
       String(_pdfNum(it.cantidad)),
@@ -17604,9 +17610,18 @@ function dstValidarPaso2(){
   return null;
 }
 /* Texto del destino para el PDF y los listados (OC viejas: su N° de presupuesto tal cual) */
-function ocDestinoTxt(oc){
+/* v2.7 · Número del TA de una OC: cabecera → «Por administración — TA-…» → materiales (si todos van al mismo) */
+function ocTAdeOC(oc, items){
+  if(!oc) return '';
+  if(oc.trabajo_admin) return String(oc.trabajo_admin);
+  const m = String(oc.presupuesto||'').match(/TA-\d+/i); if(m) return m[0].toUpperCase();
+  const s = {}; (items || (typeof detail !== 'undefined' && detail.oc && detail.oc.id === oc.id ? detail.items : []) || []).forEach(function(i){ if(i && i.trabajo_admin) s[i.trabajo_admin] = 1; });
+  const k = Object.keys(s); return k.length ? k.join(', ') : '';
+}
+function ocDestinoTxt(oc, items){
   if(!oc) return '-';
-  if(oc.destino === 'ta' || oc.trabajo_admin) return 'Trabajo por administracion ' + (oc.trabajo_admin || '');
+  // v2.7 · Texto corto: la columna del PDF corta los textos largos (antes se perdía el N° del TA)
+  if(oc.destino === 'ta' || oc.trabajo_admin){ const ta = ocTAdeOC(oc, items); return ta ? 'Por administracion ' + ta : 'Por administracion'; }
   if(oc.destino === 'presupuesto') return 'Presupuesto ' + (oc.presupuesto || '');
   return oc.presupuesto || '-';
 }
