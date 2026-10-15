@@ -1038,7 +1038,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.3 · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.4 · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -7033,6 +7033,7 @@ function renderCuenta(){
             (m.observacion?('<div class="cta-sub it">'+escapeHtml(m.observacion)+'</div>'):'')+'</td>'+
           '<td class="r"><b class="'+(entr?'mo':'mi')+'">'+(entr?'':'− ')+gs(m.monto)+'</b></td>'+
           '<td class="r" style="white-space:nowrap">'+
+            ((m.movimiento === 'otorgado' && !/^Reposici/i.test(m.concepto||'') && (state.isAdmin || state.puedeAprobar)) ? '<button type="button" class="cta-ic" data-ctacor="'+m.id+'" title="Corregir el monto de esta entrega (si se registró mal)">±</button>' : '')+
             '<button type="button" class="cta-ic" data-ctaobs="'+m.id+'" title="Observación">✎</button>'+
             '<button type="button" class="cta-ic" data-ctaadj="'+m.id+'" title="Comprobantes">📎'+
               ((CTA.adj[m.id]||0) ? '<span class="cta-n2">'+CTA.adj[m.id]+'</span>' : '')+'</button>'+
@@ -7045,9 +7046,75 @@ function renderCuenta(){
   cont.querySelectorAll('button[data-ctaobs]').forEach(function(b){
     b.onclick = function(){ ctaObservacion(Number(b.getAttribute('data-ctaobs'))); };
   });
+  cont.querySelectorAll('button[data-ctacor]').forEach(function(b){
+    b.onclick = function(){ ctaCorregir(Number(b.getAttribute('data-ctacor'))); };
+  });
   cont.querySelectorAll('button[data-ctaadj]').forEach(function(b){
     b.onclick = function(){ ctaAdjuntos(Number(b.getAttribute('data-ctaadj'))); };
   });
+}
+
+/* v13.4 · Corregir una entrega registrada con un monto equivocado.
+   No se borra ni se pisa la entrega original: se registra un movimiento de
+   CORRECCIÓN por la diferencia, con el motivo, que queda a la vista en la cuenta.
+   El saldo pendiente se recalcula solo. Solo se corrige hacia abajo (si faltó
+   plata, se registra otra entrega) y nunca por más de lo que queda pendiente. */
+async function ctaCorregir(id){
+  const m = CTA.mov.filter(function(x){ return x.id === id; })[0];
+  if(!m) return;
+  const tipoTxt = m.tipo === 'prestamo' ? 'préstamo' : 'anticipo';
+  const sal = ctaSaldo(m.contratista, m.tipo);
+  let nuevo = null, motivo = '';
+  const r = await axcDialog({
+    tono:'', icono:'±', titulo:'Corregir el monto del '+tipoTxt,
+    subtitulo: m.contratista+' · entregado el '+fmtFecha(m.fecha),
+    mensaje:'Registrado: <b>'+gs(m.monto)+'</b> · pendiente de devolver hoy: <b>'+gs(sal.saldo)+'</b>.<br>'+
+            'Usalo solo si la entrega <b>se registró con un monto equivocado</b>. La entrega original no se borra: se agrega una corrección por la diferencia, con el motivo.',
+    html:'<label class="op-l">Monto correcto de la entrega (₲)</label><input type="text" inputmode="numeric" id="ctaCorMonto" class="op-in" placeholder="Ej. 5.000.000">'+
+         '<label class="op-l" style="margin-top:8px">Motivo de la corrección</label><input type="text" id="ctaCorMot" class="op-in" maxlength="200" placeholder="Ej. se cargó 5.500.000 por error; el recibo firmado es de 5.000.000">'+
+         '<div class="ta-hint" id="ctaCorPrev" style="margin-top:8px"></div>',
+    alRender:function(box){
+      const mi = box.querySelector('#ctaCorMonto'), pv = box.querySelector('#ctaCorPrev');
+      mi.oninput = function(){
+        const v = parseGsIn(mi.value);
+        if(!(v >= 0) || mi.value.trim() === ''){ pv.innerHTML = ''; return; }
+        const dif = (Number(m.monto)||0) - v;
+        pv.innerHTML = dif > 0 ? 'Se registra una corrección de <b>− '+gs(dif)+'</b>. El pendiente pasa de <b>'+gs(sal.saldo)+'</b> a <b>'+gs(sal.saldo - dif)+'</b>.' : '';
+      };
+    },
+    validar:function(box){
+      const v = parseGsIn(box.querySelector('#ctaCorMonto').value);
+      const mot = (box.querySelector('#ctaCorMot').value||'').trim();
+      const er = function(msg){ showToast(msg,'error'); return false; };
+      if(!(v >= 0) || box.querySelector('#ctaCorMonto').value.trim() === '') return er('Escribí el monto correcto de la entrega');
+      if(v >= (Number(m.monto)||0)) return er('El monto correcto tiene que ser menor que el registrado. Si faltó registrar plata, usá «Registrar un anticipo o préstamo».');
+      const dif = (Number(m.monto)||0) - v;
+      if(dif > sal.saldo + 0.5) return er('Ya se descontó más de lo que corresponde: el pendiente es '+gs(sal.saldo)+'. Este caso es una devolución al contratista; consultá con administración.');
+      if(mot.length < 10) return er('Escribí el motivo de la corrección (mínimo 10 letras)');
+      nuevo = v; motivo = mot; return true;
+    },
+    ok:'Registrar la corrección', cancelar:'Cancelar'
+  });
+  if(!r || !r.ok || nuevo === null) return;
+  const dif = (Number(m.monto)||0) - nuevo;
+  const quien = (state.profile && (state.profile.residente||state.profile.nombre)) || (state.user && state.user.email) || null;
+  const fila = { contratista:m.contratista, tipo:m.tipo, movimiento:'correccion', monto:dif, obra:m.obra||null, fecha:hoyISO(),
+    concepto:'Corrección de la entrega del '+fmtFecha(m.fecha)+': registrado '+gs(m.monto)+' · correcto '+gs(nuevo),
+    observacion:motivo, activo:true, creado_por:quien };
+  try{
+    let res = await sb.from('contratista_cuenta').insert(fila);
+    if(res.error && /movimiento|check|constraint/i.test(res.error.message||'')){
+      // La base todavía no acepta el tipo «correccion»: se registra como descuento sin certificado, con el mismo concepto
+      res = await sb.from('contratista_cuenta').insert(Object.assign({}, fila, { movimiento:'descuento' }));
+    }
+    if(res.error) throw res.error;
+    try{ await sb.from('contratista_cuenta').update({ observacion: ((m.observacion ? m.observacion+' · ' : '')+'Corregida el '+fmtFecha(hoyISO())+': monto correcto '+gs(nuevo)).slice(0,500) }).eq('id', m.id); }catch(e2){}
+    CTA.cargado = false; await ctaCargar();
+    showToast('Corrección registrada','success', m.contratista+' · pendiente: '+gs(ctaSaldo(m.contratista, m.tipo).saldo));
+    try{ abrirCuenta(); }catch(e3){}
+  }catch(e){
+    showToast('No se pudo registrar la corrección','error', e.message||'');
+  }
 }
 
 /* Observación del movimiento: para qué se entregó, cómo se pagó, quién retiró */
