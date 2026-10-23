@@ -6918,6 +6918,7 @@ function fpMensajeVacio(total, verTodo){
   if(!nAll){
     return '<b>'+pp+' no tiene rubros cargados.</b><br>Revisalo en el módulo Presupuestos antes de comprar contra él.';
   }
+  if(nServ) return fpListaMonto(pp);   // v2.8 · lista de rubros con su saldo de material
   let h = '<b>'+pp+' no tiene materiales desglosados.</b><br>'+
     'Sus '+nAll+' rubro'+(nAll===1?'':'s')+' están cargados por monto, sin composición, '+
     'así que no hay una lista de materiales con cantidades para traer.';
@@ -6950,6 +6951,7 @@ function fpRender(){
     document.getElementById('fpCount').textContent = '—'; return;
   }
   if(cartBudget.mats === null){ cont.innerHTML = '<div class="fp-vacio">Cargando materiales del presupuesto…</div>'; return; }
+  { const pie = document.querySelector('#fpPanel .fp-foot'); if(pie) pie.style.display = ''; const sub = document.getElementById('fpSub'); if(sub && sub._orig) sub.textContent = sub._orig; }   // v2.8
 
   const verTodo = document.getElementById('fpVerTodo').checked;
   let rubros = fpRubros();
@@ -6967,7 +6969,9 @@ function fpRender(){
   document.getElementById('fpCount').textContent = rubros.length + ' de ' + total + ' rubros';
   fpSectorSelect();
   if(!rubros.length){
-    cont.innerHTML = '<div class="fp-vacio">'+fpMensajeVacio(total, verTodo)+'</div>';
+    const _msg = fpMensajeVacio(total, verTodo);
+    cont.innerHTML = /fpm-tabla/.test(_msg) ? _msg : '<div class="fp-vacio">'+_msg+'</div>';
+    fpMontoEventos(cont);
     const bc = document.getElementById('fpIrCatalogo');
     if(bc) bc.onclick = function(){ const m = document.getElementById('fpModoCat'); if(m) m.click(); };
     fpActualizarPie(); return;
@@ -7889,6 +7893,8 @@ document.getElementById('prodModalRemove').addEventListener('click', ()=>{
 // ═══════════════════════════════════════════════════════════════════
 
 function renderCart(){
+  try{ fpmImputarNuevos(); }catch(e){ console.warn('imputar al rubro', e); }   // v2.8
+  try{ fpmBanner(); }catch(e){}
   const wrap = document.getElementById('cartItems');
   try{ cartBudgetInit(); }catch(e){}
   try{ dstAplicarDefecto(); }catch(e){}
@@ -9912,16 +9918,19 @@ async function cartBudgetLoad(pp){
     const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id,coef1,coef2,merma_pct').eq('presupuesto', pp).order('material');
     const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:(Number(m.cantidad)||0), cant_exacta:(Number(m.cantidad)||0), rubro_codigo:m.rubro_codigo||'', precio_cong:(m.precio_unitario!=null?Number(m.precio_unitario):null), prod_cong:(m.producto_id!=null?String(m.producto_id):''), coef1:(Number(m.coef1)||0), coef2:(Number(m.coef2)||0), merma:(Number(m.merma_pct)||0) }; });
     // Rubros de servicio (control por dinero): precio_total>0 y sin receta. Agrupados por clave de rubro.
-    const rb = await sb.from('presupuesto_rubros').select('rubro_codigo,descripcion,unidad,precio_total,tiene_receta,sector,cantidad').eq('presupuesto', pp).order('orden');
+    const rb = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', pp).order('orden');
     const ragg = {}; const rorder = [];
     const rubroDesc = {};
     (rb.data||[]).forEach(function(r){
       if(r.rubro_codigo) rubroDesc[String(r.rubro_codigo)] = r.descripcion||'';
-      const pt = Number(r.precio_total)||0;
+      // v2.8 · El saldo para compras es la parte de MATERIAL del rubro (material por unidad × cantidad).
+      // La mano de obra se paga por Certificación. Si el rubro no tiene el desglose, se usa el total como antes.
+      const _mu = (r.material_unit==null || r.material_unit==='') ? null : Number(r.material_unit);
+      const pt = (_mu != null) ? Math.round(_mu * (Number(r.cantidad)||0)) : (Number(r.precio_total)||0);
       if(pt<=0 || r.tiene_receta) return;
       const key = r.rubro_codigo ? String(r.rubro_codigo) : ('D:'+_presuNorm(r.descripcion||''));
-      if(!ragg[key]){ ragg[key]={ rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', limite:0 }; rorder.push(key); }
-      ragg[key].limite += pt;
+      if(!ragg[key]){ ragg[key]={ rubro_codigo:r.rubro_codigo||'', descripcion:r.descripcion||'', unidad:r.unidad||'', limite:0, sector:(r.sector||'').trim(), cantidad:0, soloMaterial:(_mu!=null) }; rorder.push(key); }
+      ragg[key].limite += pt; ragg[key].cantidad += Number(r.cantidad)||0;
     });
     const rubros = rorder.map(function(k){ return ragg[k]; });
     // Lista COMPLETA de rubros (con y sin receta) para el modal de detalle
@@ -17339,6 +17348,26 @@ function pbtAddNoPresup(pid){
 #step1Content.dst-pend .dst-gate{display:block}
 #step1Content.dst-pend #fpOrigen,#step1Content.dst-pend #fpPanel,#step1Content.dst-pend #fpCatToolbar,#step1Content.dst-pend #catResults,#step1Content.dst-pend #catLoadmoreWrap,#step1Content.dst-pend #catMetaInfo,#step1Content.dst-pend .cat-meta,#step1Content.dst-pend .pbt-tabs{display:none !important}
 #recipeToggleBar:has(> :only-child){display:none !important}
+/* v2.8 · presupuesto por monto */
+.fpm-intro{padding:12px 16px;font-size:12.5px;color:#4B5568;line-height:1.5;background:#F7F9FC;border-bottom:1px solid #E3E8F0}
+.fpm-intro i{color:#8893a5}
+.fpm-wrap{overflow-x:auto}
+.fpm-tabla{width:100%;border-collapse:collapse;font-size:12.5px}
+.fpm-tabla th{text-align:left;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:#6B7486;padding:8px 12px;border-bottom:1px solid #DDE2EA;background:#fff}
+.fpm-tabla td{padding:9px 12px;border-bottom:1px solid #EEF1F6;vertical-align:top}
+.fpm-tabla .n{text-align:right;white-space:nowrap}.fpm-tabla .c{text-align:right;white-space:nowrap}
+.fpm-tabla tr.act td{background:#EEF4FC}
+.fpm-tabla tfoot td{font-weight:800;background:#F4F6FA;border-top:2px solid #1F3864}
+.fpm-cod{font-family:ui-monospace,Consolas,monospace;color:#1F3864}
+.fpm-sub{font-size:11px;color:#8893a5;font-weight:400}
+.fpm-bar{height:4px;background:#EEF1F6;border-radius:3px;margin-top:5px;max-width:260px}
+.fpm-bar i{display:block;height:100%;border-radius:3px;background:#2E8B57}.fpm-bar i.bajo{background:#C8A028}.fpm-bar i.neg{background:#C0392B}
+.fpm-saldo{font-weight:800;color:#1B5524}.fpm-saldo.bajo{color:#8A6A0E}.fpm-saldo.neg,.fpm-neg{color:#C0392B}
+.fpm-btn{border:1px solid #1F3864;background:#fff;color:#1F3864;border-radius:8px;padding:6px 10px;font-weight:700;font-size:12px;cursor:pointer}
+.fpm-btn:hover,.fpm-btn.act{background:#1F3864;color:#fff}
+.fpm-banner{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 10px;padding:10px 14px;border:1px solid #9EC1EA;background:#EEF4FC;border-radius:10px;font-size:13px;color:#15427A;flex-wrap:wrap}
+.fpm-bacc{display:flex;gap:6px}.fpm-bacc button{border:1px solid #9EC1EA;background:#fff;color:#15427A;border-radius:7px;padding:5px 10px;font-weight:700;font-size:12px;cursor:pointer}
+
 .fp-o-tit.dst-q{text-transform:none !important;letter-spacing:0 !important;font-size:14px !important}   /* v2.1 · una sola pestaña no aporta: se oculta */
 .dst-rec{font-size:10px;font-weight:700;color:#1B6B34;background:#E3F4E7;border-radius:4px;padding:1px 5px;margin-left:4px}
 .dst-chip-cart{margin:8px 16px 4px;font-size:12px;border-radius:9px;padding:8px 10px;background:#EEF4FC;color:#15427A;border:1px solid #9EC1EA}
@@ -17455,6 +17484,7 @@ document.addEventListener('click', function(e){
 });
 async function dstSet(m, val){
   const f = wizard.form;
+  if(typeof FP !== 'undefined'){ FP.rubroDestino = null; try{ fpmBanner(); }catch(e){} }   // v2.8
   f.destino = m;
   if(m === 'presupuesto'){
     f.trabajo_admin = '';
@@ -17691,6 +17721,99 @@ async function dstCambiarItem(it){
     try{ showToast('Destino cambiado', 'success'); }catch(e2){}
     try{ openDetail(oc); }catch(e3){}
   };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   v2.8 · PRESUPUESTO POR MONTO: lista de rubros con su saldo de material
+   Cuando el presupuesto no tiene composiciones (rubros «por monto»), «Traer del
+   presupuesto» muestra cada rubro con su material presupuestado, lo comprado y
+   el saldo. «Comprar para este rubro» abre el catálogo con ese rubro elegido:
+   cada producto que se agregue queda imputado a ese rubro.
+   ────────────────────────────────────────────────────────────────── */
+function fpmGs(n){ return 'Gs ' + Math.round(Number(n)||0).toLocaleString('es-PY'); }
+function fpListaMonto(pp){
+  let L = (cartBudget.rubros||[]).map(function(r){
+    const key = _cbRubroKey(r), a = _cbAggMoney(key);
+    const comprado = a.ejec + a.reserv;
+    return { r:r, key:key, comprado:comprado, carr:a.carr, saldo:r.limite - comprado - a.carr };
+  });
+  if(FP.filtro) L = L.filter(function(x){ return ((x.r.rubro_codigo||'')+' '+(x.r.descripcion||'')+' '+(x.r.sector||'')).toLowerCase().indexOf(FP.filtro) >= 0; });
+  if(FP.sector) L = L.filter(function(x){ return _secNorm(x.r.sector||'(sin sector)') === _secNorm(FP.sector); });
+  const totP = L.reduce(function(s,x){ return s + x.r.limite; }, 0), totC = L.reduce(function(s,x){ return s + x.comprado + x.carr; }, 0);
+  const cnt = document.getElementById('fpCount'); if(cnt) cnt.textContent = L.length + ' rubro' + (L.length===1?'':'s') + ' por monto';
+  const filas = L.map(function(x){
+    const pct = x.r.limite > 0 ? Math.min(100, Math.round((x.comprado + x.carr) / x.r.limite * 100)) : 0;
+    const cls = x.saldo < 0 ? 'neg' : (x.saldo < x.r.limite * 0.15 ? 'bajo' : 'ok');
+    const act = FP.rubroDestino === x.key;
+    return '<tr class="'+(act?'act':'')+'">'+
+      '<td><b class="fpm-cod">'+escapeHtml(x.r.rubro_codigo||'—')+'</b> '+escapeHtml(x.r.descripcion||'')+
+        '<div class="fpm-sub">'+escapeHtml(x.r.sector||'')+(x.r.cantidad?' · '+String(x.r.cantidad).replace('.',',')+' '+escapeHtml(x.r.unidad||''):'')+'</div>'+
+        '<div class="fpm-bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div></td>'+
+      '<td class="n">'+fpmGs(x.r.limite)+'</td>'+
+      '<td class="n">'+fpmGs(x.comprado)+(x.carr?'<div class="fpm-sub">+ '+fpmGs(x.carr)+' en este carrito</div>':'')+'</td>'+
+      '<td class="n fpm-saldo '+cls+'">'+fpmGs(x.saldo)+'</td>'+
+      '<td class="c"><button type="button" class="fpm-btn'+(act?' act':'')+'" data-fpm="'+escapeHtml(x.key)+'">'+(act?'✓ Comprando para este rubro':'Comprar para este rubro')+'</button></td></tr>';
+  }).join('');
+  return '<div class="fpm-intro"><b>'+pp+' está cargado por monto</b> (sin composición): no hay una lista de materiales con cantidades, '+
+    'pero cada rubro tiene un <b>importe de material</b>. Elegí el rubro y cargá sus materiales desde el catálogo: '+
+    'la compra descuenta de ese importe. <i>La mano de obra no se compra acá: se paga por Certificación.</i></div>'+
+    '<div class="fpm-wrap"><table class="fpm-tabla"><thead><tr><th>Rubro</th><th class="n">Material presupuestado</th><th class="n">Comprado</th><th class="n">Saldo</th><th></th></tr></thead>'+
+    '<tbody>'+(filas || '<tr><td colspan="5" class="fpm-sub" style="padding:14px">Ningún rubro coincide con el filtro.</td></tr>')+'</tbody>'+
+    '<tfoot><tr><td>Total ('+L.length+' rubros)</td><td class="n">'+fpmGs(totP)+'</td><td class="n">'+fpmGs(totC)+'</td><td class="n">'+fpmGs(totP-totC)+'</td><td></td></tr></tfoot></table></div>';
+}
+function fpMontoEventos(cont){
+  // Modo «por monto»: el subtítulo y el pie de «Agregar al carrito» no aplican
+  const esMonto = !!cont.querySelector('.fpm-tabla');
+  const pie = document.querySelector('#fpPanel .fp-foot'); if(pie) pie.style.display = esMonto ? 'none' : '';
+  const sub = document.getElementById('fpSub');
+  if(sub){ if(!sub._orig) sub._orig = sub.textContent; sub.textContent = esMonto ? 'Rubros cargados por monto: elegí un rubro y comprá sus materiales desde el catálogo.' : sub._orig; }
+  cont.querySelectorAll('[data-fpm]').forEach(function(b){
+    b.onclick = function(){ fpmElegirRubro(b.getAttribute('data-fpm')); };
+  });
+}
+function fpmRubro(key){ return (cartBudget.rubros||[]).filter(function(r){ return _cbRubroKey(r) === key; })[0] || null; }
+function fpmElegirRubro(key){
+  const r = fpmRubro(key); if(!r) return;
+  FP.rubroDestino = key;
+  // Lo que ya estaba en el carrito no se reasigna: solo lo que se agregue desde ahora
+  (wizard.cart||[]).forEach(function(it){ if(it._fpm === undefined) it._fpm = '-'; });
+  const mc = document.getElementById('fpModoCat'); if(mc) mc.click();
+  fpmBanner();
+  try{ showToast('Comprando para '+(r.rubro_codigo||'')+' · '+(r.descripcion||''), 'info', 'Cada producto que agregues del catálogo queda imputado a este rubro'); }catch(e){}
+  setTimeout(function(){ const s = document.getElementById('catSearch') || document.querySelector('#fpCatToolbar input'); if(s) s.focus(); }, 150);
+}
+function fpmBanner(){
+  let b = document.getElementById('fpmBanner');
+  const tb = document.getElementById('fpCatToolbar'); if(!tb) return;
+  const r = FP.rubroDestino ? fpmRubro(FP.rubroDestino) : null;
+  if(!r || !cartBudget.pp){ if(b) b.remove(); return; }
+  if(!b){ b = document.createElement('div'); b.id = 'fpmBanner'; b.className = 'fpm-banner'; tb.parentNode.insertBefore(b, tb); }
+  const a = _cbAggMoney(FP.rubroDestino), saldo = r.limite - a.ejec - a.reserv - a.carr;
+  b.innerHTML = '<div>🎯 Comprando para el rubro <b>'+escapeHtml(r.rubro_codigo||'')+' · '+escapeHtml(r.descripcion||'')+'</b>'+
+    (r.sector?' <span class="fpm-sub">('+escapeHtml(r.sector)+')</span>':'')+
+    '<br><span class="fpm-sub">Saldo de material: </span><b class="'+(saldo<0?'fpm-neg':'')+'">'+fpmGs(saldo)+'</b>'+
+    '<span class="fpm-sub"> · cada producto que agregues queda imputado a este rubro</span></div>'+
+    '<div class="fpm-bacc"><button type="button" id="fpmVolver">Elegir otro rubro</button><button type="button" id="fpmQuitar">Terminar</button></div>';
+  b.querySelector('#fpmVolver').onclick = function(){ const mp = document.getElementById('fpModoPre'); if(mp) mp.click(); };
+  b.querySelector('#fpmQuitar').onclick = function(){ FP.rubroDestino = null; fpmBanner(); try{ fpRender(); }catch(e){} };
+}
+/* Imputa al rubro elegido cada producto nuevo del carrito (una vez). No reasigna
+   un producto que ya está asociado a otro rubro: avisa, y se cambia en el carrito si corresponde. */
+function fpmImputarNuevos(){
+  if(!FP.rubroDestino || !cartBudget.pp || (wizard.form && wizard.form.destino && wizard.form.destino !== 'presupuesto')) return;
+  const key = FP.rubroDestino;
+  (wizard.cart||[]).forEach(function(it){
+    if(it._fpm !== undefined || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto) return;
+    it._fpm = key;
+    if(it.producto_id == null) return;
+    if(typeof _cbInsDeItem === 'function' && _cbInsDeItem(it)) return;   // es un insumo del presupuesto: va por cantidades
+    const ya = _cbResolveRubro(it.producto_id);
+    if(ya && ya !== key){
+      try{ showToast((it.producto_nombre||'Este producto')+' ya está asignado al rubro '+ya, 'info', 'Si esta compra es para otro rubro, cambialo en el carrito'); }catch(e){}
+      return;
+    }
+    if(!ya) setProductoItem(it.producto_id, key);
+  });
 }
 </script>
 </body>
