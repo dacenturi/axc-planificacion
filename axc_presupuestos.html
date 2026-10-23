@@ -1085,7 +1085,8 @@ html[data-theme="alto-contraste"]{
     <div class="pm-foot">
       <button class="pm-cancel" id="mgCancel" type="button">Cancelar</button>
       <button class="pm-btn" id="mgCoefPdf" type="button" style="background:#fff;color:#1F3864;border:1px solid #C9D0DC" title="Planilla de uso interno: costo, margen, coeficiente y precio de cada rubro">🔎 Coeficientes (uso interno)</button>
-      <button class="pm-btn" id="mgEmitir" type="button" style="background:#1F3864;color:#fff">💼 Emitir propuesta</button>
+      <button class="pm-btn" id="mgPreview" type="button" style="background:#fff;color:#1F3864;border:1px solid #1F3864" title="Ver el PDF como lo recibiría el cliente. No se guarda ni crea una versión">👁 Vista previa</button>
+      <button class="pm-btn" id="mgEmitir" type="button" style="background:#1F3864;color:#fff" title="Registra la propuesta como enviada al cliente">📨 Enviar al cliente</button>
     </div>
   </div>
 </div>
@@ -1946,6 +1947,8 @@ async function loadProfileAndApp(){
   // El permiso vive en perfiles.permisos, que se administra desde «Perfiles y Permisos».
   const _perm = profile.permisos || {};
   state.puedeVerMargen = (_perm.pres_margen === true) || profile.puede_ver_margen === true;
+  // v10.60 · Aprobar la versión del cliente (la vuelve oficial comercial y de costo)
+  state.puedeAprobarCliente = state.isAdmin || _perm.pres_aprobar_cliente === true;
   // v10.19 · La planilla es una sola: su nombre y su alcance dependen del permiso
   setTimeout(function(){
     const b = document.getElementById('pmIntegralDocBtn');
@@ -2738,6 +2741,7 @@ async function openEdit(codigo){
   document.getElementById('pmObs').value = h.observaciones || '';
   ivaSet(h.iva_pct);
   ed.activo = h.activo !== false; renderEstadoUI();
+  try{ _propEstadoPresu(codigo); }catch(eP){}   // v10.61
   aplicarBloqueo(h);
   // ── Dueño del presupuesto ─────────────────────────────────────
   // Lo edita quien lo elaboró. El resto lo ve completo, pero sin poder
@@ -4490,7 +4494,7 @@ async function saveBudget(){
       }
     }catch(_e){ /* columnas de metadata ausentes: no interrumpir */ }
     // El dueño del presupuesto es quien lo edita
-    if(!ed.isNew && ed.duenio && ed.duenio !== _userTag() && !_esAdmin()){
+    if(!ed.isNew && ed.duenio && ed.duenio !== _userTag() && !_esAdmin() && !(ed._aprobandoCliente && state.puedeAprobarCliente)){   // v10.60 · aprobar la versión del cliente
       showToast('No podés guardar este presupuesto','error',
         'Lo elaboró '+String(ed.duenio).split('@')[0]+' · pedíle que haga el cambio o consultá a un administrador');
       btn.disabled=false; btn.textContent=old; return;
@@ -4717,7 +4721,7 @@ async function saveBudget(){
     _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
   }catch(e){ console.warn('saveBudget', e); showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
-  finally{ btn.disabled = false; if(txt) txt.textContent = old; }
+  finally{ btn.disabled = false; try{ if(txt) txt.textContent = old; }catch(_eTxt){ /* v10.60 · salida temprana: «txt» todavía no existe */ } }
 }
 
 
@@ -4804,7 +4808,7 @@ const COEF_AXC = 0.69;
    Una fila por versión: cuál aceptó el cliente, con qué coeficiente y por
    cuánto. La aceptada es la única contra la que se comparan los costos. */
 async function openPropuestasLista(){
-  if(!state.isAdmin && !state.puedeVerMargen){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
+  if(!state.isAdmin && !state.puedeVerMargen && !state.puedeAprobarCliente){ showToast('No tenés permiso para ver los precios de venta','error'); return; }
   const presu = (document.getElementById('pmCodigo').value||'').trim();
   if(!presu){ showToast('Abrí primero un presupuesto','error'); return; }
 
@@ -4888,7 +4892,7 @@ async function openPropuestasLista(){
           '<div style="border:1.5px solid #bfe0c4;background:#f2faf3;border-radius:12px;padding:13px 15px;margin-bottom:14px">'+
             '<div style="display:flex;align-items:center;gap:9px;margin-bottom:10px;flex-wrap:wrap">'+
               '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:800">✓ PROPUESTA VIGENTE</span>'+
-              '<b style="font-size:14px">'+escapeHtml(acc.codigo||'')+' v'+acc.version+'</b>'+
+              '<b style="font-size:14px">'+(acc.numero_envio ? 'Propuesta '+acc.numero_envio+' <span style="font-weight:600;color:#8893a5">(v'+acc.version+')</span>' : escapeHtml(acc.codigo||'')+' v'+acc.version)+'</b>'+
               '<span style="font-size:12px;color:#5a6377">'+escapeHtml(acc.obra||'')+(acc.descripcion?(' · '+escapeHtml(acc.descripcion)):'')+'</span>'+
             '</div>'+
             '<div style="display:flex;gap:22px;flex-wrap:wrap">'+
@@ -4910,28 +4914,22 @@ async function openPropuestasLista(){
           'Ninguna versión está marcada como aceptada. Hasta que marques una, el comparativo de costo contra venta no tiene referencia.</div>';
       }
 
-      box.innerHTML = avisoRef + ficha +
-        '<style>#plBody .ins-tbl{font-size:12.5px}#plBody .ins-tbl th{position:sticky;top:0;z-index:3;background:#F0F3F8}'+
-        '#plBody .ins-tbl td,#plBody .ins-tbl th{padding:6px 8px}'+
-        '#plBody .pl-acc{width:150px;padding:6px 10px!important}'+
-        '#plBody .pl-b{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;margin-bottom:5px;'+
-          'border-radius:8px;padding:5px 9px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #C9D0DC;background:#fff;color:#1F3864;white-space:nowrap}'+
-        '#plBody .pl-b:last-child{margin-bottom:0}'+
-        '#plBody .pl-b-pdf:hover{background:#EEF3FA}'+
-        '#plBody .pl-b-mk{background:#1B5524;border-color:#1B5524;color:#fff}#plBody .pl-b-mk:hover{filter:brightness(1.12)}'+
-        '#plBody .pl-b-ok{background:#DFF3E3;border-color:#9BD3A9;color:#1B5524;cursor:default}'+
-        '</style>'+
-        '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
-        '<th class="n">Margen</th><th class="n">Coef.</th><th class="n">Rubros</th>'+
-        '<th class="n">Costo</th><th class="n">Utilidad</th><th class="n">Venta</th>'+
-        '<th class="n">Con IVA</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>'+
-        cabs.map(function(c){
+
+      // v10.61 · Propuestas enviadas (con número) arriba; las versiones viejas, plegadas
+      const _verLbl = function(c){ return c.numero_envio ? '<b>Propuesta '+c.numero_envio+'</b><div style="font-size:11px;color:#8893a5">v'+c.version+'</div>' : '<b>v'+c.version+'</b>'; };
+      const _estLbl = function(c){
+        if(c.estado === 'enviada') return '<span style="background:#E8EEF8;color:#1F3864;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:800">enviada · esperando aprobación</span>';
+        if(c.estado === 'reemplazada') return '<span style="color:#8893a5;font-size:12px">reemplazada</span>';
+        if(c.estado === 'rechazada') return '<span style="color:#c0392b;font-size:12px">rechazada</span>';
+        return '<span style="color:#8893a5;font-size:12px">sin clasificar</span>';
+      };
+      const _fila = function(c){
           const a = agg[c.id] || { costo:0, venta:0, n:0, dif:0 };
           const coef = a.venta>0 ? (a.costo/a.venta) : 0;
           const util = a.venta - a.costo;
           const iva  = Math.round(a.venta * (Number(c.iva_pct)||0) / 100);
           return '<tr'+(c.aceptada?' style="background:#f0f8f1"':'')+'>'+
-            '<td><b>v'+c.version+'</b></td>'+
+            '<td>'+_verLbl(c)+'</td>'+
             '<td>'+escapeHtml(_fmtF(c.emitido_en,false)||'')+'</td>'+
             '<td style="font-size:12px" title="'+escapeHtml(c.emitido_por||'')+'">'+escapeHtml(_nombreCorto(c.emitido_por||''))+'</td>'+
             '<td class="n">'+(isNaN(Number(c.margen_general))?'—':(Number(c.margen_general)+' %'))+'</td>'+
@@ -4946,18 +4944,54 @@ async function openPropuestasLista(){
               ? '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800">✓ ACEPTADA</span>'+
                 (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
                 (c.aceptada_obs?('<div style="font-size:11px;color:#8893a5">'+escapeHtml(c.aceptada_obs)+'</div>'):'')
-              : '<span style="color:#8893a5;font-size:12px">emitida</span>')+
+              : _estLbl(c))+
               (_coincide(a) ? '<div><span style="display:inline-block;margin-top:4px;background:#E8EEF8;color:#1F3864;border-radius:999px;padding:2px 8px;font-size:10.5px;font-weight:800">= '+(ed.activo?'PUBLICADO':'PRESUPUESTO ACTUAL')+'</span></div>' : '')+'</td>'+
             '<td class="pl-acc">'+
               '<div style="display:flex;gap:6px"><button type="button" class="pl-b pl-b-pdf" data-plver="'+c.id+'" title="Ver o imprimir esta versión tal como se emitió" style="flex:1">📄 <span>Ver PDF</span></button>'+
               '<button type="button" class="pl-b pl-b-pdf" data-plxls="'+c.id+'" title="Descargar esta versión en Excel (solo precios de venta)" style="flex:1;color:#1F7A3F;border-color:#9DB8A6">📊 <span>Excel</span></button></div>'+
               (c.aceptada
                 ? '<span class="pl-b pl-b-ok" title="Es la versión vigente: contra esta se compara el costo">✓ <span>Aceptada</span></span>'
-                : (_coincide(a)
+                : (state.puedeAprobarCliente
+                    ? '<button type="button" class="pl-b pl-b-mk" data-plapr="'+c.version+'" title="Elegí esta versión como la que aprobó el cliente: queda oficial comercial y de costo">✓ <span>Aprobar para el cliente</span></button>'+
+                      '<div style="font-size:10.5px;margin-top:3px;color:'+(_coincide(a)?'#1B5524':'#8a6d10')+'">'+(_coincide(a)?'coincide con el presupuesto':'tiene diferencias con el presupuesto')+'</div>'
+                  : _coincide(a)
                     ? '<button type="button" class="pl-b pl-b-mk" data-placep="'+c.version+'" title="Coincide con el presupuesto '+_refTxt+': marcala si es la que aceptó el cliente">✓ <span>Marcar aceptada</span></button>'
                     : '<span class="pl-b" style="cursor:default;color:#8893a5;border-style:dashed;white-space:normal;font-weight:600;font-size:11px" title="Solo se acepta la propuesta que coincide con el presupuesto '+_refTxt+'">No coincide con el '+(ed.activo?'publicado':'presupuesto actual')+'</span>'))+
             '</td></tr>';
-        }).join('')+'</tbody></table>'+
+        };
+      const _tabla = function(lista){ return '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
+        '<th class="n">Margen</th><th class="n">Coef.</th><th class="n">Rubros</th>'+
+        '<th class="n">Costo</th><th class="n">Utilidad</th><th class="n">Venta</th>'+
+        '<th class="n">Con IVA</th><th>Estado</th><th style="width:230px"></th></tr></thead><tbody>' + lista.map(_fila).join('') + '</tbody></table>'; };
+      const _clasif = cabs.filter(function(c){ return c.estado || c.aceptada; }).sort(function(x,y){ return y.version - x.version; });
+      const _viejas = cabs.filter(function(c){ return !c.estado && !c.aceptada; }).sort(function(x,y){ return y.version - x.version; });
+      const _enviada = _clasif.filter(function(c){ return c.estado === 'enviada' && !c.aceptada; })[0];
+      let _listado = '';
+      if(!acc && _enviada){
+        const ae = agg[_enviada.id] || { venta:0 };
+        _listado += '<div style="border:1.5px solid #9EC1EA;background:#EEF4FC;border-radius:12px;padding:12px 15px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'+
+          '<div><div style="font-size:10.5px;font-weight:800;color:#15427A;letter-spacing:.4px">📨 ENVIADA · ESPERANDO APROBACIÓN DEL CLIENTE</div>'+
+          '<div style="font-size:15px;font-weight:800;color:#1a2236;margin-top:2px">Propuesta '+(_enviada.numero_envio||'')+' · ₲ '+fmtGs(ae.venta)+'</div>'+
+          '<div style="font-size:12px;color:#5a6377">Enviada'+(_enviada.emitido_en ? ' el '+escapeHtml(_fmtF(_enviada.emitido_en,false)||'') : '')+(_enviada.emitido_por ? ' por '+escapeHtml(_nombreCorto(_enviada.emitido_por)) : '')+'. Cuando el cliente la apruebe, tocá «Aprobar para el cliente».</div></div>'+
+          (state.puedeAprobarCliente ? '<button type="button" class="pl-b pl-b-mk" style="width:auto" data-plapr="'+_enviada.version+'">✓ <span>Aprobar para el cliente</span></button>' : '')+'</div>';
+      }
+      if(_clasif.length) _listado += '<div style="font-weight:800;color:#1F3864;margin:4px 0 6px">Propuestas enviadas al cliente</div>' + _tabla(_clasif);
+      if(_viejas.length) _listado += '<details'+(_clasif.length?'':' open')+' style="margin-top:12px"><summary style="cursor:pointer;font-weight:700;color:#5a6377">'+
+          (_clasif.length ? 'Versiones anteriores sin clasificar ('+_viejas.length+')' : 'Versiones emitidas antes de separar «Vista previa» de «Enviar al cliente» ('+_viejas.length+')')+'</summary>'+
+          '<div style="font-size:11.5px;color:#8893a5;margin:6px 0">Antes, para ver el PDF había que emitir una versión: muchas de estas son pruebas. Si una es la que aprobó el cliente, usá «Aprobar para el cliente» en esa fila.</div>'+
+          _tabla(_viejas)+'</details>';
+      box.innerHTML = ((_enviada && !acc) ? '' : avisoRef + ficha) +   // v10.61 · con una propuesta enviada, la ficha nueva reemplaza los avisos viejos
+        '<style>#plBody .ins-tbl{font-size:12.5px}#plBody .ins-tbl th{position:sticky;top:0;z-index:3;background:#F0F3F8}'+
+        '#plBody .ins-tbl td,#plBody .ins-tbl th{padding:6px 8px}'+
+        '#plBody .pl-acc{width:150px;padding:6px 10px!important}'+
+        '#plBody .pl-b{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;margin-bottom:5px;'+
+          'border-radius:8px;padding:5px 9px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #C9D0DC;background:#fff;color:#1F3864;white-space:nowrap}'+
+        '#plBody .pl-b:last-child{margin-bottom:0}'+
+        '#plBody .pl-b-pdf:hover{background:#EEF3FA}'+
+        '#plBody .pl-b-mk{background:#1B5524;border-color:#1B5524;color:#fff}#plBody .pl-b-mk:hover{filter:brightness(1.12)}'+
+        '#plBody .pl-b-ok{background:#DFF3E3;border-color:#9BD3A9;color:#1B5524;cursor:default}'+
+        '</style>'+
+        _listado+
         '<div style="font-size:11.5px;color:#8893a5;margin-top:10px">El coeficiente real es costo ÷ venta de toda la propuesta. '+
         'Si algunos rubros tienen margen propio, el coeficiente no coincide exacto con el general.</div>';
     }catch(e){
@@ -4970,6 +5004,7 @@ async function openPropuestasLista(){
     const t = ev.target.closest('button'); if(!t) return;
     if(t.dataset.plver){ await verPropuestaVersion(t.dataset.plver); return; }
     if(t.dataset.plxls){ await excelPropuestaVersion(t.dataset.plxls); return; }
+    if(t.dataset.plapr){ await aprobarParaCliente(presu, Number(t.dataset.plapr), pintar); return; }   // v10.60
     if(t.dataset.placep){
       const v = Number(t.dataset.placep);
       if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar: la propuesta aceptada tiene que coincidir con el presupuesto guardado.'); return; }
@@ -5521,10 +5556,29 @@ async function emitirPropuesta(anexos){
   const cond    = (document.getElementById('mgCond').value||'').trim();
   const codigo  = presu.replace(/^PP/i,'CP') || ('CP'+Date.now());
 
-  const btn=document.getElementById('mgEmitir'); btn.disabled=true; const old=btn.textContent; btn.textContent='Emitiendo…';
+  // v10.61 · Vista previa (no guarda) o envío al cliente (crea la versión)
+  const _preview = !!MG._vistaPrevia; MG._vistaPrevia = false;
+  if(!_preview && !MG._soloRegistrar){
+    const okEnv = await _confirmarAccion({
+      titulo:'Enviar la propuesta al cliente', sub:presu+(cliente?' · '+cliente:''),
+      intro:'Se registra como <b>propuesta enviada</b>, con su número. Usalo solo cuando se la mandás al cliente: para probar márgenes o ver el PDF, usá <b>«Vista previa»</b>.',
+      riesgos:['La propuesta enviada anterior (si hay) pasa a <b>reemplazada</b>.',
+               'Cuando el cliente la apruebe, se marca en «Propuestas emitidas» → «Aprobar para el cliente».'],
+      ok:'Enviar al cliente', cancelar:'Volver'
+    });
+    if(okEnv === null) return;
+  }
+  const btn=document.getElementById(_preview ? 'mgPreview' : 'mgEmitir'); btn.disabled=true; const old=btn.textContent; btn.textContent=_preview ? 'Generando…' : 'Enviando…';
   try{
-    const prev = await sb.from('propuesta_cab').select('version').eq('codigo',codigo).order('version',{ascending:false}).limit(1);
-    const version = (prev.data && prev.data.length ? Number(prev.data[0].version) : 0) + 1;
+    let version = 'VISTA PREVIA', _nroEnvio = null;
+    if(!_preview){
+      const prev = await sb.from('propuesta_cab').select('version').eq('codigo',codigo).order('version',{ascending:false}).limit(1);
+      version = (prev.data && prev.data.length ? Number(prev.data[0].version) : 0) + 1;
+      try{
+        const env = await sb.from('propuesta_cab').select('id,estado,aceptada').eq('presupuesto', presu);
+        if(!env.error) _nroEnvio = (env.data||[]).filter(function(x){ return x.estado || x.aceptada; }).length + 1;
+      }catch(eN){}
+    }
 
     let costoT=0, ventaT=0, totalOpcEmitido=0;
     const items = MG.rows.map(function(r,i){
@@ -5547,9 +5601,11 @@ async function emitirPropuesta(anexos){
     };
     const cabExtra = { atencion:_vv('mgAtencion')||null, referencia:_vv('mgRef')||null,
       profesional:_vv('mgProf')||null, superficie:(_vv('mgSup')?Number(_vv('mgSup')):null),
-      alcance:_vv('mgAlcance')||null, venta_opcional:totalOpcEmitido };
+      alcance:_vv('mgAlcance')||null, venta_opcional:totalOpcEmitido,
+      estado:'enviada', numero_envio:_nroEnvio };
+    if(!_preview){
     let c = await sb.from('propuesta_cab').insert(Object.assign({}, cabBase, cabExtra)).select('id').single();
-    if(c.error && /atencion|referencia|profesional|superficie|alcance|venta_opcional/i.test(c.error.message||'')){
+    if(c.error && /atencion|referencia|profesional|superficie|alcance|venta_opcional|estado|numero_envio/i.test(c.error.message||'')){
       c = await sb.from('propuesta_cab').insert(cabBase).select('id').single();   // base sin las columnas nuevas
     }
     if(c.error) throw c.error;
@@ -5566,9 +5622,17 @@ async function emitirPropuesta(anexos){
       }));
     }
     if(it.error) throw it.error;
+    // v10.61 · La enviada anterior pasa a «reemplazada»
+    try{ if(c && c.data && c.data.id) await sb.from('propuesta_cab').update({ estado:'reemplazada' }).eq('presupuesto', presu).eq('estado','enviada').neq('id', c.data.id); }catch(eR){}
+    }
 
-    document.getElementById('mgOverlay').style.display='none';
-    showToast('Propuesta emitida','success', codigo+' v'+version+' · Gs '+fmtGs(ventaT)+' · utilidad '+((ventaT-costoT)/ventaT*100).toFixed(1)+'%');
+    if(_preview){
+      showToast('Vista previa generada','info','No se guardó ninguna versión. Cuando la mandes al cliente, usá «Enviar al cliente».');
+    } else {
+      document.getElementById('mgOverlay').style.display='none';
+      showToast((_nroEnvio ? 'Propuesta '+_nroEnvio+' enviada' : 'Propuesta enviada'),'success', codigo+' v'+version+' · Gs '+fmtGs(ventaT)+' · utilidad '+((ventaT-costoT)/ventaT*100).toFixed(1)+'%');
+      try{ _propEstadoPresu(presu); }catch(eE){}
+    }
     if(MG._soloRegistrar){ MG._soloRegistrar = false; return; }   // v10.17 · la versión queda guardada; el PDF lo genera la planilla
     const _v = function(id){ const e=document.getElementById(id); return e ? (e.value||'').trim() : ''; };
     imprimirPropuesta({ comp: !!(document.getElementById('mgComp')||{}).checked,
@@ -5576,9 +5640,9 @@ async function emitirPropuesta(anexos){
       validez:validez, condiciones:cond, observaciones:obs, items:items, venta:ventaT,
       atencion:_v('mgAtencion'), referencia:_v('mgRef'), profesional:_v('mgProf'),
       superficie:_v('mgSup'), alcance:_v('mgAlcance'),
-      iva_pct: ivaGet(), anexos: anexos||[] });
+      iva_pct: ivaGet(), anexos: anexos||[], borrador:_preview, numero_envio:_nroEnvio });
   }catch(e){
-    showToast('No se pudo emitir','error', e.message||String(e));
+    showToast(_preview ? 'No se pudo generar la vista previa' : 'No se pudo enviar','error', e.message||String(e));
   }finally{ btn.disabled=false; btn.textContent=old; }
 }
 
@@ -5886,9 +5950,9 @@ function imprimirPropuesta(P){
 '@media print{ .pie-pag{position:fixed;bottom:4mm;left:0;right:0;text-align:center;font-size:9.5px;color:#8893a5;letter-spacing:.3px} .pie-pag:after{counter-increment:page;content:"Pagina " counter(page)} }'+
 '.pie-pag{display:none}'+
 '@media print{.bar{display:none}body{background:#fff}.page{width:auto;margin:0;box-shadow:none}thead{display:table-header-group}tr{page-break-inside:avoid}}'+
-'</style></head><body>'+
+(P.borrador?'.wm{position:fixed;top:38%;left:-10%;right:-10%;text-align:center;font-size:84px;font-weight:900;color:rgba(192,57,43,.13);transform:rotate(-28deg);pointer-events:none;z-index:9999;letter-spacing:4px}.wmbar{background:#FDF0EE;color:#8B2A1E;border:1px solid #F0C4BC;border-radius:8px;padding:8px 12px;margin:8px 0;font:700 12px sans-serif;text-align:center}':'')+'</style></head><body>'+(P.borrador?'<div class="wm">VISTA PREVIA</div>':'')+
 '<div class="bar">'+escapeHtml(P._titulo)+' — documento para el cliente'+
-'<button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>'+
+'<button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>'+(P.borrador?'<div class="wmbar">VISTA PREVIA · NO ENVIADA AL CLIENTE · no tiene validez como propuesta</div>':'')+
 '<div class="page"><div class="cinta"></div>'+
 '<div class="hdr"><div style="display:flex;gap:16px;align-items:flex-start">'+
 '<img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
@@ -7004,7 +7068,7 @@ async function calcInsumosFromRecetas(silent, soloCodigos, opts){
     if(sinReceta) msg += ' · ' + sinReceta + ' rubro(s) sin receta';
     if(!opts.sinToast) showToast(msg + (silent?'':' — revisá y Guardá'), 'success');
   }catch(e){ console.warn('calcInsumos', e); if(!silent) showToast('Error calculando insumos: ' + (e.message||''), 'error'); }
-  finally{ btn.disabled = false; if(txt) txt.textContent = old; }
+  finally{ btn.disabled = false; try{ if(txt) txt.textContent = old; }catch(_eTxt){ /* v10.60 · salida temprana: «txt» todavía no existe */ } }
 }
 
 function _rubLiveUpdate(){
@@ -8271,6 +8335,8 @@ document.getElementById('mgCoefPdf').addEventListener('click', imprimirCoeficien
 document.getElementById('mgEmitir').addEventListener('click', function(){
   elegirAnexos('Propuesta económica · adjuntos', emitirPropuesta);
 });
+// v10.61 · Vista previa: el PDF sale marcado como no enviado y no se guarda ninguna versión
+document.getElementById('mgPreview').addEventListener('click', function(){ MG._vistaPrevia = true; emitirPropuesta([]); });
 // Margen y coeficiente son la misma cosa: coeficiente = 1 - margen.
 // Se escriben cualquiera de los dos y el otro se acomoda.
 (function(){
@@ -11928,6 +11994,218 @@ document.addEventListener('DOMContentLoaded', function(){
     b.onclick = function(){ AXC_TEMA.abrirSelector(); };
   }
 });
+
+/* ══════════════════════════════════════════════════════════════════
+   v10.60 · APROBAR LA VERSIÓN DEL CLIENTE
+   En un solo paso, la versión elegida queda ACEPTADA (oficial comercial) y el
+   presupuesto PUBLICADO (oficial de costo: el que descuenta en la orden de
+   compra). Así lo comercial y el costo son siempre lo mismo.
+   Si la versión no coincide con el presupuesto:
+   · solo cantidades → «Ajustar cantidades a la versión y aprobar»;
+   · costos o rubros distintos → emitir una versión nueva, o (solo administración)
+     aprobar igual con la diferencia registrada.
+   ────────────────────────────────────────────────────────────────── */
+function _apNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim(); }
+function _apKey(cod, sec, desc){ return (cod ? String(cod) : 'D:'+_apNorm(desc)) + '|' + _apNorm(sec); }
+function _apCu(r){
+  const q = Number(r.cantidad)||0;
+  if(r.costo_unit != null && r.costo_unit !== '') return Number(r.costo_unit)||0;
+  return q > 0 ? (Number(r.precio_total)||0) / q : (Number(r.precio_total)||0);
+}
+async function _apComparar(presu, version){
+  const cab = await sb.from('propuesta_cab').select('*').eq('presupuesto', presu).eq('version', version).maybeSingle();
+  if(cab.error || !cab.data) throw new Error('No se encontró la versión v'+version);
+  const its = await sb.from('propuesta_items').select('*').eq('propuesta_id', cab.data.id);
+  if(its.error) throw its.error;
+  const V = {}, C = {};
+  (its.data||[]).forEach(function(x){ if(x.opcional) return; V[_apKey(x.rubro_codigo, x.sector, x.descripcion)] = { cod:x.rubro_codigo||'', desc:x.descripcion||'', sec:x.sector||'', q:Number(x.cantidad)||0, cu:Number(x.costo_unit)||0, un:x.unidad||'' }; });
+  (ed.rubros||[]).forEach(function(r, i){ if(r.opcional) return; C[_apKey(r.rubro_codigo, r.sector, r.descripcion)] = { cod:r.rubro_codigo||'', desc:r.descripcion||'', sec:r.sector||'', q:Number(r.cantidad)||0, cu:_apCu(r), un:r.unidad||'', idx:i }; });
+  const dif = [];
+  Object.keys(V).forEach(function(k){
+    const v = V[k], c = C[k];
+    if(!c){ dif.push({ tipo:'falta', v:v }); return; }
+    const cuIgual = Math.abs(v.cu - c.cu) <= Math.max(2, Math.abs(v.cu)*0.005);
+    const qIgual = Math.abs(v.q - c.q) <= 0.0005;
+    if(!cuIgual) dif.push({ tipo:'costo', v:v, c:c });
+    else if(!qIgual) dif.push({ tipo:'cant', v:v, c:c });
+  });
+  Object.keys(C).forEach(function(k){ if(!V[k]) dif.push({ tipo:'sobra', c:C[k] }); });
+  const costoV = Number(cab.data.costo_total)||0;
+  const costoC = (ed.rubros||[]).reduce(function(s,r){ return s + (r.opcional ? 0 : (Number(r.precio_total)||0)); }, 0);
+  const soloCant = dif.length > 0 && dif.every(function(d){ return d.tipo === 'cant'; });
+  const igual = !dif.length || Math.abs(costoV - costoC) <= Math.max(5000, costoC*0.0005) && !dif.some(function(d){ return d.tipo !== 'cant'; }) && !dif.length;
+  return { cab:cab.data, dif:dif, costoV:costoV, costoC:costoC, tipo: !dif.length ? 'igual' : (soloCant ? 'cant' : 'costo') };
+}
+async function _apPublicar(obs){
+  if(ed.activo) return;
+  ed.activo = true; ed.obsLineaBase = obs || null;
+  try{ renderEstadoUI(); }catch(e){}
+  ed._saltarChequeo = true;
+  ed._aprobandoCliente = true;
+  try{ await saveBudget(); } finally { ed._aprobandoCliente = false; }
+}
+/* Confirma en la base que el presupuesto quedó publicado y, si se ajustaron, con esas cantidades */
+async function _apVerificar(presu, esperado){
+  const c = await sb.from('presupuesto_cab').select('activo').eq('codigo', presu).maybeSingle();
+  if(c.error || !c.data || c.data.activo !== true) return 'El presupuesto no quedó publicado (revisá el aviso que mostró el sistema al guardar).';
+  if(esperado && esperado.length){
+    const r = await sb.from('presupuesto_rubros').select('rubro_codigo,sector,descripcion,cantidad').eq('presupuesto', presu);
+    const M = {}; (r.data||[]).forEach(function(x){ M[_apKey(x.rubro_codigo, x.sector, x.descripcion)] = Number(x.cantidad)||0; });
+    const mal = esperado.filter(function(e){ return Math.abs((M[e.k]==null ? -1 : M[e.k]) - e.q) > 0.0005; });
+    if(mal.length) return 'Las cantidades no quedaron guardadas en '+mal.length+' rubro(s).';
+  }
+  return null;
+}
+async function aprobarParaCliente(presu, version, repintar){
+  if(!state.puedeAprobarCliente){ showToast('No tenés permiso para aprobar la versión del cliente','error','Se habilita en Perfiles: «Aprobar la versión del cliente»'); return; }
+  if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar.'); return; }
+  let A;
+  try{ A = await _apComparar(presu, version); }
+  catch(e){ showToast('No se pudo comparar la versión','error', e.message||''); return; }
+  const gs = function(n){ return '₲ '+fmtGs(Math.round(Number(n)||0)); };
+  const fq = function(n){ return String(Math.round((Number(n)||0)*1000)/1000).replace('.',','); };
+  const filas = A.dif.slice(0, 40).map(function(d){
+    const r = d.v || d.c;
+    const nom = '<b>'+escapeHtml(r.cod||'—')+'</b> '+escapeHtml(r.desc)+(r.sec?' <span style="color:#8893a5">('+escapeHtml(r.sec)+')</span>':'');
+    if(d.tipo === 'cant') return '<tr><td>'+nom+'</td><td>Cantidad</td><td class="n">'+fq(d.v.q)+' '+escapeHtml(d.v.un)+'</td><td class="n">'+fq(d.c.q)+' '+escapeHtml(d.c.un)+'</td></tr>';
+    if(d.tipo === 'costo') return '<tr><td>'+nom+'</td><td>Costo unitario</td><td class="n">'+gs(d.v.cu)+'</td><td class="n">'+gs(d.c.cu)+'</td></tr>';
+    if(d.tipo === 'falta') return '<tr><td>'+nom+'</td><td>Rubro</td><td class="n">está</td><td class="n" style="color:#c0392b">no está</td></tr>';
+    return '<tr><td>'+nom+'</td><td>Rubro</td><td class="n" style="color:#c0392b">no está</td><td class="n">está</td></tr>';
+  }).join('');
+  const sinCambios = A.tipo === 'igual';
+  const pub = ed.activo;
+  let explic, accion = null, accionTxt = '';
+  if(sinCambios){
+    explic = '<div class="ap-ok">✓ La v'+version+' <b>coincide con el presupuesto</b>. Al aprobarla queda como la versión oficial del cliente'+(pub?'':' y el presupuesto se <b>publica</b>')+'.</div>';
+    accion = 'igual'; accionTxt = '✓ Aprobar para el cliente';
+  } else if(A.tipo === 'cant'){
+    if(pub){
+      explic = '<div class="ap-warn">La v'+version+' difiere <b>solo en cantidades</b>, pero el presupuesto ya está <b>publicado</b>. Para ajustarlo hay que pasarlo a borrador (lo hace quien lo elaboró o quien tenga «Reabrir presupuesto congelado») y volver a aprobar.</div>';
+    } else {
+      explic = '<div class="ap-warn">La v'+version+' difiere <b>solo en cantidades</b> ('+A.dif.length+' rubro'+(A.dif.length===1?'':'s')+'). El sistema puede <b>volver esas cantidades a las de la v'+version+'</b>: así el presupuesto queda igual a lo que aprobó el cliente, se publica y la versión queda aceptada.</div>';
+      accion = 'cant'; accionTxt = '✓ Ajustar cantidades a la v'+version+' y aprobar';
+    }
+  } else {
+    explic = '<div class="ap-err">La v'+version+' tiene <b>diferencias de costo o de rubros</b> con el presupuesto (cambiaron precios, composiciones o rubros). No se puede volver atrás automáticamente.'+
+      '<br><b>Lo recomendado:</b> emitir una <b>versión nueva</b> con el presupuesto actual'+(state.puedeVerMargen?' («💼 Cliente → Propuesta económica»)':' (la emite quien tiene el permiso de márgenes)')+' y aprobar esa.'+
+      (state.isAdmin ? '<br>Como administrador, también podés <b>aprobar igual con la diferencia registrada</b>: queda anotado que el costo oficial no es exactamente el de la venta.' : '<br>Aprobar con diferencias solo lo puede hacer administración.')+'</div>';
+    if(state.isAdmin){ accion = 'costo'; accionTxt = 'Aprobar igual con la diferencia registrada'; }
+  }
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:13000;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div class="ap-dlg">'+
+    '<div class="ap-head"><div style="font-weight:800;font-size:16px">✓ Aprobar para el cliente · '+escapeHtml(presu)+' v'+version+'</div>'+
+      '<div style="font-size:12px;opacity:.85">Queda como la versión oficial: comercial (venta al cliente) y de costo (descuento de materiales en las compras)</div></div>'+
+    '<div class="ap-body">'+
+      '<div class="ap-res"><div><span>Versión v'+version+'</span><b>'+gs(A.cab.venta_total)+'</b><small>venta · costo '+gs(A.costoV)+' · emitida por '+escapeHtml(A.cab.emitido_por||'—')+'</small></div>'+
+      '<div><span>Presupuesto '+(pub?'publicado':'actual (borrador)')+'</span><b>'+gs(A.costoC)+'</b><small>costo · '+(ed.rubros||[]).length+' rubros</small></div>'+
+      '<div><span>Diferencia de costo</span><b style="color:'+(Math.abs(A.costoC-A.costoV)<=Math.max(5000,A.costoC*0.0005)?'#1B5524':'#8a6d10')+'">'+gs(A.costoC - A.costoV)+'</b><small>'+A.dif.length+' rubro'+(A.dif.length===1?'':'s')+' con diferencias</small></div></div>'+
+      explic+
+      (filas ? '<div class="ap-tw"><table class="ap-t"><thead><tr><th>Rubro</th><th>Qué cambió</th><th class="n">En la v'+version+'</th><th class="n">En el presupuesto</th></tr></thead><tbody>'+filas+'</tbody></table>'+
+        (A.dif.length>40?'<div style="font-size:11px;color:#8893a5;padding:6px">… y '+(A.dif.length-40)+' más</div>':'')+'</div>' : '')+
+      (accion ? '<label class="ap-l">¿Cómo aprobó el cliente? <span style="color:#c0392b">*</span></label><textarea id="apObs" rows="2" maxlength="300" placeholder="Ej. aprobado por correo del Ing. Pérez el 26/09 · acta de reunión del 25/09"></textarea>'+
+        (accion==='costo'?'<label class="ap-l">Motivo de aprobar con diferencia <span style="color:#c0392b">*</span></label><textarea id="apMot" rows="2" maxlength="300" placeholder="Ej. el cliente aprobó la v25; los precios de materiales se actualizaron después"></textarea>':'') : '')+
+      '<div class="ap-err2" id="apErr"></div>'+
+    '</div>'+
+    '<div class="ap-foot"><button type="button" class="btn-g" id="apNo">Cancelar</button>'+(accion?'<button type="button" class="ap-si" id="apSi">'+accionTxt+'</button>':'')+'</div></div>';
+  document.body.appendChild(ov);
+  const cerrar = function(){ ov.remove(); };
+  ov.querySelector('#apNo').onclick = cerrar;
+  ov.addEventListener('click', function(ev){ if(ev.target === ov) cerrar(); });
+  const si = ov.querySelector('#apSi'); if(!si) return;
+  si.onclick = async function(){
+    const er = ov.querySelector('#apErr');
+    const obs = (ov.querySelector('#apObs').value||'').trim();
+    const mot = accion === 'costo' ? (ov.querySelector('#apMot').value||'').trim() : '';
+    if(obs.length < 8){ er.textContent = 'Escribí cómo aprobó el cliente (correo, acta, reunión).'; return; }
+    if(accion === 'costo' && mot.length < 10){ er.textContent = 'Escribí el motivo de aprobar con diferencia.'; return; }
+    si.disabled = true; si.textContent = 'Aprobando…';
+    /* Quien tiene el permiso puede publicar y ajustar aunque no haya elaborado el presupuesto.
+       Se respetan: otra persona editándolo en este momento, y un presupuesto congelado. */
+    const _bloqAntes = ed.bloqueado;
+    const _necesitaGuardar = (accion === 'cant') || !ed.activo;
+    if(_necesitaGuardar && ed.bloqueado){
+      const h = (typeof _cabActual === 'function') ? (_cabActual() || {}) : {};
+      if(h.publicado_en && !ed.desbloqueado){
+        er.innerHTML = 'Este presupuesto ya fue publicado antes y está <b>congelado</b>. Para cambiarlo hay que reabrirlo (lo hace quien lo elaboró o quien tenga «Reabrir presupuesto congelado») y después aprobar la versión.';
+        si.disabled = false; si.textContent = accionTxt; return;
+      }
+      try{
+        const ocupado = (typeof tomarEdicion === 'function') ? await tomarEdicion(presu) : null;
+        if(ocupado){ er.textContent = 'Otra persona tiene abierto este presupuesto ('+(ocupado.usuario||'otro usuario')+'). Esperá a que lo cierre y volvé a intentar.'; si.disabled = false; si.textContent = accionTxt; return; }
+      }catch(eL){ console.warn('tomar edición', eL); }
+      ed.bloqueado = false;
+    }
+    const _respaldo = { activo: ed.activo, obsLB: ed.obsLineaBase, rubros: (ed.rubros||[]).map(function(r){ return { cantidad:r.cantidad, costo_unit:r.costo_unit, costo_parcial:r.costo_parcial, mano_obra_total:r.mano_obra_total, precio_total:r.precio_total }; }) };
+    const _deshacer = function(){
+      ed.activo = _respaldo.activo; ed.obsLineaBase = _respaldo.obsLB; ed.bloqueado = _bloqAntes;
+      (ed.rubros||[]).forEach(function(r, i){ const b = _respaldo.rubros[i]; if(b) Object.assign(r, b); if(r.rubro_codigo){ try{ _sincronizarCantidades(r.rubro_codigo); }catch(e){} } });
+      try{ renderEstadoUI(); }catch(e){} try{ if(typeof renderRubros === 'function') renderRubros(); }catch(e){}
+    };
+    let esperado = [];
+    try{
+      let obsFinal = obs;
+      if(accion === 'cant'){
+        let n = 0;
+        A.dif.forEach(function(d){
+          const r = ed.rubros[d.c.idx]; if(!r) return;
+          r.cantidad = d.v.q; n++; esperado.push({ k:_apKey(r.rubro_codigo, r.sector, r.descripcion), q:d.v.q });
+          try{ _sincronizarCantidades(r.rubro_codigo); }catch(e){}
+          try{ recalcCostoRubro(r); }catch(e){}
+        });
+        ed.tocado = true;
+        obsFinal = obs + ' · Cantidades ajustadas a la v'+version+' ('+n+' rubro'+(n===1?'':'s')+')';
+        await _apPublicar(obsFinal);
+        if(ed.tocado && ed.activo){ ed._saltarChequeo = true; ed._aprobandoCliente = true; try{ await saveBudget(); } finally { ed._aprobandoCliente = false; } }
+      } else if(accion === 'costo'){
+        obsFinal = '[Aprobada con diferencia de costo: v'+version+' '+gs(A.costoV)+' · presupuesto '+gs(A.costoC)+'] ' + obs + ' · Motivo: ' + mot;
+        await _apPublicar(obsFinal);
+      } else {
+        await _apPublicar(obsFinal);
+      }
+      // Solo se acepta la versión si el presupuesto quedó publicado (y ajustado) en la base
+      const _mal = await _apVerificar(presu, esperado);
+      if(_mal){ _deshacer(); throw new Error(_mal + ' No se aprobó la versión: el presupuesto y la versión tienen que quedar iguales.'); }
+      const { error } = await sb.rpc('aceptar_propuesta', { p_presupuesto: presu, p_version: version, p_quien: _userTag(), p_obs: obsFinal });
+      if(error) throw error;
+      ed.bloqueado = _bloqAntes || !!ed.activo;   // publicado: queda en solo lectura, como siempre
+      try{   // v10.61 · estados: la aprobada y, si había otra aprobada, pasa a reemplazada
+        await sb.from('propuesta_cab').update({ estado:'reemplazada' }).eq('presupuesto', presu).eq('estado','aprobada').neq('version', version);
+        const upd = { estado:'aprobada' };
+        if(!A.cab.numero_envio){
+          const env = await sb.from('propuesta_cab').select('numero_envio').eq('presupuesto', presu);
+          upd.numero_envio = Math.max(0, ...((env.data||[]).map(function(x){ return Number(x.numero_envio)||0; }))) + 1;
+        }
+        await sb.from('propuesta_cab').update(upd).eq('presupuesto', presu).eq('version', version);
+      }catch(eS){ console.warn('estado de la propuesta', eS); }
+      try{ _propEstadoPresu(presu); }catch(eE){}
+      cerrar();
+      showToast('v'+version+' aprobada para el cliente','success', 'Quedó oficial: comercial y de costo. El presupuesto está publicado.');
+      if(typeof repintar === 'function') await repintar();
+    }catch(e){
+      console.error('aprobar para el cliente', e);
+      si.disabled = false; si.textContent = accionTxt;
+      er.textContent = /aceptar_propuesta|function/i.test(e.message||'') ? 'Falta correr el script propuesta_aceptada.sql en la base.' : ('No se pudo aprobar: '+(e.message||''));
+    }
+  };
+}
+
+/* v10.61 · Una línea en el presupuesto: cuál es la propuesta oficial o cuál está esperando aprobación */
+async function _propEstadoPresu(presu){
+  let el = document.getElementById('pmPropEstado');
+  const badge = document.getElementById('pmEstadoBadge');
+  if(!el && badge){ el = document.createElement('span'); el.id = 'pmPropEstado'; el.style.cssText = 'margin-left:8px;font-size:11.5px;font-weight:800;border-radius:999px;padding:3px 10px;display:none'; badge.parentNode.insertBefore(el, badge.nextSibling); }
+  if(!el || !presu) return;
+  try{
+    const r = await sb.from('propuesta_cab').select('version,numero_envio,estado,aceptada,aceptada_en,emitido_en').eq('presupuesto', presu);
+    const L = r.data || [];
+    const ac = L.filter(function(x){ return x.aceptada; })[0];
+    const en = L.filter(function(x){ return x.estado === 'enviada' && !x.aceptada; }).sort(function(a,b){ return b.version - a.version; })[0];
+    if(ac){ el.style.display = ''; el.style.background = '#DFF3E3'; el.style.color = '#1B5524'; el.textContent = '✓ Oficial: '+(ac.numero_envio ? 'Propuesta '+ac.numero_envio+' (v'+ac.version+')' : 'v'+ac.version)+(ac.aceptada_en ? ' · aprobada el '+_fmtF(ac.aceptada_en,false) : ''); }
+    else if(en){ el.style.display = ''; el.style.background = '#E8EEF8'; el.style.color = '#1F3864'; el.textContent = '📨 Propuesta '+(en.numero_envio||'')+' enviada · esperando aprobación del cliente'; }
+    else { el.style.display = 'none'; el.textContent = ''; }
+  }catch(e){ el.style.display = 'none'; }
+}
 </script>
 <!-- SALIR SIN GUARDAR -->
 <div class="sg-ov" id="sgOv">
@@ -11952,5 +12230,25 @@ document.addEventListener('DOMContentLoaded', function(){
     </div>
   </div>
 </div>
+<style>
+/* v10.60 · Aprobar para el cliente */
+.ap-dlg{background:#fff;border-radius:14px;width:min(900px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);font-size:13px}
+.ap-head{background:#1B5524;color:#fff;padding:14px 18px;border-radius:14px 14px 0 0}
+.ap-body{overflow:auto;padding:14px 18px;flex:1}
+.ap-res{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.ap-res>div{border:1px solid #DDE2EA;border-radius:10px;padding:9px 11px}.ap-res span{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#6B7486;font-weight:700}
+.ap-res b{display:block;font-size:16px;margin:2px 0;color:#1A2236}.ap-res small{font-size:11px;color:#8893a5}
+.ap-ok,.ap-warn,.ap-err{border-radius:9px;padding:9px 12px;margin-bottom:10px;line-height:1.5}
+.ap-ok{background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4}.ap-warn{background:#FFF7E0;color:#7A5600;border:1px solid #F2D58A}.ap-err{background:#FDF0EE;color:#8B2A1E;border:1px solid #F0C4BC}
+.ap-tw{max-height:240px;overflow:auto;border:1px solid #E3E8F0;border-radius:9px;margin-bottom:10px}
+.ap-t{width:100%;border-collapse:collapse;font-size:12px}.ap-t th{position:sticky;top:0;background:#F4F6FA;text-align:left;padding:6px 9px;font-size:10.5px;color:#6B7486;text-transform:uppercase}
+.ap-t td{padding:6px 9px;border-top:1px solid #EEF1F6}.ap-t .n{text-align:right;white-space:nowrap}
+.ap-l{display:block;font-weight:700;font-size:12px;color:#4B5568;margin:8px 0 4px}
+.ap-body textarea{width:100%;box-sizing:border-box;border:1px solid #C9D0DC;border-radius:8px;padding:8px 9px;font:inherit}
+.ap-err2{color:#c0392b;font-size:12px;min-height:16px;margin-top:6px}
+.ap-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid #e2e6ee}
+.ap-si{background:#1B5524;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:800;cursor:pointer}
+@media (max-width:640px){.ap-res{grid-template-columns:1fr}}
+</style>
 </body>
 </html>
