@@ -7894,6 +7894,7 @@ document.getElementById('prodModalRemove').addEventListener('click', ()=>{
 
 function renderCart(){
   try{ fpmImputarNuevos(); }catch(e){ console.warn('imputar al rubro', e); }   // v2.8
+  try{ fpmSincronizarRubros(); }catch(e){ console.warn('rubro de la línea', e); }   // v2.8.1
   try{ fpmBanner(); }catch(e){}
   const wrap = document.getElementById('cartItems');
   try{ cartBudgetInit(); }catch(e){}
@@ -8026,12 +8027,13 @@ function renderCart(){
       const grpTot = idxs.reduce(function(a,i){ return a + (Number(wizard.cart[i].subtotal)||0); }, 0);
       const desc = (cartBudget.rubroDesc && cartBudget.rubroDesc[rk]) || '';
       const rub = (cartBudget.allRubros||[]).find(function(r){ return String(r.rubro_codigo)===rk; });
-      const presu = rub ? (Number(rub.precio_total)||0) : 0;
+      const _rm = (cartBudget.rubros||[]).find(function(r){ return String(r.rubro_codigo) === rk; });   // v2.8.1 · material del rubro por monto
+      const presu = _rm ? (Number(_rm.limite)||0) : (rub ? (Number(rub.precio_total)||0) : 0);
       let label, sub;
       const _esSin = (rk==='__sin');
       if(rk==='__mo'){ label='🔧 Mano de obra'; sub=''; }
       else if(_esSin){ label='⚠ Sin rubro asignado'; sub = _cbActive ? 'Elegí el rubro de cada ítem antes de guardar' : ''; }
-      else { label = rk + (desc ? (' · ' + desc) : ''); sub = presu>0 ? ('de ' + fmtMoney(presu) + ' presup.') : ''; }
+      else { label = rk + (desc ? (' · ' + desc) : ''); sub = presu>0 ? ('de ' + fmtMoney(presu) + (_rm ? ' de material presup.' : ' presup.')) : ''; }
       const _alert = (_esSin && _cbActive);
       const _grpStyle = _alert ? ' style="border:1px solid #e3b4b4;background:#fdf3f3;border-radius:8px"' : '';
       const _codeStyle = _alert ? ' style="color:#c0392b"' : '';
@@ -9874,8 +9876,8 @@ function _cbInsDeItem(it){
 function _cbItemMaterial(it){ return _cbInsDeItem(it); }
 
 function cbItemOptions(it){
-  const curIns = _cbInsDeItem(it);
-  const curRub = curIns ? '' : _cbResolveRubro(it.producto_id);
+  const curIns = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';   // v2.8.1
+  const curRub = curIns ? '' : fpmRubroItem(it);
   const curLineRubro = (it.rubro_codigo||'');
   let o = '<option value="">➕ Fuera de presupuesto / sin imputar</option>';
   if(cartBudget.mats && cartBudget.mats.length){
@@ -9998,12 +10000,19 @@ function _cbAgg(codigoInsumo, rubroCodigo){
 /* Agregado en GUARANÍES para un rubro de servicio */
 function _cbAggMoney(rubroKey){
   let ejec=0, reserv=0, carr=0;
+  // v2.8.1 · rubro de un ítem: la asociación del producto si es de ESTE presupuesto; si no, el rubro de la línea
+  const _rk = function(pid, lineRub, extra){
+    const a = _cbResolveRubro(pid);
+    if(a && (typeof fpmRubroDeEste !== 'function' || fpmRubroDeEste(a))) return a;
+    if(extra) return extra;
+    return (lineRub && typeof fpmRubroDeEste === 'function' && fpmRubroDeEste(String(lineRub))) ? String(lineRub) : a;
+  };
   (cartBudget.ocItems||[]).forEach(function(x){
-    if(_cbResolveRubro(x.producto_id) !== rubroKey) return;
+    if(_rk(x.producto_id, x.rubro_codigo) !== rubroKey) return;
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.subtotal;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.subtotal;
   });
-  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_cbResolveRubro(it.producto_id) === rubroKey) carr += Number(it.subtotal)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_rk(it.producto_id, it.rubro_codigo, it._fpmRub) === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -10065,8 +10074,8 @@ function _cbAutoImputar(){
 function _cbItemDestino(it){
   if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
   if(!cartBudget.pp) return null;
-  const curIns=_cbInsDeItem(it);
-  const curRub=curIns ? '' : _cbResolveRubro(it.producto_id);
+  const curIns = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';   // v2.8.1
+  const curRub=curIns ? '' : fpmRubroItem(it);
   const rkLinea=it.rubro_codigo||'';
   if(curIns){
     const m=(cartBudget.mats||[]).find(function(x){ return x.codigo_insumo===curIns && (x.rubro_codigo||'')===rkLinea; });
@@ -17806,13 +17815,49 @@ function fpmImputarNuevos(){
     if(it._fpm !== undefined || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto) return;
     it._fpm = key;
     if(it.producto_id == null) return;
-    if(typeof _cbInsDeItem === 'function' && _cbInsDeItem(it)) return;   // es un insumo del presupuesto: va por cantidades
-    const ya = _cbResolveRubro(it.producto_id);
+    if(fpmEsInsumoDeEste(it)) return;   // es un insumo de ESTE presupuesto: va por cantidades
+    const r0 = fpmRubro(key);
+    const mapv = cartBudget.map ? (cartBudget.map[_mapKey(it.producto_id)] || '') : '';
+    if(/^INS-/i.test(mapv)){   // asociado a un insumo de otra obra: no se toca esa asociación, el rubro va en la línea
+      if(r0 && r0.rubro_codigo) it.rubro_codigo = String(r0.rubro_codigo);
+      it._fpmRub = key; return;
+    }
+    let ya = _cbResolveRubro(it.producto_id);
+    if(ya && !fpmRubroDeEste(ya)) ya = '';   // asociado a un rubro de otro presupuesto: se toma el elegido
     if(ya && ya !== key){
       try{ showToast((it.producto_nombre||'Este producto')+' ya está asignado al rubro '+ya, 'info', 'Si esta compra es para otro rubro, cambialo en el carrito'); }catch(e){}
       return;
     }
-    if(!ya) setProductoItem(it.producto_id, key);
+    if(!ya || ya !== _cbResolveRubro(it.producto_id)) setProductoItem(it.producto_id, key);
+    const r = fpmRubro(key); if(r && r.rubro_codigo) it.rubro_codigo = String(r.rubro_codigo);
+  });
+}
+/* v2.8.1 · El rubro de la línea y el rubro del que «debita» tienen que ser el mismo.
+   Si el material está imputado por monto a un rubro (asociación del producto) y la
+   línea no tiene rubro, se completa con ese. Así el grupo del carrito, el guardado y
+   los informes muestran lo mismo que «Debita de». */
+function fpmEsInsumoDeEste(it){
+  const c = (typeof _cbInsDeItem === 'function') ? _cbInsDeItem(it) : '';
+  return !!c && Array.isArray(cartBudget.mats) && cartBudget.mats.some(function(m){ return m.codigo_insumo === c; });
+}
+/* El rubro de la asociación tiene que existir en ESTE presupuesto (no el de otra obra) */
+function fpmRubroDeEste(rk){ return !!rk && (cartBudget.rubros||[]).some(function(r){ return _cbRubroKey(r) === rk; }); }
+/* Rubro (por monto) de un ítem del carrito: el mismo criterio que usa el saldo */
+function fpmRubroItem(it){
+  if(!it) return '';
+  const a = _cbResolveRubro(it.producto_id);
+  if(a && fpmRubroDeEste(a)) return a;
+  if(it._fpmRub) return it._fpmRub;
+  if(it.rubro_codigo && fpmRubroDeEste(String(it.rubro_codigo))) return String(it.rubro_codigo);
+  return a;
+}
+function fpmSincronizarRubros(){
+  if(!cartBudget.pp) return;
+  (wizard.cart||[]).forEach(function(it){
+    if(it.rubro_codigo || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto || it.producto_id == null) return;
+    if(fpmEsInsumoDeEste(it)) return;
+    const rk = _cbResolveRubro(it.producto_id);
+    if(rk && !/^D:/.test(rk) && fpmRubroDeEste(rk)) it.rubro_codigo = rk;
   });
 }
 </script>
