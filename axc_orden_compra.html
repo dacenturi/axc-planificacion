@@ -6905,8 +6905,9 @@ function fpMensajeVacio(total, verTodo){
   if(total > 0){
     if(hayFiltro) return 'Ningún rubro coincide con el filtro.';
     return verTodo ? 'Ningún rubro coincide con el filtro.'
-      : '<b>Ya se compró todo el material presupuestado de '+pp+'.</b><br>'+
-        'Tildá «Ver también lo agotado» para ver lo comprado, o usá «Buscar en el catálogo» si hace falta algo más.';
+      : '<b>✓ Ya se compró todo el material presupuestado de '+pp+'.</b><br>'+
+        'Para ver lo que se compró, tildá «Ver también lo agotado».<br>'+
+        'Si hace falta <b>más</b> (ej.: se rompieron bolsas de cemento), usá «Buscar en el catálogo»: se registra como <b>exceso</b> y en el paso 2 se pide el motivo.';
   }
   const nAll  = (cartBudget.allRubros||[]).length;
   const nServ = (cartBudget.rubros||[]).length;
@@ -6945,6 +6946,7 @@ function fpNotaMO(){
 function fpRender(){
   const cont = document.getElementById('fpLista');
   if(!cont) return;
+  try{ cbmTabs(); }catch(e){}   // v2.9
   document.getElementById('fpPP').textContent = cartBudget.pp || '—';
   if(!cartBudget.pp){
     cont.innerHTML = '<div class="fp-vacio">Escribí el N° de presupuesto arriba y apretá «Cargar faltante».</div>';
@@ -7893,6 +7895,7 @@ document.getElementById('prodModalRemove').addEventListener('click', ()=>{
 // ═══════════════════════════════════════════════════════════════════
 
 function renderCart(){
+  try{ cbmAsignarNuevos(); }catch(e){ console.warn('presupuesto del material', e); }   // v2.9
   try{ fpmImputarNuevos(); }catch(e){ console.warn('imputar al rubro', e); }   // v2.8
   try{ fpmSincronizarRubros(); }catch(e){ console.warn('rubro de la línea', e); }   // v2.8.1
   try{ fpmBanner(); }catch(e){}
@@ -8017,13 +8020,21 @@ function renderCart(){
   let html;
   if(_cbActive){
     const groups = {}; const order = [];
+    const _multi = cbmMulti(), _lista = cbmLista();   // v2.9 · varios presupuestos: grupos por presupuesto
     wizard.cart.forEach((it, idx)=>{
-      const rk = it.es_mano_obra ? (it.rubro_codigo || '__mo') : (it.rubro_codigo || '__sin');
+      const rk0 = it.es_mano_obra ? (it.rubro_codigo || '__mo') : (it.rubro_codigo || '__sin');
+      const rk = (_multi && !it.es_mano_obra && !it.trabajo_admin && !it.sin_presupuesto) ? (cbmItPP(it) + '§' + rk0) : rk0;
       if(!groups[rk]){ groups[rk] = []; order.push(rk); }
       groups[rk].push(idx);
     });
-    html = order.map(function(rk){
-      const idxs = groups[rk];
+    if(_multi) order.sort(function(a,b){ const pa = a.indexOf('§')>=0 ? _lista.indexOf(a.split('§')[0]) : 99, pb = b.indexOf('§')>=0 ? _lista.indexOf(b.split('§')[0]) : 99; return pa - pb; });
+    let _ppPrev = null;
+    html = order.map(function(_key){
+      const _ppk = _key.indexOf('§') >= 0 ? _key.split('§')[0] : '';
+      const _sep = (_multi && _ppk !== _ppPrev) ? cbmSeparador(_ppk, order, groups) : ''; _ppPrev = _ppk;
+      return _sep + cbmWith(_ppk, function(){
+      const rk = _key.split('§').pop();
+      const idxs = groups[_key];
       const grpTot = idxs.reduce(function(a,i){ return a + (Number(wizard.cart[i].subtotal)||0); }, 0);
       const desc = (cartBudget.rubroDesc && cartBudget.rubroDesc[rk]) || '';
       const rub = (cartBudget.allRubros||[]).find(function(r){ return String(r.rubro_codigo)===rk; });
@@ -8043,6 +8054,7 @@ function renderCart(){
           '<div class="cgh-r"><span class="cgh-cnt">' + idxs.length + ' ít.</span><span class="cgh-tot">' + fmtMoney(grpTot) + '</span></div>' +
         '</div>';
       return '<div class="cart-group"' + _grpStyle + '>' + head + idxs.map(function(i){ return _itemHtml[i]; }).join('') + '</div>';
+      });
     }).join('');
   } else {
     html = _itemHtml.join('');
@@ -9875,7 +9887,8 @@ function _cbInsDeItem(it){
 }
 function _cbItemMaterial(it){ return _cbInsDeItem(it); }
 
-function cbItemOptions(it){
+function cbItemOptions(it){ return cbmWith(cbmItPP(it), function(){ return cbItemOptions0(it); }); }
+function cbItemOptions0(it){
   const curIns = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';   // v2.8.1
   const curRub = curIns ? '' : fpmRubroItem(it);
   const curLineRubro = (it.rubro_codigo||'');
@@ -9949,9 +9962,11 @@ async function cartBudgetLoad(pp){
     let ocItems = [];
     if(ids.length){
       // v2 · Los ítems imputados a un trabajo por administración o marcados sin presupuesto no consumen saldo
-      let it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin').in('oc_id', ids);
+      let it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').in('oc_id', ids);
+      if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin').in('oc_id', ids);
       if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
-      ocItems = (it.data||[]).filter(function(x){ return !x.trabajo_admin && !x.sin_presupuesto; }).map(function(x){
+      // v2.9 · un material imputado a OTRO presupuesto de la obra no consume saldo de este
+      ocItems = (it.data||[]).filter(function(x){ return !x.trabajo_admin && !x.sin_presupuesto && (!x.presupuesto || x.presupuesto === pp); }).map(function(x){
         const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0;
         const o = ocById[x.oc_id] || {};
         return { producto_id:x.producto_id, producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p,
@@ -9960,6 +9975,24 @@ async function cartBudgetLoad(pp){
                  estado_txt:o.estado||'' };
       });
     }
+    // v2.9 · materiales imputados a este presupuesto desde órdenes de OTRO presupuesto principal
+    try{
+      const ex = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').eq('presupuesto', pp);
+      const otros = (ex.data||[]).filter(function(x){ return ids.indexOf(x.oc_id) < 0 && !x.trabajo_admin && !x.sin_presupuesto; });
+      if(otros.length){
+        const oids = Array.from(new Set(otros.map(function(x){ return x.oc_id; })));
+        let qo = sb.from('ordenes_compra').select('id,estado,numero_oc,fecha,proveedor').in('id', oids);
+        if(OC_PRUEBA.ok) qo = qo.or('es_prueba.is.null,es_prueba.eq.false');
+        const oo = await qo; const ob = {}; (oo.data||[]).forEach(function(o){ ob[o.id] = o; ocById[o.id] = o; });
+        otros.forEach(function(x){
+          const o = ob[x.oc_id]; if(!o) return;
+          const c=Number(x.cantidad)||0, p0=Number(x.precio_unit)||0;
+          ocItems.push({ producto_id:x.producto_id, producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p0,
+                 estado:_presuNorm(o.estado), rubro_codigo:x.rubro_codigo||'', oc_id:x.oc_id, numero_oc:o.numero_oc||'',
+                 fecha:o.fecha||'', proveedor:o.proveedor||'', estado_txt:o.estado||'' });
+        });
+      }
+    }catch(eX){ /* sin la columna presupuesto en los ítems: como antes */ }
     cartBudget.ocCabs = ocById;
     // Nombre comercial del producto con el que se presupuestó cada insumo.
     // El insumo se llama "Cemento", pero al proveedor hay que pedirle
@@ -9993,7 +10026,7 @@ function _cbAgg(codigoInsumo, rubroCodigo){
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
   });
-  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_cbInsDeItem(it) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(cbmItPP(it) !== cartBudget.pp) return; if(_cbInsDeItem(it) === codigoInsumo && (it.rubro_codigo||'') === rk) carr += Number(it.cantidad)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -10012,7 +10045,7 @@ function _cbAggMoney(rubroKey){
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.subtotal;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.subtotal;
   });
-  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(_rk(it.producto_id, it.rubro_codigo, it._fpmRub) === rubroKey) carr += Number(it.subtotal)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(cbmItPP(it) !== cartBudget.pp) return; if(_rk(it.producto_id, it.rubro_codigo, it._fpmRub) === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -10057,6 +10090,7 @@ function _cbAutoImputar(){
   if(!cartBudget.pp || !Array.isArray(cartBudget.mats) || !cartBudget.mats.length) return;
   (wizard.cart||[]).forEach(function(it){
     if(it.es_mano_obra) return;                  // la mano de obra no se imputa a insumos/rubros
+    if(cbmItPP(it) !== cartBudget.pp) return;    // v2.9 · cada material, con su presupuesto
     if(it._rubroManual) return;                  // el usuario ya eligió a mano: no tocar
     if(it.rubro_codigo) return;                  // ya tiene rubro asignado
     if(_cbResolveRubro(it.producto_id)) return;  // mapeado a un rubro de servicio
@@ -10071,7 +10105,8 @@ function _cbAutoImputar(){
   });
 }
 /* Destino de débito EFECTIVO de un ítem del carrito (para el badge). Devuelve {txt,color,excede} */
-function _cbItemDestino(it){
+function _cbItemDestino(it){ return cbmWith(cbmItPP(it), function(){ return _cbItemDestino0(it); }); }
+function _cbItemDestino0(it){
   if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
   if(!cartBudget.pp) return null;
   const curIns = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';   // v2.8.1
@@ -10921,10 +10956,12 @@ async function submitOC(){
     // Garantía de imputación: con el mapa producto→insumo cargado, asignar rubro
     // a los ítems que lo permitan ANTES de guardar (evita huecos por timing del render).
     try{
+      cbmVolverPrincipal();   // v2.9
       if(cartBudget.pp && Array.isArray(cartBudget.mats) && cartBudget.mats.length){
         if(!cartBudget.mapLoaded){ await loadProductoMap(); }
         _cbAutoImputar();
       }
+      cbmLista().slice(1).forEach(function(c){ cbmWith(c, function(){ _cbAutoImputar(); }); });   // v2.9 · cada presupuesto adicional
     }catch(e){ console.warn('auto-imputar pre-guardado', e); }
     const _hayMO = wizard.cart.some(it => it.es_mano_obra);
     const _haySinPres = wizard.cart.some(it => it.sin_presupuesto);
@@ -10937,6 +10974,7 @@ async function submitOC(){
     // Cada ítem hereda su propio rubro (el primero, si tiene varios) en lugar
     // del único de cabecera que existía antes.
     const _rubroCab = (rubroCabecera() || '').trim();
+    const _ppMulti = cbmMulti() || wizard.cart.some(function(it){ return it.presupuesto && it.presupuesto !== wizard.form._pp; });
     const itemsPayload = wizard.cart.map((it, idx) => {
       const row = {
         oc_id: ocId,
@@ -10950,6 +10988,8 @@ async function submitOC(){
       };
       if(_hayMO) row.es_mano_obra = !!it.es_mano_obra;
       if(_haySinPres) row.sin_presupuesto = !!it.sin_presupuesto;
+      // v2.9 · presupuesto de cada material (solo si la orden usa más de uno)
+      if(_ppMulti) row.presupuesto = (wizard.form.destino === 'presupuesto' && !it.trabajo_admin && !it.sin_presupuesto && !it.es_mano_obra) ? (cbmItPP(it) || null) : null;
       if(_hayTA) row.trabajo_admin = it.trabajo_admin || null;   // v2 · destino por ítem
       if(_hayProdReal) row.producto_real = it.producto_real || null;
       // Sector y unidad SIEMPRE: son la base del mapeo por sector y de que el
@@ -10965,6 +11005,11 @@ async function submitOC(){
     });
     if(itemsPayload.length > 0){
       let {error: itemsError} = await sb.from('ordenes_compra_items').insert(itemsPayload);
+      // v2.9 · sin la columna «presupuesto» en los ítems no se puede guardar una orden con varios presupuestos
+      if(itemsError && _ppMulti && /presupuesto/i.test(itemsError.message || '')){
+        await sb.from('ordenes_compra').delete().eq('id', ocId);
+        throw new Error('Para usar varios presupuestos en una orden falta correr axc_oc_varios_presupuestos.sql en la base. Avisá a Conexdata. La orden no se guardó.');
+      }
       // Red de seguridad: si la columna rubro_aplicacion todavía no existe en la
       // base, la OC no se pierde — se guarda sin las áreas y se avisa.
       if(itemsError && /rubro_aplicacion/i.test(itemsError.message || '')){
@@ -17357,6 +17402,28 @@ function pbtAddNoPresup(pid){
 #step1Content.dst-pend .dst-gate{display:block}
 #step1Content.dst-pend #fpOrigen,#step1Content.dst-pend #fpPanel,#step1Content.dst-pend #fpCatToolbar,#step1Content.dst-pend #catResults,#step1Content.dst-pend #catLoadmoreWrap,#step1Content.dst-pend #catMetaInfo,#step1Content.dst-pend .cat-meta,#step1Content.dst-pend .pbt-tabs{display:none !important}
 #recipeToggleBar:has(> :only-child){display:none !important}
+/* v2.9 · varios presupuestos de la misma obra */
+.cbm-extra{margin-top:8px;padding:9px 12px;border:1px dashed #9EC1EA;background:#F5F9FE;border-radius:10px}
+.cbm-tit{font-size:12.5px;color:#15427A;margin-bottom:6px}.cbm-tit span{color:#6B7486}
+.cbm-chips{display:flex;flex-wrap:wrap;gap:6px}
+.cbm-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid #C9D5E6;background:#fff;border-radius:999px;padding:4px 11px;font-size:12.5px;font-weight:700;color:#1F3864;cursor:pointer}
+.cbm-chip small{font-weight:500;color:#8893a5}.cbm-chip.on{background:#1F3864;color:#fff;border-color:#1F3864}.cbm-chip.on small{color:#C9D5E6}
+.cbm-chip input{margin:0}
+.cbm-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 16px;background:#EEF4FC;border-bottom:1px solid #DDE6F2}
+.cbm-tl{font-size:12px;font-weight:800;color:#15427A}.cbm-th{font-size:11.5px;color:#6B7486;margin-left:6px}
+.cbm-tab{border:1px solid #9EC1EA;background:#fff;color:#1F3864;border-radius:8px;padding:5px 12px;font-weight:800;font-size:12.5px;cursor:pointer}
+.cbm-tab.on{background:#1F3864;color:#fff;border-color:#1F3864}.cbm-tab i{font-style:normal;background:#C8A028;color:#fff;border-radius:999px;padding:0 6px;margin-left:4px;font-size:11px}
+.cbm-sep{display:flex;justify-content:space-between;gap:8px;margin:12px 0 6px;padding:8px 11px;background:#FFF4D6;color:#5C4708;border:1px solid #E8CF8A;border-left:5px solid #C8A028;border-radius:8px;font-size:13px}
+.cbm-sep.otros{background:#E9EDF3;color:#4B5568;justify-content:flex-start}
+.cbm-act{flex-basis:100%;margin-top:6px;padding:6px 10px;background:#fff;border:1px solid #9EC1EA;border-left:4px solid #1F3864;border-radius:7px;font-size:12.5px;color:#15427A}
+.cbm-exc{background:#FDF0EE;border:1px solid #F0C4BC;border-radius:9px;padding:9px 12px;margin-bottom:8px;font-size:12.5px;color:#5c1f17}
+.cbm-exc:empty{display:none}
+.cbm-exc-t{font-weight:800;color:#8B2A1E;margin-bottom:4px}.cbm-exc ul{margin:0 0 6px 18px;padding:0}.cbm-exc li{margin:2px 0;line-height:1.45}
+.cbm-pasa{color:#C0392B}.cbm-u{color:#8893a5;font-size:11.5px}.cbm-exc-h{font-size:12px;color:#6B7486}
+.cbm-rps{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.cbm-rp{background:#FFF4D6;border:1px solid #E8CF8A;border-radius:999px;padding:3px 10px;font-size:12.5px;color:#5C4708}
+.cbm-aviso{margin:6px 0 2px;padding:6px 9px;background:#FFF4D6;border:1px solid #E8CF8A;border-left:4px solid #C8A028;border-radius:7px;font-size:12px;color:#5C4708;line-height:1.4}
+
+
 /* v2.8 · presupuesto por monto */
 .fpm-intro{padding:12px 16px;font-size:12.5px;color:#4B5568;line-height:1.5;background:#F7F9FC;border-bottom:1px solid #E3E8F0}
 .fpm-intro i{color:#8893a5}
@@ -17451,7 +17518,8 @@ function dstRender(){
   st.innerHTML = '<option value="">Elegí el trabajo por administración…</option>' + DST.ta.map(function(x){ return '<option value="'+dstEsc(x.codigo)+'"'+(f.trabajo_admin===x.codigo?' selected':'')+'>'+dstEsc(x.codigo+' · '+(x.nombre||'')+' · '+(x.obra||''))+'</option>'; }).join('');
   sp.style.display = m === 'presupuesto' ? '' : 'none';
   st.style.display = m === 'ta' ? '' : 'none';
-  if(m === 'presupuesto') h.innerHTML = f._pp ? '✔ Los materiales descuentan del saldo de <b>'+dstEsc(f._pp)+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.' : 'Elegí el presupuesto de la obra. <i>Ej.: cemento para el revoque del Nivel 3.</i>' + (DST.loaded && !DST.pp.length ? ' <b>No hay presupuestos aprobados cargados.</b>' : '');
+  try{ cbmRenderExtras(); }catch(eX){ console.warn('presupuestos adicionales', eX); }   // v2.9
+  if(m === 'presupuesto') h.innerHTML = f._pp ? (cbmMulti() ? '✔ Cada material descuenta del saldo de <b>su</b> presupuesto: <b>'+cbmLista().map(dstEsc).join('</b> · <b>')+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.' : '✔ Los materiales descuentan del saldo de <b>'+dstEsc(f._pp)+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.') : 'Elegí el presupuesto de la obra. <i>Ej.: cemento para el revoque del Nivel 3.</i>' + (DST.loaded && !DST.pp.length ? ' <b>No hay presupuestos aprobados cargados.</b>' : '');
   else if(m === 'ta') h.innerHTML = f.trabajo_admin ? '✔ Los materiales suman al costo de <b>'+dstEsc(f.trabajo_admin)+'</b>, que se liquida al cliente. No descuentan del presupuesto.' : 'Elegí el trabajo por administración. <i>Ej.: porcelanato para el TA-0001 · Renovación del piso.</i>' + (DST.loaded && !DST.ta.length ? ' <b>No hay trabajos por administración abiertos: se crean en Certificación o desde la orden de servicio.</b>' : '');
   else if(m === 'sin') h.innerHTML = 'Gastos que no poseen presupuesto o que no está cargado en el sistema: <b>no es posible descontar saldo</b>. Si tenés el N° de un presupuesto hecho fuera del sistema, anotalo en el paso 2 como referencia.';
   else h.innerHTML = '';
@@ -17497,6 +17565,7 @@ async function dstSet(m, val){
   f.destino = m;
   if(m === 'presupuesto'){
     f.trabajo_admin = '';
+    if(val !== undefined && (val || '') !== (f._pp || '')){ f._ppExtra = []; CBM.cache = {}; (wizard.cart||[]).forEach(function(it){ it.presupuesto = ''; }); }   // v2.9
     if(val !== undefined) f._pp = val || '';
     await setPresupuesto(f._pp || '', true);
     const p = dstPP(f._pp); if(p && p.obra) dstFijarObra(p.obra);
@@ -17535,7 +17604,7 @@ function dstAplicarDefecto(){
   if(!DST.loaded) dstLoad();
   const f = wizard.form || {};
   if(!f.destino) f.destino = 'sin';   // v2.5 · por defecto, «Sin presupuesto»
-  if(f.destino === 'presupuesto' && f._pp && cartBudget.pp !== f._pp){ setPresupuesto(f._pp, true); }
+  if(f.destino === 'presupuesto' && f._pp && cartBudget.pp !== f._pp && cbmLista().indexOf(cartBudget.pp) < 0 && !CBM._cargando){ setPresupuesto(f._pp, true); }   // v2.9 · el activo puede ser otro presupuesto de la orden
   (wizard.cart||[]).forEach(function(it){
     if(it._dstManual) return;
     it.trabajo_admin = (f.destino === 'ta') ? (f.trabajo_admin || '') : '';
@@ -17544,6 +17613,7 @@ function dstAplicarDefecto(){
 }
 function dstItemValor(it){
   if(it.trabajo_admin) return 'ta:' + it.trabajo_admin;
+  if(wizard.form.destino === 'presupuesto' && !it.sin_presupuesto && it.presupuesto && it.presupuesto !== wizard.form._pp && cbmLista().indexOf(it.presupuesto) >= 0) return 'pp:' + it.presupuesto;   // v2.9
   if(wizard.form.destino === 'presupuesto' && !it.sin_presupuesto) return 'pp';
   return 'sin';
 }
@@ -17554,19 +17624,21 @@ function dstItemHTML(it, idx){
   const v = dstItemValor(it);
   const ops = [];
   if(f.destino === 'presupuesto' && f._pp) ops.push(['pp', 'Presupuesto '+f._pp]);
+  if(f.destino === 'presupuesto') (f._ppExtra||[]).forEach(function(c){ if(c && c !== f._pp) ops.push(['pp:'+c, 'Presupuesto '+c]); });   // v2.9
   ops.push(['sin', f.destino === 'presupuesto' ? 'Sin presupuesto (material no presupuestado)' : 'Sin presupuesto']);
   DST.ta.forEach(function(t){ ops.push(['ta:'+t.codigo, 'Trabajo por adm. '+t.codigo+' · '+(t.nombre||'')]); });
   if(it.trabajo_admin && !dstTA(it.trabajo_admin)) ops.push(['ta:'+it.trabajo_admin, 'Trabajo por adm. '+it.trabajo_admin]);
-  const cls = v === 'pp' ? 'pp' : (v === 'sin' ? 'sin' : 'ta');
+  const cls = (v === 'pp' || v.indexOf('pp:') === 0) ? 'pp' : (v === 'sin' ? 'sin' : 'ta');
   return '<div class="dst-item '+cls+'"><span>Destino:</span><select class="dst-isel" data-cart-idx="'+idx+'" title="A dónde se imputa este material">'+
     ops.map(function(o){ return '<option value="'+dstEsc(o[0])+'"'+(o[0]===v?' selected':'')+'>'+dstEsc(o[1])+'</option>'; }).join('')+'</select>'+
-    (it._dstManual ? '<i title="Cambiado respecto del destino de la orden">cambiado</i>' : '')+'</div>';
+    (it._dstManual ? '<i title="Cambiado respecto del destino de la orden">cambiado</i>' : '')+'</div>'+cbmAvisoRubro(it);
 }
 document.addEventListener('change', function(e){
   const s = e.target.closest && e.target.closest('select.dst-isel'); if(!s) return;
   const it = (wizard.cart||[])[Number(s.getAttribute('data-cart-idx'))]; if(!it) return;
   const v = s.value;
-  if(v === 'pp'){ it.trabajo_admin = ''; it.sin_presupuesto = false; }
+  if(v === 'pp'){ const _antes = it.presupuesto; it.trabajo_admin = ''; it.sin_presupuesto = false; it.presupuesto = wizard.form._pp || ''; if(_antes && _antes !== it.presupuesto){ it.rubro_codigo = ''; it._rubroManual = false; it._cbmSinRubro = true; } }
+  else if(v.indexOf('pp:') === 0){ it.trabajo_admin = ''; it.sin_presupuesto = false; it.presupuesto = v.slice(3); it.rubro_codigo = ''; it._rubroManual = false; it._cbmSinRubro = true; cbmEnsure(it.presupuesto).then(function(){ try{ renderCart(); }catch(e){} }); }   // v2.9 · el rubro se vuelve a elegir en ese presupuesto
   else if(v === 'sin'){ it.trabajo_admin = ''; it.sin_presupuesto = (wizard.form.destino === 'presupuesto'); }
   else { it.trabajo_admin = v.slice(3); it.sin_presupuesto = false; }
   it._dstManual = (dstItemValor(it) !== (wizard.form.destino === 'ta' ? 'ta:'+wizard.form.trabajo_admin : (wizard.form.destino === 'presupuesto' ? 'pp' : 'sin')));
@@ -17616,7 +17688,7 @@ function dstSyncPaso2(){
     const help2 = document.getElementById('fldPresupuestoHelp');
     if(help2){ help2.textContent = m === 'presupuesto' ? 'Presupuesto aprobado elegido en el paso 1. Para cambiarlo, volvé al paso 1.' : 'Trabajo por administración elegido en el paso 1. Para cambiarlo, volvé al paso 1.'; help2.style.color = '#6B7486'; }
     if(res){ res.style.display = ''; res.innerHTML = m === 'presupuesto'
-      ? '<b>Destino: presupuesto '+dstEsc(f._pp||'—')+'.</b> Los materiales descuentan del saldo. Se cambia en el paso 1.'
+      ? (cbmMulti() ? cbmResumenHTML() : '<b>Destino: presupuesto '+dstEsc(f._pp||'—')+'.</b> Los materiales descuentan del saldo. Se cambia en el paso 1.')
       : '<b>Destino: trabajo por administración '+dstEsc(f.trabajo_admin||'—')+'.</b> Los materiales suman a su costo y se liquidan al cliente. Se cambia en el paso 1.'; }
   }
   const lblN = document.querySelector('label[for="fldPresupuesto"]');
@@ -17625,9 +17697,20 @@ function dstSyncPaso2(){
   const exc = dstExcede();
   if(wex) wex.style.display = exc.length ? '' : 'none';
   if(ex){ ex.oninput = function(){ wizard.form.justificacion_exceso = ex.value; }; if(!exc.length){ ex.value = ''; wizard.form.justificacion_exceso = ''; } }
+  try{ cbmExcesoRender(exc); }catch(eE){ console.warn('detalle del exceso', eE); }   // v2.9.1
 }
 function dstValidarPaso2(){
   const f = wizard.form || {}, m = f.destino || '';
+  try{ cbmVolverPrincipal(); }catch(e){}   // v2.9
+  if(m === 'presupuesto'){
+    const sinR = (wizard.cart||[]).filter(function(it){ return cbmSinRubro(it); })[0];
+    if(sinR) return { msg:'Elegí el rubro de '+cbmItPP(sinR)+' para «'+(sinR.producto_nombre||'el material')+'»: en el carrito, selector «Presupuesto» de ese material.', id:'fldObra' };
+  }
+  if(m === 'presupuesto' && cbmMulti()){
+    const obraV = (document.getElementById('fldObra')||{}).value || f.obra || '';
+    const otra = cbmLista().filter(function(c){ const p = dstPP(c); return p && p.obra && dstNorm(p.obra) !== dstNorm(obraV); })[0];
+    if(otra) return { msg:'El presupuesto '+otra+' es de otra obra. Una orden de compra es de una sola obra.', id:'fldObra' };
+  }
   if(!m) return { msg:'Elegí para qué es esta compra en el paso 1 (pregunta 1)', id:'fldObra' };
   const obra = (document.getElementById('fldObra')||{}).value || f.obra || '';
   if(m === 'presupuesto'){
@@ -17644,7 +17727,7 @@ function dstValidarPaso2(){
   if(exc.length){
     const j = ((document.getElementById('fldExceso')||{}).value || '').trim();
     wizard.form.justificacion_exceso = j;
-    if(j.length < 10) return { msg:exc.length+' material(es) se pasan del saldo del presupuesto: escribí la justificación del exceso (mínimo 10 letras)', id:'fldExceso' };
+    if(j.length < 10) return { msg:(exc.length===1 ? '1 material se pasa' : exc.length+' materiales se pasan')+' de lo presupuestado (el detalle está arriba del campo). Escribí por qué hace falta comprar de más. Ej.: «Se perdieron 10 bolsas por lluvia; se reponen para terminar el revoque».', id:'fldExceso' };
   }
   return null;
 }
@@ -17661,7 +17744,11 @@ function ocDestinoTxt(oc, items){
   if(!oc) return '-';
   // v2.7 · Texto corto: la columna del PDF corta los textos largos (antes se perdía el N° del TA)
   if(oc.destino === 'ta' || oc.trabajo_admin){ const ta = ocTAdeOC(oc, items); return ta ? 'Por administracion ' + ta : 'Por administracion'; }
-  if(oc.destino === 'presupuesto') return 'Presupuesto ' + (oc.presupuesto || '');
+  if(oc.destino === 'presupuesto'){
+    const pps = [oc.presupuesto || ''];   // v2.9 · varios presupuestos de la misma obra
+    (items||[]).forEach(function(i){ if(i && i.presupuesto && !i.trabajo_admin && !i.sin_presupuesto && pps.indexOf(i.presupuesto) < 0) pps.push(i.presupuesto); });
+    return (pps.length > 1 ? 'Presupuestos ' : 'Presupuesto ') + pps.filter(Boolean).join(' / ');
+  }
   return oc.presupuesto || '-';
 }
 
@@ -17672,7 +17759,7 @@ function ocDestinoTxt(oc, items){
 function dstItemDestinoTxt(oc, it){
   if(it.trabajo_admin) return { cls:'ta', txt:'Trabajo por adm. '+it.trabajo_admin };
   if(it.sin_presupuesto) return { cls:'sin', txt:'Sin presupuesto' };
-  if(oc && oc.destino === 'presupuesto') return { cls:'pp', txt:'Presupuesto '+(oc.presupuesto||'') };
+  if(oc && oc.destino === 'presupuesto') return { cls:'pp', txt:'Presupuesto '+(it.presupuesto || oc.presupuesto || '') };
   if(oc && (oc.destino === 'sin' || oc.destino === 'ta')) return { cls:'sin', txt:'Sin presupuesto' };
   return null;
 }
@@ -17859,6 +17946,212 @@ function fpmSincronizarRubros(){
     const rk = _cbResolveRubro(it.producto_id);
     if(rk && !/^D:/.test(rk) && fpmRubroDeEste(rk)) it.rubro_codigo = rk;
   });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   v2.9 · VARIOS PRESUPUESTOS DE LA MISMA OBRA EN UNA ORDEN
+   La orden tiene un presupuesto principal (cabecera) y puede sumar otros
+   presupuestos publicados de la MISMA obra. Cada material guarda el suyo
+   (ordenes_compra_items.presupuesto) y descuenta de su saldo.
+   El motor de saldos trabaja con un presupuesto «activo» (cartBudget); los
+   demás se guardan en CBM.cache y se intercambian con cbmWith().
+   ────────────────────────────────────────────────────────────────── */
+var CBM = { cache:{}, _cargando:false, _pend:{} };
+var _CBM_KEYS = ['pp','mats','rubros','ocItems','allRubros','rubroDesc','rubroSector','nombre','obra','sectorCab','prodNombre','prodUnidad','ocCabs'];
+function cbmSnap(){ const s = {}; _CBM_KEYS.forEach(function(k){ s[k] = cartBudget[k]; }); return s; }
+function cbmPut(s){ _CBM_KEYS.forEach(function(k){ cartBudget[k] = s[k]; }); }
+function cbmLista(){
+  const f = (typeof wizard !== 'undefined' && wizard.form) || {};
+  if(f.destino !== 'presupuesto' || !f._pp) return [];
+  return [f._pp].concat((f._ppExtra||[]).filter(function(c){ return c && c !== f._pp; }));
+}
+function cbmMulti(){ return cbmLista().length > 1; }
+function cbmItPP(it){
+  const f = (typeof wizard !== 'undefined' && wizard.form) || {};
+  if(it && it.presupuesto && cbmLista().indexOf(it.presupuesto) >= 0) return it.presupuesto;
+  return f._pp || cartBudget.pp || '';
+}
+function cbmGuardarActual(){ if(cartBudget.pp && Array.isArray(cartBudget.mats)) CBM.cache[cartBudget.pp] = cbmSnap(); }
+function cbmWith(pp, fn){
+  if(!pp || pp === cartBudget.pp) return fn();
+  const s = CBM.cache[pp]; if(!s) return fn();
+  const cur = cbmSnap(); cbmPut(s);
+  try{ return fn(); } finally { cbmPut(cur); }
+}
+async function cbmEnsure(pp){
+  if(!pp) return;
+  if(pp === cartBudget.pp && Array.isArray(cartBudget.mats)){ cbmGuardarActual(); return; }
+  if(CBM.cache[pp] || CBM._pend[pp]) return;
+  CBM._pend[pp] = true; cbmGuardarActual();
+  const cur = cbmSnap(); CBM._cargando = true;
+  try{ await cartBudgetLoad(pp); CBM.cache[pp] = cbmSnap(); }
+  catch(e){ console.warn('cargar presupuesto '+pp, e); }
+  finally{ cbmPut(cur); CBM._cargando = false; delete CBM._pend[pp]; }
+}
+async function cbmActivar(pp){
+  if(!pp || pp === cartBudget.pp) return;
+  cbmGuardarActual();
+  if(CBM.cache[pp]) cbmPut(CBM.cache[pp]);
+  else { CBM._cargando = true; try{ await cartBudgetLoad(pp); CBM.cache[pp] = cbmSnap(); } finally { CBM._cargando = false; } }
+  if(typeof FP !== 'undefined'){ FP.qty = {}; FP.mat = {}; FP.rubroDestino = null; FP.sector = ''; }
+  try{ fppInfoRender(); }catch(e){}   // ficha del presupuesto de la pestaña
+  try{ fpRender(); }catch(e){} try{ renderCart(); }catch(e){} try{ fpmBanner(); }catch(e){}
+}
+function cbmVolverPrincipal(){
+  const f = wizard.form || {};
+  if(f._pp && cartBudget.pp && cartBudget.pp !== f._pp && CBM.cache[f._pp]){ cbmGuardarActual(); cbmPut(CBM.cache[f._pp]); }
+}
+/* Cada material nuevo queda en el presupuesto activo (la pestaña elegida) */
+function cbmAsignarNuevos(){
+  const f = wizard.form || {};
+  if(CBM._cargando || f.destino !== 'presupuesto' || !f._pp) return;
+  const act = cbmLista().indexOf(cartBudget.pp) >= 0 ? cartBudget.pp : f._pp;
+  (wizard.cart||[]).forEach(function(it){
+    if(it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto) return;
+    if(!it.presupuesto || cbmLista().indexOf(it.presupuesto) < 0) it.presupuesto = act;
+  });
+}
+/* Presupuestos publicados de la misma obra que el principal */
+function cbmMismaObra(){
+  const f = wizard.form || {}; const p = dstPP(f._pp);
+  if(!p || !p.obra) return [];
+  return DST.pp.filter(function(x){ return x.codigo !== f._pp && x.obra && dstNorm(x.obra) === dstNorm(p.obra); });
+}
+function cbmRenderExtras(){
+  const f = wizard.form || {};
+  const sp = document.getElementById('dstPP'); if(!sp) return;
+  let box = document.getElementById('dstExtra');
+  if(!box){ box = document.createElement('div'); box.id = 'dstExtra'; box.className = 'cbm-extra'; sp.parentNode.insertBefore(box, sp.nextSibling); }
+  const otros = (f.destino === 'presupuesto' && f._pp) ? cbmMismaObra() : [];
+  if(!otros.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  f._ppExtra = (f._ppExtra||[]).filter(function(c){ return otros.some(function(x){ return x.codigo === c; }); });
+  const p = dstPP(f._pp) || {};
+  box.style.display = '';
+  box.innerHTML = '<div class="cbm-tit">¿La compra también es para otros presupuestos de <b>'+dstEsc(p.obra||'esta obra')+'</b>? <span>Tildalos y cada material va a su presupuesto.</span></div>'+
+    '<div class="cbm-chips">'+otros.map(function(x){
+      const on = (f._ppExtra||[]).indexOf(x.codigo) >= 0;
+      return '<label class="cbm-chip'+(on?' on':'')+'" title="'+dstEsc(x.nombre||'')+'"><input type="checkbox" data-cbm="'+dstEsc(x.codigo)+'"'+(on?' checked':'')+'> '+dstEsc(x.codigo)+(x.nombre?' <small>'+dstEsc(String(x.nombre).slice(0,38))+'</small>':'')+'</label>';
+    }).join('')+'</div>';
+  box.querySelectorAll('input[data-cbm]').forEach(function(ch){
+    ch.onchange = async function(){
+      const c = ch.getAttribute('data-cbm');
+      f._ppExtra = (f._ppExtra||[]).filter(function(x){ return x !== c; });
+      if(ch.checked){
+        f._ppExtra.push(c);
+        await cbmEnsure(c);
+        showToast('Se sumó '+c+' a la compra','info','En «Traer del presupuesto» elegí la pestaña '+c+' para cargar sus materiales');
+      } else {
+        let n = 0;
+        (wizard.cart||[]).forEach(function(it){ if(it.presupuesto === c){ it.presupuesto = f._pp; it.rubro_codigo = ''; it._rubroManual = false; it._cbmSinRubro = true; n++; } });
+        if(cartBudget.pp === c) cbmVolverPrincipal();
+        if(n) showToast((n===1?'1 material pasó':n+' materiales pasaron')+' a '+f._pp,'info','Eran de '+c+'. En el carrito, elegí el rubro de '+f._pp+' para cada uno (están marcados en amarillo).');
+      }
+      dstRender(); try{ renderCart(); }catch(e){} try{ fpRender(); }catch(e){}
+      try{ if(typeof saveDraft === 'function') saveDraft(); }catch(e){}
+    };
+  });
+  // Borrador recuperado: cargar los presupuestos adicionales que falten
+  (f._ppExtra||[]).forEach(function(c){ if(!CBM.cache[c] && !CBM._pend[c]) cbmEnsure(c).then(function(){ try{ renderCart(); }catch(e){} }); });
+}
+/* Pestañas en «Traer del presupuesto» */
+function cbmTabs(){
+  const panel = document.getElementById('fpPanel'); if(!panel) return;
+  let bar = document.getElementById('cbmTabs');
+  if(!bar){ bar = document.createElement('div'); bar.id = 'cbmTabs'; bar.className = 'cbm-tabs'; const head = panel.querySelector('.fp-head'); if(head) head.parentNode.insertBefore(bar, head.nextSibling); else panel.insertBefore(bar, panel.firstChild); }
+  const L = cbmLista();
+  if(L.length < 2){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = '';
+  bar.innerHTML = '<span class="cbm-tl">Presupuesto:</span>' + L.map(function(c){
+    const n = (wizard.cart||[]).filter(function(it){ return !it.es_mano_obra && !it.trabajo_admin && !it.sin_presupuesto && cbmItPP(it) === c; }).length;
+    return '<button type="button" class="cbm-tab'+(c === cartBudget.pp ? ' on' : '')+'" data-cbmtab="'+dstEsc(c)+'">'+dstEsc(c)+(n?' <i>'+n+'</i>':'')+'</button>';
+  }).join('') + '<div class="cbm-act">Estás cargando materiales para <b>'+dstEsc(cartBudget.pp||'')+'</b>'+(cartBudget.nombre ? ' · '+dstEsc(cartBudget.nombre) : '')+'. Para cargar en otro presupuesto, tocá su pestaña.</div>';
+  bar.querySelectorAll('[data-cbmtab]').forEach(function(b){ b.onclick = function(){ cbmActivar(b.getAttribute('data-cbmtab')).then(cbmTabs); }; });
+}
+/* Separador de cada presupuesto en el carrito */
+function cbmSeparador(pp, order, groups){
+  if(!pp) return '<div class="cbm-sep otros">Sin presupuesto · trabajos por administración · mano de obra</div>';
+  let tot = 0, n = 0;
+  order.forEach(function(k){ if(k.indexOf(pp+'§') === 0) groups[k].forEach(function(i){ tot += Number(wizard.cart[i].subtotal)||0; n++; }); });
+  return '<div class="cbm-sep"><span>Presupuesto <b>'+dstEsc(pp)+'</b></span><span>'+n+' ít. · <b>'+fmtMoney(tot)+'</b></span></div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   v2.9.1 · Mensajes claros con varios presupuestos
+   ────────────────────────────────────────────────────────────────── */
+function cbmNum(n){ const v = Math.round((Number(n)||0)*100)/100; return String(v).replace('.',','); }
+/* Cuánto se pide, cuánto queda y cuánto se pasa, con el presupuesto del material */
+function cbmExcesoDetalle(it){
+  return cbmWith(cbmItPP(it), function(){
+    const pp = cartBudget.pp;
+    const ins = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';
+    const rk = it.rubro_codigo || '';
+    const rdesc = (cartBudget.rubroDesc && cartBudget.rubroDesc[rk]) || '';
+    if(ins){
+      const m = (cartBudget.mats||[]).find(function(x){ return x.codigo_insumo === ins && (x.rubro_codigo||'') === rk; });
+      if(m){
+        const a = _cbAgg(ins, rk), q = Number(it.cantidad)||0;
+        const quedan = Math.max(0, m.limite - a.ejec - a.reserv - (a.carr - q));
+        return { pp:pp, nombre:it.producto_nombre||'', rubro:(rk ? rk+(rdesc?' '+rdesc:'') : 'General'), pedido:cbmNum(q), quedan:cbmNum(quedan), pasa:cbmNum(q - quedan), unidad:(it.unidad||m.unidad||'') };
+      }
+    }
+    const rub = fpmRubroItem(it);
+    if(rub){
+      const r = (cartBudget.rubros||[]).find(function(x){ return _cbRubroKey(x) === rub; });
+      if(r){
+        const a = _cbAggMoney(rub), s = Number(it.subtotal)||0;
+        const quedan = Math.max(0, r.limite - a.ejec - a.reserv - (a.carr - s));
+        return { pp:pp, nombre:it.producto_nombre||'', rubro:(r.rubro_codigo||'')+' '+(r.descripcion||''), pedido:fmtMoney(s), quedan:fmtMoney(quedan), pasa:fmtMoney(s - quedan), unidad:'' };
+      }
+    }
+    return null;
+  });
+}
+function cbmExcesoRender(exc){
+  const wex = document.getElementById('wrapExceso'); if(!wex) return;
+  let box = document.getElementById('cbmExcDet');
+  if(!box){ box = document.createElement('div'); box.id = 'cbmExcDet'; box.className = 'cbm-exc'; wex.insertBefore(box, wex.firstChild); }
+  const ex = document.getElementById('fldExceso');
+  if(ex) ex.placeholder = 'Ej.: «Se perdieron 10 bolsas de cemento por lluvia; se reponen para terminar el revoque del Nivel 3» · «El cliente pidió ampliar el contrapiso 20 m2 (ver orden de servicio)»';
+  if(!exc || !exc.length){ box.innerHTML = ''; return; }
+  const filas = exc.map(function(it){
+    const d = cbmExcesoDetalle(it);
+    if(!d) return '<li><b>'+dstEsc(it.producto_nombre||'Material')+'</b></li>';
+    const u = d.unidad ? ' <span class="cbm-u">(en '+dstEsc(d.unidad)+')</span>' : '';
+    return '<li><b>'+dstEsc(d.nombre)+'</b> · <b>'+dstEsc(d.pp)+'</b>, rubro '+dstEsc(d.rubro)+': pedís '+d.pedido+' · quedan '+d.quedan+' · <b class="cbm-pasa">se pasa '+d.pasa+'</b>'+u+'</li>';
+  }).join('');
+  box.innerHTML = '<div class="cbm-exc-t">⚠ '+(exc.length===1?'Este material se pasa':'Estos materiales se pasan')+' de lo presupuestado:</div><ul>'+filas+'</ul>'+
+    '<div class="cbm-exc-h">Escribí abajo <b>por qué</b> hace falta comprar de más. Queda en la orden y lo ve quien la aprueba.</div>';
+}
+/* Resumen del reparto (paso 2) */
+function cbmResumenHTML(){
+  const L = cbmLista(); const p = dstPP(L[0]) || {};
+  const partes = L.map(function(c){
+    let n = 0, tot = 0;
+    (wizard.cart||[]).forEach(function(it){ if(it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto) return; if(cbmItPP(it) === c){ n++; tot += Number(it.subtotal)||0; } });
+    return '<span class="cbm-rp"><b>'+dstEsc(c)+'</b> · '+n+' material'+(n===1?'':'es')+' · '+fmtMoney(tot)+'</span>';
+  }).join('');
+  const otros = (wizard.cart||[]).filter(function(it){ return !it.es_mano_obra && (it.trabajo_admin || it.sin_presupuesto); }).length;
+  return '<b>Esta orden descuenta de '+L.length+' presupuestos de '+dstEsc(p.obra||'la obra')+':</b><div class="cbm-rps">'+partes+'</div>'+
+    (otros ? '<div style="font-size:12px;color:#6B7486;margin-top:4px">Además, '+otros+' material'+(otros===1?'':'es')+' sin presupuesto o de trabajo por administración.</div>' : '')+
+    '<div style="font-size:12px;color:#6B7486;margin-top:4px">Para cambiar los presupuestos, volvé al paso 1.</div>';
+}
+/* Material que cambió de presupuesto y todavía no tiene su rubro */
+function cbmSinRubro(it){
+  if(!it || !it._cbmSinRubro) return false;
+  if(it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto || (wizard.form||{}).destino !== 'presupuesto'){ delete it._cbmSinRubro; return false; }
+  const d = _cbItemDestino(it);
+  if(d && !/^Fuera/.test(d.txt||'')){ delete it._cbmSinRubro; return false; }
+  return true;
+}
+function cbmAvisoRubro(it){
+  if(!cbmSinRubro(it)) return '';
+  const pp = cbmItPP(it);
+  const ej = cbmWith(pp, function(){
+    const m = (cartBudget.mats||[]).find(function(x){ return _cbInsDeItem(it) === x.codigo_insumo; }) || (cartBudget.mats||[])[0];
+    const rk = m ? (m.rubro_codigo||'') : (((cartBudget.rubros||[])[0]||{}).rubro_codigo||'');
+    return rk ? rk+' '+((cartBudget.rubroDesc||{})[rk]||'') : '';
+  });
+  return '<div class="cbm-aviso">⚠ Elegí el rubro de <b>'+dstEsc(pp)+'</b> para este material, en el selector «Presupuesto» de abajo'+(ej?' (ej.: '+dstEsc(ej.trim())+')':'')+'. Sin rubro no se puede guardar.</div>';
 }
 </script>
 </body>
