@@ -7780,6 +7780,7 @@ function openProductModal(productId){
 
 function fillAndOpenModal(prod){
   wizard.modalProductId = prod.id;
+  wizard.modalProd = prod;   // v2.9.2 · el producto mostrado, aunque no esté en la lista cargada
   const inCart = wizard.cart.find(c => c.producto_id === prod.id);
 
   document.getElementById('prodModalTitle').textContent = prod.nombre;
@@ -7849,7 +7850,12 @@ document.getElementById('prodModalAdd').addEventListener('click', ()=>{
   }
   const productId = wizard.modalProductId;
   let prod = wizard.catalog.items.find(p => p.id === productId)
-          || wizard.recentItems.find(p => p.id === productId);
+          || wizard.recentItems.find(p => p.id === productId)
+          || ((wizard.modalProd && wizard.modalProd.id === productId) ? wizard.modalProd : null);   // v2.9.2
+  if(!prod){   // último recurso: el nombre que muestra la ventana
+    const _tit = ((document.getElementById('prodModalTitle')||{}).textContent||'').trim();
+    if(_tit) prod = { id:productId, nombre:_tit, url_imagen:'' };
+  }
 
   const existingIdx = wizard.cart.findIndex(c => c.producto_id === productId);
   const item = {
@@ -11312,6 +11318,7 @@ async function openDetail(oc){
       sb.from('oc_historial').select('*').eq('oc_id', oc.id).order('creado_en', {ascending:true}),
     ]);
     detail.items = itemsRes.data || [];
+    try{ await ocCorregirNombres(detail.items); }catch(eN){ console.warn('nombres de productos', eN); }   // v2.9.2
     detail.adjuntos = adjRes.data || [];
     detail.historial = histRes.data || [];
 
@@ -18152,6 +18159,21 @@ function cbmAvisoRubro(it){
     return rk ? rk+' '+((cartBudget.rubroDesc||{})[rk]||'') : '';
   });
   return '<div class="cbm-aviso">⚠ Elegí el rubro de <b>'+dstEsc(pp)+'</b> para este material, en el selector «Presupuesto» de abajo'+(ej?' (ej.: '+dstEsc(ej.trim())+')':'')+'. Sin rubro no se puede guardar.</div>';
+}
+
+/* v2.9.2 · Materiales guardados como «Producto #id» (agregados desde una búsqueda):
+   se muestra el nombre real del catálogo y se corrige la línea en la base. */
+async function ocCorregirNombres(items){
+  const mal = (items||[]).filter(function(i){ return i && i.producto_id != null && (!i.producto_nombre || /^Producto #\s*\d+\s*$/i.test(String(i.producto_nombre).trim())); });
+  if(!mal.length) return;
+  const ids = Array.from(new Set(mal.map(function(i){ return i.producto_id; })));
+  const r = await sb.from('productos_catalogo').select('id,nombre').in('id', ids);
+  const M = {}; (r.data||[]).forEach(function(x){ if(x && x.nombre) M[String(x.id)] = x.nombre; });
+  for(const i of mal){
+    const nom = M[String(i.producto_id)]; if(!nom) continue;
+    i.producto_nombre = nom;
+    if(i.id != null){ try{ await sb.from('ordenes_compra_items').update({ producto_nombre: nom }).eq('id', i.id); }catch(eU){} }
+  }
 }
 </script>
 </body>
