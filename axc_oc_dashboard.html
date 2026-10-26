@@ -812,6 +812,7 @@ body{
 }
 .badge-mini[data-state="Solicitado"]{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-soft)}
 .badge-mini[data-state="Aprobado"]{background:var(--green-bg);color:var(--green);border-color:var(--green-soft)}
+.badge-mini[data-state="Pagada"]{background:#D3EEF0;color:#0B4A55;border-color:#5FB7C2;margin-left:4px}
 .badge-mini[data-state="Rechazado"]{background:var(--red-bg);color:var(--red);border-color:var(--red-soft)}
 .badge-mini[data-state="Observado"]{background:var(--blue-bg);color:var(--blue);border-color:var(--blue-soft)}
 .badge-mini[data-state="Archivado"]{background:#E5E7EE;color:#4A5066;border-color:#B8BDCB}
@@ -974,7 +975,7 @@ body{
       <div class="login-error" id="loginError"></div>
     </form>
     <div class="login-footer">
-      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v2.0 (columna Residente + jerarquia en el detalle)
+      AXC Constructora · Desarrollado por <strong>Conexdata</strong> · v2.1 (pago de las OC: filtro Pago, pagadas y crédito sin pagar · lectura sin tope de 1000 filas)
     </div>
   </div>
 </div>
@@ -1092,6 +1093,10 @@ body{
       <div class="filter-field">
         <span class="filter-label">📊 Estado</span>
         <div class="ms-wrap" id="msEstado" data-ph="Todos"></div>
+      </div>
+      <div class="filter-field">
+        <span class="filter-label">💳 Pago</span>
+        <div class="ms-wrap" id="msPago" data-ph="Todos"></div>
       </div>
     </div>
   </div>
@@ -1343,7 +1348,7 @@ const state = {
   verDetalleTabla: false,  // toggle tabla: false = una línea por OC, true = con líneas de ítems
   filtros: {
     fechaDesde: '', fechaHasta: '',
-    obra: [], sector: [], presupuesto: [], rubro: [], proveedor: [], residente: [], tipoCompra: [], estado: [],
+    obra: [], sector: [], presupuesto: [], rubro: [], proveedor: [], residente: [], tipoCompra: [], estado: [], pago: [],
   },
   trendGrain: 'month',
   charts: {},     // Referencias a instancias de Chart.js
@@ -1458,9 +1463,21 @@ async function loadData(){
   showLoading('Cargando órdenes de compra...');
   try{
     // Cargar OC + items en paralelo
+    // v2.1 · Lectura paginada: el servidor devuelve como máximo 1000 filas por
+    // pedido, y los ítems de todas las OC ya superan ese número.
+    const traerTodo = async (tabla, ordenar) => {
+      let out = [];
+      for(let desde = 0; desde < 200000; desde += 1000){
+        const r = await ordenar(sb.from(tabla).select('*')).range(desde, desde + 999);
+        if(r.error) return { data:null, error:r.error };
+        out = out.concat(r.data || []);
+        if(!r.data || r.data.length < 1000) break;
+      }
+      return { data:out, error:null };
+    };
     const [ocsRes, itemsRes] = await Promise.all([
-      sb.from('ordenes_compra').select('*').order('fecha', {ascending:false}).limit(5000),
-      sb.from('ordenes_compra_items').select('*').order('orden', {ascending:true}),
+      traerTodo('ordenes_compra', q => q.order('fecha', {ascending:false}).order('id', {ascending:false})),
+      traerTodo('ordenes_compra_items', q => q.order('oc_id', {ascending:true}).order('orden', {ascending:true}).order('id', {ascending:true})),
     ]);
     if(ocsRes.error) throw ocsRes.error;
     if(itemsRes.error) throw itemsRes.error;
@@ -1504,6 +1521,9 @@ async function loadData(){
         // Destino del ítem (fase 2): lo imputado a un trabajo por administración no cuenta como presupuesto
         oc_presupuesto: it.trabajo_admin ? ('Trabajo por adm. ' + it.trabajo_admin) : (it.presupuesto || oc.presupuesto || ''),   // v · cada material, su presupuesto
         oc_estado: oc.estado,
+        // v2.1 · Pago: independiente del estado de la orden
+        oc_pagado: oc.pagado === true,
+        oc_pago_txt: ['Solicitado','Observado','Aprobado'].includes(oc.estado) ? (oc.pagado === true ? 'Pagada' : 'Pendiente de pago') : 'No aplica',
         oc_observacion: oc.observacion || '',
       };
     }).filter(Boolean);
@@ -1555,6 +1575,7 @@ function populateFilterOptions(){
   buildMultiSelect('msResidente', residentes, 'residente');
   buildMultiSelect('msTipoCompra', tipos, 'tipoCompra');
   buildMultiSelect('msEstado', estados, 'estado');
+  buildMultiSelect('msPago', ['Pagada','Pendiente de pago'], 'pago');
 }
 
 /* Sectores de las obras elegidas. Sin obra no hay sectores: un «Nivel 2»
@@ -1649,7 +1670,7 @@ function initFilterBindings(){
   document.getElementById('btnClearFilters').addEventListener('click', () => {
     state.filtros = {
       fechaDesde:'', fechaHasta:'', obra:[], sector:[], presupuesto:[], rubro:[], proveedor:[],
-      residente:[], tipoCompra:[], estado:[]
+      residente:[], tipoCompra:[], estado:[], pago:[]
     };
     const fd = document.getElementById('fFechaDesde'); if(fd) fd.value = '';
     const fh = document.getElementById('fFechaHasta'); if(fh) fh.value = '';
@@ -1754,6 +1775,7 @@ function applyFilters(){
     if(!has(f.residente, it.oc_residente)) return false;
     if(!has(f.tipoCompra, it.oc_tipo_compra)) return false;
     if(!has(f.estado, it.oc_estado)) return false;
+    if(!has(f.pago, it.oc_pago_txt)) return false;
     return true;
   });
 }
@@ -1772,6 +1794,7 @@ function updateFiltersSummary(){
   if(f.residente && f.residente.length) parts.push(`Residente: ${lst(f.residente)}`);
   if(f.tipoCompra && f.tipoCompra.length) parts.push(`Tipo: ${lst(f.tipoCompra)}`);
   if(f.estado && f.estado.length) parts.push(`Estado: ${lst(f.estado)}`);
+  if(f.pago && f.pago.length) parts.push(`Pago: ${lst(f.pago)}`);
   const sum = document.getElementById('filtersSummary');
   sum.innerHTML = parts.length === 0
     ? 'Sin filtros'
@@ -1951,7 +1974,9 @@ function renderKPIs(){
 
   document.getElementById('kpiAprobadas').textContent = aprob;
   const pct = totalOC > 0 ? Math.round((aprob/totalOC)*100) : 0;
-  document.getElementById('kpiAprobadasTrend').innerHTML = `<strong>${pct}%</strong> del total filtrado`;
+  // v2.1 · OC aprobadas que ya se pagaron
+  const ocsApPag = new Set(items.filter(it => it.oc_estado === 'Aprobado' && it.oc_pagado).map(it => it.oc_id));
+  document.getElementById('kpiAprobadasTrend').innerHTML = `<strong>${pct}%</strong> del total filtrado · <strong>${ocsApPag.size}</strong> pagada${ocsApPag.size===1?'':'s'}`;
 
   document.getElementById('kpiSolicitadas').textContent = solic;
   document.getElementById('kpiSolicitadasTrend').innerHTML = `<strong>${fmtMoney(pendMonto)}</strong> esperando decisión`;
@@ -1970,7 +1995,11 @@ function renderKPIs(){
 
   document.getElementById('kpiCredito').textContent = fmtMoneyCompact(creditoMonto);
   document.getElementById('kpiCredito').title = fmtMoney(creditoMonto);
-  document.getElementById('kpiCreditoTrend').innerHTML = `<strong>${totalValor>0?Math.round(creditoMonto/totalValor*100):0}%</strong> de lo comprado · deuda con proveedores`;
+  // v2.1 · La deuda real: compras a crédito vigentes (aprobadas o no) sin pago registrado
+  const creditoSinPagar = items.reduce((acc,it) =>
+    acc + (tipoPago(it.oc_tipo_compra) === 'credito' && it.oc_pago_txt === 'Pendiente de pago' ? (Number(it.subtotal)||0) : 0), 0);
+  document.getElementById('kpiCreditoTrend').innerHTML = `<strong>${totalValor>0?Math.round(creditoMonto/totalValor*100):0}%</strong> de lo comprado · <strong>${fmtMoneyCompact(creditoSinPagar)}</strong> a crédito sin pagar`;
+  document.getElementById('kpiCreditoTrend').title = 'Compras a crédito vigentes (solicitadas, observadas o aprobadas) que todavía no tienen pago registrado';
 }
 
 // Clasifica el Tipo de compra en condición de pago: 'contado', 'credito' u 'otro'.
@@ -2575,7 +2604,7 @@ function renderTable(){
         <td class="right"></td>
         <td class="right"></td>
         <td class="right subtotal"><strong>${fmtMoney(ocTotal)}</strong></td>
-        <td><span class="badge-mini" data-state="${escapeHtml(it0.oc_estado)}">${escapeHtml(it0.oc_estado)}</span></td>
+        <td><span class="badge-mini" data-state="${escapeHtml(it0.oc_estado)}">${escapeHtml(it0.oc_estado)}</span>${it0.oc_pagado ? '<span class="badge-mini" data-state="Pagada">Pagada</span>' : ''}</td>
       </tr>`;
     // Ítems de la OC (ocultos hasta hacer clic)
     group.items.forEach(it => {
@@ -2762,6 +2791,7 @@ async function exportPDF(incluirDetalle = true){
     if(f.residente && f.residente.length) filterRows.push(['Residente', joinArr(f.residente)]);
     if(f.tipoCompra && f.tipoCompra.length) filterRows.push(['Tipo de compra', joinArr(f.tipoCompra)]);
     if(f.estado && f.estado.length) filterRows.push(['Estado', joinArr(f.estado)]);
+    if(f.pago && f.pago.length) filterRows.push(['Pago', joinArr(f.pago)]);
 
     if(filterRows.length === 0){
       doc.setFont('helvetica', 'italic');
@@ -2994,7 +3024,7 @@ async function exportPDF(incluirDetalle = true){
         fmtFecha(g.oc.oc_fecha), numero, pdfSafe(g.oc.oc_obra),
         pdfSafe(g.oc.oc_residente || '-'), pdfSafe(g.oc.oc_proveedor),
         pdfSafe(g.oc.oc_tipo_compra || 'Sin especificar'),
-        pdfSafe(`${g.items.length} item${g.items.length===1?'':'s'}`), '', fmtPdfMoney(ocTotal), pdfSafe(g.oc.oc_estado),
+        pdfSafe(`${g.items.length} item${g.items.length===1?'':'s'}`), '', fmtPdfMoney(ocTotal), pdfSafe(g.oc.oc_estado + (g.oc.oc_pagado ? ' (pagada)' : '')),
       ]);
       // En modo resumen, la cabecera lleva el subtotal de la OC (para la suma por hoja).
       pdfRows.push({ type:'oc', sub: incluirDetalle ? 0 : ocTotal });
