@@ -4396,7 +4396,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.2.6 · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.2.8 · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -9360,7 +9360,7 @@ function _consRubros(it){
   if(it.rubro_codigo) return [String(it.rubro_codigo)];
   return ['Sin rubro'];
 }
-function consolidarItems(items){
+function consolidarItems(items, destDe){   // v8.2.7 · destDe(it) opcional: separa el desglose por presupuesto
   const out = [], map = {};
   (items||[]).forEach(function(it){
     const k = _consKey(it);
@@ -9384,9 +9384,10 @@ function consolidarItems(items){
     const rubros = _consRubros(it);   // v2.7 · siempre el rubro de aplicación (el TA va en «Destino»)
     if(it.trabajo_admin){ c.tas = c.tas || {}; c.tas[String(it.trabajo_admin)] = 1; }
     const parte = rubros.length ? (cant / rubros.length) : cant;   // si va a 2 rubros, se reparte
+    const _dest = (typeof destDe === 'function') ? String(destDe(it) || '') : '';
     rubros.forEach(function(r){
-      const rk = String(r);
-      if(!c._amap[rk]){ c._amap[rk] = { rubro: rk, cantidad: 0, precio: pu }; c.aplic.push(c._amap[rk]); }
+      const rk = String(r) + (_dest ? ('|' + _dest) : '');
+      if(!c._amap[rk]){ c._amap[rk] = { rubro: String(r), cantidad: 0, precio: pu, dest: _dest }; c.aplic.push(c._amap[rk]); }
       c._amap[rk].cantidad += parte;
       c._amap[rk].precio = pu;
     });
@@ -14577,7 +14578,17 @@ async function generatePDF(oc, incluirAdjuntos){
     // Consolidación para el PROVEEDOR: el mismo material, aunque venga de
     // varios rubros, va en UNA sola línea con la cantidad total. La columna
     // de rubro muestra dónde se aplica y cuánto en cada uno.
-    const _consol = consolidarItems(items);
+    // v8.2.7 · Presupuesto (o TA) de cada cantidad: solo si la orden tiene más de un destino;
+    // con uno solo ya figura en «Destino» y no se repite en cada renglón.
+    const _destDe = function(it){
+      if(!it || it.es_mano_obra) return '';
+      if(it.trabajo_admin) return String(it.trabajo_admin);
+      if(it.sin_presupuesto) return 'Sin presup.';
+      return String(it.presupuesto || (oc.destino === 'presupuesto' ? (oc.presupuesto || '') : '') || '').trim();
+    };
+    const _destinos = {}; (items||[]).forEach(function(it){ const d = _destDe(it); if(d) _destinos[d] = 1; });
+    const _conDest = Object.keys(_destinos).length > 1;
+    const _consol = consolidarItems(items, _conDest ? _destDe : null);
 
     const rows = _consol.map((it, idx) => [
       String(idx + 1),
@@ -14586,7 +14597,8 @@ async function generatePDF(oc, incluirAdjuntos){
         _aplic: (it.aplic && it.aplic.length) ? it.aplic.map(function(a){
           const q = (typeof _cbQty === 'function') ? _cbQty(a.cantidad) : String(a.cantidad);
           return { r: pdfSafe(a.rubro), q: pdfSafe(q + (it.unidad ? (' ' + it.unidad) : '')),
-                   p: it.precioVaria ? pdfSafe('x ' + Math.round(a.precio).toLocaleString('es-PY')) : '' };
+                   p: it.precioVaria ? pdfSafe('x ' + Math.round(a.precio).toLocaleString('es-PY')) : '',
+                   d: pdfSafe(a.dest || '') };   // v8.2.7
         }) : null },
       pdfSafe(it.unidad || '-'),
       String(_pdfNum(it.cantidad)),
@@ -14604,10 +14616,11 @@ async function generatePDF(oc, incluirAdjuntos){
 
     doc.autoTable({
       startY: y,
-      head: [['#', 'Producto', 'Rubro de aplicacion', 'Unid.', 'Cant.', 'Precio Unit.', 'Subtotal']],
+      // v8.2.7 · «#» con poco margen (antes no entraba y estiraba el encabezado) y el total en dos columnas, sin cortarse
+      head: [[{ content:'#', styles:{ cellPadding:{top:3, bottom:3, left:0.8, right:0.8}, halign:'center' } }, 'Producto', 'Rubro de aplicacion', 'Unid.', 'Cant.', 'Precio Unit.', 'Subtotal']],
       body: rows,
-      foot: [['', '', '', '', '', { content: 'TOTAL', styles: {halign:'right', fontStyle:'bold', fillColor:[31,56,100], textColor:[255,255,255]} },
-        { content: fmtPdfMoney(total), styles:{halign:'right', fontStyle:'bold', fillColor:[31,56,100], textColor:[200,160,40], fontSize:11} }
+      foot: [[{ content:'', colSpan:3 }, { content: 'TOTAL', colSpan:2, styles: {halign:'right', fontStyle:'bold', fillColor:[31,56,100], textColor:[255,255,255]} },
+        { content: fmtPdfMoney(total), colSpan:2, styles:{halign:'right', fontStyle:'bold', fillColor:[31,56,100], textColor:[200,160,40], fontSize:11} }
       ]],
       theme: 'grid',
       styles: {
@@ -14624,16 +14637,17 @@ async function generatePDF(oc, incluirAdjuntos){
         fontStyle: 'bold',
         fontSize: 8.5,
         cellPadding: 3,
+        valign: 'middle',
       },
       footStyles: {
         fillColor: [31, 56, 100],
         textColor: [255, 255, 255],
       },
       columnStyles: {
-        0: {halign:'center', cellWidth: 7},
+        0: {halign:'center', cellWidth: 8, cellPadding:{top:2.5, bottom:2.5, left:1, right:1}},
         1: {cellWidth: 'auto'},
-        2: {cellWidth: 34, fontSize: 8, textColor:[80,90,110]},
-        3: {halign:'center', cellWidth: 13, fontSize: 8, textColor:[80,90,110]},
+        2: {cellWidth: 46, fontSize: 8, textColor:[80,90,110]},   // v8.2.7 · más ancho: menos cortes
+        3: {halign:'center', cellWidth: 17, fontSize: 7.5, textColor:[80,90,110], cellPadding:{top:2.5, bottom:2.5, left:1.2, right:1.2}},
         4: {halign:'right', cellWidth: 14},
         5: {halign:'right', cellWidth: 24},
         6: {halign:'right', cellWidth: 26, fontStyle:'bold'},
@@ -14644,38 +14658,58 @@ async function generatePDF(oc, incluirAdjuntos){
       didParseCell: function(data){
         if(data.section !== 'body' || data.column.index !== 2) return;
         const raw = data.cell.raw; if(!raw || !raw._aplic) return;
-        const fs = 8, ancho = 34 - 2 * 2.5 - 0.8;
-        doc.setFontSize(fs);
+        // v8.2.8 · cantidad (7 pt) y presupuesto (5,6 pt) más chicos y discretos
+        const fs = 8, fsQ = 7, fsD = 5.6, ancho = 46 - 2 * 2.5 - 0.8, gap = 1.2;
         const lineas = [];
-        raw._aplic.forEach(function(a){
+        raw._aplic.forEach(function(a, ia){
+          // Grupo de la derecha: cantidad + precio si varía + etiqueta del presupuesto
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(fsQ);
+          const wq = doc.getTextWidth(a.q);
           doc.setFont('helvetica', 'normal');
+          const wp = a.p ? doc.getTextWidth(a.p) + gap : 0;
+          doc.setFontSize(fsD);
+          const wd = a.d ? doc.getTextWidth(a.d) + 2.0 + gap : 0;
+          doc.setFontSize(fs); doc.setFont('helvetica', 'normal');
+          const grupo = { q:a.q, p:a.p, d:a.d, w: wq + wp + wd };
           const ls = doc.splitTextToSize(a.r || '-', ancho);
           const ult = ls.length ? ls.pop() : '';
-          ls.forEach(function(l){ lineas.push({ t:l, q:'', p:'' }); });
-          const wt = doc.getTextWidth(ult + ' '), wp = a.p ? doc.getTextWidth(' ' + a.p) : 0;
-          doc.setFont('helvetica', 'bold'); const wq = doc.getTextWidth(a.q);
-          if(ult && wt + wq + wp <= ancho) lineas.push({ t:ult, q:a.q, p:a.p });
-          else { if(ult) lineas.push({ t:ult, q:'', p:'' }); lineas.push({ t:'', q:a.q, p:a.p }); }
+          ls.forEach(function(l, k){ lineas.push({ t:l, g:null, sep: (k === 0 && ia > 0) }); });
+          const primera = !ls.length && ia > 0;
+          if(ult && doc.getTextWidth(ult) + 2 + grupo.w <= ancho) lineas.push({ t:ult, g:grupo, sep: primera });
+          else { if(ult) lineas.push({ t:ult, g:null, sep: primera }); lineas.push({ t:'', g:grupo, sep:false }); }
         });
-        doc.setFont('helvetica', 'normal');
         data.cell._aplicLineas = lineas;
-        data.cell.text = lineas.map(function(l){ return [l.t, l.q, l.p].filter(Boolean).join(' '); });
+        data.cell.text = lineas.map(function(l){ return [l.t, l.g ? l.g.q : '', l.g ? l.g.p : '', l.g ? l.g.d : ''].filter(Boolean).join(' '); });
       },
       willDrawCell: function(data){
         if(data.section === 'body' && data.column.index === 2 && data.cell._aplicLineas) data.cell.text = [];
       },
       didDrawCell: function(data){
         if(data.section !== 'body' || data.column.index !== 2 || !data.cell._aplicLineas) return;
-        const c = data.cell, fs = 8;
+        const c = data.cell, fs = 8, fsQ = 7, fsD = 5.6, gap = 1.2;
         const lh = fs * doc.getLineHeightFactor() / doc.internal.scaleFactor;
-        const x0 = c.x + c.padding('left');
+        const asc = fs * 0.3528 * 0.718;   // del tope del renglón a la línea base (8 pt)
+        const x0 = c.x + c.padding('left'), xR = c.x + c.width - c.padding('right');
         let yL = c.y + c.padding('top');
-        doc.setFontSize(fs);
         c._aplicLineas.forEach(function(l){
-          let x = x0;
-          if(l.t){ doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 90, 110); doc.text(l.t, x, yL, { baseline:'top' }); x += doc.getTextWidth(l.t + ' '); }
-          if(l.q){ doc.setFont('helvetica', 'bold'); doc.setTextColor(192, 57, 43); doc.text(l.q, x, yL, { baseline:'top' }); x += doc.getTextWidth(l.q + ' '); }
-          if(l.p){ doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 90, 110); doc.text(l.p, x, yL, { baseline:'top' }); }
+          // Separador fino entre un rubro y el siguiente
+          if(l.sep){ doc.setDrawColor(232, 236, 243); doc.setLineWidth(0.12); doc.line(x0, yL - 0.35, xR, yL - 0.35); }
+          const yB = yL + asc;
+          if(l.t){ doc.setFont('helvetica', 'normal'); doc.setFontSize(fs); doc.setTextColor(80, 90, 110); doc.text(l.t, x0, yB); }
+          if(l.g){
+            let x = xR - l.g.w;
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(fsQ); doc.setTextColor(176, 62, 52);
+            doc.text(l.g.q, x, yB); x += doc.getTextWidth(l.g.q);
+            if(l.g.p){ x += gap; doc.setFont('helvetica', 'normal'); doc.setTextColor(110, 118, 135); doc.text(l.g.p, x, yB); x += doc.getTextWidth(l.g.p); }
+            if(l.g.d){
+              x += gap;
+              doc.setFont('helvetica', 'normal'); doc.setFontSize(fsD);
+              const tw = doc.getTextWidth(l.g.d), ph = 2.5, pw = tw + 2.0, cy = yB - 0.85;
+              doc.setFillColor(241, 244, 250);
+              doc.roundedRect(x, cy - ph / 2, pw, ph, 0.8, 0.8, 'F');
+              doc.setTextColor(100, 115, 145); doc.text(l.g.d, x + 1.0, cy, { baseline:'middle' });
+            }
+          }
           yL += lh;
         });
         doc.setFont('helvetica', 'normal'); doc.setTextColor(26, 34, 54);
