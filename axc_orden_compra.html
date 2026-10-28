@@ -3989,7 +3989,7 @@ body{
 .fp-qin:disabled{border-color:#e0e5ee;background:#f4f6f9}
 .fp-rq span{font-size:11.5px;color:#8893a5;font-weight:700;white-space:nowrap}
 .fp-mats{background:#fbfcfe;border-top:1px solid #eef1f6;padding:4px 16px 12px 50px}
-.fp-mrow{display:grid;grid-template-columns:minmax(180px,1fr) 104px 92px 44px 98px 116px 40px 150px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
+.fp-mrow{display:grid;grid-template-columns:minmax(180px,1fr) 104px 92px 44px 98px 116px 40px 150px 34px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #f1f4f8}
 .fp-mpre{text-align:right;font-size:12px;color:#6b7585;font-variant-numeric:tabular-nums}
 .fp-mpre small{display:block;font-size:9.5px;color:#b0b8c4}
 .fp-msub{text-align:right;font-size:13px;font-weight:800;color:#1F3864;font-variant-numeric:tabular-nums}
@@ -4030,6 +4030,15 @@ body{
 .fp-mq{width:100%;border:1px solid #d6dde9;border-radius:7px;padding:6px 8px;font-size:12.5px;text-align:right;font-family:inherit}
 .fp-mun{font-size:11.5px;color:#8893a5;font-weight:600}
 .fp-mwarn{font-size:11px;color:#c0392b;font-weight:700}
+/* v8.2.2 · Quitar un material de esta compra */
+.fp-mquit{border:1px solid #f0c9c4;background:#fff5f4;color:#c0392b;border-radius:8px;width:32px;height:32px;padding:0;font-size:14px;font-weight:800;line-height:1;cursor:pointer;font-family:inherit}
+.fp-mquit:hover{background:#fde4e1;border-color:#e3a39b}
+.fp-mquit.rest{border-color:#9fd3d8;background:#eef8f9;color:#0b5560;font-size:17px}
+.fp-mquit.rest:hover{background:#dcf0f2}
+.fp-mrow.quitado{background:repeating-linear-gradient(135deg,#fafbfd 0 8px,#f2f4f8 8px 16px);border-radius:7px;padding-left:8px;padding-right:4px}
+.fp-mrow.quitado > *:not(.fp-mquit){opacity:.5}
+.fp-mrow.quitado .fp-mnom b{text-decoration:line-through}
+.fp-tag.quit{background:#fde8e6;color:#c0392b;border:1px solid #f0c9c4}
 .fp-row{display:grid;grid-template-columns:34px minmax(220px,1fr) 128px 108px 118px;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid #f2f4f8}
 .fp-row:hover{background:#fafcff}
 .fp-row.agot{background:#fdf4f4}
@@ -4384,7 +4393,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.2.1 · «Traer del presupuesto» para todos los residentes · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.2.4 · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -6539,7 +6548,9 @@ const wizard = {
 // ══ Compra desde presupuesto ═══════════════════════════════════
 // v8.2.1 · Disponible para todos los residentes y administradores (por su rol).
 // Otros roles lo ven solo con el permiso oc_desde_presupuesto.
-var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{}, prod:{}, precio:{}, sector:'', secCerrado:{} };
+var FP = { modo:'catalogo', filtro:'', qty:{}, mat:{}, abierto:{}, prod:{}, precio:{}, sector:'', secCerrado:{}, quitado:{} };
+/* v8.2.2 · Materiales quitados de esta compra, por presupuesto|rubro|insumo */
+function fpEsQuitado(rk, ci){ return !!(FP.quitado && FP.quitado[fpKey(rk, ci)]); }
 
 /* ═══════════════════════════════════════════════════════════════════
    SINCRONIZACIÓN PANEL → CARRITO
@@ -6958,6 +6969,7 @@ function fpRubros(incluirMO){
     // traído solo parte de los materiales.
     let ejecR = 0, reservR = 0, carrR = 0;
     const mats = porRubro[rk].map(function(m){
+      const quit = fpEsQuitado(rk, m.codigo_insumo || m.material);   // v8.2.2
       const a = _cbAgg(m.codigo_insumo, rk);
       const propio = Math.min(a.carr, fpPropioEnCarrito(rk, m.codigo_insumo || m.material));
       const otrosCarr = Math.max(0, a.carr - propio);
@@ -6969,18 +6981,25 @@ function fpRubros(incluirMO){
         carrR   = Math.max(carrR,   otrosCarr / cu);
       }
       return { m:m, saldo:saldo, cu:cu, limite:Number(m.limite)||0,
-               ejec:a.ejec, reserv:a.reserv, otrosCarr:otrosCarr,
+               ejec:a.ejec, reserv:a.reserv, otrosCarr:otrosCarr, quitado:quit,
                maxEjec: cu>0 ? saldo/cu : Infinity };
     });
-    const maxEjec = mats.reduce(function(a,x){ return Math.min(a, x.maxEjec); }, Infinity);
+    // v8.2.2 · Los materiales quitados no limitan cuánto se puede ejecutar
+    const activos = mats.filter(function(x){ return !x.quitado; });
+    const nQuit = mats.length - activos.length;
+    const maxEjec = activos.reduce(function(a,x){ return Math.min(a, x.maxEjec); }, Infinity);
     const _r2 = function(v){ return Math.max(0, Math.round((Number(v)||0)*100)/100); };
     return { codigo:rk, descripcion: ri.descripcion || cartBudget.rubroDesc?.[rk] || rk,
              unidad: ri.unidad||'', cantidad:cant, mats:mats,
              sector: ri.sector || (cartBudget.rubroSector && cartBudget.rubroSector[rk]) || '',
              maxEjec: isFinite(maxEjec) ? Math.max(0, Math.round(maxEjec*100)/100) : 0,
              ejecR:_r2(ejecR), reservR:_r2(reservR), carrR:_r2(carrR),
-             agotado: mats.some(function(x){ return x.saldo <= 0; }) };
-  }).sort(function(a,b){ return b.maxEjec - a.maxEjec; });
+             nQuit:nQuit, todosQuitados:(mats.length > 0 && nQuit === mats.length),
+             agotado: activos.some(function(x){ return x.saldo <= 0; }) };
+  }).sort(function(a,b){
+    // v8.2.3 · Ordenados por código de rubro (01.043, 04.006, 04.012…), no por cantidad
+    return String(a.codigo).localeCompare(String(b.codigo), 'es', { numeric:true });
+  });
 }
 
 // El presupuesto ya sabe de qué obra y sector es: se completa el paso 2 solo.
@@ -7332,7 +7351,7 @@ function fpRender(){
   const verTodo = document.getElementById('fpVerTodo').checked;
   let rubros = fpRubros();
   const total = rubros.length;
-  if(!verTodo) rubros = rubros.filter(function(r){ return r.maxEjec > 0; });
+  if(!verTodo) rubros = rubros.filter(function(r){ return r.maxEjec > 0 || r.nQuit > 0; });   // v8.2.2
   if(FP.filtro){
     rubros = rubros.filter(function(r){
       return (r.codigo+' '+r.descripcion+' '+r.mats.map(function(x){return x.m.material;}).join(' '))
@@ -7368,6 +7387,19 @@ function fpRender(){
     const sinSaldo = r.maxEjec <= 0;
     const filas = r.mats.map(function(x){
       const key = r.codigo + '|' + (x.m.codigo_insumo || x.m.material);
+      const ciQ = x.m.codigo_insumo || x.m.material;
+      if(x.quitado){   // v8.2.2 · quitado de esta compra: se ve tachado y se puede volver a incluir
+        const colQ = x.saldo <= 0 ? '#c0392b' : '#1B5524';
+        return '<div class="fp-mrow quitado">'+
+          '<div class="fp-mnom"><b>'+escapeHtml(x.m.material)+'</b><span class="fp-tag quit">quitado de esta compra</span>'+
+            '<span>'+escapeHtml(x.m.codigo_insumo||'sin código')+' · no se compra en esta orden; su saldo queda disponible</span></div>'+
+          '<div class="fp-msal" style="color:'+colQ+'">'+_cbQty(x.saldo)+'<small>disponible</small></div>'+
+          '<input type="number" class="fp-mq" value="" placeholder="—" disabled>'+
+          '<div class="fp-mun">'+escapeHtml(x.m.unidad||'')+'</div>'+
+          '<div class="fp-mpre"></div><div class="fp-msub">—</div><div></div><div></div>'+
+          '<button type="button" class="fp-mquit rest" data-mrest="'+escapeHtml(r.codigo)+'" data-mci="'+escapeHtml(ciQ)+'" title="Volver a incluir este material en la compra">↺</button>'+
+        '</div>';
+      }
       const calc = (FP.mat[key] != null) ? FP.mat[key]
                  : (q !== '' ? Math.round(x.cu * Number(q) * 100)/100 : '');
       const exceso = calc !== '' && Number(calc) > x.saldo;
@@ -7408,11 +7440,13 @@ function fpRender(){
         (esMO ? '<div></div>' :
           '<button type="button" class="fp-tagbtn'+(ov?' cambiado':'')+'" data-buscar="'+escapeHtml(x.m.material)+'" data-mk="'+escapeHtml(key)+'" data-ci="'+escapeHtml(x.m.codigo_insumo||'')+'" data-pid="'+escapeHtml(String(ov ? ov.id : (x.m.prod_cong||'')))+'" title="'+(ov?('Comprando: '+escapeHtml(ov.nombre)):'Elegir marca o producto del catálogo')+'">🏷️</button>')+
         (exceso ? '<div class="fp-mwarn">⚠ supera el saldo por '+Math.round(Number(calc)-x.saldo).toLocaleString('es-PY')+'</div>' : '<div></div>')+
+        '<button type="button" class="fp-mquit" data-mquit="'+escapeHtml(r.codigo)+'" data-mci="'+escapeHtml(ciQ)+'" title="Quitar este material de esta compra. No se compra en esta orden y su saldo queda disponible.">✕</button>'+
       '</div>';
     }).join('');
 
     let impRubro = 0;
     r.mats.forEach(function(x){
+      if(x.quitado) return;   // v8.2.2
       const k2 = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
       const v2 = (FP.mat[k2]!=null) ? FP.mat[k2] : (q!=='' ? x.cu*Number(q) : 0);
       const p2 = (FP.precio[k2]!=null && FP.precio[k2]!=='')
@@ -7428,19 +7462,19 @@ function fpRender(){
         '<span class="fp-rcar">'+(abierto?'▾':'▸')+'</span>'+
         '<div class="fp-rnom"><b>'+escapeHtml(r.codigo)+' · '+escapeHtml(r.descripcion)+'</b>'+
           '<span>'+(r.sector ? '📁 '+escapeHtml(r.sector)+' · ' : '')+
-          r.mats.length+' materiales · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span>'+
+          r.mats.length+' materiales'+(r.nQuit ? ' ('+r.nQuit+' quitado'+(r.nQuit===1?'':'s')+')' : '')+' · presupuestado '+Math.round(r.cantidad).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')+'</span>'+
           fpAvanceHTML(r)+
           (enCarr ? '<span class="fp-encarr">✓ ya en el carrito · '+
             (enCarrCant>0 ? (_cbQty(enCarrCant)+' '+escapeHtml(r.unidad||'')) : (enCarrN+' material'+(enCarrN===1?'':'es')))+
             '<button type="button" data-rquit="'+escapeHtml(r.codigo)+'" title="Sacar del carrito los materiales de este rubro">quitar</button></span>' : '')+
         '</div>'+
-        '<div class="fp-rmax'+(sinSaldo?' sin':'')+'" title="'+escapeHtml('Maximo ejecutable hoy, limitado por el insumo con menos saldo.\nDescuenta lo ya aprobado, lo reservado en ordenes sin aprobar y lo que otras lineas del carrito esten usando.')+'">'+
-          (sinSaldo ? '⚠ sin saldo' : 'hasta '+Math.round(r.maxEjec).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||''))+
-          '<small>'+(sinSaldo?'algún material se agotó':'podés ejecutar')+'</small></div>'+
+        '<div class="fp-rmax'+(sinSaldo?' sin':'')+'" title="'+escapeHtml('Maximo ejecutable hoy, limitado por el insumo con menos saldo (sin contar los materiales quitados).\nDescuenta lo ya aprobado, lo reservado en ordenes sin aprobar y lo que otras lineas del carrito esten usando.\nSi un material se agoto y no hace falta, quitalo con la ✕ para calcular el resto.')+'">'+
+          (r.todosQuitados ? 'sin materiales' : (sinSaldo ? '⚠ sin saldo' : 'hasta '+Math.round(r.maxEjec).toLocaleString('es-PY')+' '+escapeHtml(r.unidad||'')))+
+          '<small>'+(r.todosQuitados ? 'quitaste todos' : (sinSaldo?'algún material se agotó':'podés ejecutar'))+'</small></div>'+
         '<div class="fp-rimp">'+(impRubro>0 ? '₲ '+Math.round(impRubro).toLocaleString('es-PY') : '')+
           (impRubro>0?'<small>a comprar</small>':'')+'</div>'+
         '<div class="fp-rq" onclick="event.stopPropagation()">'+
-          '<div class="fp-qlbl">'+(sinSaldo?'sin saldo':(q!==''?'✓ cantidad cargada':'cantidad a ejecutar'))+'</div>'+
+          '<div class="fp-qlbl">'+(r.todosQuitados?'sin materiales':(sinSaldo?'sin saldo':(q!==''?'✓ cantidad cargada':'cantidad a ejecutar')))+'</div>'+
           '<div class="fp-qrow">'+
             '<input type="number" class="fp-qin'+(q!==''?' cargado':'')+'" data-rq="'+escapeHtml(r.codigo)+'" min="0" step="any" '+
               'value="'+q+'" placeholder="0"'+(sinSaldo?' disabled':'')+'>'+
@@ -7494,7 +7528,7 @@ function fpRender(){
       FP.abierto[rk] = true;
       fpRender();
       const again = document.querySelector('input[data-rq="'+rk+'"]');
-      if(again){ again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      if(again){ again.focus(); try{ again.setSelectionRange(again.value.length, again.value.length); }catch(_){ } }
     };
   });
   cont.querySelectorAll('button[data-rmax]').forEach(function(b){
@@ -7556,6 +7590,13 @@ function fpRender(){
   if(_ex) _ex.onclick = function(ev){ ev.stopPropagation(); fpxAbrir(); };
   cont.querySelectorAll('button[data-rquit]').forEach(function(b){
     b.onclick = function(ev){ ev.stopPropagation(); fpQuitarRubro(b.getAttribute('data-rquit')); };
+  });
+  // v8.2.2 · quitar / volver a incluir un material
+  cont.querySelectorAll('button[data-mquit]').forEach(function(b){
+    b.onclick = function(ev){ ev.stopPropagation(); fpQuitarMaterial(b.getAttribute('data-mquit'), b.getAttribute('data-mci'), true); };
+  });
+  cont.querySelectorAll('button[data-mrest]').forEach(function(b){
+    b.onclick = function(ev){ ev.stopPropagation(); fpQuitarMaterial(b.getAttribute('data-mrest'), b.getAttribute('data-mci'), false); };
   });
   fpActualizarPie();
 }
@@ -7619,8 +7660,9 @@ function fpActualizarPie(){
     const q = FP.qty[r.codigo];
     let delRubro = 0;
     r.mats.forEach(function(x){
+      if(x.quitado) return;   // v8.2.2
       const key = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
-      const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? x.cu*q : 0);
+      const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? Math.round(x.cu*q*100)/100 : 0);
       if(v>0){ n++; delRubro++; if(v > x.saldo) avisos++; }
     });
     if(delRubro>0 && fpEnCarrito(r.codigo)) yaCargados++;
@@ -7636,6 +7678,32 @@ function fpActualizarPie(){
   btn.textContent = yaCargados ? 'Actualizar en el carrito' : 'Agregar al carrito';
 }
 
+/* v8.2.2 · Quitar un material del cálculo de esta compra (el residente ya lo
+   tiene en obra, lo compra aparte, se agotó y no hace falta...). No cambia el
+   presupuesto: el material no se compra en esta orden y su saldo queda
+   disponible. Si ya estaba en el carrito, sale también de ahí. */
+function fpQuitarMaterial(rk, ci, quitar){
+  if(!FP.quitado) FP.quitado = {};
+  const kq = fpKey(rk, ci);
+  delete FP.mat[rk + '|' + ci];
+  let delCarrito = 0;
+  if(quitar){
+    FP.quitado[kq] = true;
+    const antes = (wizard.cart||[]).length;
+    wizard.cart = (wizard.cart||[]).filter(function(it){ return !(it && it._fpKey === kq); });
+    delCarrito = antes - wizard.cart.length;
+  } else {
+    delete FP.quitado[kq];
+  }
+  FP.abierto[rk] = true;
+  fpRender();
+  if(delCarrito){
+    if(typeof renderCart === 'function') renderCart();
+    if(typeof saveDraft === 'function') saveDraft();
+  }
+  showToast(quitar ? ('Material quitado de esta compra' + (delCarrito ? ' y del carrito' : '')) : 'Material incluido de nuevo', 'success');
+}
+
 async function fpAgregarAlCarrito(){
   // 1) Se arma lo que hay que mandar, sin tocar todavía el carrito
   const pend = [];
@@ -7645,6 +7713,7 @@ async function fpAgregarAlCarrito(){
     const q = FP.qty[r.codigo];
     let hayAlgo = false;
     r.mats.forEach(function(x){
+      if(x.quitado) return;   // v8.2.2 · el residente lo quitó de esta compra
       const key = r.codigo+'|'+(x.m.codigo_insumo||x.m.material);
       const v = (FP.mat[key]!=null) ? FP.mat[key] : (q ? Math.round(x.cu*q*100)/100 : 0);
       if(!(v>0)) return;
@@ -7770,6 +7839,7 @@ async function fpAgregarAlCarrito(){
 
 function openWizard(){
   wizard.open = true;
+  if(typeof FP !== 'undefined') FP.quitado = {};   // v8.2.2 · cada orden empieza sin materiales quitados
   document.getElementById('wizardOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
   // Las listas se cargan por adelantado para que el selector de rubros del Paso 2
@@ -8138,27 +8208,40 @@ function addToRecents(productId){
 // MODAL DE PRODUCTO
 // ═══════════════════════════════════════════════════════════════════
 
-function openProductModal(productId){
+function openProductModal(productId, lineIdx){
   let prod = wizard.catalog.items.find(p => p.id === productId);
   if(!prod) prod = wizard.recentItems.find(p => p.id === productId);
   if(!prod){
+    const _ln = (lineIdx != null) ? wizard.cart[lineIdx] : null;
     sb.from('productos_catalogo')
       .select('id, nombre, precio_referencia, url_imagen, url_producto')
       .eq('id', productId)
       .maybeSingle()
-      .then(({data})=>{ if(data) fillAndOpenModal(data); });
+      .then(({data})=>{
+        if(data) fillAndOpenModal(data, lineIdx);
+        else if(_ln) fillAndOpenModal({ id:productId, nombre:_ln.producto_nombre || ('Producto #'+productId), precio_referencia:_ln.precio_unit, url_imagen:_ln.url_imagen || '' }, lineIdx);
+      });
     return;
   }
-  fillAndOpenModal(prod);
+  fillAndOpenModal(prod, lineIdx);
 }
 
-function fillAndOpenModal(prod){
+function fillAndOpenModal(prod, lineIdx){
   wizard.modalProductId = prod.id;
   wizard.modalProd = prod;   // v2.9.2 · el producto mostrado, aunque no esté en la lista cargada
-  const inCart = wizard.cart.find(c => c.producto_id === prod.id);
+  // v8.2.4 · La ventana edita UNA línea: la del ✎ que se tocó. Un mismo producto
+  // puede estar en varias líneas (otro rubro u otro presupuesto); antes se abría
+  // siempre la primera y, al guardar, se la reemplazaba perdiendo su rubro y destino.
+  const _mismo = function(c){ return c && String(c.producto_id) === String(prod.id); };
+  const lineas = wizard.cart.filter(_mismo);
+  let inCart = null;
+  if(lineIdx != null && _mismo(wizard.cart[lineIdx])) inCart = wizard.cart[lineIdx];
+  else if(lineas.length === 1) inCart = lineas[0];
+  wizard.modalLine = inCart;
 
   document.getElementById('prodModalTitle').textContent = prod.nombre;
-  document.getElementById('prodModalEyebrow').textContent = inCart ? 'Editar item del carrito' : 'Agregar al carrito';
+  document.getElementById('prodModalEyebrow').textContent = inCart ? 'Editar item del carrito'
+    : (lineas.length > 1 ? 'Agregar al carrito · ya está en ' + lineas.length + ' líneas' : 'Agregar al carrito');
   document.getElementById('prodModalPVR').textContent = fmtMoney(prod.precio_referencia);
 
   const imgWrap = document.getElementById('prodModalImg');
@@ -8194,6 +8277,7 @@ function fillAndOpenModal(prod){
 function closeProductModal(){
   document.getElementById('prodModal').classList.remove('open');
   wizard.modalProductId = null;
+  wizard.modalLine = null;   // v8.2.4
 }
 
 function updateModalSubtotal(){
@@ -8231,7 +8315,13 @@ document.getElementById('prodModalAdd').addEventListener('click', ()=>{
     if(_tit) prod = { id:productId, nombre:_tit, url_imagen:'' };
   }
 
-  const existingIdx = wizard.cart.findIndex(c => c.producto_id === productId);
+  // v8.2.4 · la línea que se está editando (por referencia, no por producto)
+  const _linea = wizard.modalLine || null;
+  const existingIdx = _linea ? wizard.cart.indexOf(_linea) : -1;
+  if(_linea && existingIdx < 0){
+    showToast('El carrito cambió mientras editabas. Volvé a abrir la línea.', 'error');
+    closeProductModal(); return;
+  }
   const item = {
     producto_id: productId,
     producto_nombre: prod ? prod.nombre : ('Producto #'+productId),
@@ -8242,7 +8332,10 @@ document.getElementById('prodModalAdd').addEventListener('click', ()=>{
   };
 
   if(existingIdx >= 0){
-    wizard.cart[existingIdx] = item;
+    // Solo cambian cantidad y precio: el rubro, el presupuesto, el sector y el destino de la línea se conservan
+    const _ln = wizard.cart[existingIdx];
+    _ln.cantidad = item.cantidad; _ln.precio_unit = item.precio_unit; _ln.subtotal = item.subtotal;
+    if(!_ln.producto_nombre) _ln.producto_nombre = item.producto_nombre;
     showToast('Item actualizado en el carrito', 'success');
   } else {
     wizard.cart.push(item);
@@ -8260,8 +8353,10 @@ document.getElementById('prodModalAdd').addEventListener('click', ()=>{
 });
 
 document.getElementById('prodModalRemove').addEventListener('click', ()=>{
-  const productId = wizard.modalProductId;
-  wizard.cart = wizard.cart.filter(c => c.producto_id !== productId);
+  // v8.2.4 · se quita solo la línea que se está editando, no todas las del mismo producto
+  const _i = wizard.modalLine ? wizard.cart.indexOf(wizard.modalLine) : -1;
+  if(_i < 0){ showToast('El carrito cambió mientras editabas. Volvé a abrir la línea.', 'error'); closeProductModal(); return; }
+  wizard.cart.splice(_i, 1);
   showToast('Item removido del carrito', 'success');
   renderCart();
   saveDraft();
@@ -8466,7 +8561,7 @@ function renderCart(){
     node.querySelector('[data-cart-action="edit"]').addEventListener('click', (e)=>{
       e.stopPropagation();
       if(wizard.cart[idx] && wizard.cart[idx].es_mano_obra){ openManoObraModal(idx); return; }
-      openProductModal(wizard.cart[idx].producto_id);
+      openProductModal(wizard.cart[idx].producto_id, idx);   // v8.2.4 · esta línea, no la primera del mismo producto
     });
     node.querySelector('[data-cart-action="remove"]').addEventListener('click', (e)=>{
       e.stopPropagation();
@@ -10333,6 +10428,18 @@ async function cartBudgetLoad(pp){
     cartBudget.rubroDesc = rubroDesc;
     const rubroSector = {}; (rb.data||[]).forEach(function(r){ if(r.rubro_codigo) rubroSector[String(r.rubro_codigo)] = (r.sector||'').trim(); });
     cartBudget.rubroSector = rubroSector;
+    // v8.2.3 · Líneas de materiales de un rubro que ya no está en el presupuesto (se borró o
+    // cambió de código en Presupuestos): no se ofrecen ni cuentan. Si no se pudieron leer
+    // los rubros, se deja todo como estaba.
+    const _rubSet = new Set((rb.data||[]).map(function(r){ return String(r.rubro_codigo||'').trim(); }).filter(Boolean));
+    if(_rubSet.size){
+      const _antes = mats.length;
+      for(let _i = mats.length - 1; _i >= 0; _i--){
+        const _rc = String(mats[_i].rubro_codigo||'').trim();
+        if(_rc && !_rubSet.has(_rc)) mats.splice(_i, 1);
+      }
+      if(mats.length !== _antes) console.warn('Presupuesto '+pp+': '+(_antes - mats.length)+' líneas de rubros que ya no están en el presupuesto, ignoradas');
+    }
     let _q = sb.from('ordenes_compra').select('id,estado,numero_oc,fecha,proveedor').eq('presupuesto', pp);
     // Las OC de prueba no consumen saldo del presupuesto
     if(OC_PRUEBA.ok) _q = _q.or('es_prueba.is.null,es_prueba.eq.false');
