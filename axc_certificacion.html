@@ -1038,7 +1038,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.6 · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.7 · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -1608,11 +1608,25 @@ async function taDesdeOrdenServicio(){
 /* ── Listas maestras ─────────────────────────────────────────────── */
 async function loadListas(){
   try{
-    const { data } = await sb.from('listas').select('tipo,valor,obra_ref,activo');
+    // v13.7 · Contratos da de alta a sus contratistas en su propia tabla («contratistas»),
+    // no en la lista maestra: se leen las dos para que aparezcan acá.
+    const [lq, kq] = await Promise.all([
+      sb.from('listas').select('tipo,valor,obra_ref,activo'),
+      sb.from('contratistas').select('*')
+    ]);
+    const data = lq.data;
     const act = (data||[]).filter(x => x.activo !== false);
     state.listas.obras        = act.filter(x=>x.tipo==='obras').map(x=>x.valor).sort((a,b)=>a.localeCompare(b,'es'));
-    state.listas.contratistas = act.filter(x=>x.tipo==='contratistas').map(x=>x.valor)
-                                   .sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
+    const _inact = (data||[]).filter(x => x.tipo==='contratistas' && x.activo === false).map(x => norm(x.valor));
+    const _cs = [];
+    const _add = function(v){ v = String(v||'').replace(/\s+/g,' ').trim(); if(v && !_cs.some(function(x){ return norm(x) === norm(v); })) _cs.push(v); };
+    act.filter(x=>x.tipo==='contratistas').forEach(function(x){ _add(x.valor); });
+    ((kq && !kq.error && kq.data) || []).forEach(function(k){
+      if(!k || k.activo === false) return;
+      if(_inact.indexOf(norm(k.nombre)) >= 0) return;   // dado de baja en la lista maestra
+      _add(k.nombre);
+    });
+    state.listas.contratistas = _cs.sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
     // Los sectores conviven con dos tipos: «sectores» y el «sectores_presu»
     // que carga el módulo de presupuestos. Se toman los dos.
     state.listas.sectores     = act.filter(x=>x.tipo==='sectores' || x.tipo==='sectores_presu')
