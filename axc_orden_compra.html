@@ -1925,6 +1925,9 @@ body{
 .cf-warn-h{font-weight:700;color:#a32d2d;font-size:12.5px;margin-bottom:5px}
 .cf-warn-i{font-size:11.5px;color:#7a2222;line-height:1.55}
 .cf-warn-f{font-size:11px;color:#9a5a5a;margin-top:5px;font-style:italic}
+/* v8.2.5 · excesos que ya venían de órdenes anteriores: solo informativo */
+.cf-info{background:#f3f6fb;border:1px solid #d9e1ee;border-radius:10px;padding:9px 12px;margin-bottom:12px;font-size:11.5px;color:#4a5568;line-height:1.5}
+.cf-info b{color:#1F3864}
 .cf-items-h{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#5b6478;font-weight:700;margin:6px 0 8px}
 .cf-rub{border:1px solid #e6e9ef;border-radius:9px;margin-bottom:9px;overflow:hidden}
 .cf-rub-h{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#eef2f8;padding:7px 11px;font-size:12px;font-weight:700;color:#1F3864}
@@ -4393,7 +4396,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.2.4 · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.2.6 · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -10796,6 +10799,59 @@ function _cbExceededList(){
   return out;
 }
 
+/* v8.2.5 · Excesos separados en dos:
+   · «orden»: materiales que ESTA orden pide por encima del saldo, nombrados con el
+     producto que eligió el residente (el insumo del presupuesto puede llamarse
+     distinto: «LADRILLO HUECO TOBATI DON LUIS» vs. el ladrillo que se compra).
+   · «previos»: materiales del presupuesto que ya estaban excedidos por órdenes
+     anteriores y que esta orden NO incluye. Solo se informan. */
+function _cbNombresEnCarrito(ci, rk){
+  const n = [];
+  (wizard.cart||[]).forEach(function(it){
+    if(it.trabajo_admin || it.sin_presupuesto) return;
+    if(cbmItPP(it) !== cartBudget.pp) return;
+    if((it.rubro_codigo||'') !== rk || _cbInsDeItem(it) !== ci) return;
+    const nm = String(it.producto_nombre||'').trim();
+    if(nm && n.indexOf(nm) < 0) n.push(nm);
+  });
+  return n;
+}
+function _cbExcesoDetalle(){
+  const out = { orden:[], previos:[] };
+  if(!cartBudget.pp) return out;
+  const q = function(v){ return (Math.round((Number(v)||0)*100)/100).toLocaleString('es-PY'); };
+  (cartBudget.mats||[]).forEach(function(m){
+    const rk = m.rubro_codigo||'';
+    const a = _cbAgg(m.codigo_insumo, rk);
+    const disp = m.limite - a.ejec - a.reserv - a.carr;
+    if(!(disp < 0)) return;
+    const rl = rk ? (' ['+rk+']') : '', un = m.unidad || '';
+    if(a.carr > 0){
+      const quedaba = Math.max(0, m.limite - a.ejec - a.reserv);
+      const fuera = Math.min(a.carr, -disp);
+      const noms = _cbNombresEnCarrito(m.codigo_insumo, rk);
+      const nom = noms.length ? noms.join(' / ') : m.material;
+      const alias = (noms.length && noms.join(' / ').toLowerCase() !== String(m.material||'').toLowerCase()) ? (' · en el presupuesto: ' + m.material) : '';
+      out.orden.push(nom + rl + ': pedís ' + q(a.carr) + ' ' + un + ', quedaban ' + q(quedaba) + ' → excede ' + q(fuera) + ' ' + un + alias);
+    } else {
+      out.previos.push(m.material + rl + ' (excedido en ' + q(-disp) + ' ' + un + ')');
+    }
+  });
+  (cartBudget.rubros||[]).forEach(function(r){
+    const a = _cbAggMoney(_cbRubroKey(r));
+    const disp = r.limite - a.ejec - a.reserv - a.carr;
+    if(!(disp < 0)) return;
+    const nom = (r.rubro_codigo ? r.rubro_codigo + ' · ' : '') + r.descripcion;
+    if(a.carr > 0){
+      const quedaba = Math.max(0, r.limite - a.ejec - a.reserv);
+      out.orden.push(nom + ': pedís Gs ' + Math.round(a.carr).toLocaleString('es-PY') + ', quedaban Gs ' + Math.round(quedaba).toLocaleString('es-PY') + ' → excede Gs ' + Math.round(Math.min(a.carr, -disp)).toLocaleString('es-PY'));
+    } else {
+      out.previos.push(nom + ' (excedido en Gs ' + Math.round(-disp).toLocaleString('es-PY') + ')');
+    }
+  });
+  return out;
+}
+
 function cartBudgetRender(){
   _cbLayout();
   _cbRenderInto(document.getElementById('cbPanel'), true);
@@ -11283,12 +11339,18 @@ function openConfirmOC(){
 
   let exHtml = '';
   if(cartBudget.pp){
-    let ex = []; try{ ex = _cbExceededList() || []; }catch(e){}
+    // v8.2.5 · Solo los excesos de ESTA orden; lo que ya venía excedido se informa aparte
+    let det = { orden:[], previos:[] }; try{ det = _cbExcesoDetalle(); }catch(e){ console.warn('excesos', e); }
+    const ex = det.orden || [], pr = det.previos || [];
     if(ex.length){
-      exHtml = '<div class="cf-warn"><div class="cf-warn-h">⚠ ' + ex.length + ' ítem(s) superan lo presupuestado del ' + escapeHtml(cartBudget.pp) + '</div>' +
+      exHtml = '<div class="cf-warn"><div class="cf-warn-h">⚠ ' + ex.length + ' material' + (ex.length===1?'':'es') + ' de esta orden supera' + (ex.length===1?'':'n') + ' lo presupuestado del ' + escapeHtml(cartBudget.pp) + '</div>' +
         ex.slice(0,10).map(function(s){ return '<div class="cf-warn-i">• ' + escapeHtml(s) + '</div>'; }).join('') +
         (ex.length>10 ? ('<div class="cf-warn-i">… y ' + (ex.length-10) + ' más</div>') : '') +
         '<div class="cf-warn-f">Podés crearla igual; el exceso queda registrado.</div></div>';
+    }
+    if(pr.length){
+      exHtml += '<div class="cf-info">ℹ️ El ' + escapeHtml(cartBudget.pp) + ' ya tenía <b>' + pr.length + ' material' + (pr.length===1?'':'es') + '</b> excedido' + (pr.length===1?'':'s') + ' por órdenes anteriores. Esta orden no ' + (pr.length===1?'lo':'los') + ' incluye: ' +
+        escapeHtml(pr.slice(0,4).join(' · ')) + (pr.length>4 ? (' y ' + (pr.length-4) + ' más') : '') + '. Detalle en «Estado del presupuesto».</div>';
     }
   }
 
@@ -12180,7 +12242,7 @@ function renderInfoSection(oc, editing){
         <div class="detail-field"><span class="detail-field-label">Fecha</span><span class="detail-field-value">${fmtFecha(oc.fecha)}</span></div>
         <div class="detail-field"><span class="detail-field-label">Rubro</span><span class="detail-field-value">${escapeHtml(oc.rubro||'—')}</span></div>
         <div class="detail-field"><span class="detail-field-label">Obra</span><span class="detail-field-value">${escapeHtml(oc.obra||'—')}</span></div>
-        <div class="detail-field"><span class="detail-field-label">Sector</span><span class="detail-field-value ${!oc.sector?'muted':''}">${escapeHtml(oc.sector||'Sin sector')}</span></div>
+        <div class="detail-field"><span class="detail-field-label">Sector</span>${(function(){ const _st = ocSectorTxt(oc, (typeof detail !== 'undefined' && detail.oc && String(detail.oc.id) === String(oc.id)) ? (detail.items || []) : []); return '<span class="detail-field-value '+(_st === '-' ? 'muted' : '')+'">'+escapeHtml(_st === '-' ? 'Sin sector' : _st)+'</span>'; })()}</div>
         <div class="detail-field"><span class="detail-field-label">Residente</span><span class="detail-field-value">${escapeHtml(oc.residente||'—')}</span></div>
         <div class="detail-field"><span class="detail-field-label">Contratista</span><span class="detail-field-value ${!oc.contratista?'muted':''}">${escapeHtml(oc.contratista||'Sin contratista')}</span></div>
         <div class="detail-field"><span class="detail-field-label">Proveedor</span><span class="detail-field-value">${escapeHtml(oc.proveedor||'—')}</span></div>
@@ -14447,7 +14509,7 @@ async function generatePDF(oc, incluirAdjuntos){
     if(_esOCVieja) fields.push(['Rubro', oc.rubro||'-']);
     fields.push(
       ['Obra', oc.obra||'-'],
-      ['Sector', oc.sector||'-'],
+      ['Sector', ocSectorTxt(oc, items)],   // v8.2.6
       ['Residente', oc.residente||'-'],
       ['Contratista', oc.contratista||'-'],
       ['Proveedor', oc.proveedor||'-'],
@@ -14456,26 +14518,28 @@ async function generatePDF(oc, incluirAdjuntos){
       ['Destino', ocDestinoTxt(oc, items)],
     );
 
-    fields.forEach((f, idx) => {
-      const col = idx % 3;
-      const row = Math.floor(idx / 3);
-      const x = M + col * colW;
-      const yy = y + row * 11;
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7);
-      doc.setTextColor(120, 130, 150);
-      doc.text(pdfSafe(f[0]).toUpperCase(), x, yy);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9.5);
-      doc.setTextColor(26, 34, 54);
-      // Truncar texto largo
-      const txt = pdfSafe(f[1]);
-      const maxChars = 28;
-      const display = txt.length > maxChars ? txt.slice(0, maxChars-1) + '.' : txt;
-      doc.text(display, x, yy + 5);
-    });
-
-    y += 11 * Math.ceil(fields.length / 3) + 6;
+    // v8.2.6 · Antes se cortaba a 28 letras («Presupuestos PP80 / PP68 / .»): ahora
+    // el texto largo sigue en otro renglón (hasta 3) y la fila crece lo necesario.
+    let _yF = y;
+    for(let _i = 0; _i < fields.length; _i += 3){
+      const _fila = fields.slice(_i, _i + 3);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+      const _lin = _fila.map(function(f){
+        let ls = doc.splitTextToSize(pdfSafe(f[1]), colW - 4);
+        if(ls.length > 3){ ls = ls.slice(0, 3); ls[2] = String(ls[2]).replace(/.{0,3}$/, '...'); }
+        return ls;
+      });
+      const _maxL = Math.max.apply(null, _lin.map(function(l){ return l.length || 1; }));
+      _fila.forEach(function(f, col){
+        const x = M + col * colW;
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(120, 130, 150);
+        doc.text(pdfSafe(f[0]).toUpperCase(), x, _yF);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(26, 34, 54);
+        _lin[col].forEach(function(l, k){ doc.text(l, x, _yF + 5 + k * 4); });
+      });
+      _yF += 11 + (_maxL - 1) * 4;
+    }
+    y = _yF + 6;
 
     // === Observación (si la hay) ===
     if(oc.observacion && oc.observacion.trim()){
@@ -14518,7 +14582,12 @@ async function generatePDF(oc, incluirAdjuntos){
     const rows = _consol.map((it, idx) => [
       String(idx + 1),
       pdfSafe((it.producto_nombre || '-') + (function(){ const ks = Object.keys(it.tas||{}); const cab = ocTAdeOC(oc, items); return (ks.length && ks.join(', ') !== cab) ? '  (Destino: ' + ks.join(', ') + ')' : ''; })()),
-      (consAplicTexto(it) || '-').split('\n').map(pdfSafe).join('\n'),
+      { content: (consAplicTexto(it) || '-').split('\n').map(pdfSafe).join('\n'),   // v8.2.6 · cada rubro con su cantidad en rojo
+        _aplic: (it.aplic && it.aplic.length) ? it.aplic.map(function(a){
+          const q = (typeof _cbQty === 'function') ? _cbQty(a.cantidad) : String(a.cantidad);
+          return { r: pdfSafe(a.rubro), q: pdfSafe(q + (it.unidad ? (' ' + it.unidad) : '')),
+                   p: it.precioVaria ? pdfSafe('x ' + Math.round(a.precio).toLocaleString('es-PY')) : '' };
+        }) : null },
       pdfSafe(it.unidad || '-'),
       String(_pdfNum(it.cantidad)),
       fmtPdfMoney(it.precio_unit) + (it.precioVaria ? ' *' : ''),
@@ -14570,6 +14639,47 @@ async function generatePDF(oc, incluirAdjuntos){
         6: {halign:'right', cellWidth: 26, fontStyle:'bold'},
       },
       margin: {left: M, right: M},
+      rowPageBreak: 'avoid',   // v8.2.6 · una fila no se parte entre dos hojas
+      // v8.2.6 · «Rubro de aplicación»: el rubro en gris y la cantidad en rojo
+      didParseCell: function(data){
+        if(data.section !== 'body' || data.column.index !== 2) return;
+        const raw = data.cell.raw; if(!raw || !raw._aplic) return;
+        const fs = 8, ancho = 34 - 2 * 2.5 - 0.8;
+        doc.setFontSize(fs);
+        const lineas = [];
+        raw._aplic.forEach(function(a){
+          doc.setFont('helvetica', 'normal');
+          const ls = doc.splitTextToSize(a.r || '-', ancho);
+          const ult = ls.length ? ls.pop() : '';
+          ls.forEach(function(l){ lineas.push({ t:l, q:'', p:'' }); });
+          const wt = doc.getTextWidth(ult + ' '), wp = a.p ? doc.getTextWidth(' ' + a.p) : 0;
+          doc.setFont('helvetica', 'bold'); const wq = doc.getTextWidth(a.q);
+          if(ult && wt + wq + wp <= ancho) lineas.push({ t:ult, q:a.q, p:a.p });
+          else { if(ult) lineas.push({ t:ult, q:'', p:'' }); lineas.push({ t:'', q:a.q, p:a.p }); }
+        });
+        doc.setFont('helvetica', 'normal');
+        data.cell._aplicLineas = lineas;
+        data.cell.text = lineas.map(function(l){ return [l.t, l.q, l.p].filter(Boolean).join(' '); });
+      },
+      willDrawCell: function(data){
+        if(data.section === 'body' && data.column.index === 2 && data.cell._aplicLineas) data.cell.text = [];
+      },
+      didDrawCell: function(data){
+        if(data.section !== 'body' || data.column.index !== 2 || !data.cell._aplicLineas) return;
+        const c = data.cell, fs = 8;
+        const lh = fs * doc.getLineHeightFactor() / doc.internal.scaleFactor;
+        const x0 = c.x + c.padding('left');
+        let yL = c.y + c.padding('top');
+        doc.setFontSize(fs);
+        c._aplicLineas.forEach(function(l){
+          let x = x0;
+          if(l.t){ doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 90, 110); doc.text(l.t, x, yL, { baseline:'top' }); x += doc.getTextWidth(l.t + ' '); }
+          if(l.q){ doc.setFont('helvetica', 'bold'); doc.setTextColor(192, 57, 43); doc.text(l.q, x, yL, { baseline:'top' }); x += doc.getTextWidth(l.q + ' '); }
+          if(l.p){ doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 90, 110); doc.text(l.p, x, yL, { baseline:'top' }); }
+          yL += lh;
+        });
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(26, 34, 54);
+      },
       didDrawPage: function(data){
         // Footer en cada página
         const pn = doc.internal.getNumberOfPages();
@@ -19159,6 +19269,23 @@ function ocDestinoTxt(oc, items){
     return (pps.length > 1 ? 'Presupuestos ' : 'Presupuesto ') + pps.filter(Boolean).join(' / ');
   }
   return oc.presupuesto || '-';
+}
+
+/* v8.2.6 · Sector de la orden: el de la cabecera; si no tiene (orden con varios
+   presupuestos), los sectores de sus materiales, por presupuesto. */
+function ocSectorTxt(oc, items){
+  if(oc && String(oc.sector||'').trim()) return String(oc.sector).trim();
+  const orden = [], porPP = {};
+  (items||[]).forEach(function(i){
+    const sec = String((i && i.sector) || '').trim(); if(!sec) return;
+    const pp = String((i && i.presupuesto) || (oc && oc.destino === 'presupuesto' ? (oc.presupuesto || '') : '') || '').trim();
+    if(!porPP[pp]){ porPP[pp] = []; orden.push(pp); }
+    if(porPP[pp].indexOf(sec) < 0) porPP[pp].push(sec);
+  });
+  if(!orden.length) return '-';
+  if(orden.filter(Boolean).length > 1) return orden.map(function(pp){ return (pp ? pp + ': ' : '') + porPP[pp].join(', '); }).join(' / ');
+  const todos = []; orden.forEach(function(pp){ porPP[pp].forEach(function(x){ if(todos.indexOf(x) < 0) todos.push(x); }); });
+  return todos.join(' / ');
 }
 
 /* ── v2 · Destino de cada ítem en el detalle y cambio después de solicitada ──
