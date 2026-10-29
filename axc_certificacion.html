@@ -904,6 +904,13 @@ table.tb td{font-size:12.5px}
 /* Sector faltante en una línea */
 .fld.falta input{border-color:#C8A028;background:#fdfaf1}
 .fld.falta label{color:#8a6d10}
+.fg-prev{display:flex;gap:14px;align-items:center;margin-top:14px;padding:12px 14px;border:1px solid #DCE2EC;background:#F7F9FC;border-radius:10px}
+.fg-img{flex:0 0 190px;height:62px;background:#fff;border:1px solid #e3e7ee;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.fg-img img{max-width:100%;max-height:100%;object-fit:contain}
+.fg-txt{display:flex;flex-direction:column;gap:3px;font-size:13px;color:#4a5568;min-width:0}
+.fg-txt b{color:#1B5524;font-size:13.5px}
+.fg-txt label{display:flex;gap:7px;align-items:center;margin-top:5px;font-size:12px;color:#6B7280;cursor:pointer}
+@media (max-width:560px){.fg-prev{flex-direction:column;align-items:stretch}.fg-img{flex-basis:auto}}
 .firma-box{border:1.5px dashed #c3cad6;border-radius:var(--radius-lg);background:#fff;overflow:hidden;position:relative}
 .firma-box canvas{display:block;width:100%;height:180px;touch-action:none;cursor:crosshair}
 .firma-box::after{content:'';position:absolute;left:8%;right:8%;bottom:34px;border-bottom:1px solid #dde2ea;pointer-events:none}
@@ -1173,7 +1180,7 @@ html[data-theme="alto-contraste"]{
       <button type="button" class="mx" id="fmX">&times;</button>
     </div>
     <div class="mbody">
-      <div class="hint" style="margin-bottom:10px">Dibujá la firma dentro del recuadro. Queda guardada en el certificado y sale impresa en la orden de pago.</div>
+      <div class="hint" id="fmHint" style="margin-bottom:10px">Dibujá la firma dentro del recuadro. Queda guardada en el certificado y sale impresa en la orden de pago.</div>
       <div class="firma-box"><canvas id="fmCanvas" width="1200" height="360"></canvas></div>
       <div class="fld" style="margin-top:14px;max-width:420px">
         <label>Aclaración</label>
@@ -1570,6 +1577,7 @@ async function loadProfileAndApp(){
     return;
   }
   state.profile = profile;
+  try{ FG.cargada = false; FG.firma = null; FG.nombre = ''; }catch(e){}   // v13.9 · firma del usuario que entra
   temaDesdePerfil(profile);
   cargarObrasLista().then(llenarObraFiltro);
   state.isAdmin = (String(profile.rol||'').toLowerCase() === 'admin');
@@ -7373,10 +7381,12 @@ function fmLimpiarCanvas(){
 }
 
 /* Devuelve {firma, nombre} o null si se cancela */
-function pedirFirma(titulo, nombreSugerido){
+function pedirFirma(titulo, nombreSugerido, nota){
   return new Promise(function(resolve){
     const ov = document.getElementById('fmOv');
     document.getElementById('fmSub').textContent = titulo || 'Firmá con el dedo o con el mouse';
+    const fh = document.getElementById('fmHint');
+    if(fh) fh.textContent = nota || 'Dibujá la firma dentro del recuadro. Queda guardada en el certificado y sale impresa en la orden de pago.';
     document.getElementById('fmNombre').value = nombreSugerido || '';
     ov.hidden = false;
     fmLimpiarCanvas();
@@ -7418,10 +7428,71 @@ function pedirFirma(titulo, nombreSugerido){
   });
 }
 
+/* v13.9 · Firma guardada del usuario. La primera vez que aprueba se le pide
+   la firma y queda guardada (tabla firmas_usuario, una fila por usuario);
+   desde ahí cada aprobación la aplica sola, con la opción de cambiarla.
+   Si la tabla todavía no existe, se usa la última firma que el mismo usuario
+   dejó en un certificado aprobado, así igual es automática.                */
+var FG = { cargada:false, firma:null, nombre:'' };
+function fgQuien(){ return (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || ''; }
+async function firmaGuardada(){
+  if(FG.cargada) return FG.firma ? { firma:FG.firma, nombre:FG.nombre } : null;
+  try{
+    const { data, error } = await sb.from('firmas_usuario').select('firma,nombre').eq('user_id', state.user.id).maybeSingle();
+    if(!error && data && data.firma){ FG.firma = data.firma; FG.nombre = data.nombre || ''; }
+  }catch(e){}
+  if(!FG.firma){
+    try{
+      const { data } = await sb.from('certificados').select('firma_residente,firma_residente_nombre')
+        .eq('aprobado_por', fgQuien()).not('firma_residente','is',null)
+        .order('aprobado_en', { ascending:false }).limit(1);
+      if(data && data[0] && data[0].firma_residente){ FG.firma = data[0].firma_residente; FG.nombre = data[0].firma_residente_nombre || ''; }
+    }catch(e){}
+  }
+  FG.cargada = true;
+  return FG.firma ? { firma:FG.firma, nombre:FG.nombre } : null;
+}
+async function guardarFirmaUsuario(f){
+  FG.cargada = true; FG.firma = f.firma; FG.nombre = f.nombre || '';
+  try{
+    const { error } = await sb.from('firmas_usuario').upsert({ user_id:state.user.id, firma:f.firma,
+      nombre:f.nombre || null, updated_at:new Date().toISOString() }, { onConflict:'user_id' });
+    if(error) throw error;
+    return true;
+  }catch(e){ console.warn('firma del usuario no guardada (falta la tabla firmas_usuario)', e); return false; }
+}
+function firmaPreviewHTML(f){
+  return '<div class="fg-prev"><div class="fg-img"><img src="'+escapeHtml(f.firma)+'" alt="Tu firma"></div>'+
+    '<div class="fg-txt"><b>✍ Se firma automáticamente con tu firma guardada</b>'+
+    '<span>'+(f.nombre ? 'Aclaración: '+escapeHtml(f.nombre) : 'Sin aclaración')+' · sale en el certificado y en la orden de pago</span>'+
+    '<label><input type="checkbox" id="fgCambiar"> Cambiar mi firma (la dibujás de nuevo y queda para las próximas)</label></div></div>';
+}
+/* Devuelve la firma a usar: la guardada, o la que dibuja (primera vez o cambio) */
+async function obtenerFirma(cambiar, titulo, nombreSug){
+  const f = await firmaGuardada();
+  if(f && !cambiar) return f;
+  const nueva = await pedirFirma(titulo, (f && f.nombre) || nombreSug || '',
+    f ? 'Dibujá tu nueva firma: reemplaza a la guardada y se aplica sola en las próximas aprobaciones.'
+      : 'Es la primera vez que firmás: dibujá tu firma una sola vez. Queda guardada y en las próximas aprobaciones se aplica sola.');
+  if(!nueva) return null;
+  await guardarFirmaUsuario(nueva);
+  return nueva;
+}
+function fgCambiarMarcado(r){ const x = r && r.box && r.box.querySelector('#fgCambiar'); return !!(x && x.checked); }
+
 /* Firma del certificado: solo el residente. Con su firma el certificado queda
    aprobado; la aprobación del director se firma en el papel del reporte. */
 async function firmarCertificado(c){
-  const r = await pedirFirma('Firma del residente de obra', c.medido_por || '');
+  const fg = await firmaGuardada();
+  let cambiar = false;
+  if(fg){
+    const d = await axcDialog({ tono:'ok', icono:'✍', titulo:'Firmar '+(c.numero||'el certificado'),
+      subtitulo:'Firma del residente de obra', mensaje:'Se agrega tu firma al certificado aprobado.',
+      html: firmaPreviewHTML(fg), ok:'Firmar', cancelar:'Cancelar' });
+    if(!d.ok) return;
+    cambiar = fgCambiarMarcado(d);
+  }
+  const r = await obtenerFirma(cambiar, 'Firma del residente de obra', fgQuien() || c.medido_por || '');
   if(!r) return;
   const campos = { firma_residente: r.firma, firma_residente_nombre: r.nombre || null,
                    firma_residente_en: new Date().toISOString() };
@@ -9420,6 +9491,7 @@ async function cambiarEstado(id, estado){
           '<ul style="margin:6px 0 0 18px;padding:0">'+plan.filas.map(function(f){ return '<li>'+escapeHtml((f.item.rubro_codigo||'')+' · '+(f.item.rubro_desc||f.item.descripcion||''))+' · '+qty(f.cantidad)+' '+escapeHtml(f.item.unidad||'')+' × '+gs(f.precio)+'</li>'; }).join('')+'</ul>'+
           '<small style="display:block;margin-top:6px">Motivo: '+escapeHtml(plan.motivo)+'</small></div>'
       : '';
+    const fgPrev = await firmaGuardada();   // v13.9
     const r = await axcDialog({
       tono:'ok', icono:'✓', titulo: plan ? 'Aprobar el certificado y agregar la adenda' : 'Aprobar el certificado',
       subtitulo:'Al aprobar consume el presupuesto de forma definitiva y habilita el pago',
@@ -9430,14 +9502,17 @@ async function cambiarEstado(id, estado){
               '<b style="font-size:17px">'+gs(total)+'</b>.'+
               (avisos.length ? '<br><br><span style="color:#8a6d10">⚠ '+avisos.join(' · ')+'.</span>' : '')+
               '<br><br>Después de aprobar vas a poder cargarle el <b>anticipo</b> y el <b>préstamo</b> a descontar '+
-              'para obtener el saldo a cobrar.<br><br>✍ <b>Al confirmar se pide tu firma digital</b>: queda como firma del residente en el certificado y en la orden de pago.'+avisoAd,
+              'para obtener el saldo a cobrar.'+
+              (fgPrev ? '' : '<br><br>✍ <b>Al confirmar se pide tu firma digital, solo esta vez</b>: queda guardada y en las próximas aprobaciones se aplica sola. Sale como firma del residente en el certificado y en la orden de pago.')+avisoAd,
+      html: fgPrev ? firmaPreviewHTML(fgPrev) : '',
       lista: ordSec.map(s=>'📁 <b>'+escapeHtml(s)+'</b> · '+porSec[s].n+' trabajo(s) · <b>'+gs(porSec[s].total)+'</b>')
              .concat(['&nbsp;', '<b>TOTAL A CERTIFICAR: '+gs(total)+'</b>']),
       ok: plan ? 'Firmar, aprobar y agregar la adenda' : 'Firmar y aprobar', cancelar:'Revisar de nuevo'
     });
     if(!r.ok) return;
-    /* v11.4 · Aprobar incluye la firma digital del residente: un paso menos */
-    firmaAprob = await pedirFirma('Firma del residente · aprobación de '+(c.numero||'certificado'), state.profile.residente || state.profile.nombre || c.medido_por || '');
+    /* v11.4 · Aprobar incluye la firma digital del residente: un paso menos
+       v13.9 · La firma se dibuja una sola vez; después se aplica la guardada */
+    firmaAprob = await obtenerFirma(fgCambiarMarcado(r), 'Firma del residente · aprobación de '+(c.numero||'certificado'), state.profile.residente || state.profile.nombre || c.medido_por || '');
     if(!firmaAprob){
       showToast('El certificado no se aprobó','info','Para aprobar se necesita la firma del residente');
       return;
