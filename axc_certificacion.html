@@ -8245,9 +8245,30 @@ async function opPDF(O, docs){
   doc.text(doc.splitTextToSize(notas.join(' '), W-M*2-96), M, yn);
 
   // Firmas
+  /* v13.10 · La firma del residente ya viene de la aprobación de los
+     certificados: si los aprobó y firmó, la orden de pago sale firmada.
+     Se prefiere la de quien emite la orden; si no, la última aprobación. */
+  let fRes = null;
+  try{
+    const ids = its.map(function(x){ return x.id || x.certificado_id; }).filter(Boolean);
+    if(ids.length){
+      const { data:fc } = await sb.from('certificados').select('id,firma_residente,firma_residente_nombre,aprobado_por,aprobado_en').in('id', ids);
+      const conF = (fc||[]).filter(function(x){ return x.firma_residente; })
+        .sort(function(a,b){ return String(b.aprobado_en||'').localeCompare(String(a.aprobado_en||'')); });
+      const emi = norm(soloNombreC(c.emitido_por||''));
+      fRes = conF.filter(function(x){ return emi && norm(soloNombreC(x.firma_residente_nombre||x.aprobado_por||'')) === emi; })[0] || conF[0] || null;
+    }
+  }catch(eF){ console.warn('firma residente en la orden', eF); }
   let yf = Math.max(Math.max(yl, yn) + 34, H - 52);
   const fw = (W-M*2-16)/3;
-  [['ELABORADO POR', c.emitido_por||'', 'residente'],
+  if(fRes){
+    try{
+      const fh = 16, fwImg = Math.min(fw, fh * (1200/360));
+      doc.addImage(fRes.firma_residente, 'PNG', M + (fw - fwImg)/2, yf - fh - 1, fwImg, fh);
+    }catch(eI){ console.warn('firma pdf orden', eI); }
+  }
+  [fRes ? ['FIRMA DEL RESIDENTE', soloNombreC(fRes.firma_residente_nombre || fRes.aprobado_por || c.emitido_por || ''), 'residente de obra · firmado digitalmente']
+        : ['ELABORADO POR', c.emitido_por||'', 'residente'],
    ['AUTORIZADO POR', APROBADOR_DOC, 'direccion de obra'],
    ['RECIBI CONFORME', c.contratista||'', 'contratista · C.I.']].forEach(function(f, i){
     const x = M + i*(fw+8);
