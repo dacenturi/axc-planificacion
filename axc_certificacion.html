@@ -173,6 +173,17 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .cert-card[data-estado="Aprobado"]::before{background:var(--state-aprobado-bd)}
 .cert-card[data-estado="Anulado"]::before{background:var(--state-rechazado-bd)}
 .cert-card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+/* v13.8 · Copiar certificado */
+.cert-obra.con-copia{position:relative;padding-right:46px}
+.cert-copy{position:absolute;right:0;top:50%;transform:translateY(-50%);width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:.55;transition:opacity .15s,border-color .15s,color .15s}
+.cert-card:hover .cert-copy{opacity:1}
+.cert-copy:hover{border-color:var(--navy2);color:var(--navy)}
+.cp-banner{display:flex;gap:10px;align-items:flex-start;background:#F4F6FA;border:1px solid #DCE2EC;border-radius:10px;padding:9px 13px;margin:0 0 12px;font-size:12.5px;color:#4a5568;line-height:1.5}
+.cp-banner b{color:#2d3748}.cp-banner .cp-ico{font-size:15px;color:#1F3864}
+.lin.sinsaldo{opacity:.7}.lin.sinsaldo:hover,.lin.sinsaldo:focus-within{opacity:1}
+tr.pl-r.sinsaldo td{color:#8893a5}
+.lin-tag.ss{background:#F1F2F5;color:#6B7280;border:1px solid #DDE1E7}
+.pl-tag.ss{background:#F1F2F5;color:#6B7280}
 .cert-num{font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:var(--navy)}
 .cert-num small{display:block;font-family:'Inter',sans-serif;font-size:11px;font-weight:500;color:var(--text-muted);margin-top:2px}
 .cert-obra{font-size:13.5px;font-weight:600;color:var(--text)}
@@ -1763,8 +1774,9 @@ function renderList(){
       '</div>'
     : '<div class="cert-card" data-estado="'+escapeHtml(c.estado)+'" data-id="'+c.id+'">'+
       '<div class="cert-num">'+escapeHtml(c.numero||('#'+c.id))+'<small>'+fmtFecha(c.fecha)+'</small></div>'+
-      '<div class="cert-obra">'+escapeHtml(c.obra||'—')+
-        '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small></div>'+
+      '<div class="cert-obra con-copia">'+escapeHtml(c.obra||'—')+
+        '<small>'+(c.sector?('📁 '+escapeHtml(c.sector)+' · '):'')+(c.presupuesto?('📋 '+escapeHtml(c.presupuesto)):'sin presupuesto')+'</small>'+
+        '<button type="button" class="cert-copy" data-copiar="'+c.id+'" title="Copiar: crea un certificado nuevo con los mismos trabajos y las cantidades en 0">⧉</button></div>'+
       '<div class="cert-obra">'+quienCert(c)+'</div>'+
       '<div class="cert-obra">'+escapeHtml(c.contratista||'—')+'<small>contratista</small></div>'+
       '<div><span class="badge '+escapeHtml(c.estado)+'">'+escapeHtml(c.estado)+'</span>'+
@@ -1773,6 +1785,9 @@ function renderList(){
     '</div>').join('');
   cont.querySelectorAll('.cert-card').forEach(el=>{
     el.onclick = ()=> abrirDetalle(Number(el.getAttribute('data-id')));
+  });
+  cont.querySelectorAll('[data-copiar]').forEach(b=>{
+    b.onclick = function(ev){ ev.stopPropagation(); copiarCertificado(Number(b.getAttribute('data-copiar'))); };
   });
 }
 
@@ -1801,11 +1816,41 @@ async function cerrarEditor(){
     if(!r.ok) return;
   }
   document.getElementById('edOv').hidden = true;
-  ed.open=false; ed.id=null; ed.med={}; ed.fotos={}; ed.lineas=[];
+  ed.open=false; ed.id=null; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.copiaDe='';
 }
 
-async function abrirEditor(id){
+/* v13.8 · Copiar un certificado. Es sólo una ayuda de carga: se arma un
+   certificado NUEVO (borrador) con el mismo contratista, contrato, obra,
+   sector y trabajos, con la medición en 0. El disponible se recalcula con
+   todo lo ya certificado (incluido el original), y los trabajos que ya no
+   tienen saldo vienen marcados de forma discreta. No se copian fotos,
+   observaciones ni el estado del original. */
+async function copiarCertificado(id){
+  const c = state.list.filter(x=>x.id===id)[0];
+  if(!c){ showToast('No se encontró el certificado','error'); return; }
+  const r = await axcDialog({
+    tono:'', icono:'⧉', titulo:'Copiar '+(c.numero||('#'+c.id)),
+    subtitulo:'Se crea un certificado nuevo con los mismos trabajos',
+    mensaje:'Se abre un <b>certificado nuevo</b> para <b>'+escapeHtml(c.contratista||'—')+'</b> en <b>'+escapeHtml(c.obra||'—')+'</b>'+
+            (c.sector?(' · '+escapeHtml(c.sector)):'')+', listo para cargar la medición.',
+    lista:['Las <b>cantidades quedan en 0</b>: cargá sólo lo ejecutado en este período.',
+           'El <b>disponible</b> se calcula con todo lo ya certificado, incluido '+escapeHtml(c.numero||'el original')+'.',
+           'Los trabajos <b>sin saldo</b> aparecen atenuados con la marca «sin saldo». Si no corresponde medirlos, sacalos con ✕.',
+           'Se mantienen el precio unitario y la ubicación. No se copian fotos, observaciones ni la fecha.',
+           'El original no se modifica.'],
+    ok:'Copiar', cancelar:'Cancelar'
+  });
+  if(!r.ok) return;
+  const dt = document.getElementById('dtOv'); if(dt) dt.hidden = true;
+  await abrirEditor(id, { copia:true });
+}
+
+async function abrirEditor(id, opt){
   try{ await catCargar(); }catch(e){}   // v11.33 · nombres de rubro del catálogo
+  const copia = !!(opt && opt.copia && id);   // v13.8 · copia: certificado nuevo armado desde otro
+  const idOrigen = id;
+  if(copia) id = null;
+  ed.copiaDe = '';
   ed.open=true; ed.id=id; ed.med={}; ed.fotos={}; ed.lineas=[]; ed.hist={}; ed.presus=[]; ed.libre=false; ed.ordenPrevio={}; ed.estadoPrevio=''; ed.motivoReapertura='';
   ed.buscar=''; ed.filtro=''; ed.ubicaciones=[]; ed.sel={}; ed.ctSel=[]; ed.contraPrevio='';
   const bq=document.getElementById('edBuscar'); if(bq) bq.value='';
@@ -1831,14 +1876,18 @@ async function abrirEditor(id){
   aplicarModo();
   actualizarTotales();
 
-  if(id){
-    const c = state.list.filter(x=>x.id===id)[0];
+  if(idOrigen){
+    const c = state.list.filter(x=>x.id===idOrigen)[0];
     if(c){
-      ed.estadoPrevio = c.estado || '';
-      document.getElementById('edFecha').value = String(c.fecha||hoyISO()).slice(0,10);
+      if(copia){
+        ed.copiaDe = c.numero || ('#'+c.id);
+        document.getElementById('edTitulo').textContent = 'Nuevo certificado · copia de '+ed.copiaDe;
+      }
+      ed.estadoPrevio = copia ? '' : (c.estado || '');
+      document.getElementById('edFecha').value = copia ? hoyISO() : String(c.fecha||hoyISO()).slice(0,10);
       document.getElementById('edContra').value = c.contratista||'';
       ed.contraPrevio = c.contratista||'';
-      document.getElementById('edObs').value = c.observacion||'';
+      document.getElementById('edObs').value = copia ? '' : (c.observacion||'');
       actualizarPaso2();
       await cpCargar(c.contratista||'');
       cargarAntecedentes();
@@ -1848,7 +1897,7 @@ async function abrirEditor(id){
       await cargarLineas();
       document.getElementById('edSector').value = c.sector||'';
       // Traer lo ya cargado en este certificado
-      const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', id).order('orden');
+      const { data:its } = await sb.from('certificado_items').select('*').eq('certificado_id', idOrigen).order('orden');
       (its||[]).sort(function(a,b){ return (Number(a.orden)||0) - (Number(b.orden)||0); });
       (its||[]).forEach((it, idx)=>{
         const k = keyLinea(it.rubro_codigo, it.codigo_insumo, it.descripcion, it.presupuesto);
@@ -1868,8 +1917,9 @@ async function abrirEditor(id){
             cant_contratada: ci ? (Number(ci.cantidad)||0) : 0, contrato_detalle: (ci && ci.detalle) || it.detalle || '',
             libre: (!it.rubro_codigo && !it.contrato_item_id) || (!!it.trabajo_admin && !it.contrato_item_id) });
         }
-        ed.med[k] = { cant:Number(it.cantidad)||0, precio:Number(it.precio_unit)||0,
-                      ubicacion:it.ubicacion||'', obs:it.observacion||'' };
+        // v13.8 · En una copia la medición arranca en 0 (se conserva precio y ubicación)
+        ed.med[k] = { cant: copia ? '' : (Number(it.cantidad)||0), precio:Number(it.precio_unit)||0,
+                      ubicacion:it.ubicacion||'', obs: copia ? '' : (it.observacion||'') };
         // v10.0 · La clasificación vuelve con la línea: antes se perdía y el
         // certificado con trabajos sin presupuesto no se podía volver a guardar.
         if(it.clasificacion === 'indirecto' || it.clasificacion === 'a_presupuestar' || it.clasificacion === 'administracion') ed.med[k].clasif = it.clasificacion;
@@ -1888,7 +1938,7 @@ async function abrirEditor(id){
       });
       // Las fotos ya subidas vuelven al editor: si no, al volver a guardar se
       // perdían (el guardado rehace las líneas y las fotos cuelgan de ellas).
-      try{
+      if(!copia) try{
         const ids = (its||[]).map(x=>x.id);
         if(ids.length){
           const { data:fs } = await sb.from('certificado_fotos').select('*').in('item_id', ids);
@@ -1906,7 +1956,7 @@ async function abrirEditor(id){
           }
         }
       }catch(eF){ console.warn('fotos previas', eF); }
-      ctPreciosPorDefecto(c.estado);
+      ctPreciosPorDefecto(copia ? 'Borrador' : c.estado);   // la copia toma el precio vigente del contrato
       if(ed.ctSel.length) ed.libre = false;
       // v13.6 · Certificado sin contrato: vuelve con su obra (antes quedaba «Elegí la obra…»)
       try{
@@ -1928,8 +1978,29 @@ async function abrirEditor(id){
       renderChips(); ctAviso(); llenarObraFiltro(); aplicarModo();
       refrescarSectoresObra();
       renderLineas();
+      if(copia){
+        const nT = (ed.lineas||[]).filter(function(l){ return ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)]; }).length;
+        const nS = lineasSinSaldo();
+        showToast('Copia de '+ed.copiaDe+' lista', 'success',
+          nT+' trabajo(s) con la cantidad en 0'+(nS ? (' · '+nS+' sin saldo disponible, marcado(s) en gris') : ' · todos con saldo disponible'));
+      }
     }
   }
+}
+
+/* v13.8 · Trabajos agregados que ya no tienen saldo (contrato o presupuesto) */
+function sinSaldoLinea(l){
+  if(!l || l.libre) return false;
+  const k = keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto);
+  const d = saldoLinea(l, ed.hist[k]);
+  if(d == null || d > 0) return false;
+  const m = ed.med[k];
+  return !(m && Number(m.cant) > 0);   // si ya cargó cantidad, manda el aviso de excedente
+}
+function lineasSinSaldo(){
+  return (ed.lineas||[]).filter(function(l){
+    return ed.sel[keyLinea(l.rubro_codigo,l.codigo_insumo,l.descripcion,l.presupuesto)] && sinSaldoLinea(l);
+  }).length;
 }
 
 /* v11.8 · Identidad de un trabajo: presupuesto + rubro + insumo (o descripción).
@@ -4968,6 +5039,13 @@ function renderLineas(){
       ? btnNoContratadoHtml()
       : (CT.contratos.length ? '' : '<button type="button" class="btn-g" id="btnDesdeCP">📋 Agregar desde los precios del contratista</button>'))+'</div>';
 
+  if(ed.copiaDe){
+    const nS = lineasSinSaldo();
+    cont.insertAdjacentHTML('afterbegin', '<div class="cp-banner"><span class="cp-ico">⧉</span><span>'+
+      '<b>Copia de '+escapeHtml(ed.copiaDe)+'.</b> Las cantidades vienen en 0: cargá sólo lo ejecutado en este período; los trabajos que queden en 0 no se guardan.'+
+      (nS ? ' <b>'+nS+' trabajo(s) ya no tienen saldo disponible</b>: aparecen atenuados con la marca «sin saldo». Si no corresponde medirlos, sacalos con ✕.' : '')+
+      '</span></div>');
+  }
   const b=document.getElementById('btnLibre'); if(b) b.onclick = agregarLibre;
   const bcp=document.getElementById('btnDesdeCP'); if(bcp) bcp.onclick = cpAgregarDesdeLista;
   const bnc=document.getElementById('btnNoContratado'); if(bnc) bnc.onclick = trabajoNoContratado;
@@ -5168,8 +5246,9 @@ function lineaFila(l, contratista){
     (l.admin ? '<span class="pl-tag ta" title="Trabajo por administración: se suma a su costo real">por administración · '+escapeHtml(l.admin)+'</span>' : '')+
     destinoHTML(l, m, k, 'pl')+
     (l.libre && !l.rubro_codigo ? '<span class="pl-tag sr">sin presupuesto</span>' : '')+
-    (excedida ? '<span class="pl-tag ex">'+(l.contrato_item_id?'supera el contrato':'supera lo presupuestado')+'</span>' : '');
-  return '<tr class="pl-r'+(cargada?' ok':'')+(excedida?' exc':'')+'" data-fila="'+escapeHtml(k)+'">'+
+    (excedida ? '<span class="pl-tag ex">'+(l.contrato_item_id?'supera el contrato':'supera lo presupuestado')+'</span>' : '')+
+    (sinSaldoLinea(l) ? '<span class="pl-tag ss" title="'+(l.contrato_item_id?'Lo contratado ya está certificado por completo.':'Lo presupuestado ya está certificado por completo.')+' Si no corresponde medirlo, sacalo con ✕; si cargás cantidad, el sistema pide el motivo.">sin saldo</span>' : '');
+  return '<tr class="pl-r'+(cargada?' ok':'')+(excedida?' exc':'')+(sinSaldoLinea(l)?' sinsaldo':'')+'" data-fila="'+escapeHtml(k)+'">'+
     '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button>'+ordBtnsHtml(k)+'</td>'+
     (function(){
       let dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
@@ -5301,7 +5380,8 @@ function lineaHTML(l, contratista){
   // El presupuesto cambió después de que se certificó contra él
   const cpCert = h.cantPresupCert;
   const cantCambiada = !l.libre && cpCert != null && l.cant_presup > 0 && Math.abs(cpCert - l.cant_presup) > 0.001;
-  return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+'" data-k="'+escapeHtml(k)+'">'+
+  const sinSaldo = sinSaldoLinea(l);   // v13.8
+  return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+(sinSaldo?' sinsaldo':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
       '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(String(l.contrato_detalle||'').trim() || nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc))+
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
@@ -5309,6 +5389,7 @@ function lineaHTML(l, contratista){
         (sinRef && !l.libre ? '<span class="lin-tag sr" title="La cantidad sí está presupuestada; lo que falta es la mano de obra en la composición del rubro. El pago se hace igual, con el precio del contrato o el que cargues.">sin mano de obra en el presupuesto</span>' : '')+
         (l.moDeclarada ? '<span class="lin-tag mo" title="El presupuesto declara cuánto de este rubro es mano de obra. El precio de referencia es sólo esa parte.">sólo mano de obra</span>' : '')+((l.conReceta || (l.esRubro && !l.moDeclarada)) ? '<span class="lin-tag sr" title="El precio del rubro incluye materiales porque el presupuesto no declara la mano de obra por separado. Verificá antes de pagar.">incluye materiales</span>' : '')+
         (excedida ? '<span class="lin-tag ex">'+(l.contrato_item_id?'supera lo contratado':'fuera de lo presupuestado')+'</span>' : '')+
+        (sinSaldo ? '<span class="lin-tag ss" title="'+(l.contrato_item_id?'Lo contratado ya está certificado por completo.':'Lo presupuestado ya está certificado por completo.')+' Si no corresponde medirlo, sacalo con ✕; si cargás cantidad, el sistema pide el motivo.">sin saldo</span>' : '')+
         (l.contrato_item_id ? '<span class="lin-tag ct" title="Contratado con '+escapeHtml(contratista||'')+' · cantidad '+qty(l.cant_contratada)+' '+escapeHtml(l.unidad||'')+' a '+gs(l.precio_contrato)+'">'+escapeHtml(l.contrato_numero||'contrato')+'</span>' : '')+
         iconoDetalle(l.contrato_detalle, l.contrato_numero)+
         (l.adendaPend ? '<span class="lin-tag ad" title="Rubro del presupuesto: al aprobar el certificado se agrega como adenda al contrato '+escapeHtml(l.adendaPend.numero||'')+'">adenda al aprobar</span>' : '')+
@@ -8883,6 +8964,8 @@ async function abrirDetalle(id){
   }
   // v11.7 · El orden se cambia en la misma tabla (▲▼ y ⇅), sin botón aparte
   dtPuedeOrdenar = (c.estado !== 'Anulado' && !pagado && (enCurso || state.puedeAprobar));
+  // v13.8 · Copiar: sirve también desde un anulado, para rehacerlo
+  acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtCopiar" title="Crea un certificado nuevo con los mismos trabajos y las cantidades en 0">⧉ Copiar</button>';
   if(c.estado !== 'Anulado'){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-g" id="dtAdjBtn" title="Planos, contratos o cualquier documento del certificado">📎 Adjuntos</button>';
   }
@@ -9033,6 +9116,7 @@ async function abrirDetalle(id){
     const bFR=document.getElementById('dtFirmaR'); if(bFR) bFR.onclick = ()=> firmarCertificado(c);
     const bOr=document.getElementById('dtOrdenar'); if(bOr) bOr.onclick = ()=> ordenarItems(c, its||[]);
     const bAd2=document.getElementById('dtAdjBtn'); if(bAd2) bAd2.onclick = ()=> panelAdjuntos(c, its||[]);
+    const bCp=document.getElementById('dtCopiar'); if(bCp) bCp.onclick = ()=> copiarCertificado(c.id);
     const bRe=document.getElementById('dtReabrir'); if(bRe) bRe.onclick = async function(){
       const r = await axcDialog({
         tono:'warn', icono:'✎', titulo:'Editar un certificado aprobado',
