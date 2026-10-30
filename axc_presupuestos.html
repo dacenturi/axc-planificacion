@@ -1166,6 +1166,7 @@ html[data-theme="alto-contraste"]{
         <div style="flex:1"><label class="pm-label">Precio referencia (Gs) *</label><input id="inPrecio" class="pm-input" inputmode="numeric" placeholder="0" style="text-align:right"></div>
       </div>
       <div id="inDupWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
+      <div id="inCatSug" style="display:none;margin-top:10px"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="inCancel">Cancelar</button><button type="button" class="pm-btn" id="inSave">Crear y usar</button></div>
     </div>
   </div>
@@ -1507,6 +1508,16 @@ html[data-theme="alto-contraste"]{
   .ci-codwrap{display:flex;gap:4px;align-items:center}
   .ci-newins{flex:none;width:24px;height:24px;border:1px solid #0E7C86;background:#e6f4f5;color:#0E7C86;border-radius:6px;font-size:13px;line-height:1;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center}
   .ci-newins:hover{background:#0E7C86;color:#fff}
+  /* Catálogo completo en la composición */
+  .cs-box{background:#EEF6F7;border:1px solid #BFDDE0;border-radius:9px;padding:9px 11px;font-size:12px;color:#25525a}
+  .cs-box b{color:#0E5E66}
+  .cs-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px dashed #cfe3e5}
+  .cs-row:first-of-type{border-top:0}
+  .cs-n{flex:1;min-width:0;font-weight:600;color:#1f2937;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cs-m{color:#64748b;font-size:11.5px;white-space:nowrap}
+  .cs-use{border:1px solid #0E7C86;background:#fff;color:#0E7C86;border-radius:6px;font-size:11.5px;font-weight:700;padding:3px 9px;cursor:pointer;white-space:nowrap}
+  .cs-use:hover{background:#0E7C86;color:#fff}
+  .mc-dup{border:1px solid #d9b26a;background:#fff8ea;color:#8a5a00;border-radius:6px;cursor:pointer;font-size:12px;padding:2px 7px}
   .comp-head-btn{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:8px;padding:7px 13px;font-size:13px;font-weight:700;cursor:pointer}
   .comp-head-btn:hover{background:rgba(255,255,255,.26)}
   .comp-cap{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -9712,7 +9723,90 @@ function _fillCompInsDatalist(){
   dl.innerHTML = (ed.insList||[]).map(function(i){
     const nom = i.nombre || i.codigo;
     return '<option value="'+escapeHtml(nom)+'">'+escapeHtml(i.codigo+(i.unidad?' · '+i.unidad:''))+'</option>';
+  }).join('') +
+  // Productos del catálogo que todavía no son insumo: al elegirlos se crea el
+  // INS-xxx enlazado a ese mismo producto, sin duplicarlo.
+  (compCat.hits||[]).map(function(p){
+    return '<option value="'+escapeHtml(p.nombre||'')+'">'+escapeHtml('📦 Catálogo'+(p.unidad_medida?' · '+p.unidad_medida:'')+' · Gs '+fmtGs(Number(p.precio_referencia)||0)+' · se agrega como insumo')+'</option>';
   }).join('');
+}
+
+/* ── Catálogo completo en Composiciones ─────────────────────────────
+   Antes la composición solo veía la tabla «insumos» (INS-xxx). Los
+   productos del catálogo (los mismos que ve Orden de Compra) no aparecían,
+   y con el ＋ se terminaba creando un producto duplicado. Ahora:
+   · al escribir, se buscan también en productos_catalogo;
+   · al elegir uno, se crea el INS-xxx enlazado a ESE producto;
+   · el ＋ muestra primero los productos parecidos que ya existen.      */
+var compCat = { hits:[], seq:0, tmr:null };
+function _likeSafe(w){ return String(w).replace(/[%_]/g,function(c){ return '\\'+c; }); }
+async function _catalogoBuscar(q, lim){
+  const words = String(q||'').toLowerCase().split(/\s+/).filter(function(w){ return w.length>=2; }).slice(0,4);
+  if(!words.length) return [];
+  const armar = function(conMaestro){
+    let qq = sb.from('productos_catalogo').select('id,nombre,marca,precio_referencia,unidad_medida').eq('activo', true);
+    if(conMaestro) qq = qq.is('id_maestro', null);
+    words.forEach(function(w){ qq = qq.ilike('nombre', '%'+_likeSafe(w)+'%'); });
+    return qq.order('nombre').limit(lim||30);
+  };
+  let r = await armar(true);
+  if(r.error) r = await armar(false);   // por si la columna id_maestro no existe
+  return r.data || [];
+}
+function _insDeProducto(pid){
+  pid = String(pid);
+  const cod = Object.keys(ed.prodIdByIns||{}).filter(function(k){ return ed.prodIdByIns[k] === pid; })[0];
+  return cod ? ((ed.insList||[]).find(function(x){ return x.codigo === cod; }) || null) : null;
+}
+async function _buscarCatalogoComp(q){
+  const seq = ++compCat.seq;
+  q = String(q||'').trim();
+  if(q.length < 3){ compCat.hits = []; _fillCompInsDatalist(); return; }
+  let prods = [];
+  try{ prods = await _catalogoBuscar(q, 40); }catch(e){ console.warn('catálogo comp', e); }
+  if(seq !== compCat.seq) return;
+  const nombresIns = {};
+  (ed.insList||[]).forEach(function(i){ nombresIns[String(i.nombre||'').trim().toLowerCase()] = 1; });
+  compCat.hits = prods.filter(function(p){
+    return !_insDeProducto(p.id) && !nombresIns[String(p.nombre||'').trim().toLowerCase()];
+  }).slice(0, 25);
+  _fillCompInsDatalist();
+}
+/* Código INS-### libre en las dos tablas (el código del producto es único) */
+async function _codigoInsLibre(){
+  let code=_nextInsCode();
+  for(let g=0; g<200; g++){
+    const [chkIns, chkProd] = await Promise.all([
+      sb.from('insumos').select('codigo').eq('codigo', code).maybeSingle(),
+      sb.from('productos_catalogo').select('codigo').eq('codigo', code).maybeSingle()
+    ]);
+    if(!chkIns.data && !chkProd.data) break;
+    const m=code.match(/^INS-(\d+)$/i); const n=(m?parseInt(m[1],10):0)+1; code='INS-'+String(n).padStart(3,'0');
+  }
+  return code;
+}
+/* Insumo para un producto del catálogo: el que ya lo tiene (como predeterminado
+   o como marca), o uno nuevo enlazado a ese producto. Nunca crea otro producto. */
+async function _insumoDesdeProducto(p){
+  const ya = _insDeProducto(p.id);
+  if(ya) return ya;
+  try{
+    const lk = await sb.from('insumo_marcas').select('codigo_insumo').eq('producto_id', Number(p.id)).eq('activo', true).limit(1);
+    const cod = lk.data && lk.data[0] && lk.data[0].codigo_insumo;
+    const ins = cod && (ed.insList||[]).find(function(x){ return x.codigo === cod; });
+    if(ins) return ins;
+  }catch(e){}
+  const code = await _codigoInsLibre();
+  const precio = Number(p.precio_referencia)||0, uni = p.unidad_medida || '';
+  const r = await sb.from('insumos').insert({ codigo:code, nombre:p.nombre||'', unidad_compra:uni||null, unidad_base:uni||null,
+    precio_base:precio, moneda:'PYG', producto_id:String(p.id), activo:true });
+  if(r.error) throw r.error;
+  try{ await sb.from('insumo_marcas').insert({ codigo_insumo:code, producto_id:Number(p.id), es_default:true, activo:true, creado_por:_userTag() }); }catch(e){ console.warn('insumo_marcas catálogo', e); }
+  _audit('insumo', code, 'crear desde catálogo', { producto_id:p.id, nombre:p.nombre, precio:precio });
+  ed.insList=null; await loadInsList(); compCat.hits=[]; _fillCompInsDatalist();
+  if(document.getElementById('insMgrOverlay').classList.contains('show')) renderInsMgr();
+  showToast('«'+(p.nombre||'')+'» agregado como '+code, 'success', 'Es el mismo producto del catálogo: no se creó un duplicado');
+  return (ed.insList||[]).find(function(x){ return x.codigo === code; }) || { codigo:code, nombre:p.nombre||'', unidad:uni };
 }
 
 /* Busca el insumo por nombre exacto, y si no por código */
@@ -10072,9 +10166,24 @@ function _bindEditor(){
     if(el.value==='insumo'){ comp.items[i].precio_unit=null; } else { comp.items[i].codigo_catalogo=''; comp.items[i].producto_id=null; if(!comp.items[i].unidad) comp.items[i].unidad='jor'; }
     renderCompEditor();
   }); });
-  right.querySelectorAll('.ci-cod').forEach(function(el){ el.addEventListener('change', function(){
+  right.querySelectorAll('.ci-cod').forEach(function(el){ el.addEventListener('input', function(){
+    clearTimeout(compCat.tmr);
+    const v = el.value;
+    compCat.tmr = setTimeout(function(){ _buscarCatalogoComp(v); }, 280);
+  }); });
+  right.querySelectorAll('.ci-cod').forEach(function(el){ el.addEventListener('change', async function(){
     const i=+el.getAttribute('data-i'); const txt=el.value.trim();
-    const ins=_insPorNombre(txt);
+    let ins=_insPorNombre(txt);
+    if(!ins && txt){
+      const t = txt.toLowerCase();
+      const p = (compCat.hits||[]).find(function(x){ return String(x.nombre||'').trim().toLowerCase() === t; });
+      if(p){
+        el.disabled = true;
+        try{ ins = await _insumoDesdeProducto(p); }
+        catch(e){ console.warn('insumo desde catálogo', e); showToast('No se pudo agregar el producto como insumo: '+(e.message||''),'error'); }
+        el.disabled = false;
+      }
+    }
     if(ins){
       comp.items[i].codigo_catalogo = ins.codigo;
       comp.items[i].material = ins.nombre || ins.codigo;
@@ -10084,7 +10193,7 @@ function _bindEditor(){
       // No está en el catálogo: se deja el texto y se avisa con el ＋ al lado
       comp.items[i].codigo_catalogo = '';
       comp.items[i].material = txt;
-      if(txt) showToast('«'+txt+'» no está en el catálogo','info','Usá el ＋ para crearlo, o elegí uno de la lista');
+      if(txt) showToast('«'+txt+'» no está en el catálogo','info','Elegí uno de la lista (también salen los productos de Orden de Compra) o usá el ＋');
     }
     renderCompEditor();
   }); });
@@ -10388,12 +10497,45 @@ function _nextInsCode(){
 function openNewInsumo(rowIdx){
   comp._newInsForRow = rowIdx;
   document.getElementById('inCod').value=_nextInsCode();
-  document.getElementById('inNom').value=''; document.getElementById('inUni').value=''; document.getElementById('inPrecio').value='';
+  const _it = comp.items && comp.items[rowIdx];
+  const _txt = (_it && !_it.codigo_catalogo && _it.material) ? String(_it.material) : '';
+  document.getElementById('inNom').value=_txt; document.getElementById('inUni').value=''; document.getElementById('inPrecio').value='';
   document.getElementById('inDupWarn').style.display='none';
+  const _cs=document.getElementById('inCatSug'); if(_cs){ _cs.style.display='none'; _cs.innerHTML=''; }
+  if(_txt){ _checkInsDup(); _sugCatalogoNuevo(); }
   document.getElementById('insOverlay').classList.add('show');
   setTimeout(function(){ document.getElementById('inNom').focus(); }, 50);
 }
 function closeNewInsumo(){ document.getElementById('insOverlay').classList.remove('show'); }
+var _sugCatSeq=0, _sugCatTmr=null;
+async function _sugCatalogoNuevo(){
+  const box=document.getElementById('inCatSug'); if(!box) return;
+  const q=(document.getElementById('inNom').value||'').trim();
+  const seq=++_sugCatSeq;
+  if(q.length<3){ box.style.display='none'; box.innerHTML=''; return; }
+  let prods=[];
+  // Se busca con las palabras más largas: «Media sombra por ml x 4 mts» → media, sombra
+  const pal=q.toLowerCase().split(/\s+/).filter(function(w){ return w.length>=4 && !/^\d/.test(w); }).sort(function(a,b){ return b.length-a.length; }).slice(0,2);
+  try{ prods = await _catalogoBuscar(pal.length ? pal.join(' ') : q, 8); }catch(e){}
+  if(seq!==_sugCatSeq) return;
+  if(!prods.length){ box.style.display='none'; box.innerHTML=''; return; }
+  box.innerHTML='<div class="cs-box"><div style="margin-bottom:4px">📦 <b>Ya hay productos parecidos en el catálogo</b> (los mismos de Orden de Compra). Si es uno de estos, usalo: así no se crea un duplicado.</div>'+
+    prods.map(function(p,k){
+      const ins=_insDeProducto(p.id);
+      return '<div class="cs-row"><span class="cs-n" title="'+escapeHtml(p.nombre||'')+'">'+escapeHtml((p.marca?p.marca+' · ':'')+(p.nombre||''))+'</span>'+
+        '<span class="cs-m">'+escapeHtml(p.unidad_medida||'')+' · Gs '+fmtGs(Number(p.precio_referencia)||0)+(ins?' · '+escapeHtml(ins.codigo):'')+'</span>'+
+        '<button type="button" class="cs-use" data-k="'+k+'">Usar este</button></div>';
+    }).join('')+'</div>';
+  box.style.display='block';
+  box.querySelectorAll('.cs-use').forEach(function(b){ b.addEventListener('click', async function(){
+    const p=prods[+b.getAttribute('data-k')]; b.disabled=true; b.textContent='…';
+    try{
+      const ins=await _insumoDesdeProducto(p);
+      _applyInsToRow(ins.codigo, ins.nombre||p.nombre, ins.unidad||p.unidad_medida||'');
+      closeNewInsumo();
+    }catch(e){ console.warn('usar producto', e); showToast('No se pudo usar el producto: '+(e.message||''),'error'); b.disabled=false; b.textContent='Usar este'; }
+  }); });
+}
 function _checkInsDup(){
   const nom=(document.getElementById('inNom').value||'').trim().toLowerCase();
   const w=document.getElementById('inDupWarn');
@@ -10424,19 +10566,15 @@ async function saveNewInsumo(){
       _applyInsToRow(dup.codigo, dup.nombre, dup.unidad); closeNewInsumo(); showToast('Usando '+dup.codigo,'success'); return;
     }
   }
+  const _sug=document.getElementById('inCatSug');
+  if(_sug && _sug.style.display!=='none' && _sug.innerHTML){
+    if(!confirm('Hay productos parecidos en el catálogo (los mismos de Orden de Compra).\n\n¿Crear igual un producto NUEVO «'+nom+'»?\nSi es uno de los que aparecen, cancelá y tocá «Usar este».')) return;
+  }
   const btn=document.getElementById('inSave'); const old=btn.textContent; btn.disabled=true; btn.textContent='Creando…';
   try{
     // código libre, revalidado contra AMBAS tablas (el índice único ux_productos_codigo
     // está en productos_catalogo, que puede ir adelantado respecto de insumos).
-    let code=_nextInsCode();
-    for(let g=0; g<200; g++){
-      const [chkIns, chkProd] = await Promise.all([
-        sb.from('insumos').select('codigo').eq('codigo', code).maybeSingle(),
-        sb.from('productos_catalogo').select('codigo').eq('codigo', code).maybeSingle()
-      ]);
-      if(!chkIns.data && !chkProd.data) break;
-      const m=code.match(/^INS-(\d+)$/i); const n=(m?parseInt(m[1],10):0)+1; code='INS-'+String(n).padStart(3,'0');
-    }
+    let code=await _codigoInsLibre();
     const nowIso=new Date().toISOString();
     const prodPayload={ nombre:nom, precio_referencia:precio, unidad_medida:uni||null, categoria:'insumo',
       search_terms: nom.toLowerCase().split(/\s+/).filter(Boolean), activo:true, creado_por:_userTag(),
@@ -10680,12 +10818,37 @@ async function renderMarcas(){
       '<div class="ins-acts">'+
         (isDef?'':'<button type="button" class="mc-def" data-pid="'+m.pid+'" title="Hacer predeterminada">★</button>')+
         '<button type="button" class="mc-edit" data-pid="'+m.pid+'" data-precio="'+m.precio+'" title="Editar precio del producto">✏️</button>'+
+        (isDef?'':'<button type="button" class="mc-dup" data-pid="'+m.pid+'" data-nom="'+escapeHtml(m.nombre)+'" title="Es el mismo producto que la predeterminada: se oculta del catálogo y de Orden de Compra">⇄ Duplicado</button>')+
         (isDef?'':'<button type="button" class="mc-del" data-pid="'+m.pid+'" title="Desvincular (no borra el producto)">✕</button>')+
       '</div></div>';
   }).join('');
   box.querySelectorAll('.mc-def').forEach(function(b){ b.addEventListener('click',function(){ setMarcaDefault(b.getAttribute('data-pid')); }); });
   box.querySelectorAll('.mc-edit').forEach(function(b){ b.addEventListener('click',function(){ editMarcaPrecio(b.getAttribute('data-pid'), Number(b.getAttribute('data-precio'))||0); }); });
   box.querySelectorAll('.mc-del').forEach(function(b){ b.addEventListener('click',function(){ desvincularMarca(b.getAttribute('data-pid')); }); });
+  box.querySelectorAll('.mc-dup').forEach(function(b){ b.addEventListener('click',function(){ unificarDuplicado(b.getAttribute('data-pid'), b.getAttribute('data-nom')); }); });
+}
+/* Unificar: el producto queda como duplicado de la marca predeterminada
+   (id_maestro), igual que en la unificación del catálogo. Desaparece de la
+   búsqueda de Orden de Compra y de Composiciones; las OC viejas no cambian. */
+async function unificarDuplicado(pid, nombre){
+  if(_marcasDefaultPid==null){ showToast('Primero marcá la predeterminada (★)','error'); return; }
+  if(String(pid)===String(_marcasDefaultPid)) return;
+  const def=(await _marcasVinculadas()).find(function(m){ return m.pid===String(_marcasDefaultPid); });
+  if(!confirm('¿«'+nombre+'» es el mismo producto que «'+(def?def.nombre:'la predeterminada')+'»?\n\n'+
+    '• Se oculta del catálogo: deja de aparecer en Orden de Compra y en Composiciones.\n'+
+    '• Queda registrado como duplicado de la predeterminada.\n'+
+    '• Las órdenes de compra ya emitidas no cambian.')) return;
+  try{
+    const u=await sb.from('productos_catalogo').update({ id_maestro:Number(_marcasDefaultPid), updated_at:new Date().toISOString() }).eq('id', Number(pid));
+    if(u.error) throw u.error;
+    await sb.from('insumo_marcas').update({activo:false}).eq('codigo_insumo',_marcasCod).eq('producto_id',Number(pid));
+    // Si otro insumo lo tenía como predeterminado, pasa al producto que queda
+    try{ await sb.from('insumos').update({ producto_id:String(_marcasDefaultPid) }).eq('producto_id', String(pid)); }catch(e){}
+    ed.insList=null; await loadInsList(); _fillCompInsDatalist();
+    await renderMarcas(); renderInsMgr();
+    showToast('Duplicado unificado','success','«'+nombre+'» ya no aparece en Orden de Compra');
+    _audit('marca', _marcasCod, 'unificar duplicado', { producto_id:pid, maestro:_marcasDefaultPid });
+  }catch(e){ console.warn('unificarDuplicado', e); showToast('No se pudo unificar: '+(e.message||''),'error'); }
 }
 async function searchMarcaCatalogo(q){
   const box=document.getElementById('marcaSearchResults');
@@ -11310,6 +11473,7 @@ document.getElementById('inClose').addEventListener('click', closeNewInsumo);
 document.getElementById('inCancel').addEventListener('click', closeNewInsumo);
 document.getElementById('inSave').addEventListener('click', saveNewInsumo);
 document.getElementById('inNom').addEventListener('input', _checkInsDup);
+document.getElementById('inNom').addEventListener('input', function(){ clearTimeout(_sugCatTmr); _sugCatTmr=setTimeout(_sugCatalogoNuevo, 320); });
 document.getElementById('insOverlay').addEventListener('click', function(e){ if(e.target===this) closeNewInsumo(); });
 document.getElementById('compExport').addEventListener('click', exportArbol);
 document.getElementById('compPlantilla').addEventListener('click', exportPlantilla);
