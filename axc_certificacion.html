@@ -10029,16 +10029,38 @@ async function pedirReportes(c, its){
   if(!r.planilla && !r.orden && !r.cliente){ showToast('Elegí al menos un documento','error'); return; }
 
   // Avance al cliente: sale siempre como archivo propio, nunca mezclado
+  /* v13.11 · Antes, sin propuesta aceptada solo salía un aviso que el resto
+     de los documentos tapaba enseguida, y parecía que no hacía nada.
+     Ahora: los trabajos por administración se valorizan a costo ÷ coeficiente
+     del TA; los del presupuesto, a la propuesta aceptada. Si algo no tiene
+     precio al cliente, se avisa con un cuadro que no se cierra solo.       */
   if(r.cliente){
-    const _pl = String(c.presupuesto||'').split(',').map(x=>x.trim()).filter(Boolean);
-    const va = await ventaAceptada(_pl);
-    if(!va){
-      showToast('No hay propuesta aceptada para este presupuesto','error',
-        'Presupuesto(s): '+(_pl.join(', ')||'—')+' · marcala en Presupuestos → Propuestas');
-    }else{
+    const pc = await precioClienteCert(c, its);
+    let seguir = true;
+    if(!pc.va && !pc.taCods.length){
+      await axcDialog({ tono:'danger', icono:'🧾', titulo:'No se puede generar el avance al cliente',
+        subtitulo: c.numero || '',
+        mensaje:'Los trabajos de este certificado no tienen precio de venta al cliente.',
+        lista:[ pc.presus.length
+                  ? 'El presupuesto <b>'+escapeHtml(pc.presus.join(', '))+'</b> no tiene una propuesta <b>aceptada</b>. Marcala en Presupuestos → Propuestas.'
+                  : 'El certificado <b>no tiene presupuesto</b> ni trabajos por administración (TA).',
+                'Si es un trabajo por administración, imputá las líneas a su <b>TA</b> y cargá el coeficiente en «Trabajos por administración → Abrir · liquidación».' ],
+        ok:'Entendido', soloOk:true });
+      seguir = false;
+    }else if(pc.sinPrecio.length){
+      const d = await axcDialog({ tono:'warn', icono:'🧾', titulo:'Hay trabajos sin precio al cliente',
+        subtitulo: pc.sinPrecio.length+' de '+(its||[]).length+' trabajo(s)',
+        mensaje:'Estos trabajos no están en la propuesta aceptada ni en un trabajo por administración. En el avance al cliente salen <b>en 0</b>:',
+        lista: pc.sinPrecio.slice(0,6).map(function(x){ return escapeHtml((x.rubro_codigo ? x.rubro_codigo+' · ' : '')+(x.descripcion||x.rubro_desc||'')); })
+               .concat(pc.sinPrecio.length > 6 ? ['y '+(pc.sinPrecio.length-6)+' más'] : []),
+        ok:'Generar igual', cancelar:'Cancelar' });
+      seguir = !!d.ok;
+    }
+    if(seguir){
       await generarPlanillaPDF(c, its, Object.assign({}, r.clienteOps, {
-        cliente:true, venta:va.venta, propVersion:va.cab.version,
-        clienteNombre:va.cab.cliente || '', ivaPct:Number(va.cab.iva_pct)||0 }));
+        cliente:true, venta:(pc.va ? pc.va.venta : {}), propVersion:(pc.va ? pc.va.cab.version : ''),
+        taCoef:pc.taCoef, clienteNombre:pc.cliente, ivaPct:pc.ivaPct }));
+      showToast('Avance al cliente generado','success', pc.taCods.length ? ('Por administración: costo ÷ coeficiente de '+pc.taCods.join(', ')) : undefined);
     }
     if(!r.planilla && !r.orden) return;
   }
@@ -10206,6 +10228,39 @@ async function anexoAdjuntos(doc, c, W, H, M){
 
 /* Propuesta económica aceptada del presupuesto: es la que manda para
    facturarle al cliente. Devuelve el precio de venta por rubro. */
+/* v13.11 · Precio al cliente de las líneas de un certificado:
+   propuesta aceptada (presupuesto) y coeficiente de los TA (administración). */
+async function precioClienteCert(c, its){
+  const presus = String(c.presupuesto||'').split(',').map(function(x){ return x.trim(); }).filter(Boolean);
+  (its||[]).forEach(function(x){ const p = String(x.presupuesto||'').trim(); if(p && presus.indexOf(p) < 0) presus.push(p); });
+  const va = presus.length ? await ventaAceptada(presus) : null;
+  const taCods = Array.from(new Set((its||[]).map(function(x){ return x.trabajo_admin; }).filter(Boolean)));
+  const taCoefs = {}; let taRows = [];
+  if(taCods.length){
+    try{
+      const { data } = await sb.from('trabajos_admin').select('*').in('codigo', taCods);
+      taRows = data || [];
+      taRows.forEach(function(t){ taCoefs[t.codigo] = taCoef(t); });
+    }catch(e){ console.warn('coeficiente TA', e); }
+    taCods.forEach(function(k){ if(!taCoefs[k]) taCoefs[k] = 1; });
+  }
+  const sinPrecio = (its||[]).filter(function(x){
+    if(x.trabajo_admin) return false;
+    const v = va && va.venta[x.rubro_codigo];
+    return !(v && Number(v.precio_unit) > 0);
+  });
+  let iva = va ? Number(va.cab.iva_pct)||0 : null;
+  if(iva == null){
+    try{
+      const { data:pc } = await sb.from('presupuesto_cab').select('iva_pct').eq('obra', c.obra||'').limit(20);
+      const v = (pc||[]).map(function(x){ return Number(x.iva_pct)||0; }).filter(function(n){ return n > 0; })[0];
+      iva = v || 0;
+    }catch(e){ iva = 0; }
+  }
+  const cliente = (va && va.cab.cliente) || (taRows[0] && taRows[0].solicitado_por) || '';
+  return { presus:presus, va:va, taCods:taCods, taCoef:taCoefs, sinPrecio:sinPrecio, ivaPct:iva, cliente:cliente };
+}
+
 async function ventaAceptada(presus){
   const L = (presus||[]).filter(Boolean);
   if(!L.length) return null;
@@ -10419,10 +10474,14 @@ async function generarPlanillaPDF(c, its, opts){
       const ki = porCt && x.contrato_item_id ? CTI[x.contrato_item_id] : null;
       const k  = ki ? ('ci:'+x.contrato_item_id) : _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector);
       const a  = ant[k] || { cant:0, monto:0 };
-      const cp = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
+      // v13.11 · Al cliente, lo de administración va a costo ÷ coeficiente del TA
+      const esTAc = !!(op.cliente && x.trabajo_admin);
+      const cp = esTAc ? 0
+               : op.cliente ? Number(((op.venta||{})[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
                : porCt ? (ki ? ki.cant : 0)
                        : (Number(x.cant_presup)||0);
-      const pu = op.cliente ? Number((op.venta[x.rubro_codigo]||{}).precio_unit || 0)
+      const pu = esTAc ? Math.round((Number(x.precio_unit)||0) / (((op.taCoef||{})[x.trabajo_admin]) || 1))
+               : op.cliente ? Number(((op.venta||{})[x.rubro_codigo]||{}).precio_unit || 0)
                             : (Number(x.precio_unit)||0);
       // Contra el contrato: el total contratado sale del precio pactado
       const puG = (porCt && ki && ki.pu) ? ki.pu : pu;
@@ -10450,7 +10509,8 @@ async function generarPlanillaPDF(c, its, opts){
         libre ? '-' : g0(G),
         // v11.14 · Lo que no tiene presupuesto dice qué es, en lugar de un guion
         (function(){
-          if(op.cliente) return pdfSafe((x.presupuesto||'-')+' v'+(op.propVersion||''));
+          if(op.cliente && x.trabajo_admin) return { content:pdfSafe(x.trabajo_admin+' / coef. '+taN4((op.taCoef||{})[x.trabajo_admin]||1)), styles:{ textColor:[31,92,58], fontStyle:'bold' } };
+          if(op.cliente) return pdfSafe(x.presupuesto ? (x.presupuesto+(op.propVersion ? ' v'+op.propVersion : '')) : '-');
           if(porCt && ki && x.trabajo_admin) return { content:pdfSafe((ki.numero || '-')+' > '+x.trabajo_admin), styles:{ textColor:[31,92,58], fontStyle:'bold' } };   // v13.0
           if(porCt && ki) return ki.pres ? { content:pdfSafe(ki.numero || '-'), _pp:ki.pres, styles:{ cellPadding:{ top:1.3, right:1, bottom:4.4, left:1 } } } : pdfSafe(ki.numero || '-');
           if(porCt && x.clasificacion !== 'a_presupuestar' && x.clasificacion !== 'indirecto') return { content:'Fuera de contrato', styles:{ textColor:[138,90,0], fontStyle:'bold' } };
@@ -10560,7 +10620,8 @@ async function generarPlanillaPDF(c, its, opts){
       (op.propVersion?(' (version '+op.propVersion+')'):'')+'. '+
       'Total contratado (G) = cantidad de la propuesta x precio unitario. '+
       'Acumulado anterior: avance reconocido en certificados aprobados anteriores. '+
-      'Los trabajos fuera de la propuesta no tienen % ni saldo.'
+      'Los trabajos fuera de la propuesta no tienen % ni saldo.'+
+      ((its||[]).some(function(x){ return x.trabajo_admin; }) ? ' Trabajos por administracion (TA): costo real / coeficiente del trabajo, sin cantidad de referencia.' : '')
     : porCt
     ? 'Documento de uso interno: residente, supervision y gerencia. Avance contra el contrato. '+
       'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo item del contrato. '+
