@@ -4896,7 +4896,7 @@ async function openPropuestasLista(){
         const a = agg[acc.id] || { costo:0, venta:0, n:0 };
         const coef = a.venta>0 ? (a.costo/a.venta) : 0;
         const util = a.venta - a.costo;
-        const iva  = Math.round(a.venta * (Number(acc.iva_pct)||0) / 100);
+        const iva  = Math.round(a.venta * _ivaProp(acc) / 100);
         const dato = function(l,v,s){ return '<div style="min-width:150px"><div style="font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</div>'+
           '<div style="font-size:15px;font-weight:800;color:#1a2236;margin-top:2px">'+v+'</div>'+(s?('<div style="font-size:11px;color:#8893a5">'+s+'</div>'):'')+'</div>'; };
         ficha =
@@ -4908,7 +4908,7 @@ async function openPropuestasLista(){
             '</div>'+
             '<div style="display:flex;gap:22px;flex-wrap:wrap">'+
               dato('Venta sin IVA','₲ '+fmtGs(a.venta), a.n+' rubro(s)')+
-              dato('IVA '+(Number(acc.iva_pct)||0)+' %','₲ '+fmtGs(iva))+
+              dato('IVA '+_ivaProp(acc)+' %','₲ '+fmtGs(iva))+
               dato('Total con IVA','₲ '+fmtGs(a.venta+iva))+
               dato('Costo interno','₲ '+fmtGs(a.costo))+
               dato('Utilidad','₲ '+fmtGs(util), a.venta>0?((util/a.venta*100).toFixed(1)+' % de la venta'):'')+
@@ -4938,7 +4938,7 @@ async function openPropuestasLista(){
           const a = agg[c.id] || { costo:0, venta:0, n:0, dif:0 };
           const coef = a.venta>0 ? (a.costo/a.venta) : 0;
           const util = a.venta - a.costo;
-          const iva  = Math.round(a.venta * (Number(c.iva_pct)||0) / 100);
+          const iva  = Math.round(a.venta * _ivaProp(c) / 100);
           return '<tr'+(c.aceptada?' style="background:#f0f8f1"':'')+'>'+
             '<td>'+_verLbl(c)+'</td>'+
             '<td>'+escapeHtml(_fmtF(c.emitido_en,false)||'')+'</td>'+
@@ -4950,7 +4950,7 @@ async function openPropuestasLista(){
             '<td class="n">₲ '+fmtGs(a.costo)+'</td>'+
             '<td class="n">₲ '+fmtGs(util)+(a.venta>0?('<div style="font-size:11px;color:#8893a5">'+(util/a.venta*100).toFixed(1)+' %</div>'):'')+'</td>'+
             '<td class="n"><b>₲ '+fmtGs(a.venta)+'</b></td>'+
-            '<td class="n">₲ '+fmtGs(a.venta+iva)+(Number(c.iva_pct)?('<div style="font-size:11px;color:#8893a5">IVA '+Number(c.iva_pct)+' %</div>'):'')+'</td>'+
+            '<td class="n">₲ '+fmtGs(a.venta+iva)+(_ivaProp(c)?('<div style="font-size:11px;color:#8893a5">IVA '+_ivaProp(c)+' %</div>'):'<div style="font-size:11px;color:#8893a5">sin IVA</div>')+'</td>'+
             '<td>'+(c.aceptada
               ? '<span style="background:#DFF3E3;color:#1B5524;border:1px solid #bfe0c4;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800">✓ ACEPTADA</span>'+
                 (c.aceptada_en?('<div style="font-size:11px;color:#8893a5">'+_fmtF(c.aceptada_en,false)+(c.aceptada_por?(' · '+escapeHtml(c.aceptada_por)):'')+'</div>'):'')+
@@ -5162,7 +5162,7 @@ async function excelPropuestaVersion(id){
       [1,2,6].forEach(function(i){ const cell = row.getCell(i); cell.fill = fill(fc); fuente(cell, { size:9.5, bold:true, color:{ argb:tc } }); cell.border = bordes; });
       row.getCell(1).alignment = { horizontal:'right' }; row.getCell(6).numFmt = '#,##0'; r++;
     };
-    const ivaP = N(c.iva_pct);
+    const ivaP = _ivaProp(c);
     const totales = function(neto, etFin, opc){
       const filas = ivaP > 0
         ? [[(opc?'SUBTOTAL SIN IVA':'TOTAL GENERAL SIN IVA'), neto, 'FF2CA8E0', 'FF0D2B3D'], ['IVA '+ivaP+' %', Math.round(neto*ivaP/100), 'FFDCE1F2', 'FF1A2236'],
@@ -5257,6 +5257,16 @@ async function excelPropuestaVersion(id){
   }catch(e){ showToast('No se pudo generar el Excel','error', e.message||String(e)); }
 }
 
+/* IVA de una propuesta: el guardado en la propuesta; si es de antes de que
+   se guardara (null), el del presupuesto. Antes la lista mostraba «Con IVA»
+   igual a la venta porque la propuesta no tenía el dato. */
+function _ivaProp(c){
+  if(c && c.iva_pct!=null && c.iva_pct!=='') return Number(c.iva_pct)||0;
+  const m = state._ivaPct || {};
+  if(c && m[c.presupuesto]!=null) return Number(m[c.presupuesto])||0;
+  return Number(ivaGet())||0;
+}
+
 async function verPropuestaVersion(id){
   try{
     const { data:c, error } = await sb.from('propuesta_cab').select('*').eq('id', id).single();
@@ -5276,7 +5286,7 @@ async function verPropuestaVersion(id){
       }),
       venta:Number(c.venta_total)||0, atencion:c.atencion, referencia:c.referencia,
       profesional:c.profesional, superficie:c.superficie, alcance:c.alcance,
-      iva_pct:c.iva_pct, anexos:[], _reimpresion:true
+      iva_pct:_ivaProp(c), anexos:[], _reimpresion:true
     });
   }catch(e){ showToast('No se pudo abrir la propuesta','error', e.message||''); }
 }
@@ -5613,10 +5623,10 @@ async function emitirPropuesta(anexos){
     const cabExtra = { atencion:_vv('mgAtencion')||null, referencia:_vv('mgRef')||null,
       profesional:_vv('mgProf')||null, superficie:(_vv('mgSup')?Number(_vv('mgSup')):null),
       alcance:_vv('mgAlcance')||null, venta_opcional:totalOpcEmitido,
-      estado:'enviada', numero_envio:_nroEnvio };
+      estado:'enviada', numero_envio:_nroEnvio, iva_pct:ivaGet() };
     if(!_preview){
     let c = await sb.from('propuesta_cab').insert(Object.assign({}, cabBase, cabExtra)).select('id').single();
-    if(c.error && /atencion|referencia|profesional|superficie|alcance|venta_opcional|estado|numero_envio/i.test(c.error.message||'')){
+    if(c.error && /atencion|referencia|profesional|superficie|alcance|venta_opcional|estado|numero_envio|iva_pct/i.test(c.error.message||'')){
       c = await sb.from('propuesta_cab').insert(cabBase).select('id').single();   // base sin las columnas nuevas
     }
     if(c.error) throw c.error;
