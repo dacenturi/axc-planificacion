@@ -470,7 +470,8 @@ async function cargarObras(){
 function refrescarPP(){
   const o=$('fObra').value;
   const L=S.cabs.filter(function(c){ return c.obra===o; });
-  $('fPP').innerHTML='<option value="">Todos los de la obra ('+L.length+')</option>'+L.map(function(c){
+  const nAct=L.filter(function(c){ return c.activo!==false; }).length;
+  $('fPP').innerHTML='<option value="">Todos los activos ('+nAct+')</option>'+(nAct<L.length?'<option value="*">Todos, incluidos inactivos ('+L.length+')</option>':'')+L.map(function(c){
     return '<option value="'+esc(c.codigo)+'">'+esc(c.codigo+(c.descripcion?' · '+c.descripcion:''))+(c.activo===false?' (inactivo)':'')+'</option>'; }).join('');
 }
 
@@ -480,7 +481,9 @@ async function cargar(){
   if(!obra){ toast('Elegí la obra','error'); return; }
   localStorage.setItem('axc_av_obra', obra);
   const ppSel=$('fPP').value, corte=$('fCorte').value||hoyISO();
-  const cabs=S.cabs.filter(function(c){ return c.obra===obra && (!ppSel || c.codigo===ppSel); });
+  // Sin elegir presupuesto: solo los activos (los inactivos son versiones
+  // reemplazadas o borradores). «*» los incluye a todos.
+  const cabs=S.cabs.filter(function(c){ return c.obra===obra && (ppSel==='*' ? true : (ppSel ? c.codigo===ppSel : c.activo!==false)); });
   const pps=cabs.map(function(c){ return c.codigo; });
   $('out').innerHTML='<div class="loading"><div class="spin"></div>Armando el informe de avance…</div>';
   const b=$('btnGo'); b.disabled=true;
@@ -522,7 +525,7 @@ async function cargar(){
       const pp={}; prods.forEach(function(p){ pp[String(p.id)]=N(p.precio_referencia); });
       insc.forEach(function(i){ R.precioCat[i.codigo] = pp[String(i.producto_id)]||0; });
     }
-    S.D = calcular(R, { obra:obra, cabs:cabs, pps:pps, corte:corte, ppSel:ppSel });
+    S.D = calcular(R, { obra:obra, cabs:cabs, pps:pps, corte:corte, ppSel:(ppSel==='*'?'':ppSel) });
     // IVA del presupuesto (para la vista gerencial)
     S.D.iva = (cabs.map(function(c){ return N(c.iva_pct); }).filter(function(v){ return v>0; })[0]) || 10;
     // capítulos para el filtro
@@ -585,10 +588,11 @@ function calcular(R, F){
   };
 
   // 2) Composición (insumos) y costo presupuestado
-  const compIdx={};
+  const compIdx={}; const huerf={};
   (R.ins||[]).forEach(function(m){
     if(!m.rubro_codigo) return;
-    const o=RB[m.presupuesto+'|'+m.rubro_codigo]; if(!o) return;
+    const o=RB[m.presupuesto+'|'+m.rubro_codigo];
+    if(!o){ huerf[m.presupuesto+' '+m.rubro_codigo]=(huerf[m.presupuesto+' '+m.rubro_codigo]||0)+N(m.cantidad)*N(m.precio_unitario); return; }
     const mo=esMO(m.codigo_insumo);
     let pu=N(m.precio_unitario); if(!mo && !(pu>0)) pu=N(R.precioCat[m.codigo_insumo]);
     const q=N(m.cantidad), c=q*pu;
@@ -669,7 +673,10 @@ function calcular(R, F){
   T.avVenta = T.venta>0 ? T.evv/T.venta : null;
 
   // Costo real de la obra (todo lo gastado, esté o no imputado a un rubro)
-  const ocOk=(R.ocs||[]).filter(function(o){ return !o.es_prueba && String(o.fecha||'').slice(0,10)<=F.corte && (!F.ppSel || !o.presupuesto || o.presupuesto===F.ppSel); });
+  // Con un presupuesto elegido, solo las OC que lo mencionan (el campo es texto libre: «PP82», «82», «PP82 - …»)
+  const numPP = F.ppSel ? String(F.ppSel).replace(/\D/g,'') : '';
+  const ocDePP=function(o){ const t=String(o.presupuesto||''); return t===F.ppSel || (numPP && new RegExp('(^|[^0-9])(PP)?0*'+numPP+'([^0-9]|$)','i').test(t)); };
+  const ocOk=(R.ocs||[]).filter(function(o){ return !o.es_prueba && String(o.fecha||'').slice(0,10)<=F.corte && (!F.ppSel || ocDePP(o)); });
   // Criterio de OC en el costo real: «emitidas» (todas menos rechazadas y anuladas)
   // o «aprobadas» (solo Aprobado/Archivado; lo demás queda como en trámite).
   const ocValida=ocOk.filter(function(o){ return !/^(rechazad|anulad)/i.test(String(o.estado||'')) && !o.anulada_por; });
@@ -689,9 +696,14 @@ function calcular(R, F){
   T.cpiBruto = T.ac>0 ? T.ev/T.ac : null;
   T.cpi = T.acInc>0 ? T.ev/T.acInc : null;
   T.eac = (T.cpi && T.cpi>0) ? T.costo/T.cpi : null;
-  T.margenPrev = T.venta>0 ? T.venta-T.costo : null;
-  T.margenHoy = T.venta>0 ? T.evv-T.acInc : null;
-  T.margenProy = (T.venta>0 && T.eac!=null) ? T.venta-T.eac : null;
+  // Margen previsto: solo contra el costo de los presupuestos que tienen
+  // propuesta aceptada (si no, se compararía venta parcial con costo total).
+  const ppConVenta={}; Object.keys(ventaPP).forEach(function(p){ ppConVenta[p]=1; });
+  T.costoConVenta = L.filter(function(o){ return ppConVenta[o.pp]; }).reduce(function(a,o){ return a+o.costo; },0);
+  T.ventaParcial = F.pps.some(function(p){ return !ppConVenta[p]; });
+  T.margenPrev = T.venta>0 ? T.venta-T.costoConVenta : null;
+  T.margenHoy = (T.venta>0 && !T.ventaParcial) ? T.evv-T.acInc : null;
+  T.margenProy = (T.venta>0 && T.eac!=null && !T.ventaParcial) ? T.venta-T.eac : null;
   T.noImput = Math.max(0, T.ac - T.acRub);
   T.ocNoImp = Math.max(0, T.ocEje - T.mat);
 
@@ -756,6 +768,9 @@ function calcular(R, F){
   const avisos=[];
   const ppSinProp=F.pps.filter(function(p){ return ventaPP[p]==null; });
   if(ppSinProp.length) avisos.push({ t:'warn', m:'Sin propuesta aceptada: '+ppSinProp.join(', ')+' (el valor comercial no incluye esos presupuestos)' });
+  const hk=Object.keys(huerf); if(hk.length) avisos.push({ t:'warn', m:'Insumos de rubros que ya no están en el presupuesto ('+hk.join(', ')+'): no se cuentan' });
+  if(F.ppSel && !ocOk.length) avisos.push({ t:'bad', m:'Ninguna OC está vinculada a '+F.ppSel+': el costo real de este presupuesto solo incluye la mano de obra (el CPI sale inflado)' });
+  if(T.ventaParcial && T.venta>0) avisos.push({ t:'warn', m:'Margen previsto solo de '+Object.keys(ventaPP).join(', ')+' (los únicos con propuesta aceptada); margen a la fecha y proyectado necesitan todas las propuestas' });
   if(ocPrueba.length) avisos.push({ t:'bad', m:ocPrueba.length+' OC marcada(s) como prueba suman '+gsM(ocPrueba.reduce(function(a,o){ return a+N(o.valor_total); },0))+' en el costo real ('+ocPrueba.map(function(o){ return o.numero_oc; }).join(', ')+'): conviene anularlas' });
   if(S.ocModo!=='aprobadas' && ocSinAprobar.length) avisos.push({ t:'warn', m:ocSinAprobar.length+' OC todavía sin aprobar se cuentan como costo ('+gsM(ocSinAprobar.reduce(function(a,o){ return a+N(o.valor_total); },0))+')' });
   const ivas = Array.from(new Set((F.cabs||[]).map(function(c){ return N(c.iva_pct); })));
@@ -932,7 +947,7 @@ function render(){
       '<div class="vs"><div><b style="color:#B08A1E">'+(T.avProg!=null?pct(T.avProg):'—')+'</b>programado</div><div><b>'+(T.avVenta!=null?pct(T.avVenta):'—')+'</b>a precio de venta</div></div></div>'+
     '<div class="card"><h3>Indicadores de gestión</h3><div class="sub">Gestión del valor ganado (EVM) · montos sin IVA · pasá el mouse por la <i>i</i> para ver cómo se calcula cada uno</div><div class="kpis">'+
       kpi('Presupuesto a costo', gsM(T.costo), 'MO '+gsM(T.costoMO)+' · materiales '+gsM(T.costoMat), '', null, AY.bac)+
-      kpi('Valor comercial', T.venta>0?gsM(T.venta):'—', T.venta>0?('margen previsto '+gsM(T.margenPrev)+' · '+pct(T.margenPrev/T.venta)):'sin propuesta aceptada', '', null, AY.venta)+
+      kpi('Valor comercial', T.venta>0?gsM(T.venta):'—', T.venta>0?((T.ventaParcial?'solo '+D.props.map(function(p){ return p.presupuesto; }).join(', ')+' · ':'')+'margen previsto '+pct(T.margenPrev/T.venta)):'sin propuesta aceptada', T.ventaParcial?'warn':'', null, AY.venta)+
       kpi('Valor ganado (EV)', gsM(T.ev), 'obra ejecutada, a costo presupuestado', '', null, AY.ev)+
       kpi('Ejecutado a venta', T.venta>0?gsM(T.evv):'—', 'lo certificable al cliente', '', null, AY.evv)+
       kpi('Costo real (AC)', gsM(T.ac), 'MO '+gsM(T.moTot)+' · OC '+gsM(T.ocEje)+(T.caja?' · caja '+gsM(T.caja):'')+(T.ocRes?' · en trámite '+gsM(T.ocRes):''), '', null, AY.ac)+
@@ -1353,7 +1368,7 @@ function renderGer(){
     '<div class="m">Corte al '+fmtF(F.corte)+' · presupuesto(s) '+esc(F.pps.join(', '))+(props?' · propuesta aceptada '+esc(props):'')+' · contrato y certificado '+ivaTxt+'</div></div>'+
     '<div class="badge">VISTA GERENCIAL</div></div>'+
   '<div class="g-cards">'+
-    gCard('Contrato (ingresos)', T.venta>0?gs(G.contrato):'—', T.venta>0?'presupuesto de ingresos · '+ivaTxt:'sin propuesta aceptada', 'c-blue', AYG.contrato)+
+    gCard('Contrato (ingresos)', T.venta>0?gs(G.contrato):'—', T.venta>0?((T.ventaParcial?'solo '+D.props.map(function(p){ return p.presupuesto; }).join(', ')+' (faltan propuestas) · ':'presupuesto de ingresos · ')+ivaTxt):'sin propuesta aceptada', T.ventaParcial?'c-red':'c-blue', AYG.contrato)+
     gCard('Certificado al cliente', gs(last.certA), G.contrato>0?pct(last.certA/G.contrato)+' del contrato':'', 'c-blue', AYG.cert)+
     gCard('Cobrado acumulado', sinCob?'—':gs(last.cobA), sinCob?'sin cobros cargados · usá «💵 Cobros»':(G.contrato>0?pct(last.cobA/G.contrato)+' del contrato · por cobrar '+gsM(G.contrato-last.cobA):''), 'c-green', AYG.cob)+
     gCard('Pendiente de cobro', sinCob?'—':gs(last.pend), 'certificado − cobrado', 'c-gold', AYG.pend, (!sinCob&&last.pend<0)?'neg':'')+
