@@ -631,7 +631,7 @@ function calcular(R, F){
     if(F.ppSel && pp!==F.ppSel) return;          // con un presupuesto elegido, lo demás no cuenta
     if(!pp || F.pps.indexOf(pp)<0 || !x.rubro_codigo){ moSinRubro+=pag; return; }
     const o=getRB(pp, x.rubro_codigo, x.rubro_desc||x.descripcion);
-    o.certPag+=pag; o.certCant+=N(x.cantidad);
+    o.certPag+=pag; o.certCant+=N(x.cantidad); (o.pagH=o.pagH||[]).push({ f:x._fecha, v:pag });
     // Avance por CANTIDAD medida contra la cantidad presupuestada de esa línea.
     // (No por monto: el precio de contrato y el de la línea pueden no coincidir.)
     if(N(x.cant_presup)>0) o.hist.push({ f:x._fecha, sec:norm(x.sector||''), cod:String(x.codigo_insumo||x.descripcion||''), cant:N(x.cantidad), pres:N(x.cant_presup) });
@@ -727,8 +727,8 @@ function calcular(R, F){
   L.forEach(function(o){
     if(o.metodo==='mo'){
       let avPrev=0; const fechas=Array.from(new Set(o.hist.map(function(h){ return h.f; }))).sort();
-      fechas.forEach(function(f){ const av=avanceRubro(o, o.hist.filter(function(h){ return h.f<=f; })); const d=av-avPrev; avPrev=av; const mk=mesKey(f); if(M[mk]){ M[mk].ev+=d*o.costo; M[mk].evv+=d*o.venta; } });
-    }else if(o.ev>0){ const mk=mesKey(F.corte); if(M[mk]){ M[mk].ev+=o.ev; M[mk].evv+=o.evv; } }
+      fechas.forEach(function(f){ const av=avanceRubro(o, o.hist.filter(function(h){ return h.f<=f; })); const d=av-avPrev; avPrev=av; const mk=mesKey(f); if(M[mk]){ M[mk].ev+=d*o.costo; M[mk].evv+=d*o.venta; o.evM=o.evM||{}; o.evM[mk]=(o.evM[mk]||0)+d*o.costo; o.evvM=o.evvM||{}; o.evvM[mk]=(o.evvM[mk]||0)+d*o.venta; } });
+    }else if(o.ev>0){ const mk=mesKey(F.corte); if(M[mk]){ M[mk].ev+=o.ev; M[mk].evv+=o.evv; o.evM={}; o.evM[mk]=o.ev; o.evvM={}; o.evvM[mk]=o.evv; } }
   });
   items.forEach(function(x){ if(F.ppSel && x.presupuesto!==F.ppSel) return; const mk=mesKey(x._fecha); if(M[mk]){ const v=N(x.subtotal)||N(x.cantidad)*N(x.precio_unit); M[mk].ac+=v; M[mk].mo+=v; } });
   ocEje.forEach(function(o){ const mk=mesKey(o.fecha); if(M[mk]){ M[mk].ac+=N(o.valor_total); M[mk].oc+=N(o.valor_total); } });
@@ -875,7 +875,7 @@ function tagIdx(x, okT, badT){ if(x==null) return null; return x>=0.98?['ok',okT
 
 function resumenEjecutivo(D){
   const T=D.T, F=D.F; const p=[];
-  p.push('Al <b>'+fmtF(F.corte)+'</b> la obra <b>'+esc(F.obra)+'</b> registra un <b>avance físico de '+pct(T.av)+'</b>'+
+  p.push('Al <b>'+fmtF(F.corte)+'</b> '+(D.vistaCap?'el capítulo <b>'+esc(S.capSel)+'</b> de':'la obra')+' <b>'+esc(F.obra)+'</b> registra un <b>avance físico de '+pct(T.av)+'</b>'+
     (T.avProg!=null ? ' frente a un <b>'+pct(T.avProg)+' programado</b> ('+(T.spi>=0.98?'en plazo':(T.spi>=0.9?'levemente atrasada':'atrasada'))+', SPI '+idx(T.spi)+')' : '')+'.');
   p.push('Se ejecutaron <b>'+gsM(T.ev)+'</b> del presupuesto de costo ('+gsM(T.costo)+') con un costo real de <b>'+gsM(T.ac)+'</b>'+(T.acopio>0?' ('+gsM(T.acInc)+' incorporado a la obra)':'')+
     (T.cpi!=null ? ': por cada ₲ 1 gastado se ejecutaron ₲ '+idx(T.cpi)+' de obra (CPI '+(T.cpi>=0.98?'favorable':'desfavorable')+').' : '.'));
@@ -932,13 +932,52 @@ function kpi(l, v, d, cls, tag, ay){
 }
 function capsVisibles(D){ return S.capSel ? D.caps.filter(function(c){ return c.cap===S.capSel; }) : D.caps; }
 
+/* Vista filtrada por capítulo: los indicadores, el avance y la curva S se
+   recalculan solo con los rubros del capítulo. El costo real del capítulo es
+   el imputado a sus rubros (MO certificada + materiales vinculados); las OC
+   sin presupuesto y la caja chica no se pueden repartir por capítulo. */
+function vistaCap(D){
+  if(!S.capSel) return D;
+  const L=D.L.filter(function(o){ return o.cap===S.capSel; });
+  const caps=D.caps.filter(function(c){ return c.cap===S.capSel; });
+  const B=D.T, T={};
+  const sum=function(f){ return L.reduce(function(a,o){ return a+N(f(o)); },0); };
+  T.costo=sum(function(o){ return o.costo; }); T.costoMO=sum(function(o){ return o.costoMO; }); T.costoMat=sum(function(o){ return o.costoMat; });
+  T.venta=sum(function(o){ return o.venta; }); T.ev=sum(function(o){ return o.ev; }); T.evv=sum(function(o){ return o.evv; });
+  T.mo=sum(function(o){ return o.certPag; }); T.mat=sum(function(o){ return o.matComp; }); T.acopio=sum(function(o){ return o.acopio; });
+  T.acRub=T.mo+T.mat; T.ac=T.acRub; T.moTot=T.mo; T.ocEje=T.mat; T.caja=0; T.ocRes=0; T.noImput=0;
+  T.acInc=Math.max(0,T.ac-T.acopio); T.cpiBruto=T.ac>0?T.ev/T.ac:null; T.cpi=T.acInc>0?T.ev/T.acInc:null;
+  T.av=T.costo>0?T.ev/T.costo:0; T.avVenta=T.venta>0?T.evv/T.venta:null;
+  T.eac=(T.cpi&&T.cpi>0)?T.costo/T.cpi:null;
+  const ppV={}; (D.props||[]).forEach(function(p){ ppV[p.presupuesto]=1; });
+  T.costoConVenta=L.filter(function(o){ return ppV[o.pp]; }).reduce(function(a,o){ return a+o.costo; },0);
+  T.ventaParcial=B.ventaParcial; T.margenPrev=T.venta>0?T.venta-T.costoConVenta:null;
+  T.margenHoy=(T.venta>0&&!T.ventaParcial)?T.evv-T.acInc:null;
+  T.margenProy=(T.venta>0&&T.eac!=null&&!T.ventaParcial)?T.venta-T.eac:null;
+  T.avProg=B.avProg; T.pv=B.avProg!=null?B.avProg*T.costo:null; T.spi=(T.pv>0)?T.ev/T.pv:null;
+  T.capitulo=true;
+  // curva S del capítulo
+  const corteK=mesKey(D.F.corte), fr=B.costo>0?T.costo/B.costo:0;
+  let aEV=0,aEVV=0,aAC=0,aPV=0;
+  const serie=D.serie.map(function(s){
+    const k=s.k, real=k<=corteK;
+    const mEV=L.reduce(function(a,o){ return a+N(o.evM&&o.evM[k]); },0), mEVV=L.reduce(function(a,o){ return a+N(o.evvM&&o.evvM[k]); },0);
+    let mAC=L.reduce(function(a,o){ return a+(o.pagH||[]).filter(function(h){ return mesKey(h.f)===k; }).reduce(function(b,h){ return b+N(h.v); },0); },0);
+    const mMat=(k===corteK)?T.mat:0; mAC+=mMat;
+    const mPV=s.mPV!=null?s.mPV*fr:null; if(mPV!=null) aPV+=mPV;
+    if(real){ aEV+=mEV; aEVV+=mEVV; aAC+=mAC; }
+    return { k:k, pv:s.pv!=null?aPV:null, ev:real?aEV:null, evv:real?aEVV:null, ac:real?aAC:null, mEV:real?mEV:null, mEVV:real?mEVV:null, mPV:mPV, mAC:real?mAC:null, mo:real?mAC-mMat:0, oc:mMat, caja:0, cob:0 };
+  });
+  return Object.assign({}, D, { L:L, caps:caps, T:T, serie:serie, vistaCap:true });
+}
+
 function render(){
-  const D=S.D, T=D.T, F=D.F;
+  const D=vistaCap(S.D), T=D.T, F=D.F; S.DV=D;
   destruirCharts();
   const props = D.props.map(function(p){ return (p.codigo||p.presupuesto)+' v'+(p.version||1); }).join(', ');
   const chips = D.avisos.map(function(a){ return '<span class="chip '+(a.t||'')+'">'+esc(a.m)+'</span>'; }).join('');
   const html =
-  '<div class="rep-head"><div><h2>'+esc(F.obra)+'</h2><div class="meta">Corte al '+fmtF(F.corte)+' · '+F.pps.length+' presupuesto(s): '+esc(F.pps.join(', '))+
+  '<div class="rep-head"><div><h2>'+esc(F.obra)+(S.capSel?' <span style="font-size:.6em;color:#B08A1E">· '+esc(S.capSel)+'</span>':'')+'</h2><div class="meta">Corte al '+fmtF(F.corte)+' · '+F.pps.length+' presupuesto(s): '+esc(F.pps.join(', '))+
     (props?' · propuesta aceptada '+esc(props):'')+' · '+D.nCert+' certificado(s) aprobados · '+D.nOC+' OC</div></div><div class="chips">'+chips+'</div></div>'+
 
   '<div class="hero">'+
@@ -961,7 +1000,7 @@ function render(){
     '</div></div>'+
   '</div>'+
   '<div class="summary">'+resumenEjecutivo(D)+'</div>'+
-  (S.capSel?'<div class="filtro-nota">Filtro de capítulo <b>'+esc(S.capSel)+'</b>: se aplica a la tabla y a los gráficos por capítulo y por rubro. Los indicadores y la curva S son de toda la obra.</div>':'')+
+  (S.capSel?'<div class="filtro-nota">Mostrando solo el capítulo <b>'+esc(S.capSel)+'</b>: indicadores, avance y curva S calculados con sus '+D.L.length+' rubro(s). El costo real es el imputado a esos rubros (mano de obra certificada y materiales vinculados); las OC sin presupuesto y la caja chica no se reparten por capítulo.'+(D.T.avProg!=null?' El programado usa el mismo % del plan de obra.':'')+'</div>':'')+
 
   '<div class="grid2">'+
     '<div class="card"><div class="chart-h"><div><h3 class="h3i">Curva S · avance acumulado'+info(AY.curva)+'</h3><div class="sub">Programado vs ejecutado (a costo y a venta) vs costo real</div></div>'+
@@ -1039,7 +1078,7 @@ function tablaHTML(D){
 function enganchar(){
   const s=$('tSrch'); if(s) s.addEventListener('input', function(){ S.search=s.value; $('tWrap').innerHTML=tablaHTML(S.D); engancharTabla(); });
   const c=$('tComp'); if(c) c.addEventListener('change', function(){ S.showComp=c.checked; $('tWrap').innerHTML=tablaHTML(S.D); engancharTabla(); });
-  document.querySelectorAll('#segCurva button').forEach(function(b){ b.addEventListener('click', function(){ S.curvaModo=b.getAttribute('data-m'); document.querySelectorAll('#segCurva button').forEach(function(x){ x.classList.toggle('on', x===b); }); dibujarCurva(S.D); }); });
+  document.querySelectorAll('#segCurva button').forEach(function(b){ b.addEventListener('click', function(){ S.curvaModo=b.getAttribute('data-m'); document.querySelectorAll('#segCurva button').forEach(function(x){ x.classList.toggle('on', x===b); }); dibujarCurva(S.DV||S.D); }); });
   engancharTabla();
 }
 function engancharTabla(){
@@ -1174,7 +1213,7 @@ function pdfSafe(s){ return String(s==null?'':s).replace(/[≥]/g,'>=').replace(
 function gsP(n){ return 'Gs '+Math.round(N(n)).toLocaleString('es-PY'); }
 function gsPM(n){ return pdfSafe(gsM(n)); }
 function exportarPDF(){
-  const D=S.D; if(!D){ toast('Primero generá el informe','error'); return; }
+  const D=S.DV||S.D; if(!D){ toast('Primero generá el informe','error'); return; }
   const { jsPDF } = window.jspdf; const doc=new jsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
   const W=297, H=210, M=12, T=D.T, F=D.F;
   const NAVY=[31,56,100], GOLD=[200,160,40], INK=[27,36,51], MUT=[124,132,148];
@@ -1189,7 +1228,7 @@ function exportarPDF(){
     doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,20,W,1,'F');
   };
   // Página 1: resumen ejecutivo
-  head('Informe de avance de obra');
+  head('Informe de avance de obra'+(S.capSel?' · '+S.capSel:''));
   let y=28;
   const cards=[ ['AVANCE FISICO', pct(T.av), T.avProg!=null?('programado '+pct(T.avProg)):'sin plan de obra'],
     ['PRESUPUESTO A COSTO', gsPM(T.costo), 'MO '+gsPM(T.costoMO)+' / mat. '+gsPM(T.costoMat)],
