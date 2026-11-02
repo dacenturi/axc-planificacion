@@ -31,6 +31,7 @@
   --shadow:0 1px 2px rgba(0,0,0,.45),0 3px 12px rgba(0,0,0,.35);--shadow-lg:0 22px 60px rgba(0,0,0,.6);
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
 body.modal-open{overflow:hidden}
 h1,h2,h3,p{margin:0}
@@ -169,13 +170,13 @@ textarea.in{min-height:66px;resize:vertical}
       <h1>Modificaciones de presupuesto</h1>
       <p>Cada modificación cambia el saldo de un rubro sin tocar el presupuesto aprobado. La orden de compra trae la versión vigente: base más modificaciones aprobadas.</p>
     </div></div>
-    <div class="toolbar">
+    <div class="toolbar" id="toolbar">
       <div class="fld"><label class="lbl" for="selPP">Presupuesto</label><select id="selPP" class="in"></select></div>
       <button type="button" class="btn primary" id="btnNueva">＋ Nueva modificación</button>
     </div>
     <div id="avisos"></div>
     <div class="kpis" id="kpis"></div>
-    <div class="card">
+    <div class="card" id="cardLista">
       <div class="card-h"><div><h2>Modificaciones del presupuesto</h2><p id="listaSub"></p></div></div>
       <div id="lista"></div>
     </div>
@@ -268,12 +269,17 @@ async function cargarPerfil(){
 /* ── Datos ── */
 async function cargarPresupuestos(){
   var r = await sb.from('presupuesto_cab').select('*');
-  S.cabs = (r.data || []).slice().sort(function(a, b){
+  var todos = (r.data || []).slice().sort(function(a, b){
     var na = parseInt((/(\d+)/.exec(a.codigo) || [])[1] || '0', 10), nb = parseInt((/(\d+)/.exec(b.codigo) || [])[1] || '0', 10);
-    return (b.activo === true) - (a.activo === true) || nb - na;
+    return nb - na;
   });
+  // Las modificaciones se piden sobre presupuestos APROBADOS o PUBLICADOS. Un borrador se corrige
+  // directamente en Presupuestos: no se muestra acá para no generar confusión.
+  var pedido = todos.filter(function(c){ return c.codigo === S.pp; })[0];
+  S.borrador = (pedido && pedido.activo !== true) ? pedido.codigo : '';
+  S.cabs = todos.filter(function(c){ return c.activo === true; });
   var sel = $('#selPP');
-  sel.innerHTML = S.cabs.map(function(c){ return '<option value="' + esc(c.codigo) + '">' + esc(c.codigo) + (c.obra ? ' · ' + esc(c.obra) : '') + (c.activo === true ? '' : ' · sin aprobar') + '</option>'; }).join('');
+  sel.innerHTML = S.cabs.map(function(c){ return '<option value="' + esc(c.codigo) + '">' + esc(c.codigo) + (c.obra ? ' · ' + esc(c.obra) : '') + '</option>'; }).join('');
   if(!S.pp || !S.cabs.some(function(c){ return c.codigo === S.pp; })) S.pp = S.cabs.length ? S.cabs[0].codigo : '';
   sel.value = S.pp;
   sel.onchange = function(){ S.pp = sel.value; S.rubroIni = ''; cargarPresupuesto(); };
@@ -301,10 +307,12 @@ async function cargarPresupuesto(){
 
 /* ── Vista principal ── */
 function render(){
-  var av = '';
+  var av = '', sinElig = !S.cabs.length;
+  $('#toolbar').hidden = sinElig; $('#kpis').hidden = sinElig; $('#cardLista').hidden = sinElig;
+  if(sinElig) av += '<div class="note info"><b>Todavía no hay presupuestos aprobados o publicados.</b> Las modificaciones se piden sobre un presupuesto ya aprobado. Mientras está en borrador, se corrige directamente en Presupuestos.</div>';
+  else if(S.borrador) av += '<div class="note info"><b>' + esc(S.borrador) + ' está en borrador.</b> Un presupuesto en borrador se corrige directamente en Presupuestos; las modificaciones se piden cuando ya está aprobado o publicado. Se muestra ' + esc(S.pp) + '.</div>';
   if(!S.modsOk) av += '<div class="note err">Falta correr <b>axc_v83_modificaciones.sql</b> en la base: todavía no se pueden registrar modificaciones.</div>';
   else if(!S.conVista) av += '<div class="note warn">La vista de presupuesto vigente no está disponible: se muestra el presupuesto base.</div>';
-  if(S.cab && S.cab.activo !== true) av += '<div class="note info">Este presupuesto todavía no está aprobado: se corrige directamente en Presupuestos. Las modificaciones son para presupuestos aprobados.</div>';
   if(!S.puede) av += '<div class="note">Podés ver las modificaciones; para pedirlas hace falta perfil de residente o el permiso correspondiente.</div>';
   $('#avisos').innerHTML = av;
   $('#btnNueva').disabled = !(S.puede && S.modsOk && S.cab && S.cab.activo === true && S.rubros.length);
