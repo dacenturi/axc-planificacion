@@ -360,14 +360,15 @@ table.cob td.n{text-align:right}
 
 <script>
 /* ═══════════════════════════════════════════════════════════════════
-   AXC · AVANCE DE OBRA  (v1.0)
+   AXC · AVANCE DE OBRA  (v1.1)
    Reporte gerencial de avance físico y económico por obra.
 
    Fuentes (solo lectura, mismas tablas que el resto del sistema):
-   · presupuesto_cab / presupuesto_rubros / presupuesto_insumos → costo presupuestado (línea base)
+   · presupuesto_cab / presupuesto_rubros / v_presupuesto_insumos_vigente → costo presupuestado VIGENTE
+     (presupuesto aprobado + modificaciones aprobadas; presupuesto_insumos queda como base de comparación)
    · propuesta_cab / propuesta_items (aceptada)                  → valor comercial (venta, sin IVA)
    · certificados / certificado_items (Aprobado)                 → avance físico y mano de obra real
-   · vw_desvio_precios                                           → materiales comprados por rubro / insumo
+   · vw_compras_imputadas                                        → compras por rubro / insumo (cada línea de OC cuenta UNA vez)
    · ordenes_compra (Aprobado / Archivado)                       → costo real de materiales de la obra
    · caja_chica_movimientos (aprobado)                           → gastos menores de la obra
    · obra_plan_avance (opcional)                                 → curva programada (plan de obra)
@@ -492,9 +493,16 @@ async function cargar(){
     const R = {};
     const tareas = [
       todo(function(){ return sb.from('presupuesto_rubros').select('*').in('presupuesto', pps); }).then(function(d){ R.rubros=d; }),
-      todo(function(){ return sb.from('presupuesto_insumos').select('presupuesto,rubro_codigo,codigo_insumo,material,unidad,cantidad,precio_unitario').in('presupuesto', pps); }).then(function(d){ R.ins=d; }),
+      // v1.1 · Costo presupuestado VIGENTE (base + modificaciones aprobadas). Sin la vista (falta el SQL): el presupuesto base.
+      todo(function(){ return sb.from('v_presupuesto_insumos_vigente').select('presupuesto,rubro_codigo,codigo_insumo,material,unidad,cantidad,precio_unitario').in('presupuesto', pps); }).then(function(d){ R.ins=d; })
+        .catch(function(e){ console.warn('vista vigente', e); R.sinVista=true; return todo(function(){ return sb.from('presupuesto_insumos').select('presupuesto,rubro_codigo,codigo_insumo,material,unidad,cantidad,precio_unitario').in('presupuesto', pps); }).then(function(d){ R.ins=d; }); }),
+      todo(function(){ return sb.from('presupuesto_insumos').select('presupuesto,rubro_codigo,codigo_insumo,cantidad,precio_unitario').in('presupuesto', pps); }).then(function(d){ R.insBase=d; }).catch(function(){ R.insBase=[]; }),
+      todo(function(){ return sb.from('presupuesto_modificaciones').select('numero,presupuesto,rubro_codigo,impacto,aprobado_en').in('presupuesto', pps).eq('estado','aprobada'); }).then(function(d){ R.mods=d; }).catch(function(){ R.mods=[]; }),
       todo(function(){ return sb.from('rubros').select('codigo,capitulo'); }).then(function(d){ R.arbol=d; }).catch(function(){ R.arbol=[]; }),
-      todo(function(){ return sb.from('vw_desvio_precios').select('*').in('presupuesto', pps); }).then(function(d){ R.desv=d; }).catch(function(e){ console.warn('vw_desvio', e); R.desv=[]; R.sinDesv=true; }),
+      // v1.1 · Compras imputadas por línea de OC. Sin la vista (falta el SQL): el criterio anterior (por producto).
+      todo(function(){ return sb.from('vw_compras_imputadas').select('*').ilike('obra', obra); }).then(function(d){ R.comp=d; })
+        .catch(function(e){ console.warn('vw_compras_imputadas', e); R.comp=null; R.sinComp=true;
+          return todo(function(){ return sb.from('vw_desvio_precios').select('*').in('presupuesto', pps); }).then(function(d){ R.desv=d; }).catch(function(e2){ console.warn('vw_desvio', e2); R.desv=[]; R.sinDesv=true; }); }),
       sb.from('propuesta_cab').select('*').in('presupuesto', pps).eq('aceptada', true).then(function(r){ R.props=r.data||[]; }),
       todo(function(){ return sb.from('certificados').select('id,numero,fecha,estado,contratista,presupuesto,total').ilike('obra', obra).eq('estado','Aprobado'); }).then(function(d){ R.certs=d; }),
       todo(function(){ return sb.from('ordenes_compra').select('*').ilike('obra', obra); }).then(function(d){ R.ocs=d; }).catch(function(e){ console.warn('oc',e); R.ocs=[]; R.errOC=(e&&e.message)||'error'; }),
@@ -601,12 +609,25 @@ function calcular(R, F){
     if(!compIdx[ck]){ compIdx[ck]={ cod:m.codigo_insumo||'', mat:m.material||m.codigo_insumo||'', unidad:m.unidad||'', cant:0, pu:pu, costo:0, mo:mo, ejeCant:0, ejeMonto:0 }; o.comp.push(compIdx[ck]); }
     compIdx[ck].cant+=q; compIdx[ck].costo+=c;
   });
+  // v1.1 · Costo BASE (presupuesto aprobado sin modificaciones): sirve para mostrar cuánto cambió el costo vigente
+  (R.insBase||[]).forEach(function(m){
+    if(!m.rubro_codigo) return;
+    const o=RB[m.presupuesto+'|'+m.rubro_codigo]; if(!o) return;
+    const mo=esMO(m.codigo_insumo); let pu=N(m.precio_unitario); if(!mo && !(pu>0)) pu=N(R.precioCat[m.codigo_insumo]);
+    o.costoBaseIns=(o.costoBaseIns||0)+N(m.cantidad)*pu; o.hayBase=true;
+  });
   // Rubros sin composición: el costo es su precio total; la mano de obra sale
   // del campo mano_obra_total del rubro (el resto es material).
   Object.keys(RB).forEach(function(k){ const o=RB[k];
     if(o.receta){ o.costo=o.costoMat+o.costoMO; }
     else { o.costo=o.precioTotal; o.costoMO = (o.moNR>0 && o.moNR<=o.precioTotal) ? o.moNR : o.precioTotal; o.costoMat=Math.max(0, o.costo-o.costoMO); }
   });
+
+  Object.keys(RB).forEach(function(k){ const o=RB[k];
+    o.costoBase = (o.receta && o.hayBase && !R.sinVista) ? o.costoBaseIns : o.costo;
+    if(Math.abs(o.costo-o.costoBase)<1) o.costoBase=o.costo;
+  });
+  (R.mods||[]).forEach(function(m){ const o=RB[m.presupuesto+'|'+m.rubro_codigo]; if(o) (o.mods=o.mods||[]).push(m.numero); });
 
   // 3) Venta: propuesta aceptada (sin IVA, sin opcionales)
   const ventaPP={}; const propPorId={}; (R.propSel||[]).forEach(function(p){ propPorId[p.id]=p; ventaPP[p.presupuesto]=0; });
@@ -639,15 +660,42 @@ function calcular(R, F){
     if(x.codigo_insumo && compIdx[ck]){ compIdx[ck].ejeCant+=N(x.cantidad); compIdx[ck].ejeMonto+=pag; }
   });
 
-  // 5) Materiales comprados por rubro e insumo
-  (R.desv||[]).forEach(function(r){
-    if(r.obra && norm(r.obra)!==norm(F.obra)) return;      // el mismo código de presupuesto puede existir en otra obra
-    const o=RB[r.presupuesto+'|'+r.rubro_codigo]; if(!o) return;
-    const mc=N(r.monto_comprado!=null?r.monto_comprado:r.monto_comp), qc=N(r.cant_comprada!=null?r.cant_comprada:r.cant_comp);
-    o.matComp+=mc;
-    const ck=o.k+'|'+(r.codigo_insumo||'');
-    if(compIdx[ck]){ compIdx[ck].ejeCant+=qc; compIdx[ck].ejeMonto+=mc; }
-  });
+  // 5) Compras por rubro e insumo (v1.1 · cada línea de OC cuenta UNA vez, en el rubro y material que guardó)
+  const CX = { np:0, ta:0, sinPP:0, sinRubro:0, gg:0 };
+  if(R.comp){
+    R.comp.forEach(function(r){
+      if(r.obra && norm(r.obra)!==norm(F.obra)) return;      // el mismo código de presupuesto puede existir en otra obra
+      const est=String(r.estado_oc||'');
+      if(/^(rechazad|anulad)/i.test(est)) return;
+      if(S.ocModo==='aprobadas' && !/^(aprobado|archivado)$/i.test(est)) return;
+      if(String(r.fecha||'').slice(0,10)>F.corte) return;
+      if(r.presupuesto ? F.pps.indexOf(r.presupuesto)<0 : !!F.ppSel) return;
+      const tl=r.tipo_linea, mc=N(r.monto), qc=N(r.cantidad_pres!=null?r.cantidad_pres:r.cantidad);
+      if(tl==='mano_obra') return;
+      if(tl==='trabajo_admin'){ CX.ta+=mc; return; }
+      if(tl==='sin_presupuesto'){ CX.sinPP+=mc; return; }
+      if(tl==='no_presupuestado'){
+        if(!r.rubro_codigo || r.rubro_codigo==='GG'){ CX.gg+=mc; return; }
+        const on=RB[r.presupuesto+'|'+r.rubro_codigo];
+        if(!on){ CX.sinRubro+=mc; return; }
+        on.npMonto=(on.npMonto||0)+mc; CX.np+=mc; return;
+      }
+      const o=RB[r.presupuesto+'|'+r.rubro_codigo];
+      if(!o){ CX.sinRubro+=mc; return; }
+      o.matComp+=mc;
+      const ck=o.k+'|'+(r.codigo_insumo||'');
+      if(compIdx[ck]){ compIdx[ck].ejeCant+=qc; compIdx[ck].ejeMonto+=mc; }
+    });
+  } else {
+    (R.desv||[]).forEach(function(r){
+      if(r.obra && norm(r.obra)!==norm(F.obra)) return;
+      const o=RB[r.presupuesto+'|'+r.rubro_codigo]; if(!o) return;
+      const mc=N(r.monto_comprado!=null?r.monto_comprado:r.monto_comp), qc=N(r.cant_comprada!=null?r.cant_comprada:r.cant_comp);
+      o.matComp+=mc;
+      const ck=o.k+'|'+(r.codigo_insumo||'');
+      if(compIdx[ck]){ compIdx[ck].ejeCant+=qc; compIdx[ck].ejeMonto+=mc; }
+    });
+  }
 
   // 6) Avance por rubro
   const L = orden.map(function(k){ return RB[k]; });
@@ -656,7 +704,7 @@ function calcular(R, F){
     else if(o.costoMat>0 && o.matComp>0){ o.av=Math.min(1, o.matComp/o.costoMat); o.metodo='compras'; }
     else { o.av=0; o.metodo='na'; }
     o.ev=o.av*o.costo; o.evv=o.av*o.venta;
-    o.ac=o.certPag+o.matComp;
+    o.ac=o.certPag+o.matComp+N(o.npMonto);   // v1.1 · lo no presupuestado también es costo real del rubro
     // Materiales comprados que todavía no se incorporaron a la obra (acopio)
     o.acopio = (o.metodo==='mo') ? Math.max(0, o.matComp - o.av*o.costoMat) : 0;
     o.desv = o.ev-(o.ac-o.acopio);
@@ -665,10 +713,12 @@ function calcular(R, F){
   });
 
   // 7) Totales
-  const T={ costo:0, venta:0, ev:0, evv:0, acRub:0, mo:0, mat:0, costoMO:0, costoMat:0 };
+  const T={ costo:0, venta:0, ev:0, evv:0, acRub:0, mo:0, mat:0, costoMO:0, costoMat:0, costoBase:0, npRub:0 };
   T.acopio=0; L.forEach(function(o){ T.acopio+=o.acopio; });
-  L.forEach(function(o){ T.costo+=o.costo; T.venta+=o.venta; T.ev+=o.ev; T.evv+=o.evv; T.acRub+=o.ac; T.mo+=o.certPag; T.mat+=o.matComp; T.costoMO+=o.costoMO; T.costoMat+=o.costoMat; });
+  L.forEach(function(o){ T.costo+=o.costo; T.venta+=o.venta; T.ev+=o.ev; T.evv+=o.evv; T.acRub+=o.ac; T.mo+=o.certPag; T.mat+=o.matComp; T.costoMO+=o.costoMO; T.costoMat+=o.costoMat; T.costoBase+=(o.costoBase!=null?o.costoBase:o.costo); T.npRub+=N(o.npMonto); });
   T.venta += ventaSinRubro;
+  T.modImp = T.costo - T.costoBase; T.nMods = (R.mods||[]).length;   // v1.1 · cambio del costo por modificaciones aprobadas
+  T.npGG = CX.gg; T.taMonto = CX.ta; T.sinPPMonto = CX.sinPP; T.sinRubroMonto = CX.sinRubro;
   T.av = T.costo>0 ? T.ev/T.costo : 0;
   T.avVenta = T.venta>0 ? T.evv/T.venta : null;
 
@@ -705,7 +755,7 @@ function calcular(R, F){
   T.margenHoy = (T.venta>0 && !T.ventaParcial) ? T.evv-T.acInc : null;
   T.margenProy = (T.venta>0 && T.eac!=null && !T.ventaParcial) ? T.venta-T.eac : null;
   T.noImput = Math.max(0, T.ac - T.acRub);
-  T.ocNoImp = Math.max(0, T.ocEje - T.mat);
+  T.ocNoImp = Math.max(0, T.ocEje - T.mat - T.npRub);
 
   // 8) Línea de tiempo mensual (curva S)
   const fechas=[];
@@ -779,9 +829,19 @@ function calcular(R, F){
   if(R.sinTablaCob) avisos.push({ t:'', m:'Falta la tabla obra_cobros: la vista gerencial sale sin cobros' });
   if(!hayPlan) avisos.push({ t:'warn', m:'Sin plan de obra: no se calcula el avance programado ni el SPI' });
   if(moSinRubro>0) avisos.push({ t:'warn', m:'Mano de obra certificada sin rubro del presupuesto: '+gsM(moSinRubro) });
-  if(R.sinDesv) avisos.push({ t:'bad', m:'No se pudo leer vw_desvio_precios: los materiales por rubro salen en 0' });
+  // v1.1 · Mensajes sobre modificaciones y compras fuera de presupuesto
+  if(R.sinVista) avisos.push({ t:'warn', m:'Falta correr axc_v83_modificaciones.sql: el informe usa el presupuesto base y no incluye las modificaciones aprobadas' });
+  else if(T.nMods>0) avisos.push({ t:'', m:'Costo presupuestado vigente: base '+gsM(T.costoBase)+(T.modImp>=0?' + ':' − ')+gsM(Math.abs(T.modImp))+' por '+T.nMods+' modificación(es) aprobada(s). El precio de venta no cambia.' });
+  const _modTarde=(R.mods||[]).filter(function(m){ return String(m.aprobado_en||'').slice(0,10)>F.corte; }).length;
+  if(_modTarde) avisos.push({ t:'warn', m:_modTarde+' modificación(es) se aprobaron después de la fecha de corte: el costo presupuestado es el vigente de hoy' });
+  if(R.sinComp) avisos.push({ t:'warn', m:'Falta correr axc_v83_reportes.sql: las compras por rubro usan el criterio anterior (por producto) y pueden repetirse en varios rubros' });
+  if(R.sinDesv) avisos.push({ t:'bad', m:'No se pudieron leer las compras por rubro: los materiales por rubro salen en 0' });
+  if(CX.np>0) avisos.push({ t:'warn', m:gsM(CX.np)+' de compras no presupuestadas se suman al costo real de sus rubros. Regularizalas en Presupuestos › Obra no presupuestada' });
+  if(CX.gg>0) avisos.push({ t:'', m:gsM(CX.gg)+' en gastos generales de obra (herramientas, EPP, consumibles): no cargan costo a ningún rubro' });
+  if(CX.ta>0) avisos.push({ t:'warn', m:gsM(CX.ta)+' en compras por administración (se cobran al cliente): están en el costo real pero no en el presupuesto' });
+  if(CX.sinRubro>0) avisos.push({ t:'warn', m:gsM(CX.sinRubro)+' en compras con presupuesto que no tienen rubro asignado o cuyo rubro ya no está: no se cuentan en ningún rubro' });
   const rubSinMed = L.filter(function(o){ return o.metodo==='compras' && o.costo>0; }).length;
-  if(F.corte < hoyISO()) avisos.push({ t:'', m:'Materiales por rubro: se toman todas las OC vinculadas (la vista no filtra por fecha)' });
+  if(R.sinComp && F.corte < hoyISO()) avisos.push({ t:'', m:'Materiales por rubro: se toman todas las OC vinculadas (la vista anterior no filtra por fecha)' });
   if(rubSinMed) avisos.push({ t:'', m:rubSinMed+' rubro(s) sin mano de obra: avance estimado por compras' });
 
   return { F:F, L:L, caps:capL, T:T, serie:serie, hayPlan:hayPlan, avisos:avisos, ventaPP:ventaPP, props:R.propSel||[],
@@ -887,13 +947,15 @@ function resumenEjecutivo(D){
   if(peores.length) p.push('Rubros con mayor sobrecosto: '+peores.map(function(o){ return '<b>'+esc(o.rk||'')+'</b> '+esc(o.desc.slice(0,40))+' ('+gsM(-o.desv)+')'; }).join('; ')+'.');
   if(T.acopio>0) p.push('Hay <b>'+gsM(T.acopio)+'</b> en materiales comprados que todavía no se incorporaron a la obra (acopio): no se cuentan como costo de lo ejecutado en el CPI.');
   if(T.noImput>0) p.push('Hay <b>'+gsM(T.noImput)+'</b> de costo real sin imputar a rubros (compras sin presupuesto, caja chica u otros): se cuentan en el CPI de la obra.');
+  if(T.nMods>0 && Math.abs(T.modImp)>=1 && !D.vistaCap) p.push('El presupuesto de costo es el <b>vigente</b>: base '+gsM(T.costoBase)+(T.modImp>=0?' más ':' menos ')+'<b>'+gsM(Math.abs(T.modImp))+'</b> por '+T.nMods+' modificación(es) aprobada(s); el precio de venta no cambia.');
+  if(T.npRub>0) p.push('Se compraron <b>'+gsM(T.npRub)+'</b> de materiales no presupuestados: figuran como costo real de sus rubros y están pendientes de regularizar en Presupuestos.');
   return p.join(' ');
 }
 
 /* ── ayudas (ⓘ): cómo se construye cada número ───────────────────── */
 function info(t){ return '<span class="info" tabindex="0" data-tip="'+esc(t)+'">i</span>'; }
 const AY = {
-  bac:'<b>Presupuesto a costo (BAC)</b>\nSuma del costo de todos los rubros del presupuesto: cantidad de cada insumo × su precio congelado (mano de obra y materiales). Los rubros sin composición toman su precio total. Sin IVA.',
+  bac:'<b>Presupuesto a costo (BAC)</b>\nSuma del costo de todos los rubros del presupuesto: cantidad de cada insumo × su precio congelado (mano de obra y materiales). Los rubros sin composición toman su precio total. Sin IVA.\\nEs el costo VIGENTE: el presupuesto aprobado más las modificaciones aprobadas (cambios de materiales). El precio de venta no cambia por ellas.',
   venta:'<b>Valor comercial</b>\nSuma de la propuesta aceptada por el cliente (Presupuestos → Propuestas), sin IVA y sin los ítems opcionales.\nMargen previsto = valor comercial − presupuesto a costo.',
   ev:'<b>Valor ganado (EV)</b>\nPara cada rubro: avance físico × su costo presupuestado. Se suma todo.\nEs «cuánto presupuesto ya se convirtió en obra».',
   evv:'<b>Ejecutado a precio de venta</b>\nPara cada rubro: avance físico × su precio en la propuesta aceptada.\nEs lo que, en teoría, ya se le puede certificar al cliente.',
@@ -945,7 +1007,8 @@ function vistaCap(D){
   T.costo=sum(function(o){ return o.costo; }); T.costoMO=sum(function(o){ return o.costoMO; }); T.costoMat=sum(function(o){ return o.costoMat; });
   T.venta=sum(function(o){ return o.venta; }); T.ev=sum(function(o){ return o.ev; }); T.evv=sum(function(o){ return o.evv; });
   T.mo=sum(function(o){ return o.certPag; }); T.mat=sum(function(o){ return o.matComp; }); T.acopio=sum(function(o){ return o.acopio; });
-  T.acRub=T.mo+T.mat; T.ac=T.acRub; T.moTot=T.mo; T.ocEje=T.mat; T.caja=0; T.ocRes=0; T.noImput=0;
+  T.costoBase=sum(function(o){ return o.costoBase!=null?o.costoBase:o.costo; }); T.modImp=T.costo-T.costoBase; T.nMods=B.nMods; T.npRub=sum(function(o){ return o.npMonto; });
+  T.acRub=T.mo+T.mat+T.npRub; T.ac=T.acRub; T.moTot=T.mo; T.ocEje=T.mat+T.npRub; T.caja=0; T.ocRes=0; T.noImput=0;
   T.acInc=Math.max(0,T.ac-T.acopio); T.cpiBruto=T.ac>0?T.ev/T.ac:null; T.cpi=T.acInc>0?T.ev/T.acInc:null;
   T.av=T.costo>0?T.ev/T.costo:0; T.avVenta=T.venta>0?T.evv/T.venta:null;
   T.eac=(T.cpi&&T.cpi>0)?T.costo/T.cpi:null;
@@ -985,7 +1048,7 @@ function render(){
       '<div class="ring"><canvas id="cGauge" width="210" height="210"></canvas><div class="big"><b>'+pct(T.av,1).replace(' %','%')+'</b><span>Avance físico</span></div></div>'+
       '<div class="vs"><div><b style="color:#B08A1E">'+(T.avProg!=null?pct(T.avProg):'—')+'</b>programado</div><div><b>'+(T.avVenta!=null?pct(T.avVenta):'—')+'</b>a precio de venta</div></div></div>'+
     '<div class="card"><h3>Indicadores de gestión</h3><div class="sub">Gestión del valor ganado (EVM) · montos sin IVA · pasá el mouse por la <i>i</i> para ver cómo se calcula cada uno</div><div class="kpis">'+
-      kpi('Presupuesto a costo', gsM(T.costo), 'MO '+gsM(T.costoMO)+' · materiales '+gsM(T.costoMat), '', null, AY.bac)+
+      kpi('Presupuesto a costo', gsM(T.costo), (T.nMods>0 && Math.abs(T.modImp)>=1) ? ('base '+gsM(T.costoBase)+' · modificaciones '+(T.modImp>=0?'+ ':'− ')+gsM(Math.abs(T.modImp))) : ('MO '+gsM(T.costoMO)+' · materiales '+gsM(T.costoMat)), '', null, AY.bac)+
       kpi('Valor comercial', T.venta>0?gsM(T.venta):'—', T.venta>0?((T.ventaParcial?'solo '+D.props.map(function(p){ return p.presupuesto; }).join(', ')+' · ':'')+'margen previsto '+pct(T.margenPrev/T.venta)):'sin propuesta aceptada', T.ventaParcial?'warn':'', null, AY.venta)+
       kpi('Valor ganado (EV)', gsM(T.ev), 'obra ejecutada, a costo presupuestado', '', null, AY.ev)+
       kpi('Ejecutado a venta', T.venta>0?gsM(T.evv):'—', 'lo certificable al cliente', '', null, AY.evv)+
@@ -1030,7 +1093,10 @@ function render(){
     '<li><b>Valor comercial:</b> propuesta aceptada del cliente, sin IVA y sin ítems opcionales. «Ejecutado a venta» = avance de cada rubro × su precio de venta.</li>'+
     '<li><b>Materiales en acopio:</b> comprados para rubros con avance medido por mano de obra, que superan lo que ese avance ya consumió. Se descuentan del costo real al calcular el CPI y el margen a la fecha.</li>'+
     '<li><b>CPI</b> mayor a 1: la obra cuesta menos de lo presupuestado para lo ejecutado. <b>SPI</b> mayor a 1: va adelantada respecto del plan.</li>'+
-    '<li>Los materiales por rubro salen de las OC vinculadas al presupuesto; las OC sin presupuesto y la caja chica cuentan en el costo real de la obra, no en los rubros.</li>'+
+    '<li>Los materiales por rubro salen de las líneas de OC imputadas al presupuesto: cada línea cuenta una sola vez, en el rubro y el material que la residente eligió al cargarla. Las OC sin presupuesto y la caja chica cuentan en el costo real de la obra, no en los rubros.</li>'+
+    '<li><b>Costo presupuestado vigente:</b> el presupuesto aprobado más las modificaciones aprobadas (cambios de materiales de una parte de la obra). La base queda como referencia y el precio de venta no cambia: una modificación baja o sube la utilidad, no el precio al cliente.</li>'+
+    '<li><b>Compras no presupuestadas:</b> se suman al costo real del rubro donde se aplican y figuran como desvío hasta que se regularicen en Presupuestos › Obra no presupuestada. Las de gastos generales (herramientas, EPP, consumibles) no cargan costo a ningún rubro.</li>'+
+    '<li><b>Compras por administración:</b> se cobran al cliente. Están en el costo real de la obra porque se pagaron, pero no cuentan contra el presupuesto.</li>'+
   '</ul></div>';
   $('out').innerHTML=html;
   enganchar();
@@ -1056,9 +1122,10 @@ function tablaHTML(D){
       h+='<tr class="rub"><td class="l desc"><span class="sem '+o.sem+'"></span><span class="cod">'+esc(o.rk||'—')+'</span> '+esc(o.desc)+
         (o.metodo==='compras'?'<span class="metodo c" title="Sin mano de obra presupuestada: avance estimado por materiales comprados">compras</span>':'')+
         (o.extra?'<span class="metodo c">fuera de presupuesto</span>':'')+
+        ((o.mods&&o.mods.length)?'<span class="metodo c" title="Modificaciones aprobadas de este rubro">✎ '+esc(o.mods.join(', '))+'</span>':'')+
         '<span class="mini">'+esc(o.pp)+(secs.length?' · '+esc(secs.slice(0,3).join(', '))+(secs.length>3?' +'+(secs.length-3):''):'')+'</span></td>'+
-        '<td>'+esc(o.unidad)+'</td><td>'+num(o.cant)+'</td><td>'+gs(o.costo)+'</td><td>'+(o.venta?gs(o.venta):'—')+'</td><td>'+barP(o.av)+'</td>'+
-        '<td>'+gs(o.ev)+'</td><td>'+(o.venta?gs(o.evv):'—')+'</td><td>'+gs(o.certPag)+'</td><td>'+gs(o.matComp)+'</td><td>'+(o.acopio?gs(o.acopio):'—')+'</td><td>'+gs(o.ac)+'</td>'+
+        '<td>'+esc(o.unidad)+'</td><td>'+num(o.cant)+'</td><td>'+gs(o.costo)+(Math.abs(o.costo-(o.costoBase!=null?o.costoBase:o.costo))>=1?'<span class="mini" style="display:block" title="Costo del presupuesto aprobado, sin modificaciones">base '+gs(o.costoBase)+'</span>':'')+'</td><td>'+(o.venta?gs(o.venta):'—')+'</td><td>'+barP(o.av)+'</td>'+
+        '<td>'+gs(o.ev)+'</td><td>'+(o.venta?gs(o.evv):'—')+'</td><td>'+gs(o.certPag)+'</td><td>'+gs(o.matComp)+(o.npMonto?'<span class="mini" style="display:block" title="Compras no presupuestadas aplicadas a este rubro">+ '+gs(o.npMonto)+' no presup.</span>':'')+'</td><td>'+(o.acopio?gs(o.acopio):'—')+'</td><td>'+gs(o.ac)+'</td>'+
         '<td class="'+(o.desv<0?'neg':(o.desv>0?'pos':''))+'">'+gs(o.desv)+'</td><td>'+(o.cpi!=null?idx(o.cpi):'—')+'</td></tr>';
       if(S.showComp && o.comp.length){
         h+='<tr class="comp-h"><td class="l" style="padding-left:34px">Composición · insumo</td><td>Unid.</td><td>Cant. presup.</td><td>Costo presup.</td><td>P. unit.</td><td>Ejecutado / comprado</td><td>Cant. ejecutada</td><td>Monto real</td><td colspan="6"></td></tr>';
@@ -1184,12 +1251,16 @@ function exportarExcel(){
   if(typeof XLSX==='undefined'){ toast('No se cargó la librería de Excel','error'); return; }
   const T=D.T, F=D.F;
   const res=[['AXC CONSTRUCTORA · INFORME DE AVANCE DE OBRA'],['Obra',F.obra],['Fecha de corte',fmtF(F.corte)],['Presupuestos',F.pps.join(', ')],[],
-    ['Indicador','Valor'],['Avance físico',T.av],['Avance programado',T.avProg],['Presupuesto a costo (BAC)',Math.round(T.costo)],['Valor comercial (sin IVA)',Math.round(T.venta)],
+    ['Indicador','Valor'],['Avance físico',T.av],['Avance programado',T.avProg],['Presupuesto a costo vigente (BAC)',Math.round(T.costo)],['  Presupuesto base',Math.round(T.costoBase)],['  Modificaciones aprobadas',Math.round(T.modImp)],['Compras no presupuestadas (en rubros)',Math.round(T.npRub)],['Valor comercial (sin IVA)',Math.round(T.venta)],
     ['Valor ganado (EV)',Math.round(T.ev)],['Ejecutado a precio de venta',Math.round(T.evv)],['Costo real (AC)',Math.round(T.ac)],['  Mano de obra certificada',Math.round(T.moTot)],
     ['  OC aprobadas',Math.round(T.ocEje)],['  Caja chica',Math.round(T.caja)],['Materiales en acopio',Math.round(T.acopio)],['CPI (sobre costo incorporado)',T.cpi],['CPI sin descontar acopio',T.cpiBruto],['SPI',T.spi],['EAC',T.eac!=null?Math.round(T.eac):null],
     ['Margen previsto',T.margenPrev!=null?Math.round(T.margenPrev):null],['Margen a la fecha',T.margenHoy!=null?Math.round(T.margenHoy):null],['Margen proyectado',T.margenProy!=null?Math.round(T.margenProy):null]];
   const rub=[['Capítulo','Presupuesto','Código','Rubro','Unidad','Cantidad','Costo presupuestado','Venta','Avance físico','Método','Ejecutado a costo','Ejecutado a venta','MO certificada','Materiales comprados','En acopio','Costo real','Desvío (sin acopio)','CPI']];
   D.caps.forEach(function(c){ c.rubs.forEach(function(o){ rub.push([c.cap,o.pp,o.rk,o.desc,o.unidad,o.cant,Math.round(o.costo),Math.round(o.venta),o.av,o.metodo==='mo'?'MO certificada':(o.metodo==='compras'?'Compras':'—'),Math.round(o.ev),Math.round(o.evv),Math.round(o.certPag),Math.round(o.matComp),Math.round(o.acopio),Math.round(o.ac),Math.round(o.desv),o.cpi]); }); });
+  // v1.1 · Costo base, modificaciones y compras no presupuestadas por rubro (mismo orden que las filas)
+  rub[0].push('Costo base','Modificaciones','Compras no presupuestadas');
+  const _ord=[]; D.caps.forEach(function(c){ c.rubs.forEach(function(o){ _ord.push(o); }); });
+  _ord.forEach(function(o,i){ const b=(o.costoBase!=null?o.costoBase:o.costo); rub[i+1].push(Math.round(b), Math.round(o.costo-b), Math.round(N(o.npMonto))); });
   const comp=[['Presupuesto','Rubro','Tipo','Código','Insumo','Unidad','Cantidad presup.','Precio unit.','Costo presup.','Cantidad ejecutada','Monto real','% ejecutado']];
   D.L.forEach(function(o){ o.comp.forEach(function(m){ comp.push([o.pp,o.rk,m.mo?'Mano de obra':'Material',m.cod,m.mat,m.unidad,m.cant,Math.round(m.pu),Math.round(m.costo),m.ejeCant,Math.round(m.ejeMonto),m.cant>0?m.ejeCant/m.cant:null]); }); });
   const cur=[['Mes','Programado acumulado','Ejecutado acumulado (EV)','Ejecutado a venta acumulado','Costo real acumulado','MO del mes','OC del mes','Caja chica del mes']];
@@ -1231,7 +1302,7 @@ function exportarPDF(){
   head('Informe de avance de obra'+(S.capSel?' · '+S.capSel:''));
   let y=28;
   const cards=[ ['AVANCE FISICO', pct(T.av), T.avProg!=null?('programado '+pct(T.avProg)):'sin plan de obra'],
-    ['PRESUPUESTO A COSTO', gsPM(T.costo), 'MO '+gsPM(T.costoMO)+' / mat. '+gsPM(T.costoMat)],
+    ['PRESUPUESTO A COSTO', gsPM(T.costo), (T.nMods>0 && Math.abs(T.modImp)>=1) ? ('base '+gsPM(T.costoBase)+' '+(T.modImp>=0?'+':'-')+' modif. '+gsPM(Math.abs(T.modImp))) : ('MO '+gsPM(T.costoMO)+' / mat. '+gsPM(T.costoMat))],
     ['VALOR COMERCIAL', T.venta>0?gsPM(T.venta):'-', T.venta>0?('margen previsto '+pct(T.margenPrev/T.venta)):'sin propuesta aceptada'],
     ['VALOR GANADO (EV)', gsPM(T.ev), 'ejecutado a costo'],
     ['EJECUTADO A VENTA', T.venta>0?gsPM(T.evv):'-', 'certificable al cliente'],
