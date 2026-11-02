@@ -4414,7 +4414,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.2.9 · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.3.0 · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -7476,6 +7476,7 @@ function fpRender(){
       return '<div class="fp-mrow'+(exceso?' exceso':'')+'">'+
         '<div class="fp-mcel"><div class="fp-mnom"><b>'+escapeHtml(x.m.material)+
           (esMO ? '<span class="fp-tag">logística · no es material</span>' : '')+
+          (x.m.mods ? '<span class="fp-tag" title="Cambiado por pedido de modificación del presupuesto">✎ '+escapeHtml(x.m.mods)+'</span>' : '')+
           ((calc!=='' && FP.mat[key]==null) ? '<span class="fp-calc">calculado</span>' : '')+
           (ov ? '<span class="fp-tag ok">→ '+escapeHtml(ov.nombre)+'</span>' : '')+'</b>'+
           (function(){
@@ -9646,7 +9647,7 @@ function _epAgg(m, rk){
 function _epOCs(codigoInsumo, rk){
   const out = [];
   (cartBudget.ocItems||[]).forEach(function(x){
-    if(_cbResolveIns(x.producto_id) !== codigoInsumo) return;
+    if((x.codigo_insumo || _cbResolveIns(x.producto_id)) !== codigoInsumo) return;   // v8.3 · manda la imputación de la línea
     if((x.rubro_codigo||'') !== (rk||'')) return;
     out.push(x);
   });
@@ -10469,8 +10470,10 @@ async function cartBudgetLoad(pp){
   await loadProductoMap();
   try{
     try{ const cab = await sb.from('presupuesto_cab').select('nombre,obra,sector').eq('codigo', pp).maybeSingle(); cartBudget.nombre = (cab.data && cab.data.nombre) ? cab.data.nombre : ''; cartBudget.obra = (cab.data && cab.data.obra) ? cab.data.obra : ''; cartBudget.sectorCab = (cab.data && cab.data.sector) ? cab.data.sector : ''; }catch(_){ cartBudget.nombre=''; }
-    const bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id,coef1,coef2,merma_pct').eq('presupuesto', pp).order('material');
-    const mats = (bm.data||[]).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:(Number(m.cantidad)||0), cant_exacta:(Number(m.cantidad)||0), rubro_codigo:m.rubro_codigo||'', precio_cong:(m.precio_unitario!=null?Number(m.precio_unitario):null), prod_cong:(m.producto_id!=null?String(m.producto_id):''), coef1:(Number(m.coef1)||0), coef2:(Number(m.coef2)||0), merma:(Number(m.merma_pct)||0) }; });
+    // v8.3 · Versión vigente del presupuesto (base + modificaciones aprobadas); sin la vista, la base
+    let bm = await sb.from('v_presupuesto_insumos_vigente').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id,coef1,coef2,merma_pct,mods').eq('presupuesto', pp).order('material');
+    if(bm.error) bm = await sb.from('presupuesto_insumos').select('codigo_insumo,material,unidad,cantidad,rubro_codigo,precio_unitario,producto_id,coef1,coef2,merma_pct').eq('presupuesto', pp).order('material');
+    const mats = (bm.data||[]).filter(function(m){ return !(m.mods && !(Number(m.cantidad) > 0)); }).map(function(m){ return { codigo_insumo:m.codigo_insumo, material:m.material, unidad:m.unidad, limite:(Number(m.cantidad)||0), cant_exacta:(Number(m.cantidad)||0), rubro_codigo:m.rubro_codigo||'', precio_cong:(m.precio_unitario!=null?Number(m.precio_unitario):null), prod_cong:(m.producto_id!=null?String(m.producto_id):''), coef1:(Number(m.coef1)||0), coef2:(Number(m.coef2)||0), merma:(Number(m.merma_pct)||0), mods:(m.mods||'') }; });
     // Rubros de servicio (control por dinero): precio_total>0 y sin receta. Agrupados por clave de rubro.
     const rb = await sb.from('presupuesto_rubros').select('*').eq('presupuesto', pp).order('orden');
     const ragg = {}; const rorder = [];
@@ -10513,14 +10516,15 @@ async function cartBudgetLoad(pp){
     let ocItems = [];
     if(ids.length){
       // v2 · Los ítems imputados a un trabajo por administración o marcados sin presupuesto no consumen saldo
-      let it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').in('oc_id', ids);
+      let it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto,codigo_insumo').in('oc_id', ids);   // v8.3
+      if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').in('oc_id', ids);
       if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin').in('oc_id', ids);
       if(it.error) it = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo').in('oc_id', ids);
       // v2.9 · un material imputado a OTRO presupuesto de la obra no consume saldo de este
       ocItems = (it.data||[]).filter(function(x){ return !x.trabajo_admin && !x.sin_presupuesto && (!x.presupuesto || x.presupuesto === pp); }).map(function(x){
         const c=Number(x.cantidad)||0, p=Number(x.precio_unit)||0;
         const o = ocById[x.oc_id] || {};
-        return { producto_id:x.producto_id, producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p,
+        return { producto_id:x.producto_id, codigo_insumo:x.codigo_insumo||'', producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p,
                  estado: estadoById[x.oc_id]||'', rubro_codigo:x.rubro_codigo||'',
                  oc_id:x.oc_id, numero_oc:o.numero_oc||'', fecha:o.fecha||'', proveedor:o.proveedor||'',
                  estado_txt:o.estado||'' };
@@ -10528,7 +10532,8 @@ async function cartBudgetLoad(pp){
     }
     // v2.9 · materiales imputados a este presupuesto desde órdenes de OTRO presupuesto principal
     try{
-      const ex = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').eq('presupuesto', pp);
+      let ex = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto,codigo_insumo').eq('presupuesto', pp);   // v8.3
+      if(ex.error) ex = await sb.from('ordenes_compra_items').select('producto_id,producto_nombre,cantidad,precio_unit,oc_id,rubro_codigo,sin_presupuesto,trabajo_admin,presupuesto').eq('presupuesto', pp);
       const otros = (ex.data||[]).filter(function(x){ return ids.indexOf(x.oc_id) < 0 && !x.trabajo_admin && !x.sin_presupuesto; });
       if(otros.length){
         const oids = Array.from(new Set(otros.map(function(x){ return x.oc_id; })));
@@ -10538,7 +10543,7 @@ async function cartBudgetLoad(pp){
         otros.forEach(function(x){
           const o = ob[x.oc_id]; if(!o) return;
           const c=Number(x.cantidad)||0, p0=Number(x.precio_unit)||0;
-          ocItems.push({ producto_id:x.producto_id, producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p0,
+          ocItems.push({ producto_id:x.producto_id, codigo_insumo:x.codigo_insumo||'', producto_nombre:x.producto_nombre||'', cantidad:c, subtotal:c*p0,
                  estado:_presuNorm(o.estado), rubro_codigo:x.rubro_codigo||'', oc_id:x.oc_id, numero_oc:o.numero_oc||'',
                  fecha:o.fecha||'', proveedor:o.proveedor||'', estado_txt:o.estado||'' });
         });
@@ -10572,7 +10577,7 @@ function _cbAgg(codigoInsumo, rubroCodigo){
   const rk = rubroCodigo||'';
   let ejec=0, reserv=0, carr=0;
   (cartBudget.ocItems||[]).forEach(function(x){
-    if(_cbResolveIns(x.producto_id) !== codigoInsumo) return;
+    if((x.codigo_insumo || _cbResolveIns(x.producto_id)) !== codigoInsumo) return;   // v8.3 · manda la imputación de la línea
     if((x.rubro_codigo||'') !== rk) return;
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.cantidad;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.cantidad;
@@ -11601,6 +11606,16 @@ async function submitOC(){
       // v2.9 · presupuesto de cada material (solo si la orden usa más de uno)
       if(_ppMulti) row.presupuesto = (wizard.form.destino === 'presupuesto' && !it.trabajo_admin && !it.sin_presupuesto && !it.es_mano_obra) ? (cbmItPP(it) || null) : null;
       if(_hayTA) row.trabajo_admin = it.trabajo_admin || null;   // v2 · destino por ítem
+      // v8.3 · Imputación guardada en la línea: el material del presupuesto que descuenta.
+      // Así el saldo no depende del mapa global producto→insumo.
+      try{
+        const _enPP = wizard.form.destino === 'presupuesto';
+        const _ci = (_enPP && !it.trabajo_admin && !it.sin_presupuesto && !it.es_mano_obra)
+          ? cbmWith(cbmItPP(it), function(){ return fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : ''; }) : '';
+        row.codigo_insumo = _ci || null;
+        row.tipo_linea = it.es_mano_obra ? 'mano_obra' : (it.trabajo_admin ? 'trabajo_admin'
+          : (_enPP ? (it.sin_presupuesto ? 'no_presupuestado' : 'presupuestado') : 'sin_presupuesto'));
+      }catch(_eI){ console.warn('imputación de la línea', _eI); }
       if(_hayProdReal) row.producto_real = it.producto_real || null;
       // Sector y unidad SIEMPRE: son la base del mapeo por sector y de que el
       // proveedor lea la unidad correcta, sin tener que reconstruirlo después.
@@ -11615,6 +11630,13 @@ async function submitOC(){
     });
     if(itemsPayload.length > 0){
       let {error: itemsError} = await sb.from('ordenes_compra_items').insert(itemsPayload);
+      // v8.3 · Sin las columnas de imputación (falta axc_v83_modificaciones.sql): se guarda sin ellas
+      if(itemsError && /codigo_insumo|tipo_linea/i.test(itemsError.message || '')){
+        itemsPayload.forEach(function(r){ delete r.codigo_insumo; delete r.tipo_linea; });
+        const _rI = await sb.from('ordenes_compra_items').insert(itemsPayload);
+        itemsError = _rI.error;
+        if(!itemsError) showToast('La OC se guardó, pero falta correr axc_v83_modificaciones.sql en la base. Avisá a Conexdata.', 'error');
+      }
       // v2.9 · sin la columna «presupuesto» en los ítems no se puede guardar una orden con varios presupuestos
       if(itemsError && _ppMulti && /presupuesto/i.test(itemsError.message || '')){
         await sb.from('ordenes_compra').delete().eq('id', ocId);
@@ -12480,8 +12502,9 @@ async function detailLoadPresuInsumos(){
   if(!pp){ detail._presuInsumos = []; return; }
   if(detail._presuInsumos && detail._presuInsumos._pp === pp) return; // ya cargado
   try{
-    const { data } = await sb.from('presupuesto_insumos')
-      .select('material,rubro_codigo').eq('presupuesto', pp);
+    let _rv = await sb.from('v_presupuesto_insumos_vigente').select('material,rubro_codigo').eq('presupuesto', pp);   // v8.3
+    if(_rv.error) _rv = await sb.from('presupuesto_insumos').select('material,rubro_codigo').eq('presupuesto', pp);
+    const data = _rv.data;
     const arr = (data||[]).map(function(m){ return { material:m.material||'', rubro_codigo:String(m.rubro_codigo||'').trim() }; });
     arr._pp = pp;
     detail._presuInsumos = arr;
@@ -14425,8 +14448,9 @@ async function generatePDF(oc, incluirAdjuntos){
       // 1) presupuesto de esta orden
       if(oc.presupuesto){
         try{
-          const { data: pi } = await sb.from('presupuesto_insumos')
-            .select('producto_id,material,unidad').eq('presupuesto', oc.presupuesto);
+          let _rpi = await sb.from('v_presupuesto_insumos_vigente').select('producto_id,material,unidad').eq('presupuesto', oc.presupuesto);   // v8.3
+          if(_rpi.error) _rpi = await sb.from('presupuesto_insumos').select('producto_id,material,unidad').eq('presupuesto', oc.presupuesto);
+          const pi = _rpi.data;
           (pi||[]).forEach(function(r){
             const u = String(r.unidad||'').trim();
             _set(porProd, String(r.producto_id||'').trim(), u);
