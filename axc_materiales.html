@@ -116,6 +116,18 @@ tr.tot td:last-child{color:var(--gold-soft)}
 .est.ot{background:#eef1f6;color:var(--text-muted)}
 .pu.sube{color:var(--red);font-weight:800} .pu.baja{color:var(--green);font-weight:800}
 .vacio{padding:44px;text-align:center;color:var(--text-muted)}
+.avisos{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.aviso{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#F6F8FB;color:#4A5468;font-size:12.5px;line-height:1.5}
+.aviso b{color:var(--text)}
+.aviso.warn{background:var(--amber-bg);border-color:#F0CB5E;color:var(--amber)}
+.aviso.warn b{color:var(--amber)}
+.aviso.bad{background:#FCE7E7;border-color:#EDB0B0;color:#8A1B1B}
+.dst{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:5px;border:1px solid;white-space:nowrap}
+.dst.presupuestado{background:#E4F3E8;border-color:#A6D7B2;color:#1B5524}
+.dst.reemplazo{background:#E6EEFB;border-color:#AFC6EE;color:#1D4A94}
+.dst.no_presupuestado{background:#FDEDE0;border-color:#F1BE95;color:#8A3B00}
+.dst.trabajo_admin{background:#F8EFD2;border-color:#E3CD8C;color:#6B5000}
+.dst.sin_presupuesto{background:#EDF1F6;border-color:#CBD3DF;color:#4A5468}
 .chart-box{height:300px;position:relative}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
 .g2 .card{margin-bottom:0;min-width:0}
@@ -181,6 +193,7 @@ tr.tot td:last-child{color:var(--gold-soft)}
       <div class="f-fld"><span class="f-lbl">🏷️ Rubro</span><div class="ms" id="fRubro" data-ph="Todos"></div></div>
       <div class="f-fld"><span class="f-lbl">🚚 Proveedor</span><div class="ms" id="fProv" data-ph="Todos"></div></div>
       <div class="f-fld"><span class="f-lbl">📊 Estado</span><div class="ms" id="fEstado" data-ph="Todos"></div></div>
+      <div class="f-fld"><span class="f-lbl">🧾 Tipo de compra</span><div class="ms" id="fDest" data-ph="Todos"></div></div>
       <div class="f-fld"><span class="f-lbl">📅 Desde</span><input id="fD" class="f-in" type="date"></div>
       <div class="f-fld"><span class="f-lbl">📅 Hasta</span><input id="fH" class="f-in" type="date"></div>
       <div class="f-fld"><span class="f-lbl">🧩 Agrupar por</span>
@@ -196,6 +209,7 @@ tr.tot td:last-child{color:var(--gold-soft)}
     <div class="chips" id="chips"></div>
   </div>
 
+  <div class="avisos" id="avisos"></div>
   <div class="kpis" id="kpis"></div>
 
   <div class="card">
@@ -243,7 +257,7 @@ tr.tot td:last-child{color:var(--gold-soft)}
   </div>
 
   <div class="foot">
-    Los montos corresponden a órdenes de compra no anuladas.<br>
+    Los montos corresponden a órdenes de compra no anuladas ni rechazadas, sin las de prueba. «Fuera de presupuesto» suma lo no presupuestado y lo comprado sin presupuesto; lo que se cobra al cliente por administración no entra.<br>
     <span id="footCx"></span>Resumen elaborado por Conexdata
   </div>
 </div>
@@ -264,22 +278,57 @@ const num=n=>(Number(n)||0).toLocaleString('es-PY',{maximumFractionDigits:2});
 const fFecha=f=>{try{return new Date(f).toLocaleDateString('es-PY',{day:'2-digit',month:'2-digit',year:'2-digit'});}catch(e){return '\u2014';}};
 const mes=f=>{try{const d=new Date(f);return d.toLocaleDateString('es-PY',{month:'short',year:'numeric'});}catch(e){return '\u2014';}};
 
+/* Supabase devuelve como máximo 1000 filas por consulta: se pagina para no perder compras */
+async function pag(build){
+  const out=[], P=1000;
+  for(let i=0;i<300;i++){
+    const r=await build().range(i*P,i*P+P-1);
+    if(r.error) throw r.error;
+    const d=r.data||[]; out.push.apply(out,d);
+    if(d.length<P) break;
+  }
+  return out;
+}
+const DEST={presupuestado:'Presupuestado',reemplazo:'Reemplazo',no_presupuestado:'No presupuestado',
+  trabajo_admin:'Por administración',sin_presupuesto:'Sin presupuesto'};
+/* Tipo de compra de una línea. Con la vista vw_compras_imputadas es el mismo criterio que usa
+   Avance de Obra; sin ella (falta el SQL) se calcula acá con lo que trae la línea. */
+function tipoLinea(x,o){
+  const pt=String(x.presupuesto||o.presupuesto||'').trim(), dest=String(o.destino||'');
+  if(String(x.trabajo_admin||'').trim() || dest==='ta' || /^por administraci/i.test(pt)) return 'trabajo_admin';
+  if(x.tipo_linea==='no_presupuestado' || x.tipo_linea==='reemplazo') return x.tipo_linea;
+  if(x.sin_presupuesto===true) return 'no_presupuestado';
+  if(dest==='sin' || !pt || /^sin presupuesto/i.test(pt)) return 'sin_presupuesto';
+  return 'presupuestado';
+}
 async function cargar(){
   try{
-    const [oc,it]=await Promise.all([
-      sb.from('ordenes_compra').select('*').order('fecha',{ascending:false}).limit(6000),
-      sb.from('ordenes_compra_items').select('*')
-    ]);
-    if(oc.error) throw oc.error; if(it.error) throw it.error;
-    const m=new Map((oc.data||[]).map(o=>[o.id,o]));
-    S.items=(it.data||[]).map(x=>{
+    const oc=await pag(()=>sb.from('ordenes_compra').select('*').order('id',{ascending:true}));
+    const it=await pag(()=>sb.from('ordenes_compra_items').select('*').order('id',{ascending:true}));
+    let vw=null;
+    try{ vw=await pag(()=>sb.from('vw_compras_imputadas').select('item_id,tipo_linea,presupuesto').order('item_id',{ascending:true})); }
+    catch(e){ console.warn('vw_compras_imputadas',e); S.sinVista=true; }
+    const m=new Map(oc.map(o=>[o.id,o]));
+    const vm=new Map((vw||[]).map(r=>[r.item_id,r]));
+    S.excl={prueba:0,rech:0};
+    S.items=it.map(x=>{
       const o=m.get(x.oc_id); if(!o) return null;
-      if(o.estado==='Anulada') return null;
-      if(x.es_mano_obra) return null;              // sólo materiales
+      const est=String(o.estado||'');
+      if(/^anulad/i.test(est)) return null;
+      if(/^rechazad/i.test(est)){ S.excl.rech++; return null; }      // una OC rechazada no es consumo
+      if(o.es_prueba===true){ S.excl.prueba++; return null; }          // las OC de prueba no cuentan
+      if(x.es_mano_obra) return null;                                  // sólo materiales
+      const v=vw?vm.get(x.id):null;
+      if(vw && !v) return null;                                        // la vista deja afuera las OC de prueba
+      const tl=v?v.tipo_linea:tipoLinea(x,o);
+      if(tl==='mano_obra') return null;
       const cant=Number(x.cantidad)||0, sub=Number(x.subtotal)||0;
+      const pTxt=String((v&&v.presupuesto)||x.presupuesto||o.presupuesto||'').trim();
       return {...x, cant, sub, pu: cant>0?Math.round(sub/cant):0,
         numero:o.numero_oc||'', fecha:o.fecha||'', obra:o.obra||'', sector:o.sector||'',
-        presupuesto:((x.presupuesto||o.presupuesto)||'').trim(), proveedor:o.proveedor||'', residente:o.residente||'',
+        presupuesto:/^(sin presupuesto|por administraci)/i.test(pTxt)?'':pTxt,
+        destK:tl, dest:DEST[tl]||'Sin presupuesto',
+        proveedor:o.proveedor||'', residente:o.residente||'',
         estado:o.estado||'', rubro:(x.rubro_aplicacion||o.rubro||''), tipo:o.tipo_compra||''};
     }).filter(Boolean);
     asignarColores(); llenarSelects(); leerFiltros(); aplicar();
@@ -290,7 +339,7 @@ async function cargar(){
 
 /* Desplegable de casillas: permite elegir varias obras, presupuestos,
    sectores, rubros o proveedores a la vez. */
-const SEL={obra:[],sector:[],presu:[],rubro:[],prov:[],estado:[]};
+const SEL={obra:[],sector:[],presu:[],rubro:[],prov:[],estado:[],dest:[]};
 function multi(id,vals,clave){
   const w=document.getElementById(id); if(!w) return;
   const ph=w.getAttribute('data-ph')||'Todos';
@@ -363,7 +412,8 @@ function cascada(desde){
   [['fPresu','presupuesto','presu','Sin presupuestos'],
    ['fRubro','rubro','rubro','Sin rubros'],
    ['fProv','proveedor','prov','Sin proveedores'],
-   ['fEstado','estado','estado','Sin estados']].forEach(([id,campo,clave,vac])=>{
+   ['fEstado','estado','estado','Sin estados'],
+   ['fDest','dest','dest','Sin tipos de compra']].forEach(([id,campo,clave,vac])=>{
     let v=LISTA(base,campo);
     if(clave==='presu') v=v.filter(x=>!/^sin presupuesto/i.test(x));
     OPC[clave]=v;
@@ -380,7 +430,7 @@ function terminos(){
 }
 function leerFiltros(){
   F={mats:terminos(), obra:SEL.obra, sector:SEL.sector, presu:SEL.presu,
-     rubro:SEL.rubro, prov:SEL.prov, estado:SEL.estado,
+     rubro:SEL.rubro, prov:SEL.prov, estado:SEL.estado, dest:SEL.dest,
      d:document.getElementById('fD').value, h:document.getElementById('fH').value,
      grp:document.getElementById('fGrp').value};
   // etiquetas de los materiales elegidos, para poder sacarlos de a uno
@@ -404,6 +454,7 @@ function aplicar(){
     if(F.rubro && F.rubro.length && !F.rubro.some(r=>String(x.rubro).indexOf(r)>=0)) return false;
     if(!hay(F.prov,x.proveedor)) return false;
     if(!hay(F.estado,x.estado)) return false;
+    if(!hay(F.dest,x.dest)) return false;
     if(F.d && (!x.fecha || x.fecha < F.d)) return false;
     if(F.h && (!x.fecha || x.fecha > F.h+'T23:59:59')) return false;
     return true;
@@ -417,13 +468,36 @@ function aplicar(){
   if(F.rubro.length)act.push('Rubro: '+lst(F.rubro));
   if(F.prov.length)act.push('Proveedor: '+lst(F.prov));
   if(F.estado.length)act.push('Estado: '+lst(F.estado));
+  if(F.dest.length)act.push('Tipo de compra: '+lst(F.dest));
   if(F.d)act.push('Desde '+F.d); if(F.h)act.push('Hasta '+F.h);
   document.getElementById('fResumen').textContent=act.length?act.join(' \u00b7 '):'Sin filtros';
   renderKpis(); renderGraficos(); renderTabla();
 }
 
+const esAprob=x=>/^(aprobado|archivado)$/i.test(String(x.estado||''));
+/* Mensajes claros sobre lo que se está viendo y cómo interpretarlo */
+function renderAvisos(por,t){
+  const a=[], g=k=>por[k]||0;
+  if(S.sinVista) a.push(['warn','<b>Falta correr axc_v83_reportes.sql.</b> El tipo de compra se calcula con lo que trae cada línea de la orden y puede no coincidir con Avance de Obra. Avisá a Conexdata.']);
+  if(t>0){
+    const partes=[['presupuestado','del presupuesto'],['reemplazo','en reemplazos'],['no_presupuestado','no presupuestados'],['trabajo_admin','por administración'],['sin_presupuesto','sin presupuesto']]
+      .filter(p=>g(p[0])>0).map(p=>'<b>'+gs(g(p[0]))+'</b> '+p[1]);
+    a.push(['','En este filtro: '+partes.join(' \u00b7 ')+'.']);
+  }
+  if(g('no_presupuestado')>0) a.push(['warn','<b>Compras no presupuestadas:</b> son materiales que no estaban en el presupuesto. Suman al costo real del rubro donde se aplican y quedan pendientes de regularizar en Presupuestos \u203a Obra no presupuestada.']);
+  if(g('reemplazo')>0) a.push(['','<b>Reemplazos:</b> materiales comprados en lugar de otro del presupuesto, con su motivo. Descuentan del material que reemplazan.']);
+  if(g('trabajo_admin')>0) a.push(['','<b>Por administración:</b> se cobran al cliente; no cuentan contra el presupuesto de la obra.']);
+  if(g('sin_presupuesto')>0) a.push(['','<b>Sin presupuesto:</b> compras de la obra sin presupuesto asociado (por ejemplo, gastos de mantenimiento).']);
+  const x=S.excl||{};
+  if(x.prueba||x.rech) a.push(['','No se cuentan '+[x.prueba?x.prueba+' l\u00ednea(s) de \u00f3rdenes de prueba':'',x.rech?x.rech+' l\u00ednea(s) de \u00f3rdenes rechazadas':''].filter(Boolean).join(' ni ')+'.']);
+  const sin=S.filt.filter(x=>!esAprob(x)).reduce((q,x)=>q+x.sub,0);
+  if(sin>0) a.push(['warn','<b>'+gs(sin)+'</b> corresponden a \u00f3rdenes que todav\u00eda esperan aprobaci\u00f3n: figuran como consumo, pero pueden cambiar.']);
+  document.getElementById('avisos').innerHTML=a.map(r=>'<div class="aviso '+r[0]+'">'+r[1]+'</div>').join('');
+}
 function renderKpis(){
   const t=S.filt.reduce((a,x)=>a+x.sub,0);
+  const por={}; S.filt.forEach(x=>{ por[x.destK]=(por[x.destK]||0)+x.sub; });
+  const fuera=(por.no_presupuestado||0)+(por.sin_presupuesto||0);
   const ocs=new Set(S.filt.map(x=>x.oc_id)).size;
   const prods=new Set(S.filt.map(x=>norm(x.producto_nombre))).size;
   const conPU=S.filt.filter(x=>x.cant>0&&x.fecha).sort((a,b)=>new Date(a.fecha)-new Date(b.fecha));
@@ -441,9 +515,13 @@ function renderKpis(){
      '<div class="kpi-t">seg\u00fan el filtro aplicado</div></div>'+
    '<div class="kpi a"><div class="kpi-l">Variaci\u00f3n del precio</div><div class="kpi-v">'+vari+'</div>'+
      '<div class="kpi-t">'+varT+'</div></div>'+
-   '<div class="kpi '+(S.filt.some(x=>x.estado!=='Aprobado')?'r':'g')+'"><div class="kpi-l">Aprobado</div>'+
-     '<div class="kpi-v">'+gs(S.filt.filter(x=>x.estado==='Aprobado').reduce((a,x)=>a+x.sub,0))+'</div>'+
-     '<div class="kpi-t">el resto todav\u00eda espera aprobaci\u00f3n</div></div>';
+   '<div class="kpi '+(S.filt.some(x=>!esAprob(x))?'r':'g')+'"><div class="kpi-l">Aprobado</div>'+
+     '<div class="kpi-v">'+gs(S.filt.filter(esAprob).reduce((a,x)=>a+x.sub,0))+'</div>'+
+     '<div class="kpi-t">el resto todav\u00eda espera aprobaci\u00f3n</div></div>'+
+   '<div class="kpi '+(fuera>0?'a':'g')+'"><div class="kpi-l">Fuera de presupuesto</div>'+
+     '<div class="kpi-v">'+(t>0?(Math.round(fuera/t*1000)/10).toLocaleString('es-PY')+' %':'\u2014')+'</div>'+
+     '<div class="kpi-t">'+gs(fuera)+' no presupuestado o sin presupuesto</div></div>';
+  renderAvisos(por,t);
 }
 
 /* ══ Gráficos ════════════════════════════════════════════════════════
@@ -773,7 +851,7 @@ function renderTabla(){
   const ks=Object.keys(g).sort((a,b)=>g[b].reduce((s,x)=>s+x.sub,0)-g[a].reduce((s,x)=>s+x.sub,0));
   const ref={}; S.filt.forEach(x=>{const k=norm(x.producto_nombre);
     if(!ref[k]||new Date(x.fecha)>new Date(ref[k].fecha)) ref[k]=x;});
-  let h='<table><thead><tr><th>Fecha</th><th>OC</th><th>Obra</th><th>Sector</th><th>Presupuesto</th>'+
+  let h='<table><thead><tr><th>Fecha</th><th>OC</th><th>Obra</th><th>Sector</th><th>Presupuesto</th><th>Tipo de compra</th>'+
     '<th>Producto</th><th>Rubro</th><th>Proveedor</th><th>Residente</th><th>Estado</th>'+
     '<th class="n">Cant.</th><th class="n">P. unit.</th><th class="n">Subtotal</th></tr></thead><tbody>';
   let total=0, cantTot=0;
@@ -781,7 +859,7 @@ function renderTabla(){
     const fs=g[k].slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
     const sub=fs.reduce((a,x)=>a+x.sub,0); const cn=fs.reduce((a,x)=>a+x.cant,0);
     total+=sub; cantTot+=cn;
-    h+='<tr class="grp"><td colspan="10">'+esc(k)+'<span class="cnt">'+fs.length+' compra(s)</span></td>'+
+    h+='<tr class="grp"><td colspan="11">'+esc(k)+'<span class="cnt">'+fs.length+' compra(s)</span></td>'+
        '<td class="n">'+num(cn)+'</td><td></td><td class="n">'+gs(sub)+'</td></tr>';
     fs.forEach(x=>{
       const r=ref[norm(x.producto_nombre)];
@@ -789,6 +867,7 @@ function renderTabla(){
       const ec=x.estado==='Aprobado'?'ap':(x.estado==='Solicitado'?'so':'ot');
       h+='<tr><td>'+fFecha(x.fecha)+'</td><td>'+esc(x.numero)+'</td><td>'+esc(x.obra||'\u2014')+'</td>'+
         '<td>'+esc(x.sector||'\u2014')+'</td><td>'+esc(x.presupuesto||'\u2014')+'</td>'+
+        '<td><span class="dst '+esc(x.destK)+'">'+esc(x.dest)+'</span></td>'+
         '<td><div class="prod">'+esc(x.producto_nombre||'\u2014')+'</div></td>'+
         '<td>'+esc(String(x.rubro||'\u2014').replace(/[{}"]/g,'').slice(0,34))+'</td>'+
         '<td>'+esc(x.proveedor||'\u2014')+'</td><td>'+esc(x.residente||'\u2014')+'</td>'+
@@ -797,7 +876,7 @@ function renderTabla(){
         '<td class="n pu'+cls+'">'+gs(x.pu)+'</td><td class="n">'+gs(x.sub)+'</td></tr>';
     });
   });
-  h+='<tr class="tot"><td colspan="10">TOTAL GENERAL \u00b7 '+ks.length+' grupo(s)</td>'+
+  h+='<tr class="tot"><td colspan="11">TOTAL GENERAL \u00b7 '+ks.length+' grupo(s)</td>'+
      '<td class="n">'+num(cantTot)+'</td><td></td><td class="n">'+gs(total)+'</td></tr>';
   h+='</tbody></table>';
   cont.innerHTML=h;
@@ -841,6 +920,7 @@ function pdf(){
     if(F.rubro.length)act.push(['Rubro',j(F.rubro,'rubro')]);
     if(F.prov.length)act.push(['Proveedor',j(F.prov,'prov')]);
     if(F.estado.length)act.push(['Estado',j(F.estado,'estado')]);
+    if(F.dest.length)act.push(['Tipo de compra',j(F.dest,'dest')]);
     if(F.d)act.push(['Desde',F.d]); if(F.h)act.push(['Hasta',F.h]);
     act.push(['Agrupado por',document.getElementById('fGrp').selectedOptions[0].text]);
     doc.setTextColor(31,56,100); doc.setFont('helvetica','bold'); doc.setFontSize(10);
@@ -906,7 +986,7 @@ function pdf(){
                  {content:'',styles:{fillColor:[237,243,251]}},
                  {content:money(sub),styles:{halign:'right',fontStyle:'bold',fillColor:[237,243,251],textColor:[31,56,100]}}]);
       fs.forEach(x=>body.push([fFecha(x.fecha),sp(x.numero),sp(x.obra||'-'),sp(x.sector||'-'),
-        sp(x.presupuesto||'-'),sp((x.producto_nombre||'-').slice(0,38)),sp(x.proveedor||'-'),
+        sp((x.presupuesto?x.presupuesto+(x.destK==='presupuestado'?'':' \u00b7 '+x.dest):x.dest)),sp((x.producto_nombre||'-').slice(0,38)),sp(x.proveedor||'-'),
         sp(x.estado),num(x.cant)+' '+sp(x.unidad||''),money(x.pu),money(x.sub)]));
     });
     body.push([{content:'TOTAL GENERAL  ·  '+ks.length+' grupo(s)',colSpan:8,
@@ -940,8 +1020,8 @@ function pdf(){
 
 function csv(){
   const sep=';';
-  let t=['Fecha','OC','Obra','Sector','Presupuesto','Producto','Rubro','Proveedor','Residente','Estado','Cantidad','Unidad','PrecioUnit','Subtotal'].join(sep)+'\n';
-  S.filt.forEach(x=>{ t+=[fFecha(x.fecha),x.numero,x.obra,x.sector,x.presupuesto,x.producto_nombre,
+  let t=['Fecha','OC','Obra','Sector','Presupuesto','Tipo de compra','Producto','Rubro','Proveedor','Residente','Estado','Cantidad','Unidad','PrecioUnit','Subtotal'].join(sep)+'\n';
+  S.filt.forEach(x=>{ t+=[fFecha(x.fecha),x.numero,x.obra,x.sector,x.presupuesto,x.dest,x.producto_nombre,
     String(x.rubro||'').replace(/[{}"]/g,''),x.proveedor,x.residente,x.estado,x.cant,x.unidad||'',x.pu,x.sub]
     .map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(sep)+'\n'; });
   const a=document.createElement('a');
