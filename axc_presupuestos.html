@@ -1165,6 +1165,11 @@ html[data-theme="alto-contraste"]{
         <div style="flex:0 0 140px"><label class="pm-label">Unidad de compra</label><input id="inUni" class="pm-input" placeholder="UNID, BOLSA, M3…" maxlength="30"></div>
         <div style="flex:1"><label class="pm-label">Precio referencia (Gs) *</label><input id="inPrecio" class="pm-input" inputmode="numeric" placeholder="0" style="text-align:right"></div>
       </div>
+      <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-end">
+        <div style="flex:1"><label class="pm-label">Contenido por unidad</label><input id="inCont" class="pm-input" inputmode="decimal" placeholder="Ej. 50" style="text-align:right"></div>
+        <div style="flex:0 0 120px"><label class="pm-label">Medida</label><select id="inContUn" class="pm-input"><option value="kg">kg</option><option value="l">litros</option><option value="m">m</option><option value="m2">m²</option><option value="u">unidades</option></select></div>
+      </div>
+      <div style="font-size:11.5px;color:#8893a5;line-height:1.35;margin-top:5px">Solo para bolsas, baldes, latas o cajas: cuánto trae cada una (por ejemplo, una bolsa de 50 kg). Se carga una vez y aparece en la orden de compra.</div>
       <div id="inDupWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
       <div id="inCatSug" style="display:none;margin-top:10px"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="inCancel">Cancelar</button><button type="button" class="pm-btn" id="inSave">Crear y usar</button></div>
@@ -1251,6 +1256,11 @@ html[data-theme="alto-contraste"]{
         <div style="flex:0 0 140px"><label class="pm-label">Unidad de compra</label><input id="insEditUni" class="pm-input" maxlength="30"></div>
         <div style="flex:1"><label class="pm-label">Precio referencia (Gs) *</label><input id="insEditPrecio" class="pm-input" inputmode="numeric" style="text-align:right"></div>
       </div>
+      <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-end">
+        <div style="flex:1"><label class="pm-label">Contenido por unidad</label><input id="insEditCont" class="pm-input" inputmode="decimal" placeholder="Ej. 50" style="text-align:right"></div>
+        <div style="flex:0 0 120px"><label class="pm-label">Medida</label><select id="insEditContUn" class="pm-input"><option value="kg">kg</option><option value="l">litros</option><option value="m">m</option><option value="m2">m²</option><option value="u">unidades</option></select></div>
+      </div>
+      <div style="font-size:11.5px;color:#8893a5;line-height:1.35;margin-top:5px">Solo para bolsas, baldes, latas o cajas: cuánto trae cada una (por ejemplo, una bolsa de 50 kg). Se carga una vez y aparece en la orden de compra.</div>
       <div id="insEditWarn" style="display:none;margin-top:10px;background:#fff4e5;border:1px solid #f0c987;border-radius:8px;padding:9px 11px;font-size:12px;color:#92560a"></div>
       <div class="mini-actions"><button type="button" class="pm-btn-ghost" id="insEditCancel">Cancelar</button><button type="button" class="pm-btn" id="insEditSave">Guardar</button></div>
     </div>
@@ -2278,7 +2288,9 @@ async function loadInsList(){
   if(ed.insList) return;
   ed.precioMeta = ed.precioMeta || {};
   try{
-    const { data:ins } = await sb.from('insumos').select('codigo,unidad_compra,producto_id').eq('activo', true);
+    let _rIns = await sb.from('insumos').select('codigo,unidad_compra,producto_id,contenido_compra,contenido_unidad').eq('activo', true);
+    if(_rIns.error) _rIns = await sb.from('insumos').select('codigo,unidad_compra,producto_id').eq('activo', true);   // v8.3b · falta axc_v83b_contenido.sql
+    const ins = _rIns.data;
     const ids = (ins||[]).map(function(i){ return i.producto_id; }).filter(function(x){ return x!=null; });
     let names = {}, precios = {};
     if(ids.length){
@@ -2303,7 +2315,7 @@ async function loadInsList(){
     (ins||[]).forEach(function(i){ ed.precioByIns[i.codigo] = i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0; if(i.producto_id!=null) ed.prodIdByIns[i.codigo] = String(i.producto_id); });
     ed.insList = (ins||[]).map(function(i){
       const meta = (i.producto_id!=null ? (ed.precioMeta[String(i.producto_id)]||{}) : {});
-      return { codigo:i.codigo, unidad:i.unidad_compra||'', nombre: names[String(i.producto_id)]||'',
+      return { codigo:i.codigo, unidad:i.unidad_compra||'', contenido:Number(i.contenido_compra)||0, contenidoUn:i.contenido_unidad||'kg', nombre: names[String(i.producto_id)]||'',
                precio: (i.producto_id!=null ? (precios[String(i.producto_id)]||0) : 0),
                proveedor: meta.proveedor||'', precioFecha: meta.fecha||'',
                precioPor: meta.por||'', precioFuente: meta.fuente||'' };
@@ -10554,6 +10566,7 @@ function openNewInsumo(rowIdx){
   const _it = comp.items && comp.items[rowIdx];
   const _txt = (_it && !_it.codigo_catalogo && _it.material) ? String(_it.material) : '';
   document.getElementById('inNom').value=_txt; document.getElementById('inUni').value=''; document.getElementById('inPrecio').value='';
+  document.getElementById('inCont').value=''; document.getElementById('inContUn').value='kg';
   document.getElementById('inDupWarn').style.display='none';
   const _cs=document.getElementById('inCatSug'); if(_cs){ _cs.style.display='none'; _cs.innerHTML=''; }
   if(_txt){ _checkInsDup(); _sugCatalogoNuevo(); }
@@ -10614,6 +10627,10 @@ async function saveNewInsumo(){
   const precio=_numInt(document.getElementById('inPrecio').value);
   if(!nom){ showToast('Falta el nombre del insumo','error'); return; }
   if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
+  const contRaw=(document.getElementById('inCont').value||'').replace(',','.').trim();
+  const cont=contRaw?parseFloat(contRaw):0, contUn=document.getElementById('inContUn').value||'kg';
+  if(contRaw && !(cont>0)){ showToast('El contenido tiene que ser un número mayor que cero','error'); return; }
+  if(!(cont>0) && _ENVASE_RE.test(uni) && !confirm('«'+uni+'» es un envase y no cargaste cuánto trae (por ejemplo, 50 kg por bolsa).\n\nSin ese dato, la orden de compra no puede mostrar el tamaño. ¿Crear igual?')) return;
   const dup=(ed.insList||[]).find(function(i){ return String(i.nombre||'').trim().toLowerCase()===nom.toLowerCase(); });
   if(dup){
     if(confirm('Ya existe «'+dup.nombre+'» ('+dup.codigo+').\n\n¿Usar el insumo existente en lugar de crear uno nuevo?')){
@@ -10644,14 +10661,22 @@ async function saveNewInsumo(){
     const prodId=prod.data.id;
     const insPayload={ codigo:code, nombre:nom, unidad_compra:uni||null, unidad_base:uni||null,
       precio_base:precio, moneda:'PYG', producto_id:String(prodId), activo:true };
-    const insR=await sb.from('insumos').insert(insPayload);
+    let _contSinCol=false;
+    if(cont>0){ insPayload.contenido_compra=cont; insPayload.contenido_unidad=contUn; }
+    let insR=await sb.from('insumos').insert(insPayload);
+    if(insR.error && /contenido/i.test(insR.error.message||'')){
+      delete insPayload.contenido_compra; delete insPayload.contenido_unidad;
+      insR=await sb.from('insumos').insert(insPayload);
+      if(!insR.error) _contSinCol=true;
+    }
     if(insR.error) throw insR.error;
     try{ await sb.from('insumo_marcas').insert({ codigo_insumo:code, producto_id:Number(prodId), es_default:true, activo:true, creado_por:_userTag() }); }catch(e){ console.warn('insumo_marcas nuevo', e); }
     ed.insList=null; await loadInsList(); _fillCompInsDatalist();
     if(document.getElementById('insMgrOverlay').classList.contains('show')) renderInsMgr();
     _applyInsToRow(code, nom, uni);
     closeNewInsumo();
-    showToast('Insumo «'+code+'» creado', 'success');
+    if(_contSinCol) showToast('Insumo «'+code+'» creado, pero el contenido NO se guardó: falta correr axc_v83b_contenido.sql en la base','error');
+    else showToast('Insumo «'+code+'» creado', 'success');
     _audit('insumo', code, 'crear', {nombre: nom, precio: precio});
   }catch(e){ console.warn('saveNewInsumo', e); showToast('No se pudo crear: '+(e.message||''), 'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
@@ -10752,6 +10777,16 @@ async function openInsMgr(){
   document.getElementById('insMgrOverlay').classList.add('show');
 }
 function closeInsMgr(){ document.getElementById('insMgrOverlay').classList.remove('show'); }
+/* v8.3b · Contenido de cada envase (bolsa de 50 kg, balde de 20 l…) */
+const _ENVASE_RE = /^(bolsas?|sacos?|baldes?|latas?|tambor(es)?|cajas?|paquetes?|bid[oó]n(es)?)$/i;
+function _fmtCont(n){ return (Math.round(Number(n)*100)/100).toLocaleString('es-PY',{maximumFractionDigits:2}); }
+function _insMetaTxt(i){
+  const un=String(i.unidad||'').trim();
+  let t=escapeHtml(un);
+  if(i.contenido>0) t+=' de '+_fmtCont(i.contenido)+' '+escapeHtml(i.contenidoUn||'kg');
+  else if(_ENVASE_RE.test(un)) t+=' <span style="color:#b45309;font-weight:700" title="Falta cargar cuánto trae cada envase. Editá el insumo y completá «Contenido por unidad».">· sin contenido</span>';
+  return t+' · Gs '+fmtGs(i.precio||0);
+}
 function renderInsMgr(){
   const q=(_insMgrSearch||'').toLowerCase().trim();
   const list=(ed.insList||[]).filter(function(i){ if(!q) return true; return (String(i.codigo)+' '+String(i.nombre||'')).toLowerCase().indexOf(q)>=0; });
@@ -10760,7 +10795,7 @@ function renderInsMgr(){
   box.innerHTML=list.map(function(i){
     return '<div class="ins-row">'+
       '<div class="ins-main" title="'+escapeHtml(i.nombre||'')+'"><span class="ins-code">'+escapeHtml(i.codigo)+'</span><span class="ins-name">'+escapeHtml(i.nombre||'')+'</span></div>'+
-      '<div class="ins-meta">'+escapeHtml(i.unidad||'')+' · Gs '+fmtGs(i.precio||0)+'</div>'+
+      '<div class="ins-meta">'+_insMetaTxt(i)+'</div>'+
       '<div class="ins-acts"><button type="button" class="ins-marcas" data-cod="'+escapeHtml(i.codigo)+'" title="Marcas del catálogo">🏷️</button><button type="button" class="ins-edit" data-cod="'+escapeHtml(i.codigo)+'" title="Editar">✏️</button>'+
         '<button type="button" class="ins-del" data-cod="'+escapeHtml(i.codigo)+'" title="Dar de baja">✕</button></div>'+
     '</div>';
@@ -10780,6 +10815,9 @@ async function openInsEdit(codigo){
   document.getElementById('insEditNom').value=i.nombre||'';
   document.getElementById('insEditUni').value=i.unidad||'';
   document.getElementById('insEditPrecio').value=i.precio||0;
+  document.getElementById('insEditCont').value = i.contenido>0 ? String(i.contenido).replace('.',',') : '';
+  document.getElementById('insEditContUn').value = i.contenidoUn || 'kg';
+  if(!document.getElementById('insEditContUn').value) document.getElementById('insEditContUn').value = 'kg';
   document.getElementById('insEditWarn').style.display='none';
   document.getElementById('insEditOverlay').classList.add('show');
   setTimeout(function(){ document.getElementById('insEditNom').focus(); },50);
@@ -10799,9 +10837,18 @@ async function saveInsEdit(){
   const precio=_numInt(document.getElementById('insEditPrecio').value);
   if(!nom){ showToast('Falta el nombre','error'); return; }
   if(!(precio>0)){ showToast('Cargá un precio de referencia','error'); return; }
+  const contRaw=(document.getElementById('insEditCont').value||'').replace(',','.').trim();
+  const cont=contRaw?parseFloat(contRaw):0, contUn=document.getElementById('insEditContUn').value||'kg';
+  if(contRaw && !(cont>0)){ showToast('El contenido tiene que ser un número mayor que cero','error'); return; }
+  if(!(cont>0) && _ENVASE_RE.test(uni) && !confirm('«'+uni+'» es un envase y no cargaste cuánto trae (por ejemplo, 50 kg por bolsa).\n\nSin ese dato, la orden de compra no puede mostrar el tamaño. ¿Guardar igual?')) return;
   const btn=document.getElementById('insEditSave'); const old=btn.textContent; btn.disabled=true; btn.textContent='Guardando…';
   try{
-    const u1=await sb.from('insumos').update({ nombre:nom, unidad_compra:uni||null, precio_base:precio }).eq('codigo',_insEditCod);
+    let _contSinCol=false;
+    let u1=await sb.from('insumos').update({ nombre:nom, unidad_compra:uni||null, precio_base:precio, contenido_compra:cont>0?cont:null, contenido_unidad:cont>0?contUn:null }).eq('codigo',_insEditCod);
+    if(u1.error && /contenido/i.test(u1.error.message||'')){
+      u1=await sb.from('insumos').update({ nombre:nom, unidad_compra:uni||null, precio_base:precio }).eq('codigo',_insEditCod);
+      if(!u1.error && cont>0) _contSinCol=true;
+    }
     if(u1.error) throw u1.error;
     if(_insEditProdId!=null){
       await sb.from('productos_catalogo').update({ nombre:nom, precio_referencia:precio, unidad_medida:uni||null, updated_at:new Date().toISOString() }).eq('id', _insEditProdId);
@@ -10809,8 +10856,9 @@ async function saveInsEdit(){
     ed.insList=null; await loadInsList(); _fillCompInsDatalist(); renderInsMgr();
     if(comp.rubro) renderCompEditor();
     closeInsEdit();
-    showToast('Insumo '+_insEditCod+' actualizado','success');
-    _audit('insumo', _insEditCod, 'editar', {nombre: nom, precio: precio});
+    if(_contSinCol) showToast('Insumo '+_insEditCod+' actualizado, pero el contenido NO se guardó: falta correr axc_v83b_contenido.sql en la base','error');
+    else showToast('Insumo '+_insEditCod+' actualizado','success');
+    _audit('insumo', _insEditCod, 'editar', {nombre: nom, precio: precio, contenido: cont>0?(cont+' '+contUn):null});
   }catch(e){ console.warn('saveInsEdit',e); showToast('No se pudo actualizar: '+(e.message||''),'error'); }
   finally{ btn.disabled=false; btn.textContent=old; }
 }
