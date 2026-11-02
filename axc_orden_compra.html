@@ -4416,7 +4416,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.3.1 · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.3.2 · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -8457,6 +8457,7 @@ function renderCart(){
   try{ cbmAsignarNuevos(); }catch(e){ console.warn('presupuesto del material', e); }   // v2.9
   try{ fpmImputarNuevos(); }catch(e){ console.warn('imputar al rubro', e); }   // v2.8
   try{ fpmSincronizarRubros(); }catch(e){ console.warn('rubro de la línea', e); }   // v2.8.1
+  try{ fpmMarcarRubroAp(); }catch(e){ console.warn('rubro de aplicación del presupuesto', e); }   // v8.3.2
   try{ fpmBanner(); }catch(e){}
   const wrap = document.getElementById('cartItems');
   try{ cartBudgetInit(); }catch(e){}
@@ -9333,6 +9334,7 @@ function itemRubrosAp(it){
 // Ítems del carrito sin ningún rubro asignado
 function rubrosApFaltantes(){
   if(!OC_RUBRO_APLICACION) return [];
+  try{ fpmMarcarRubroAp(); }catch(e){}   // v8.3.2 · el rubro del presupuesto cuenta como rubro de aplicación
   return wizard.cart.filter(it => itemRubrosAp(it).length === 0);
 }
 
@@ -19619,6 +19621,32 @@ function fpmRubroItem(it){
   if(it._fpmRub) return it._fpmRub;
   if(it.rubro_codigo && fpmRubroDeEste(String(it.rubro_codigo))) return String(it.rubro_codigo);
   return a;
+}
+/* v8.3.2 · Presupuestos por monto (p. ej. cargados desde Excel): al comprar «para el rubro X» la línea
+   quedaba imputada a ese rubro, pero NO se anotaba como su rubro de aplicación. Resultado: la orden pedía
+   el rubro al final y el PDF mostraba el que se elegía ahí. Ahora el rubro del presupuesto queda anotado
+   (fijo, como en los presupuestos con receta) y el PDF lo imprime. */
+function fpmRapLabel(r){
+  if(!r) return '';
+  const cod = String(r.rubro_codigo||'').trim(), des = String(r.descripcion||'').trim();
+  return cod ? (cod + (des ? ' · ' + des : '')) : des;
+}
+function fpmMarcarRubroAp(){
+  if(!OC_RUBRO_APLICACION || !cartBudget.pp) return;
+  if(wizard.form && wizard.form.destino && wizard.form.destino !== 'presupuesto') return;
+  (wizard.cart||[]).forEach(function(it){
+    if(!it || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto || it.producto_id == null) return;
+    if(it._rap_presu) return;                          // ya tiene su rubro del presupuesto
+    if(fpmEsInsumoDeEste(it)) return;                  // va por cantidades: ese flujo ya lo marca
+    if(cbmItPP(it) !== cartBudget.pp) return;          // es de otro presupuesto de la orden
+    let key = fpmRubroItem(it);
+    if(!key && typeof it._fpm === 'string' && it._fpm !== '-') key = it._fpm;
+    if(!key || !fpmRubroDeEste(key)) return;
+    const rap = fpmRapLabel(fpmRubro(key)); if(!rap) return;
+    it._rap_presu = rap;
+    const act = itemRubrosAp(it);
+    if(!act.some(function(a){ return a.toLowerCase() === rap.toLowerCase(); })) it.rubros_ap = act.concat([rap]);
+  });
 }
 function fpmSincronizarRubros(){
   if(!cartBudget.pp) return;
