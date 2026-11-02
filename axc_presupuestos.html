@@ -7967,6 +7967,13 @@ async function abrirPlanillaIntegral(){
   const verCom = !!(state.puedeVerMargen || state.isAdmin);
   if(!ed.open){ showToast('Abrí o creá un presupuesto primero','error'); return; }
   const presu = (document.getElementById('pmCodigo').value||'').trim() || 'presupuesto nuevo';
+  // v8.3 · Modificaciones aprobadas del presupuesto: el pie muestra el costo vigente
+  window._piMods = null;
+  try{
+    const _rm = await sb.from('presupuesto_modificaciones').select('impacto,estado').eq('presupuesto', presu);
+    if(!_rm.error){ const _ap = (_rm.data||[]).filter(function(m){ return m.estado === 'aprobada'; });
+      window._piMods = { n:_ap.length, imp:_ap.reduce(function(s,m){ return s + (Number(m.impacto)||0); }, 0) }; }
+  }catch(_eM){ /* sin la tabla (falta el SQL): sin pie de modificaciones */ }
   _mgPreparar();          // sin rubros devuelve una lista vacía: se carga desde acá
   const gen0 = Number(document.getElementById('mgPct').value) || 31;
 
@@ -7983,6 +7990,7 @@ async function abrirPlanillaIntegral(){
             '<input id="piGen" type="number" step="0.0001" min="0.05" max="1" value="'+(1-gen0/100).toFixed(4)+'" style="width:94px;padding:6px 9px;border-radius:8px;border:0;text-align:right"></label>'+
           '<button type="button" id="piAplicar" style="background:#C8A028;color:#1c2430;border:0;border-radius:8px;padding:7px 13px;font-weight:700;cursor:pointer">Aplicar a todos</button>':'')+
           '<button type="button" id="piComp" style="background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:700" title="Crear o editar la composición de un rubro">🧩 Composiciones</button>'+
+          '<button type="button" id="piMods" style="background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:700" title="Pedidos de modificación del presupuesto aprobado">📝 Modificaciones</button>'+
           '<label style="font-size:11.5px;display:flex;align-items:center;gap:6px;opacity:.9" title="Al abrir un presupuesto se muestra primero esta planilla">'+
             '<input type="checkbox" id="piPref" checked> Abrir siempre esta vista</label>'+
           '<button type="button" id="piCerrar" style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 13px;cursor:pointer">Cerrar</button>'+
@@ -8157,6 +8165,7 @@ async function abrirPlanillaIntegral(){
     });
 
     const util = ventaT - costoT, coefR = ventaT > 0 ? costoT/ventaT : 0;
+    window._piTot = { costo: costoT, venta: ventaT, verCom: verCom };   // v8.3 · para el módulo de modificaciones
     const d = function(l, v, s2){ return '<div style="display:flex;align-items:baseline;gap:6px">'+
       '<span style="font-size:10px;letter-spacing:.3px;text-transform:uppercase;color:#8893a5;font-weight:700">'+l+'</span>'+
       '<b style="font-size:14px;color:#1a2236">'+v+'</b>'+(s2?'<span style="font-size:10.5px;color:#8893a5">'+s2+'</span>':'')+'</div>'; };
@@ -8168,6 +8177,9 @@ async function abrirPlanillaIntegral(){
           d('Utilidad','₲ '+fmtGs(util), ventaT>0 ? (util/ventaT*100).toFixed(1)+' %' : '')+
           d('Coef. real', coefR?coefR.toFixed(4):'—')
         : d('Con IVA','₲ '+fmtGs(costoT+_ivaG), _iva ? ('IVA '+_iva+' %') : 'sin IVA'))+
+      ((window._piMods && window._piMods.n) ? d('Vigente','₲ '+fmtGs(costoT + window._piMods.imp),
+        window._piMods.n+' modif. · '+(window._piMods.imp>=0?'+':'−')+' ₲ '+fmtGs(Math.abs(window._piMods.imp))+
+        ((verCom && ventaT>0) ? ' · utilidad '+((ventaT-costoT-window._piMods.imp)/ventaT*100).toFixed(1)+' %' : '')) : '')+
       '<div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'+
         '<button type="button" id="piPdf" class="pm-toggle" style="border:1px solid #C9D0DC">🖨 Generar PDF</button>'+
         '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
@@ -8296,6 +8308,14 @@ async function abrirPlanillaIntegral(){
   })();
   /* v10.22 · Composiciones desde la planilla: se cierra la planilla, se edita la
      composición y al volver la planilla se reabre sola con los datos al día. */
+  /* v8.3 · Pedidos de modificación: módulo aparte, con el costo y la venta de esta planilla */
+  document.getElementById('piMods').onclick = function(){
+    const t = window._piTot || {};
+    let u = 'axc_modificaciones.html?pp=' + encodeURIComponent(presu);
+    if(t.costo) u += '&costo=' + Math.round(t.costo);
+    if(t.verCom && t.venta) u += '&venta=' + Math.round(t.venta);
+    window.open(u, '_blank');
+  };
   document.getElementById('piComp').onclick = async function(cod){
     const rubro = (typeof cod === 'string') ? cod : '';
     _cerrar(false);
@@ -8932,9 +8952,9 @@ async function loadReport(){
     const [cab, rub, ins, ocs, items, ppm, insu, cert] = await Promise.all([
       sb.from('presupuesto_cab').select('codigo,obra,descripcion,activo'),
       sb.from('presupuesto_rubros').select('presupuesto,sector,orden,rubro_codigo,descripcion,unidad,cantidad,precio_total,tiene_receta'),
-      sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,material,unidad,cantidad,rubro_codigo'),
+      sb.from('v_presupuesto_insumos_vigente').select('presupuesto,codigo_insumo,material,unidad,cantidad,rubro_codigo,mods'),   // v8.3
       sb.from('ordenes_compra').select('id,estado,presupuesto'),
-      sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit'),
+      sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit,rubro_codigo,codigo_insumo,presupuesto,sin_presupuesto,trabajo_admin'),
       sb.from('producto_presupuesto_map').select('producto_id,material,rubro_codigo'),
       sb.from('insumos').select('codigo,producto_id'),
       // Mano de obra ya certificada: es consumo del rubro, igual que una compra
@@ -8942,6 +8962,11 @@ async function loadReport(){
         .select('presupuesto,rubro_codigo,subtotal,certificados!inner(estado)')
         .eq('certificados.estado','Aprobado').limit(20000)
     ]);
+    // v8.3 · Sin la vista o sin las columnas nuevas (falta el SQL): como antes
+    let insR = ins, itemsR = items;
+    if(insR.error) insR = await sb.from('presupuesto_insumos').select('presupuesto,codigo_insumo,material,unidad,cantidad,rubro_codigo');
+    if(itemsR.error) itemsR = await sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit,rubro_codigo,presupuesto,sin_presupuesto,trabajo_admin');
+    if(itemsR.error) itemsR = await sb.from('ordenes_compra_items').select('oc_id,producto_id,cantidad,precio_unit');
     REP.certByPP = {};
     ((cert && cert.data)||[]).forEach(function(x){
       if(!x.presupuesto || !x.rubro_codigo) return;
@@ -8951,7 +8976,7 @@ async function loadReport(){
     REP.cab = (cab.data||[]).slice().sort(function(a,b){ const na=parseInt((/(\d+)/.exec(a.codigo)||[])[1]||'0',10), nb=parseInt((/(\d+)/.exec(b.codigo)||[])[1]||'0',10); return na-nb; });
     REP.rubros = rub.data||[];
     // mano de obra (MO-…) y logística (LG-…) no se compran por orden de compra: quedan fuera del control de avance
-    REP.insumos = (ins.data||[]).filter(function(i){ return !/^(MO|LG)-/i.test(String(i.codigo_insumo||'')); });
+    REP.insumos = (insR.data||[]).filter(function(i){ return !/^(MO|LG)-/i.test(String(i.codigo_insumo||'')); });
     REP.map = {}; REP.rmap = {};
     (ppm.data||[]).forEach(function(r){ REP.map[String(r.producto_id)]=r.material||''; REP.rmap[String(r.producto_id)]=r.rubro_codigo||''; });
     REP.insMap = {}; (insu.data||[]).forEach(function(i){ if(i.producto_id!=null) REP.insMap[String(i.producto_id)]=i.codigo; });
@@ -8959,10 +8984,11 @@ async function loadReport(){
     const estadoOC = {}, ppOC = {};
     (ocs.data||[]).forEach(function(o){ estadoOC[o.id]=_pn(o.estado); ppOC[o.id]=o.presupuesto||''; });
     REP.itemsByPP = {};
-    (items.data||[]).forEach(function(it){
-      const pp = ppOC[it.oc_id]; if(!pp) return;
+    (itemsR.data||[]).forEach(function(it){
+      if(it.sin_presupuesto || it.trabajo_admin) return;   // v8.3 · no descuentan del presupuesto
+      const pp = it.presupuesto || ppOC[it.oc_id]; if(!pp) return;
       const c=Number(it.cantidad)||0, p=Number(it.precio_unit)||0;
-      (REP.itemsByPP[pp]=REP.itemsByPP[pp]||[]).push({ producto_id:it.producto_id, cantidad:c, subtotal:c*p, estado:estadoOC[it.oc_id]||'' });
+      (REP.itemsByPP[pp]=REP.itemsByPP[pp]||[]).push({ producto_id:it.producto_id, cantidad:c, subtotal:c*p, estado:estadoOC[it.oc_id]||'', rubro_codigo:it.rubro_codigo||'', codigo_insumo:it.codigo_insumo||'' });
     });
     // poblar filtro de obras
     const obras = {}; REP.cab.forEach(function(c){ if(c.obra) obras[c.obra]=1; });
@@ -8991,11 +9017,25 @@ function buildRows(){
   cabSel.forEach(function(c){
     const items = REP.itemsByPP[c.codigo]||[];
     // INSUMOS (cantidad)
-    REP.insumos.filter(function(x){ return x.presupuesto===c.codigo; }).forEach(function(m){
-      let reserv=0, ejec=0;
-      items.forEach(function(it){ if(_resolveIns(it.producto_id)!==m.codigo_insumo) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.cantidad; else if(_RES.indexOf(it.estado)>=0) reserv+=it.cantidad; });
+    // v8.3 · Cada compra descuenta UNA línea: el insumo guardado en la OC (o el mapa
+    // producto→insumo en las viejas) en su rubro; si ese rubro no lo tiene, la primera línea del insumo.
+    const _lin = REP.insumos.filter(function(x){ return x.presupuesto===c.codigo; });
+    const _agg = {};
+    items.forEach(function(it){
+      const ci = it.codigo_insumo || _resolveIns(it.producto_id); if(!ci) return;
+      let k = (it.rubro_codigo||'') + '|' + ci;
+      if(!_lin.some(function(x){ return ((x.rubro_codigo||'') + '|' + x.codigo_insumo) === k; })){
+        const f = _lin.filter(function(x){ return x.codigo_insumo === ci; })[0]; if(!f) return;
+        k = (f.rubro_codigo||'') + '|' + ci;
+      }
+      const a = _agg[k] || (_agg[k] = { ejec:0, reserv:0 });
+      if(_EJE.indexOf(it.estado)>=0) a.ejec += it.cantidad; else if(_RES.indexOf(it.estado)>=0) a.reserv += it.cantidad;
+    });
+    _lin.forEach(function(m){
+      const _a = _agg[(m.rubro_codigo||'') + '|' + m.codigo_insumo] || { ejec:0, reserv:0 };
+      let reserv=_a.reserv, ejec=_a.ejec;
       const comprado=reserv+ejec, pres=Number(m.cantidad)||0, saldo=pres-comprado;
-      rows.push({ pp:c.codigo, obra:c.obra||'', sector:'', tipo:'insumo', ref:m.codigo_insumo, desc:m.material, unid:m.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:false });
+      rows.push({ pp:c.codigo, obra:c.obra||'', sector:'', tipo:'insumo', ref:m.codigo_insumo, desc:m.material+(m.mods?' · '+m.mods:''), unid:m.unidad||'', pres:pres, reserv:reserv, ejec:ejec, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:false });
     });
     // RUBROS de servicio (dinero)
     const certPP = REP.certByPP[c.codigo] || {};
@@ -11653,16 +11693,21 @@ async function npCargar(){
     cand.forEach(function(o){ byId[o.id] = o; });
     if(ids.length){
       const porOC = {};
-      const { data:it } = await sb.from('ordenes_compra_items').select('id,oc_id,producto_nombre,cantidad,precio_unit,rubro_codigo').in('oc_id', ids);
+      // v8.3 · También los materiales marcados «no presupuestado» dentro de una OC con presupuesto
+      let _itR = await sb.from('ordenes_compra_items').select('id,oc_id,producto_nombre,cantidad,precio_unit,rubro_codigo,sin_presupuesto,tipo_linea,trabajo_admin').in('oc_id', ids);
+      if(_itR.error) _itR = await sb.from('ordenes_compra_items').select('id,oc_id,producto_nombre,cantidad,precio_unit,rubro_codigo').in('oc_id', ids);
+      const it = _itR.data;
       (it||[]).forEach(function(x){
         const o = byId[x.oc_id] || {};
+        if(x.trabajo_admin) return;   // lo de administración se liquida aparte
+        const npLinea = x.sin_presupuesto === true || x.tipo_linea === 'no_presupuestado';
         const sinRubro = !x.rubro_codigo, sinPP = !o.presupuesto;
-        if(!sinRubro && !sinPP) return;
+        if(!sinRubro && !sinPP && !npLinea) return;
         if(yaReg['oc|oc'+x.oc_id]) return;   // la compra se regulariza entera, no ítem por ítem
         const k = 'oc'+x.oc_id;
         const g = porOC[k] || (porOC[k] = { origen:'oc', ref:'oc'+x.oc_id, fecha:o.fecha||'',
           doc:o.numero_oc||('OC '+x.oc_id), quien:o.proveedor||'', detalle:'', unidad:'', cantidad:0, monto:0,
-          nota:(sinPP?'Orden sin presupuesto':'Ítems sin rubro'), items:[] });
+          nota:(sinPP?'Orden sin presupuesto':(npLinea?'Material no presupuestado':'Ítems sin rubro')), items:[] });
         const imp = Math.round((Number(x.cantidad)||0)*(Number(x.precio_unit)||0));
         g.monto += imp;
         g.items.push({ nombre:x.producto_nombre||'', cantidad:Number(x.cantidad)||0, monto:imp });
