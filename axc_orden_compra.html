@@ -4416,7 +4416,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.3.3 · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.3.5 · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -7413,7 +7413,20 @@ function fpRender(){
     cont.innerHTML = '<div class="fp-vacio">Escribí el N° de presupuesto arriba y apretá «Cargar faltante».</div>';
     document.getElementById('fpCount').textContent = '—'; return;
   }
-  if(cartBudget.mats === null){ cont.innerHTML = '<div class="fp-vacio">Cargando materiales del presupuesto…</div>'; return; }
+  if(cartBudget.mats === null){
+    FP._cargaDesde = FP._cargaDesde || Date.now();
+    const tarda = (Date.now() - FP._cargaDesde) > 12000;
+    cont.innerHTML = '<div class="fp-vacio">Cargando materiales del presupuesto…' + (tarda
+      ? '<div style="margin-top:8px;font-size:12.5px">Está tardando más de lo normal. <button type="button" id="fpReintentar" style="margin-left:6px;padding:4px 12px;border-radius:7px;border:1px solid #1F3864;background:#fff;color:#1F3864;font-weight:700;cursor:pointer">Reintentar</button></div>' : '') + '</div>';
+    if(!tarda){ clearTimeout(FP._cargaT); FP._cargaT = setTimeout(function(){ try{ if(cartBudget.mats === null) fpRender(); }catch(e){} }, 12500); }
+    const _rb = document.getElementById('fpReintentar');
+    if(_rb) _rb.onclick = function(){
+      FP._cargaDesde = 0; const _pp = cartBudget.pp; delete CBM.cache[_pp]; cartBudget.mats = null; fpRender();
+      cartBudgetLoad(_pp).then(function(){ try{ fpRender(); renderCart(); }catch(e){} });
+    };
+    return;
+  }
+  FP._cargaDesde = 0;
   { const pie = document.querySelector('#fpPanel .fp-foot'); if(pie) pie.style.display = ''; const sub = document.getElementById('fpSub'); if(sub && sub._orig) sub.textContent = sub._orig; }   // v2.8
 
   // v8.2.9 · Lo ya consumido se muestra en gris; la casilla ahora sirve para ocultarlo
@@ -7485,7 +7498,7 @@ function fpRender(){
       }
       const calc = (FP.mat[key] != null) ? FP.mat[key]
                  : (q !== '' ? Math.round(x.cu * Number(q) * 100)/100 : '');
-      const exceso = calc !== '' && Number(calc) > x.saldo;
+      const exceso = calc !== '' && Number(calc) > x.saldo && !_fpRedondeo(calc, x.saldo);   // v8.3.4
       const puBase = (FP.prod[key] ? Number(FP.prod[key].precio) : Number(x.m.precio_cong)) || 0;
       const puOv   = FP.precio[key];
       const pu     = (puOv != null && puOv !== '') ? (Number(puOv)||0) : puBase;
@@ -7809,7 +7822,7 @@ async function fpAgregarAlCarrito(){
         ? (Number(puOv)||0)
         : ((ov ? Number(ov.precio) : Number(x.m.precio_cong)) || 0);
       hayAlgo = true;
-      pend.push({ r:r, x:x, key:key, v:v, pu:pu, ov:ov, esMO:esMO, sobre:(v > x.saldo) });
+      pend.push({ r:r, x:x, key:key, v:v, pu:pu, ov:ov, esMO:esMO, sobre:(v > x.saldo && !_fpRedondeo(v, x.saldo)), redondeo:_fpRedondeo(v, x.saldo) });
     });
     if(hayAlgo) rubrosTocados.push(r);
   });
@@ -10718,6 +10731,28 @@ function _cbAutoImputar(){
   });
 }
 /* Destino de débito EFECTIVO de un ítem del carrito (para el badge). Devuelve {txt,color,excede} */
+/* v8.3.4 · REDONDEO A UNIDAD ENTERA
+   El presupuesto calcula con fracciones (1,3 barras; 0,46 bolsa) y la obra compra unidades completas.
+   Pasarse del saldo SOLO por llevar el pedido a la unidad entera siguiente no es un exceso: no pide
+   justificación y queda registrado como «Redondeo». Es redondeo cuando, para ese material y rubro:
+     · el total pedido es un número entero,
+     · es exactamente la unidad entera que cubre el saldo (p. ej. saldo 1,3 → 2; saldo 10,7 → 11), y
+     · el saldo era de al menos 0,1 de unidad (si ya estaba agotado, es un exceso de verdad). */
+/* Interruptor: el redondeo a unidad entera está EN PAUSA. Para activarlo: OC_REDONDEO = true. */
+const OC_REDONDEO = false;
+function _cbEsRedondeo(m, a){
+  if(!OC_REDONDEO) return false;
+  const previo = (Number(m.limite)||0) - (Number(a.ejec)||0) - (Number(a.reserv)||0);   // saldo antes de esta orden
+  const total = Number(a.carr)||0;
+  if(!(previo >= 0.1) || !(total > previo + 1e-9)) return false;
+  return Math.abs(total - Math.round(total)) < 1e-6 && Math.round(total) === Math.ceil(previo - 1e-9);
+}
+function _fpRedondeo(v, saldo){   // el mismo criterio, para lo que se carga desde «Traer del presupuesto»
+  if(!OC_REDONDEO) return false;
+  v = Number(v)||0; saldo = Number(saldo)||0;
+  if(!(saldo >= 0.1) || !(v > saldo + 1e-9)) return false;
+  return Math.abs(v - Math.round(v)) < 1e-6 && Math.round(v) === Math.ceil(saldo - 1e-9);
+}
 function _cbItemDestino(it){ return cbmWith(cbmItPP(it), function(){ return _cbItemDestino0(it); }); }
 function _cbItemDestino0(it){
   if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
@@ -10729,8 +10764,9 @@ function _cbItemDestino0(it){
     const m=(cartBudget.mats||[]).find(function(x){ return x.codigo_insumo===curIns && (x.rubro_codigo||'')===rkLinea; });
     if(m){
       const a=_cbAgg(curIns, rkLinea); const disp=m.limite - a.ejec - a.reserv - a.carr;
-      const col = m.limite<=0 ? '#5a6677' : (disp<0?'#c0392b':(disp<m.limite*0.15?'#C8A028':'#1B5524'));
-      return { txt:'Insumo · Rubro '+(rkLinea||'General'), color:col, excede:disp<0 };
+      const _red = disp<0 && _cbEsRedondeo(m, a);   // v8.3.4
+      const col = m.limite<=0 ? '#5a6677' : (_red ? '#8a6d10' : (disp<0?'#c0392b':(disp<m.limite*0.15?'#C8A028':'#1B5524')));
+      return { txt:'Insumo · Rubro '+(rkLinea||'General')+(_red?' · redondeo a unidad entera':''), color:col, excede:(disp<0 && !_red), redondeo:_red };
     }
   }
   if(curRub){
@@ -10948,6 +10984,7 @@ function _cbExcesoDetalle(){
     const a = _cbAgg(m.codigo_insumo, rk);
     const disp = m.limite - a.ejec - a.reserv - a.carr;
     if(!(disp < 0)) return;
+    if(a.carr > 0 && _cbEsRedondeo(m, a)) return;   // v8.3.4 · redondeo a unidad entera: no es exceso
     const rl = rk ? (' ['+rk+']') : '', un = m.unidad || '';
     if(a.carr > 0){
       const quedaba = Math.max(0, m.limite - a.ejec - a.reserv);
@@ -11670,6 +11707,7 @@ async function submitOC(){
         const _ci = (_enPP && !it.trabajo_admin && !it.sin_presupuesto && !it.es_mano_obra)
           ? cbmWith(cbmItPP(it), function(){ return fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : ''; }) : '';
         row.codigo_insumo = _ci || null;
+        if(_enPP && !it.trabajo_admin && !it.sin_presupuesto && !it.es_mano_obra){ try{ const _dd = _cbItemDestino(it); if(_dd && _dd.redondeo) row.motivo = 'Redondeo a unidad entera'; }catch(_eR){} }   // v8.3.4
         row.tipo_linea = it.es_mano_obra ? 'mano_obra' : (it.trabajo_admin ? 'trabajo_admin'
           : (_enPP ? (it.sin_presupuesto ? 'no_presupuestado' : 'presupuestado') : 'sin_presupuesto'));
       }catch(_eI){ console.warn('imputación de la línea', _eI); }
@@ -11688,8 +11726,8 @@ async function submitOC(){
     if(itemsPayload.length > 0){
       let {error: itemsError} = await sb.from('ordenes_compra_items').insert(itemsPayload);
       // v8.3 · Sin las columnas de imputación (falta axc_v83_modificaciones.sql): se guarda sin ellas
-      if(itemsError && /codigo_insumo|tipo_linea/i.test(itemsError.message || '')){
-        itemsPayload.forEach(function(r){ delete r.codigo_insumo; delete r.tipo_linea; });
+      if(itemsError && /codigo_insumo|tipo_linea|motivo/i.test(itemsError.message || '')){
+        itemsPayload.forEach(function(r){ delete r.codigo_insumo; delete r.tipo_linea; delete r.motivo; });
         const _rI = await sb.from('ordenes_compra_items').insert(itemsPayload);
         itemsError = _rI.error;
         if(!itemsError) showToast('La OC se guardó, pero falta correr axc_v83_modificaciones.sql en la base. Avisá a Conexdata.', 'error');
@@ -19392,6 +19430,7 @@ function dstSyncPaso2(){
   if(wex) wex.style.display = exc.length ? '' : 'none';
   if(ex){ ex.oninput = function(){ wizard.form.justificacion_exceso = ex.value; }; if(!exc.length){ ex.value = ''; wizard.form.justificacion_exceso = ''; } }
   try{ cbmExcesoRender(exc); }catch(eE){ console.warn('detalle del exceso', eE); }   // v2.9.1
+  try{ cbmRedondeoRender(); }catch(eR){ console.warn('detalle del redondeo', eR); }   // v8.3.4
 }
 function dstValidarPaso2(){
   const f = wizard.form || {}, m = f.destino || '';
@@ -19754,25 +19793,49 @@ function cbmWith(pp, fn){
   const cur = cbmSnap(); cbmPut(s);
   try{ return fn(); } finally { cbmPut(cur); }
 }
+/* v8.3.5 · Las cargas de presupuestos se hacen UNA TRAS OTRA.
+   Antes, al tildar varios presupuestos (o tocar una pestaña mientras otro cargaba) las cargas se pisaban:
+   cada una cambiaba el presupuesto activo y, al terminar, devolvía una copia vieja. Resultado: un
+   presupuesto quedaba para siempre en «Cargando materiales del presupuesto…». */
+let _cbCola = Promise.resolve();
+function _cbExclusivo(fn){
+  const run = function(){ return fn(); };
+  const p = _cbCola.then(run, run);
+  _cbCola = p.catch(function(){});
+  return p;
+}
 async function cbmEnsure(pp){
   if(!pp) return;
   if(pp === cartBudget.pp && Array.isArray(cartBudget.mats)){ cbmGuardarActual(); return; }
   if(CBM.cache[pp] || CBM._pend[pp]) return;
-  CBM._pend[pp] = true; cbmGuardarActual();
-  const cur = cbmSnap(); CBM._cargando = true;
-  try{ await cartBudgetLoad(pp); CBM.cache[pp] = cbmSnap(); }
-  catch(e){ console.warn('cargar presupuesto '+pp, e); }
-  finally{ cbmPut(cur); CBM._cargando = false; delete CBM._pend[pp]; }
+  CBM._pend[pp] = true;
+  try{
+    await _cbExclusivo(async function(){
+      if(CBM.cache[pp]) return;                                              // lo resolvió otra carga mientras esperaba
+      if(pp === cartBudget.pp && Array.isArray(cartBudget.mats)){ cbmGuardarActual(); return; }
+      cbmGuardarActual();
+      const cur = cbmSnap(); CBM._cargando = true;                           // la copia se toma cuando le toca el turno
+      try{ await _cartBudgetLoadRaw(pp); CBM.cache[pp] = cbmSnap(); }
+      catch(e){ console.warn('cargar presupuesto '+pp, e); }
+      finally{ cbmPut(cur); CBM._cargando = false; }
+    });
+  } finally { delete CBM._pend[pp]; }
 }
 async function cbmActivar(pp){
   if(!pp || pp === cartBudget.pp) return;
-  cbmGuardarActual();
-  if(CBM.cache[pp]) cbmPut(CBM.cache[pp]);
-  else { CBM._cargando = true; try{ await cartBudgetLoad(pp); CBM.cache[pp] = cbmSnap(); } finally { CBM._cargando = false; } }
+  await _cbExclusivo(async function(){
+    if(pp === cartBudget.pp) return;
+    cbmGuardarActual();
+    if(CBM.cache[pp]) cbmPut(CBM.cache[pp]);
+    else { CBM._cargando = true; try{ await _cartBudgetLoadRaw(pp); CBM.cache[pp] = cbmSnap(); } finally { CBM._cargando = false; } }
+  });
   if(typeof FP !== 'undefined'){ FP.qty = {}; FP.mat = {}; FP.rubroDestino = null; FP.sector = ''; }
   try{ fppInfoRender(); }catch(e){}   // ficha del presupuesto de la pestaña
   try{ fpRender(); }catch(e){} try{ renderCart(); }catch(e){} try{ fpmBanner(); }catch(e){}
 }
+/* La carga normal (al elegir el presupuesto en el paso 1) también hace cola */
+const _cartBudgetLoadRaw = cartBudgetLoad;
+cartBudgetLoad = function(pp){ return _cbExclusivo(function(){ return _cartBudgetLoadRaw(pp); }); };
 function cbmVolverPrincipal(){
   const f = wizard.form || {};
   if(f._pp && cartBudget.pp && cartBudget.pp !== f._pp && CBM.cache[f._pp]){ cbmGuardarActual(); cbmPut(CBM.cache[f._pp]); }
@@ -19881,6 +19944,33 @@ function cbmExcesoDetalle(it){
     }
     return null;
   });
+}
+function dstRedondeos(){
+  if(!cartBudget.pp) return [];
+  return (wizard.cart||[]).filter(function(it){
+    if(it.trabajo_admin || it.sin_presupuesto || it.es_mano_obra) return false;
+    try{ const d = _cbItemDestino(it); return !!(d && d.redondeo); }catch(e){ return false; }
+  });
+}
+function cbmRedondeoRender(){
+  const wex = document.getElementById('wrapExceso'); if(!wex || !wex.parentNode) return;
+  let box = document.getElementById('cbmRedDet');
+  if(!box){
+    box = document.createElement('div'); box.id = 'cbmRedDet';
+    box.style.cssText = 'margin-top:8px;padding:10px 13px;border-radius:9px;background:#eef4fb;border:1px solid #c6d8ee;color:#1f4e78;font-size:12.5px;line-height:1.5';
+    wex.parentNode.insertBefore(box, wex);
+  }
+  const red = dstRedondeos();
+  if(!red.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  const filas = red.map(function(it){
+    const d = cbmExcesoDetalle(it); if(!d) return '<li><b>'+dstEsc(it.producto_nombre||'Material')+'</b></li>';
+    const u = d.unidad ? ' <span class="cbm-u">(en '+dstEsc(d.unidad)+')</span>' : '';
+    return '<li><b>'+dstEsc(d.nombre)+'</b> · <b>'+dstEsc(d.pp)+'</b>, rubro '+dstEsc(d.rubro)+': pedís '+d.pedido+' · quedan '+d.quedan+' · <b>+'+d.pasa+' por redondeo</b>'+u+'</li>';
+  }).join('');
+  box.innerHTML = '<b>Redondeo a unidad entera</b> · '+red.length+' material'+(red.length===1?'':'es')+
+    '<div style="margin-top:2px">Se compran por unidad completa y el presupuesto tenía una fracción. <b>No necesitan justificación</b>; queda anotado en la orden.</div>'+
+    '<ul style="margin:6px 0 0 18px;padding:0">'+filas+'</ul>';
+  box.style.display = 'block';
 }
 function cbmExcesoRender(exc){
   const wex = document.getElementById('wrapExceso'); if(!wex) return;
