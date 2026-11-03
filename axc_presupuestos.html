@@ -2820,6 +2820,11 @@ async function openEdit(codigo){
         setTimeout(function(){ if(ed.open && !document.getElementById('piOv')) abrirPlanillaIntegral(); }, 400);
       }
     }catch(e){}
+    const _entA = _rubrosCodigoEntreSectores(ed.rubros);
+    if(_entA.length){   // v8.3.6
+      showToast(_entA.length+' rubro'+(_entA.length===1?'':'s')+' repetido'+(_entA.length===1?'':'s')+' en distintos sectores', 'error',
+        _entA.map(function(x){ return x.codigo; }).join(' · ')+' — comparten materiales y el costo sale duplicado. Se diferencian al guardar.');
+    }
     const _rep = _rubrosCodigoRepetido(ed.rubros);
     if(_rep.length){
       showToast('Hay códigos de rubro repetidos en el mismo sector', 'error',
@@ -3131,6 +3136,38 @@ function _rubrosCodigoRepetido(lista){
   return orden.map(function(k){ return g[k]; }).filter(function(x){ return x.filas.length > 1; });
 }
 
+/* v8.3.6 · Mismo código en DISTINTOS sectores.
+   Los materiales y la mano de obra del presupuesto cuelgan del CÓDIGO del rubro, no del sector. Si 04.086
+   está cargado en dos sectores, las dos filas se reparten las mismas líneas y el costo de cada una sale
+   duplicado. Para que cada sector lleve las suyas, la segunda y las siguientes pasan a llevar un código con
+   letra (04.086-B, 04.086-C), que toma la composición del código base. */
+function _rubrosCodigoEntreSectores(lista){
+  const g = {}, orden = [];
+  (lista||ed.rubros||[]).forEach(function(r,i){
+    const cod = String(r.rubro_codigo||'').trim(); if(!cod) return;
+    const k = cod.toUpperCase();
+    if(!g[k]){ g[k] = { codigo:cod, filas:[], sectores:{} }; orden.push(k); }
+    g[k].filas.push(i); g[k].sectores[String(r.sector||'').trim().toUpperCase()] = 1;
+  });
+  return orden.map(function(k){ return g[k]; }).filter(function(x){ return x.filas.length > 1 && Object.keys(x.sectores).length > 1; });
+}
+/* Renombra las repeticiones (la primera conserva su código) y regenera los materiales de esos rubros desde
+   su composición, cada uno con su propia cantidad. Devuelve la lista de cambios. */
+async function _diferenciarEntreSectores(grupos){
+  const usados = {}; ed.rubros.forEach(function(x){ usados[String(x.rubro_codigo||'').toUpperCase()] = 1; });
+  const cambios = [], recalcular = [];
+  grupos.forEach(function(g){
+    recalcular.push(g.codigo);
+    g.filas.slice(1).forEach(function(i){
+      const nuevo = _codigoLibre(g.codigo, usados); usados[nuevo.toUpperCase()] = 1;
+      cambios.push(ed.rubros[i].rubro_codigo + ' → ' + nuevo + ' (' + (ed.rubros[i].sector||'sin sector') + ')');
+      ed.rubros[i].rubro_codigo = nuevo; recalcular.push(nuevo);
+    });
+  });
+  renderRubros();
+  if(typeof calcInsumosFromRecetas === 'function') await calcInsumosFromRecetas(true, recalcular, { restaurar:true });
+  return cambios;
+}
 /* Siguiente código libre con sufijo: 01.039 → 01.039-B, -C… */
 /* v9.5 · Código del catálogo de un rubro del presupuesto. Los rubros repetidos
    en varios sectores llevan sufijo (07.003-B, 07.003-C): su composición es la
@@ -3568,10 +3605,21 @@ function addRubro(){
     document.getElementById('pmRubMO').focus(); return;
   }
   // evitar duplicado exacto (mismo sector + mismo código)
-  if(ed.rubros.some(function(r){ return r.sector===sector && r.rubro_codigo===a.codigo; })){
-    showToast('Ese rubro ya está cargado en ese sector', 'error'); return;
+  const _yaEnSector = ed.rubros.filter(function(r){ return r.sector===sector && String(_codBase(r.rubro_codigo)).toUpperCase() === String(a.codigo).toUpperCase(); })[0];
+  if(_yaEnSector){
+    showToast('Ese rubro ya está cargado en ese sector', 'error', _yaEnSector.rubro_codigo !== a.codigo
+      ? ('Figura como ' + _yaEnSector.rubro_codigo + '. Si es otro trabajo, cargalo en otro sector.') : '');
+    return;
   }
-  const nuevo = { sector:sector, rubro_codigo:a.codigo, descripcion:a.nombre, unidad:a.unidad||'',
+  // v8.3.6 · Si el rubro ya está en OTRO sector, se carga con código diferenciado (04.086-B): cada sector
+  // lleva sus propios materiales y mano de obra, y el costo no se duplica.
+  let codFinal = a.codigo;
+  if(ed.rubros.some(function(r){ return String(r.rubro_codigo||'').toUpperCase() === String(a.codigo).toUpperCase(); })){
+    const _us = {}; ed.rubros.forEach(function(x){ _us[String(x.rubro_codigo||'').toUpperCase()] = 1; });
+    codFinal = _codigoLibre(a.codigo, _us);
+    showToast('Cargado como ' + codFinal, 'success', a.codigo + ' ya estaba en otro sector: así cada sector lleva sus propios materiales.');
+  }
+  const nuevo = { sector:sector, rubro_codigo:codFinal, descripcion:a.nombre, unidad:a.unidad||'',
                   cantidad:cant, precio_total: (a.tiene_receta?0:pt), tiene_receta:!!a.tiene_receta,
                   material_unit: (a.tiene_receta?null:mat), mano_obra_unit: (a.tiene_receta?null:mo),
                   capitulo: (a.capitulo && String(a.capitulo).trim()) ? String(a.capitulo).trim() : '' };
@@ -3593,7 +3641,7 @@ function addRubro(){
   // si tiene receta, cargar sus insumos automáticamente
   if(teniaReceta && typeof calcInsumosFromRecetas==='function'){
     // v9.0: solo el rubro nuevo; antes recalculaba todo y pisaba los ajustes a mano
-    calcInsumosFromRecetas(true, [a.codigo]);
+    calcInsumosFromRecetas(true, [codFinal]);
   }
 }
 
@@ -4643,6 +4691,28 @@ async function saveBudget(){
       });
       renderRubros();
       showToast('Códigos diferenciados', 'success', _cambios.join(' · '));
+    }
+
+    // ── v8.3.6 · Mismo código en distintos sectores ─────────────────
+    const _ent = _rubrosCodigoEntreSectores(ed.rubros);
+    if(_ent.length){
+      const _desc2 = function(g){
+        return '<b>'+escapeHtml(g.codigo)+'</b> en '+g.filas.map(function(i){ const r=ed.rubros[i];
+          return escapeHtml(r.sector||'sin sector')+' ('+escapeHtml(_qty(Number(r.cantidad)||0)+' '+(r.unidad||''))+')'; }).join(' · ');
+      };
+      const r2 = await pmAvisoSalida({
+        titulo:'Hay rubros repetidos en distintos sectores',
+        subtitulo:codigo+' · '+_ent.length+' rubro'+(_ent.length===1?'':'s')+' repetido'+(_ent.length===1?'':'s'),
+        texto:'Los materiales y la mano de obra cuelgan del <b>código</b> del rubro. Si el mismo código está en dos sectores, las dos filas comparten las mismas líneas y <b>el costo de cada una sale duplicado</b>. Para que cada sector lleve las suyas, el segundo pasa a llevar un código con letra (por ejemplo 04.086-B), con la misma composición.',
+        puntos:_ent.map(_desc2).concat([
+          'Cada rubro conserva su sector, su descripción y su cantidad.',
+          'Los materiales y la mano de obra de estos rubros <b>se vuelven a generar desde su composición</b>: se pierden los ajustes hechos a mano en ellos.'
+        ]),
+        textoVolver:'Revisar la lista', textoGuardar:'Diferenciar y guardar', ocultarSalir:true, onGuardar: async function(){}
+      });
+      if(r2 !== 'guardado'){ btn.disabled=false; btn.textContent=old; return; }
+      const _cam2 = await _diferenciarEntreSectores(_ent);
+      showToast('Códigos diferenciados', 'success', _cam2.join(' · '));
     }
 
     // Rubros: reemplazo completo
