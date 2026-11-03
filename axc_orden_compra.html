@@ -4416,7 +4416,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.3.2 · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.3.3 · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -8318,14 +8318,37 @@ function fillAndOpenModal(prod, lineIdx){
   // siempre la primera y, al guardar, se la reemplazaba perdiendo su rubro y destino.
   const _mismo = function(c){ return c && String(c.producto_id) === String(prod.id); };
   const lineas = wizard.cart.filter(_mismo);
+  // v8.3.3 · Comprando «para el rubro X»: el material se busca y se edita por RUBRO. Si el material ya está
+  // en el carrito para otro rubro, esta compra se agrega como línea aparte (no reemplaza ni suma a la otra).
+  const _destRub = fpmRubroDestinoActivo();
   let inCart = null;
   if(lineIdx != null && _mismo(wizard.cart[lineIdx])) inCart = wizard.cart[lineIdx];
+  else if(_destRub) inCart = lineas.filter(function(c){ return fpmRubroDeLinea(c) === _destRub; })[0] || null;
   else if(lineas.length === 1) inCart = lineas[0];
   wizard.modalLine = inCart;
+  const _otras = lineas.filter(function(c){ return c !== inCart; });
+  const _rubInCart = inCart ? fpmRubroDeLinea(inCart) : '';
 
   document.getElementById('prodModalTitle').textContent = prod.nombre;
-  document.getElementById('prodModalEyebrow').textContent = inCart ? 'Editar item del carrito'
-    : (lineas.length > 1 ? 'Agregar al carrito · ya está en ' + lineas.length + ' líneas' : 'Agregar al carrito');
+  document.getElementById('prodModalEyebrow').textContent = inCart
+    ? ('Editar item del carrito' + (_rubInCart ? ' · rubro ' + fpmRubroEtiqueta(_rubInCart) : ''))
+    : (_destRub ? ('Agregar al carrito · para el rubro ' + fpmRubroEtiqueta(_destRub))
+      : (lineas.length > 1 ? 'Agregar al carrito · ya está en ' + lineas.length + ' líneas' : 'Agregar al carrito'));
+  // Aviso: dónde más está este material dentro de la orden
+  (function(){
+    let nt = document.getElementById('prodModalNote');
+    if(!nt){
+      nt = document.createElement('div'); nt.id = 'prodModalNote';
+      nt.style.cssText = 'margin:8px 0 2px;padding:8px 11px;border-radius:8px;background:#eef4fb;border:1px solid #c6d8ee;color:#1f4e78;font-size:12.5px;line-height:1.45';
+      document.getElementById('prodModalTitle').insertAdjacentElement('afterend', nt);
+    }
+    if(_otras.length){
+      const donde = _otras.map(function(c){ const rk = fpmRubroDeLinea(c); return (rk ? fpmRubroEtiqueta(rk) : 'sin rubro') + ' (' + c.cantidad + (c.unidad ? ' ' + c.unidad : '') + ')'; }).join(' · ');
+      nt.innerHTML = '<b>También está en el carrito:</b> ' + escapeHtml(donde) + '.<br>' +
+        (inCart ? 'Estás editando solo la línea de este rubro.' : 'Esta compra se agrega <b>aparte</b>, con su propio rubro y cantidad. En el PDF al proveedor sale en una sola línea con el total.');
+      nt.style.display = 'block';
+    } else { nt.style.display = 'none'; nt.textContent = ''; }
+  })();
   document.getElementById('prodModalPVR').textContent = fmtMoney(prod.precio_referencia);
 
   const imgWrap = document.getElementById('prodModalImg');
@@ -8628,6 +8651,8 @@ function renderCart(){
       if(!wizard.cart[idx]) return;
       wizard.cart[idx]._rubroManual = true;   // el usuario eligió a mano → la auto-imputación no lo pisa
       const v = sel.value;
+      wizard.cart[idx]._fpmRub = (v && v.indexOf('@@') < 0) ? v : '';   // v8.3.3 · el rubro elegido es el de ESTA línea
+      delete wizard.cart[idx]._rap_presu;                                // y el rubro de aplicación se recalcula con él
       if(v.indexOf('@@') >= 0){
         const parts = v.split('@@');
         wizard.cart[idx].rubro_codigo = parts[1] || '';
@@ -10627,11 +10652,13 @@ function _cbAggMoney(rubroKey){
     return (lineRub && typeof fpmRubroDeEste === 'function' && fpmRubroDeEste(String(lineRub))) ? String(lineRub) : a;
   };
   (cartBudget.ocItems||[]).forEach(function(x){
-    if(_rk(x.producto_id, x.rubro_codigo) !== rubroKey) return;
+    const _lr = String(x.rubro_codigo||'');   // v8.3.3 · material comprado para varios rubros: manda el de la línea
+    const _rkx = (_lr && _cbMultiRubro()[String(x.producto_id)] && fpmRubroDeEste(_lr)) ? _lr : _rk(x.producto_id, x.rubro_codigo);
+    if(_rkx !== rubroKey) return;
     if(_CB_EJEC.indexOf(x.estado)>=0) ejec += x.subtotal;
     else if(_CB_RESERVA.indexOf(x.estado)>=0) reserv += x.subtotal;
   });
-  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(cbmItPP(it) !== cartBudget.pp) return; if(_rk(it.producto_id, it.rubro_codigo, it._fpmRub) === rubroKey) carr += Number(it.subtotal)||0; });
+  (wizard.cart||[]).forEach(function(it){ if(it.trabajo_admin || it.sin_presupuesto) return; if(cbmItPP(it) !== cartBudget.pp) return; const _rkc = (it._fpmRub && fpmRubroDeEste(it._fpmRub)) ? it._fpmRub : _rk(it.producto_id, it.rubro_codigo, it._fpmRub); if(_rkc === rubroKey) carr += Number(it.subtotal)||0; });
   return { ejec:ejec, reserv:reserv, carr:carr };
 }
 
@@ -19596,11 +19623,16 @@ function fpmImputarNuevos(){
     let ya = _cbResolveRubro(it.producto_id);
     if(ya && !fpmRubroDeEste(ya)) ya = '';   // asociado a un rubro de otro presupuesto: se toma el elegido
     if(ya && ya !== key){
-      try{ showToast((it.producto_nombre||'Este producto')+' ya está asignado al rubro '+ya, 'info', 'Si esta compra es para otro rubro, cambialo en el carrito'); }catch(e){}
+      // v8.3.3 · El mismo material para OTRO rubro: queda como línea aparte, con su rubro y su cantidad.
+      // La asociación del producto con el primer rubro no se toca.
+      it._fpmRub = key;
+      const rB = fpmRubro(key); if(rB && rB.rubro_codigo) it.rubro_codigo = String(rB.rubro_codigo);
+      try{ showToast('Agregado aparte para el rubro '+fpmRubroEtiqueta(key), 'success', (it.producto_nombre||'Este material')+' también está en '+fpmRubroEtiqueta(ya)+': cada rubro lleva su cantidad'); }catch(e){}
       return;
     }
     if(!ya || ya !== _cbResolveRubro(it.producto_id)) setProductoItem(it.producto_id, key);
     const r = fpmRubro(key); if(r && r.rubro_codigo) it.rubro_codigo = String(r.rubro_codigo);
+    it._fpmRub = key;   // v8.3.3
   });
 }
 /* v2.8.1 · El rubro de la línea y el rubro del que «debita» tienen que ser el mismo.
@@ -19616,6 +19648,7 @@ function fpmRubroDeEste(rk){ return !!rk && (cartBudget.rubros||[]).some(functio
 /* Rubro (por monto) de un ítem del carrito: el mismo criterio que usa el saldo */
 function fpmRubroItem(it){
   if(!it) return '';
+  if(it._fpmRub && fpmRubroDeEste(it._fpmRub)) return it._fpmRub;   // v8.3.3 · rubro propio de la línea
   const a = _cbResolveRubro(it.producto_id);
   if(a && fpmRubroDeEste(a)) return a;
   if(it._fpmRub) return it._fpmRub;
@@ -19648,12 +19681,45 @@ function fpmMarcarRubroAp(){
     if(!act.some(function(a){ return a.toLowerCase() === rap.toLowerCase(); })) it.rubros_ap = act.concat([rap]);
   });
 }
+/* v8.3.3 · EL MISMO MATERIAL EN VARIOS RUBROS
+   Un material (p. ej. el cemento) puede comprarse para rubros distintos en la misma orden. Cada compra es
+   una línea aparte, con su rubro y su cantidad: así el carrito, los saldos y los reportes saben cuánto va
+   a cada rubro. Solo el PDF al proveedor lo consolida en una línea (con el desglose por rubro). */
+function fpmRubroDeLinea(it){
+  if(!it) return '';
+  if(it._fpmRub && fpmRubroDeEste(it._fpmRub)) return it._fpmRub;
+  if(it._fpm && it._fpm !== '-' && fpmRubroDeEste(it._fpm)) return it._fpm;
+  if(it.rubro_codigo && fpmRubroDeEste(String(it.rubro_codigo))) return String(it.rubro_codigo);
+  return '';
+}
+function fpmRubroEtiqueta(key){
+  const r = key ? fpmRubro(key) : null;
+  return r ? (fpmRapLabel(r) || key) : (key || '');
+}
+function fpmRubroDestinoActivo(){
+  return (typeof FP !== 'undefined' && FP.rubroDestino && cartBudget.pp &&
+          !(wizard.form && wizard.form.destino && wizard.form.destino !== 'presupuesto')) ? FP.rubroDestino : '';
+}
+/* Productos que en órdenes ya guardadas se compraron para más de un rubro de este presupuesto:
+   para ellos manda el rubro de cada línea (y no la asociación única producto → rubro). */
+function _cbMultiRubro(){
+  if(cartBudget._multi && cartBudget._multiRef === cartBudget.ocItems) return cartBudget._multi;
+  const seen = {}, multi = {};
+  (cartBudget.ocItems||[]).forEach(function(x){
+    const rk = String(x.rubro_codigo||''); if(!rk || !fpmRubroDeEste(rk)) return;
+    const pid = String(x.producto_id);
+    (seen[pid] = seen[pid] || {})[rk] = 1;
+    if(Object.keys(seen[pid]).length > 1) multi[pid] = true;
+  });
+  cartBudget._multi = multi; cartBudget._multiRef = cartBudget.ocItems;
+  return multi;
+}
 function fpmSincronizarRubros(){
   if(!cartBudget.pp) return;
   (wizard.cart||[]).forEach(function(it){
     if(it.rubro_codigo || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto || it.producto_id == null) return;
     if(fpmEsInsumoDeEste(it)) return;
-    const rk = _cbResolveRubro(it.producto_id);
+    const rk = (it._fpmRub && fpmRubroDeEste(it._fpmRub)) ? it._fpmRub : _cbResolveRubro(it.producto_id);   // v8.3.3
     if(rk && !/^D:/.test(rk) && fpmRubroDeEste(rk)) it.rubro_codigo = rk;
   });
 }
