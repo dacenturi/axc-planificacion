@@ -2820,11 +2820,6 @@ async function openEdit(codigo){
         setTimeout(function(){ if(ed.open && !document.getElementById('piOv')) abrirPlanillaIntegral(); }, 400);
       }
     }catch(e){}
-    const _entA = _rubrosCodigoEntreSectores(ed.rubros);
-    if(_entA.length){   // v8.3.6
-      showToast(_entA.length+' rubro'+(_entA.length===1?'':'s')+' repetido'+(_entA.length===1?'':'s')+' en distintos sectores', 'error',
-        _entA.map(function(x){ return x.codigo; }).join(' · ')+' — comparten materiales y el costo sale duplicado. Se diferencian al guardar.');
-    }
     const _rep = _rubrosCodigoRepetido(ed.rubros);
     if(_rep.length){
       showToast('Hay códigos de rubro repetidos en el mismo sector', 'error',
@@ -3150,6 +3145,28 @@ function _rubrosCodigoEntreSectores(lista){
     g[k].filas.push(i); g[k].sectores[String(r.sector||'').trim().toUpperCase()] = 1;
   });
   return orden.map(function(k){ return g[k]; }).filter(function(x){ return x.filas.length > 1 && Object.keys(x.sectores).length > 1; });
+}
+/* ¿Diferenciar los códigos puede perjudicar algo? Solo se le pregunta al usuario en estos dos casos:
+   · hay ajustes hechos a mano en los materiales de esos rubros (se regeneran desde la composición), o
+   · el presupuesto ya tiene certificaciones o compras cargadas con esos códigos. */
+async function _riesgoDiferenciar(grupos, presupuesto){
+  const cods = {}; grupos.forEach(function(g){ cods[String(g.codigo).toUpperCase()] = g.codigo; });
+  const manuales = {};
+  (ed.insumos||[]).forEach(function(x){
+    if(x._removed) return;
+    const rc = String(x.rubro_codigo||''); if(!cods[rc.toUpperCase()]) return;
+    if(x.editado_manual || (!_isMO(x) && !_isLG(x) && x.precio_origen === 'manual') || _isLG(x) || /^Adicional/i.test(x.subtipo||'')) manuales[rc] = 1;
+  });
+  const refs = {}; let error = false;
+  try{
+    const lista = Object.keys(cods).map(function(k){ return cods[k]; });
+    const c1 = await sb.from('certificado_items').select('rubro_codigo').eq('presupuesto', presupuesto).in('rubro_codigo', lista).limit(2000);
+    if(c1.error) throw c1.error;
+    (c1.data||[]).forEach(function(r){ refs[r.rubro_codigo] = 1; });
+    const c2 = await sb.from('ordenes_compra_items').select('rubro_codigo').eq('presupuesto', presupuesto).in('rubro_codigo', lista).limit(2000);
+    if(!c2.error) (c2.data||[]).forEach(function(r){ refs[r.rubro_codigo] = 1; });
+  }catch(e){ error = true; console.warn('verificar referencias de rubros', e); }
+  return { manuales:Object.keys(manuales), refs:Object.keys(refs), error:error };
 }
 /* Renombra las repeticiones (la primera conserva su código) y regenera los materiales de esos rubros desde
    su composición, cada uno con su propia cantidad. Devuelve la lista de cambios. */
@@ -4693,26 +4710,34 @@ async function saveBudget(){
       showToast('Códigos diferenciados', 'success', _cambios.join(' · '));
     }
 
-    // ── v8.3.6 · Mismo código en distintos sectores ─────────────────
+    // ── v8.3.6 · El mismo rubro en varias plantas / sectores ─────────
+    // Es normal (planta baja, planta alta…). Como los materiales cuelgan del código del rubro, cada uno
+    // necesita el suyo: el segundo pasa a llevar una letra (04.086-B). Si no hay riesgo, se hace solo.
     const _ent = _rubrosCodigoEntreSectores(ed.rubros);
     if(_ent.length){
-      const _desc2 = function(g){
-        return '<b>'+escapeHtml(g.codigo)+'</b> en '+g.filas.map(function(i){ const r=ed.rubros[i];
-          return escapeHtml(r.sector||'sin sector')+' ('+escapeHtml(_qty(Number(r.cantidad)||0)+' '+(r.unidad||''))+')'; }).join(' · ');
-      };
-      const r2 = await pmAvisoSalida({
-        titulo:'Hay rubros repetidos en distintos sectores',
-        subtitulo:codigo+' · '+_ent.length+' rubro'+(_ent.length===1?'':'s')+' repetido'+(_ent.length===1?'':'s'),
-        texto:'Los materiales y la mano de obra cuelgan del <b>código</b> del rubro. Si el mismo código está en dos sectores, las dos filas comparten las mismas líneas y <b>el costo de cada una sale duplicado</b>. Para que cada sector lleve las suyas, el segundo pasa a llevar un código con letra (por ejemplo 04.086-B), con la misma composición.',
-        puntos:_ent.map(_desc2).concat([
-          'Cada rubro conserva su sector, su descripción y su cantidad.',
-          'Los materiales y la mano de obra de estos rubros <b>se vuelven a generar desde su composición</b>: se pierden los ajustes hechos a mano en ellos.'
-        ]),
-        textoVolver:'Revisar la lista', textoGuardar:'Diferenciar y guardar', ocultarSalir:true, onGuardar: async function(){}
-      });
-      if(r2 !== 'guardado'){ btn.disabled=false; btn.textContent=old; return; }
+      const _rg = await _riesgoDiferenciar(_ent, codigo);
+      const _hayRiesgo = _rg.error || _rg.manuales.length || _rg.refs.length;
+      if(_hayRiesgo){
+        const _desc2 = function(g){
+          return '<b>'+escapeHtml(g.codigo)+'</b> en '+g.filas.map(function(i){ const r=ed.rubros[i];
+            return escapeHtml(r.sector||'sin sector')+' ('+escapeHtml(_qty(Number(r.cantidad)||0)+' '+(r.unidad||''))+')'; }).join(' · ');
+        };
+        const _pts = _ent.map(_desc2);
+        if(_rg.manuales.length) _pts.push('<b>Tienen ajustes hechos a mano</b> (en '+_rg.manuales.map(escapeHtml).join(', ')+'): los materiales se vuelven a generar desde la composición y esos ajustes se pierden.');
+        if(_rg.refs.length) _pts.push('<b>Ya tienen certificaciones o compras</b> con el código actual (en '+_rg.refs.map(escapeHtml).join(', ')+'): quedan con la primera aparición de cada rubro, que conserva su código.');
+        if(_rg.error) _pts.push('No se pudo verificar si hay certificaciones o compras cargadas con estos códigos.');
+        _pts.push('Cada rubro conserva su sector, su descripción y su cantidad.');
+        const r2 = await pmAvisoSalida({
+          titulo:'El mismo rubro está en varias plantas o sectores',
+          subtitulo:codigo+' · '+_ent.length+' rubro'+(_ent.length===1?'':'s'),
+          texto:'Repetir un rubro en distintas plantas es normal. Para que cada una lleve <b>sus propios materiales y su propio costo</b>, el sistema le da un código distinto: el segundo pasa a llamarse, por ejemplo, <b>04.086-B</b>, con la misma composición.',
+          puntos:_pts,
+          textoVolver:'Revisar la lista', textoGuardar:'Diferenciar y guardar', ocultarSalir:true, onGuardar: async function(){}
+        });
+        if(r2 !== 'guardado'){ btn.disabled=false; btn.textContent=old; return; }
+      }
       const _cam2 = await _diferenciarEntreSectores(_ent);
-      showToast('Códigos diferenciados', 'success', _cam2.join(' · '));
+      showToast('Rubros por planta diferenciados', 'success', _cam2.join(' · '));
     }
 
     // Rubros: reemplazo completo
