@@ -8809,7 +8809,8 @@ function _roCompute(){
     const items=REP.itemsByPP[c.codigo]||[];
     // consumo (dinero) por rubro_codigo desde OC (reservado + ejecutado)
     const consByRub={};
-    items.forEach(function(it){ const rk=_resolveRub(it.producto_id); if(!rk) return; if(_EJE.indexOf(it.estado)>=0||_RES.indexOf(it.estado)>=0){ consByRub[rk]=(consByRub[rk]||0)+it.subtotal; } });
+    const _mr0=_multiRubro(items);
+    items.forEach(function(it){ const rk=_rubroDeItem(it,_mr0); if(!rk) return; if(_EJE.indexOf(it.estado)>=0||_RES.indexOf(it.estado)>=0){ consByRub[rk]=(consByRub[rk]||0)+it.subtotal; } });
     const certByRub=(RO.certByPP||{})[c.codigo]||{};   // mano de obra certificada
     // presupuestado (dinero) de insumos por rubro (recetas) + detalle de insumos
     const insMoneyByRub={}; const insListByRub={};
@@ -8961,6 +8962,21 @@ function _rubKey(r){ return r.rubro_codigo ? String(r.rubro_codigo) : ('D:'+_pn(
 
 function _resolveIns(pid){ const k=String(pid); const ov=REP.map[k]; if(ov && /^INS-/i.test(ov)) return ov; return REP.insMap[k]||''; }
 function _resolveRub(pid){ return REP.rmap[String(pid)]||''; }
+/* v8.3.3 · Un material comprado para VARIOS rubros del mismo presupuesto: manda el rubro de cada línea
+   (la asociación única producto → rubro solo sirve cuando el material va a un solo rubro). */
+function _multiRubro(items){
+  const seen={}, multi={};
+  (items||[]).forEach(function(it){
+    const rk=String(it.rubro_codigo||''); if(!rk) return;
+    const pid=String(it.producto_id); (seen[pid]=seen[pid]||{})[rk]=1;
+    if(Object.keys(seen[pid]).length>1) multi[pid]=true;
+  });
+  return multi;
+}
+function _rubroDeItem(it, multi){
+  const lr=String(it.rubro_codigo||'');
+  return (lr && multi && multi[String(it.producto_id)]) ? lr : _resolveRub(it.producto_id);
+}
 
 async function loadReport(){
   document.getElementById('pageSubtitle').textContent = 'Cargando datos…';
@@ -9058,7 +9074,8 @@ function buildRows(){
     REP.rubros.filter(function(x){ return x.presupuesto===c.codigo && (Number(x.precio_total)||0)>0 && !x.tiene_receta; }).forEach(function(r){
       const key=_rubKey(r);
       let reserv=0, ejec=0;
-      items.forEach(function(it){ if(_resolveRub(it.producto_id)!==key) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.subtotal; else if(_RES.indexOf(it.estado)>=0) reserv+=it.subtotal; });
+      const _mr1=_multiRubro(items);
+      items.forEach(function(it){ if(_rubroDeItem(it,_mr1)!==key) return; if(_EJE.indexOf(it.estado)>=0) ejec+=it.subtotal; else if(_RES.indexOf(it.estado)>=0) reserv+=it.subtotal; });
       const certif = Math.round(certPP[r.rubro_codigo]||0);   // mano de obra certificada
       const comprado=reserv+ejec+certif, pres=Number(r.precio_total)||0, saldo=pres-comprado;
       rows.push({ pp:c.codigo, obra:c.obra||'', sector:r.sector||'', tipo:'rubro', ref:r.rubro_codigo||'', desc:r.descripcion||'', unid:r.unidad||'', pres:pres, reserv:reserv, ejec:ejec, certif:certif, comprado:comprado, pct: pres>0?(comprado/pres*100):0, saldo:saldo, money:true });
