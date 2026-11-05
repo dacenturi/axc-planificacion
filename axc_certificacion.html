@@ -6203,6 +6203,53 @@ async function cpGuardarFila(o){
   }catch(e){ console.warn('guardar precio', e); showToast('No se pudo guardar el precio','error', e.message||String(e)); return false; }
 }
 
+/* v13.9 · Trabajos del contrato que NO se agregaron solos.
+   Al elegir un contrato el certificado trae solo los trabajos con saldo. Los que ya están certificados por
+   completo (o excedidos) quedaban escondidos y el residente no los veía. Ahora hay un aviso fijo con un
+   botón: se pueden cargar igual, con el motivo del excedente. También avisa si un trabajo del contrato quedó
+   afuera por el filtro de sector. */
+function sinSaldoBanner(disp){
+  const hint = document.getElementById('edSelHint'); if(!hint) return;
+  let b = document.getElementById('edSinSaldoBox');
+  if(!b){
+    b = document.createElement('div'); b.id = 'edSinSaldoBox';
+    b.style.cssText = 'margin-top:8px;padding:10px 13px;border-radius:9px;background:#fff7e6;border:1px solid #f0d28a;color:#6e5300;font-size:12.8px;line-height:1.5';
+    hint.insertAdjacentElement('afterend', b);
+  }
+  const keyL = function(l){ return keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto); };
+  const agot = (disp||[]).filter(function(l){
+    if(l.libre) return false;
+    const sd = saldoLinea(l, ed.hist[keyL(l)]);
+    return sd != null && sd <= 0;
+  });
+  const sec = (document.getElementById('edSector')||{}).value || '';
+  const otroSec = sec ? (ed.lineas||[]).filter(function(l){
+    return !ed.sel[keyL(l)] && l.sector !== sec && l.contrato_item_id && ctElegido(ctDeItem(l.contrato_item_id));
+  }) : [];
+  const nombre = function(l){ return '<b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(String(l.contrato_detalle||l.descripcion||'').slice(0,60)); };
+  let h = '';
+  if(agot.length){
+    h += '<div><b>'+agot.length+' trabajo'+(agot.length===1?'':'s')+' del contrato sin saldo</b> no '+(agot.length===1?'se agregó':'se agregaron')+' solo'+(agot.length===1?'':'s')+
+         ' ('+(agot.length===1?'ya está certificado por completo o excedido':'ya están certificados por completo o excedidos')+'): '+agot.slice(0,4).map(nombre).join(' · ')+(agot.length>4?' y '+(agot.length-4)+' más':'')+'.</div>'+
+         '<div style="margin-top:3px">Se pueden cargar igual: al escribir la cantidad pide el <b>motivo del excedente</b>, que queda anotado para que la dirección decida la adenda.</div>'+
+         '<button type="button" id="edAgotAdd" class="btn-g" style="margin-top:6px">Agregar '+(agot.length===1?'este trabajo':'estos '+agot.length+' trabajos')+'</button>';
+  }
+  if(otroSec.length){
+    h += '<div'+(agot.length?' style="margin-top:8px"':'')+'><b>'+otroSec.length+' trabajo'+(otroSec.length===1?'':'s')+' de este contrato '+(otroSec.length===1?'está':'están')+' en otro sector</b> y el filtro «'+escapeHtml(sec)+'» '+(otroSec.length===1?'lo oculta':'los oculta')+': '+
+         otroSec.slice(0,4).map(function(l){ return nombre(l)+' ('+escapeHtml(l.sector||'sin sector')+')'; }).join(' · ')+(otroSec.length>4?' y '+(otroSec.length-4)+' más':'')+'.</div>'+
+         '<button type="button" id="edVerSectores" class="btn-g" style="margin-top:6px">Ver todos los sectores</button>';
+  }
+  b.innerHTML = h; b.style.display = h ? 'block' : 'none';
+  const ba = document.getElementById('edAgotAdd');
+  if(ba) ba.onclick = function(){
+    agot.forEach(function(l){ ed.sel[keyL(l)] = true; });
+    renderLineas();
+    showToast(agot.length+' trabajo'+(agot.length===1?'':'s')+' agregado'+(agot.length===1?'':'s'),'success','Escribí la cantidad: pide el motivo del excedente');
+  };
+  const bs = document.getElementById('edVerSectores');
+  if(bs) bs.onclick = function(){ const e = document.getElementById('edSector'); if(e){ e.value = ''; } renderLineas(); };
+}
+
 /* Lista de trabajos disponibles para agregar, agrupada por presupuesto y sector */
 function selectorTrabajos(disp, nSel){
   const box = document.getElementById('edSelBox');
@@ -6239,6 +6286,7 @@ function selectorTrabajos(disp, nSel){
   if(hint) hint.innerHTML = '<b>'+nSel+'</b> trabajo(s) agregado(s) · <b>'+disp.length+'</b> disponible(s) sin agregar'+
     (ed.secFiltro ? ' <b>en '+escapeHtml(ed.secFiltro)+'</b>' : '')+
     (disp.length ? '' : ' · ya están todos');
+  try{ sinSaldoBanner(disp); }catch(eB){ console.warn('aviso de trabajos sin saldo', eB); }   // v13.9
 }
 
 /* Lista de trabajos con el texto completo: el desplegable del navegador
