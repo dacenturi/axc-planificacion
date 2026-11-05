@@ -744,7 +744,7 @@ const _SB = supabase.createClient(
   'https://zvucnezwhgfgupasgqnd.supabase.co',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg'
 );
-const APP_VERSION='Escáner de Facturas v1.4';
+const APP_VERSION='Escáner de Facturas v1.4.1';
 const FN_PRO='escanear-factura-pro';      // función nueva (todos los datos)
 const FN_BASICA='escanear-factura';       // función de Caja Chica (respaldo)
 const BUCKET='facturas-ia';
@@ -1055,17 +1055,29 @@ async function escanearPendientes(){
 function fileToBase64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('No se pudo leer el archivo')); r.readAsDataURL(file); }); }
 
 /* Llama a la IA. Prueba la función completa y, si no está publicada, la básica de Caja Chica. */
+/* Llama a la IA. Usa la función completa; si no está publicada o no responde, sigue con la básica de Caja Chica. */
+let FN_PRO_OK=null;   // null = sin probar · false = no disponible en esta sesión
+async function invocar(fn,body){
+  const res=await _SB.functions.invoke(fn,{body});
+  if(!res.error) return { data:res.data||{} };
+  let msg=String(res.error.message||''), status=0;
+  try{ const c=res.error.context; if(c){ status=c.status||0; if(typeof c.json==='function'){ const b=await c.json(); if(b&&b.error) msg=b.error; } } }catch(_){}
+  // «Failed to send a request» = no hubo respuesta (función sin publicar, caída al arrancar o sin red)
+  const sinServicio=/failed to send|fetch|network|not found|404|boot|worker/i.test(msg)||status===404||status>=500;
+  return { error:msg||'El servicio de escaneo no respondió', sinServicio, status };
+}
 async function llamarIA(file, mime){
   const b64=await fileToBase64(file);
   const body={ image_base64:b64, mime_type:mime, filename:file.name||'factura' };
-  let usada=FN_PRO, res=await _SB.functions.invoke(FN_PRO,{body});
-  if(res.error){
-    let msg=String(res.error.message||'');
-    try{ if(res.error.context&&typeof res.error.context.json==='function'){ const b=await res.error.context.json(); if(b&&b.error) msg=b.error; } }catch(_){}
-    if(/not found|404/i.test(msg)){ usada=FN_BASICA; res=await _SB.functions.invoke(FN_BASICA,{body}); if(res.error) throw new Error(res.error.message||'El servicio de escaneo no respondió'); }
-    else throw new Error(msg||'El servicio de escaneo no respondió');
+  let usada=FN_PRO, r1=null;
+  if(FN_PRO_OK!==false){ r1=await invocar(FN_PRO,body); if(r1.error&&r1.sinServicio) FN_PRO_OK=false; else FN_PRO_OK=true; }
+  if(!r1||(r1.error&&r1.sinServicio)){
+    usada=FN_BASICA; const r2=await invocar(FN_BASICA,body);
+    if(r2.error) throw new Error(r2.sinServicio?'No hay conexión con el servicio de escaneo (ni la función completa ni la de Caja Chica respondieron). Revisá la conexión e intentá de nuevo.':r2.error);
+    r1=r2;
   }
-  const data=res.data||{};
+  if(r1.error) throw new Error(r1.error);
+  const data=r1.data;
   if(data.error) throw new Error(data.error);
   let r=data.factura||data.result||data.data||data;
   if(typeof r==='string'){ try{ r=JSON.parse(r); }catch(_){ throw new Error('La IA devolvió una respuesta que no se pudo leer'); } }
@@ -1080,7 +1092,7 @@ async function escanearUno(id, enLote){
     const d=desdeIA(r, modelo||usada);
     if(!d.ia_campos.length) throw new Error('La IA no encontró datos en este archivo. Probá con una foto más nítida.');
     q.data=d; q.estado='lista';
-    q.msg=usada===FN_BASICA?'Se leyó con el escaneo básico de Caja Chica: faltan timbrado, IVA y receptor. Publicá la función nueva para lectura completa.':'';
+    q.msg=usada===FN_BASICA?'Leída con el escaneo básico de Caja Chica (la función «escanear-factura-pro» no respondió): revisá timbrado, IVA, receptor y la tasa de cada ítem.':'';
     await verificarDuplicadoCola(q);
     renderCola();
     if(!enLote&&ACTUAL&&ACTUAL.colaId===id) abrirDesdeCola(q);
