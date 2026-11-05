@@ -789,7 +789,7 @@ const _SB = supabase.createClient(
   'https://zvucnezwhgfgupasgqnd.supabase.co',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg'
 );
-const APP_VERSION='Escáner de Facturas v1.8.1';
+const APP_VERSION='Escáner de Facturas v1.9';
 const FN_PRO='escanear-factura-pro';      // función nueva (todos los datos)
 const FN_BASICA='escanear-factura';       // función de Caja Chica (respaldo)
 const BUCKET='facturas-ia';
@@ -1138,17 +1138,56 @@ function bindDrop(){
 async function agregarArchivos(files){
   const list=[...(files||[])].filter(f=>/^image\//.test(f.type)||f.type==='application/pdf'||/\.pdf$/i.test(f.name));
   if(!list.length){ toast('Solo se aceptan fotos (JPG, PNG, WEBP) o PDF','err'); return; }
-  for(const f of list){
-    if(f.size>15*1024*1024){ toast(`"${f.name}" pesa más de 15 MB y no se puede leer`,'err'); continue; }
+  for(const f0 of list){
+    if(f0.size>15*1024*1024){ toast(`"${f0.name}" pesa más de 15 MB y no se puede leer`,'err'); continue; }
+    // PDF con varias páginas: preguntar si son varias facturas y separarlas
+    let partes=[f0];
+    if(f0.type==='application/pdf'||/\.pdf$/i.test(f0.name)){ const r=await separarPdf(f0); if(r===null) continue; partes=r; }
+    for(const f of partes){
     const hash=await huella(f);
     if(hash&&COLA.some(o=>o.hash===hash)){ toast(`"${f.name}" ya está en la lista de esta sesión`,'err'); continue; }
     let file=f;
     try{ if(/^image\//.test(f.type)) file=await achicarImagen(f); }catch(e){}
     COLA.push({ uid:uid(), file, hash, nombre:f.name, mime:file.type||(/\.pdf$/i.test(f.name)?'application/pdf':'image/jpeg'),
       url:URL.createObjectURL(file), estado:'cola', msg:'', data:null, dbId:null });
+    }
   }
   renderCola();
   escanearPendientes();
+}
+/* ═════════ PDF CON VARIAS FACTURAS ═════════
+   Si el PDF tiene más de una página, se pregunta cómo están las facturas y se separa en archivos
+   independientes (pdf-lib, en el navegador). Cada parte se lee, revisa y guarda como una factura. */
+function preguntar(titulo,html,ico,opciones){
+  return new Promise(res=>{ abrirModal(titulo,html,ico,false,opciones.map(o=>({txt:o.txt,sec:o.sec,fn:()=>res(o.v)})));
+    const bg=gs('alert-bg'); const obs=new MutationObserver(()=>{ if(!bg.classList.contains('open')){ obs.disconnect(); setTimeout(()=>res(null),0); } }); obs.observe(bg,{attributes:true,attributeFilter:['class']}); });
+}
+async function separarPdf(f){
+  if(!window.PDFLib) return [f];
+  let doc, n=1;
+  try{ doc=await PDFLib.PDFDocument.load(await f.arrayBuffer(),{ignoreEncryption:true}); n=doc.getPageCount(); }catch(e){ return [f]; }
+  if(n<=1) return [f];
+  if(n>80){ aviso('PDF demasiado largo',`«${esc(f.name)}» tiene <b>${n} páginas</b>. Separalo en archivos de hasta 80 páginas.`,'📄'); return null; }
+  const disp=CUOTA.ok?(CUOTA.agotadaPorGoogle?0:quedan()+quedanLite()):null;
+  const aviso2=disp!=null&&n>disp?`<br><span style="color:var(--red)"><b>Atención:</b> quedan ${disp} escaneos hoy; las facturas que no alcancen quedan en espera para cargar a mano o leer mañana.</span>`:'';
+  const op=await preguntar('Este PDF tiene varias páginas',
+    `«<b>${esc(f.name)}</b>» tiene <b>${n} páginas</b>. ¿Cómo están las facturas?<br><span style="font-size:14px;color:var(--text2)">Cada factura separada usa un escaneo con IA.</span>${aviso2}`,'📄',
+    [{txt:`Una factura por página (${n})`,v:1},{txt:`Cada 2 páginas (${Math.ceil(n/2)})`,v:2,sec:true},{txt:'Es una sola factura',v:'todo',sec:true},{txt:'Cancelar',v:null,sec:true}]);
+  if(op===null) return null;
+  if(op==='todo') return [f];
+  const base=f.name.replace(/\.pdf$/i,''), out=[];
+  try{
+    for(let i=0;i<n;i+=op){
+      const nd=await PDFLib.PDFDocument.create({updateMetadata:false});
+      const idx=[]; for(let k=i;k<Math.min(n,i+op);k++) idx.push(k);
+      (await nd.copyPages(doc,idx)).forEach(p=>nd.addPage(p));
+      const bytes=await nd.save({updateFieldAppearances:false});
+      const etq=idx.length>1?`p${idx[0]+1}-${idx[idx.length-1]+1}`:`p${idx[0]+1}`;
+      out.push(new File([bytes],`${base} · ${etq} de ${n}.pdf`,{type:'application/pdf'}));
+    }
+  }catch(e){ aviso('No se pudo separar el PDF',esc(e.message||e)+'<br>Se va a leer como una sola factura.','📄'); return [f]; }
+  toast(`PDF separado en ${out.length} factura(s)`,'ok');
+  return out;
 }
 /* Las fotos de celular (4–12 MB) se reducen a 2200 px de lado mayor: se leen igual de bien y viajan mucho más rápido */
 function achicarImagen(file){
