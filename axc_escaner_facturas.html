@@ -63,6 +63,17 @@ button{font-family:inherit}
 .cuota{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;border-left:4px solid var(--green)}
 .cuota.q-medio{border-left-color:var(--cyan)} .cuota.q-bajo{border-left-color:var(--accent)} .cuota.q-agot{border-left-color:var(--red)}
 .cq-top{display:flex;align-items:center;gap:14px}
+.cq-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.cq-head .cq-t b{color:var(--accent)}
+.cq-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.cq-two{grid-template-columns:1fr}}
+.cq-one{display:flex;align-items:center;gap:12px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:9px 11px}
+.cq-one.off{opacity:.55}
+.cq-one.lite .cq-ring{--c:var(--violet)}
+.cq-one.lite.on{border-color:var(--violet)}
+.q-lite i{background:var(--violet)!important}
+.q-lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--text3);font-weight:700}
+.q-sep{width:1px;height:14px;background:var(--border)}
 .cq-ring{--c:var(--green);width:62px;height:62px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;background:conic-gradient(var(--c) calc(var(--p)*1%),var(--border) 0)}
 .q-medio .cq-ring{--c:var(--cyan)} .q-bajo .cq-ring{--c:var(--accent)} .q-agot .cq-ring{--c:var(--red)}
 .cq-ring span{width:48px;height:48px;border-radius:50%;background:var(--bg2);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1}
@@ -778,7 +789,7 @@ const _SB = supabase.createClient(
   'https://zvucnezwhgfgupasgqnd.supabase.co',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2dWNuZXp3aGdmZ3VwYXNncW5kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTkxMzksImV4cCI6MjA5MjE5NTEzOX0.N_examWWtb6EZcSFzzO93cExqfOvD4PrjPSXNzLLzNg'
 );
-const APP_VERSION='Escáner de Facturas v1.8';
+const APP_VERSION='Escáner de Facturas v1.8.1';
 const FN_PRO='escanear-factura-pro';      // función nueva (todos los datos)
 const FN_BASICA='escanear-factura';       // función de Caja Chica (respaldo)
 const BUCKET='facturas-ia';
@@ -1008,7 +1019,7 @@ function switchTab(t){
    · Principal (Gemini Flash): cupo diario COMPARTIDO con Caja Chica → se cuenta en caja_chica_ia_uso, como siempre.
    · Respaldo (Gemini Flash-Lite): cupo propio de Google, solo lo usa el Escáner → se cuenta en facturas_ia_uso.
    Cuando el principal se agota, la función sigue sola con el respaldo. Solo se frena si Google agota los dos. */
-let CUOTA={limite:IA_LIMITE_DIARIO, usados:0, lite:0, porOrigen:{}, porUsuario:{}, flashAgotado:false, agotadaPorGoogle:false, ok:false};
+let CUOTA={limite:IA_LIMITE_DIARIO, limiteLite:500, probarLite:false, usados:0, lite:0, porOrigen:{}, porUsuario:{}, flashAgotado:false, agotadaPorGoogle:false, ok:false};
 function hoyPacifico(){ try{ return new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'}); }catch(e){ return todayISO(); } }
 function quedan(){ return CUOTA.flashAgotado?0:Math.max(0,CUOTA.limite-CUOTA.usados); }
 function enRespaldo(){ return !CUOTA.agotadaPorGoogle&&quedan()<=0; }
@@ -1023,7 +1034,11 @@ function reinicio(){
 async function cargarLimite(){
   try{ const { data }=await _SB.from('facturas_ia_config').select('valor').eq('clave','ia_limite').maybeSingle();
     const n=data&&data.valor&&Number(data.valor.limite); if(n>0) CUOTA.limite=n; }catch(e){}
+  try{ const { data }=await _SB.from('facturas_ia_config').select('valor').eq('clave','ia_limite_lite').maybeSingle();
+    const n=data&&data.valor&&Number(data.valor.limite); if(n>0) CUOTA.limiteLite=n; }catch(e){}
 }
+function quedanLite(){ return CUOTA.agotadaPorGoogle?0:Math.max(0,CUOTA.limiteLite-CUOTA.lite); }
+function anillo(cls,p,num,de,tit,sub){ return `<div class="cq-one ${cls}"><div class="cq-ring" style="--p:${p}"><span><b>${num}</b><small>de ${de}</small></span></div><div><div class="cq-t">${tit}</div><div class="cq-s">${sub}</div></div></div>`; }
 async function actualizarCuota(){
   const el=gs('ia-quota');
   try{
@@ -1048,30 +1063,35 @@ function pintarCuota(){
   const q=quedan(), L=CUOTA.limite, u=Math.min(L,CUOTA.usados), niv=nivelCuota(), rz=reinicio(), resp=enRespaldo();
   const pct=CUOTA.agotadaPorGoogle?0:(resp?100:Math.round(q/L*100));
   const el=gs('ia-quota'); el.classList.remove('hide'); el.className='ia-quota q-'+niv;
+  const ql=quedanLite(), LL=CUOTA.limiteLite, pl=Math.round(ql/LL*100);
   el.innerHTML=CUOTA.agotadaPorGoogle?`<span class="q-bar"><i style="width:0%"></i></span><span><b>Sin escaneos</b> hasta las ${rz.hora}</span>`
-    :resp?`<span class="q-bar"><i style="width:100%"></i></span><span><b>Modo respaldo</b> · ${CUOTA.lite} leída(s) con Flash-Lite</span>`
-    :`<span class="q-bar"><i style="width:${pct}%"></i></span><span><b>${q}</b> de ${L} escaneos principales${CUOTA.lite?` · ${CUOTA.lite} de respaldo`:''}</span>`;
+    :`<span class="q-lbl">Principal</span><span class="q-bar"><i style="width:${resp?0:pct}%"></i></span><span><b>${q}</b>/${L}</span><span class="q-sep"></span><span class="q-lbl">Lite</span><span class="q-bar q-lite"><i style="width:${pl}%"></i></span><span><b>${ql}</b>/${LL}</span>`;
   el.title=`Principal (Flash, compartido con Caja Chica): ${u} de ${L}. Respaldo (Flash-Lite, solo Escáner): ${CUOTA.lite} hoy. Se reinicia a las ${rz.hora}.`;
   const c=gs('cuota-card'); c.classList.remove('hide'); c.className='cuota q-'+niv;
   const orig=Object.entries(CUOTA.porOrigen).map(([k,v])=>`${k} <b>${v}</b>`).join(' · ')||'Ninguno todavía';
   const msg=CUOTA.agotadaPorGoogle?`<b>Google indicó que se agotaron los dos niveles de lectura de hoy.</b> Las facturas se pueden cargar a mano con «Cargar a mano», o esperar al reinicio.`
     :resp?`<b>Se usaron las lecturas principales de hoy: el escáner sigue con el modelo de respaldo (Flash-Lite).</b> Es un poco menos preciso con letra a mano: revisá con atención los campos en ámbar.`
     :(niv==='bajo'?`<b>Quedan pocas lecturas principales.</b> Después el escáner sigue solo con el modelo de respaldo.`:'');
-  c.innerHTML=`<div class="cq-top">
-      <div class="cq-ring" style="--p:${pct}"><span>${resp?'<b style="font-size:13px">Resp.</b><small>Flash-Lite</small>':`<b>${CUOTA.agotadaPorGoogle?0:q}</b><small>de ${L}</small>`}</span></div>
-      <div class="cq-txt"><div class="cq-t">${resp?'Escaneando con el modelo de respaldo':'Escaneos con IA disponibles hoy'}</div>
-        <div class="cq-s">${u} principal(es) usado(s) · ${CUOTA.lite} de respaldo · ${orig}</div>
-        <div class="cq-s">Se reinicia a las <b>${rz.hora}</b>${rz.falta?` · en ${rz.falta}`:''}</div></div>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="detalleCuota()" title="Ver el detalle de uso">Detalle</button>
-    </div>${msg?`<div class="cq-msg">${msg}</div>`:''}`;
+  c.innerHTML=`<div class="cq-head"><span class="cq-t">Escaneos con IA disponibles hoy · <b>${(CUOTA.agotadaPorGoogle?0:q+ql)}</b> en total</span>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="detalleCuota()" title="Ver el detalle de uso">Detalle</button></div>
+    <div class="cq-two">
+      ${anillo(resp?'off':'',CUOTA.agotadaPorGoogle?0:(resp?0:pct),CUOTA.agotadaPorGoogle?0:q,L,'Principal · Gemini Flash',`${u} usado(s) · compartido con Caja Chica${resp?' · <b>agotado</b>':''}`)}
+      ${anillo('lite'+(resp?' on':''),CUOTA.agotadaPorGoogle?0:pl,ql,LL,'Respaldo · Gemini Flash-Lite',`${CUOTA.lite} usado(s) · solo Escáner${resp?' · <b>en uso</b>':''}`)}
+    </div>
+    <div class="cq-s" style="margin-top:8px">Se reinicia a las <b>${rz.hora}</b>${rz.falta?` · en ${rz.falta}`:''}${CUOTA.probarLite?' · <b style="color:var(--violet)">el próximo escaneo usará el respaldo (prueba)</b>':''}</div>
+    ${msg?`<div class="cq-msg">${msg}</div>`:''}`;
   gs('btn-scan-all').disabled=CUOTA.agotadaPorGoogle||!COLA.some(x=>x.estado==='cola'||x.estado==='error');
 }
 function detalleCuota(){
   const rz=reinicio(), L=CUOTA.limite;
   const us=Object.entries(CUOTA.porUsuario).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r"><b>${v}</b></td></tr>`).join('')||'<tr><td colspan="2" class="muted">Sin escaneos hoy</td></tr>';
   const og=Object.entries(CUOTA.porOrigen).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r"><b>${v}</b></td></tr>`).join('')||'<tr><td colspan="2" class="muted">Sin escaneos hoy</td></tr>';
-  const adm=ROL==='admin'?`<div class="cq-adm"><label for="cq-lim">Lecturas principales por día (Flash)</label><div style="display:flex;gap:8px;justify-content:center;margin-top:6px"><input id="cq-lim" type="number" min="1" max="2000" value="${L}"><button type="button" class="alert-btn sec" style="padding:8px 18px;font-size:14px" onclick="guardarLimite()">Guardar</button></div>
-      <div class="muted" style="font-size:12px;margin-top:6px">Ajustalo al cupo real que muestra Google AI Studio. Al llegar a este número el escáner pasa solo al respaldo.</div></div>`:'';
+  const adm=ROL==='admin'?`<div class="cq-adm"><div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
+      <div><label for="cq-lim">Principal (Flash) por día</label><div style="margin-top:6px"><input id="cq-lim" type="number" min="1" max="5000" value="${L}"></div></div>
+      <div><label for="cq-liml">Respaldo (Flash-Lite) por día</label><div style="margin-top:6px"><input id="cq-liml" type="number" min="1" max="20000" value="${CUOTA.limiteLite}"></div></div></div>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap"><button type="button" class="alert-btn sec" style="padding:8px 18px;font-size:14px" onclick="guardarLimite()">Guardar límites</button>
+      <button type="button" class="alert-btn sec" style="padding:8px 18px;font-size:14px" onclick="probarRespaldo()">🧪 Probar respaldo en el próximo escaneo</button></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Ajustá los dos números al cupo real que muestra Google AI Studio (aistudio.google.com/rate-limit). «Probar respaldo» hace que la próxima factura se lea con Flash-Lite, para confirmar que funciona.</div></div>`:'';
   abrirModal('Escaneos con IA de hoy',`<div class="cq-modal">
     <div class="cq-big">${enRespaldo()?'<b style="font-size:26px">Modo respaldo</b>':`<b>${quedan()}</b> principales de ${L}`}</div>
     <div class="muted" style="margin-bottom:14px">${CUOTA.lite} lectura(s) con el respaldo hoy · se reinicia a las <b>${rz.hora}</b> (hora de Paraguay)${rz.falta?` · faltan ${rz.falta}`:''}</div>
@@ -1080,16 +1100,20 @@ function detalleCuota(){
     <div class="muted" style="font-size:13px;margin-top:14px;text-align:left"><b>Principal (Gemini Flash):</b> la mejor lectura; su cupo es compartido con Caja Chica.<br><b>Respaldo (Gemini Flash-Lite):</b> se usa solo en el Escáner cuando se acaba el principal; tiene un cupo propio bastante mayor y no afecta a Caja Chica.<br>Cada lectura consume uno, también «Volver a leer». Cargar a mano no consume.</div>${adm}</div>`,'✨',false,[{txt:'Cerrar'}]);
 }
 async function guardarLimite(){
-  const n=Math.round(Number(gs('cq-lim').value)); if(!(n>0)){ toast('Ingresá un número válido','err'); return; }
-  const { error }=await _SB.from('facturas_ia_config').upsert({clave:'ia_limite',valor:{limite:n},actualizado_por:CURRENT_USER.email,actualizado_en:new Date().toISOString()},{onConflict:'clave'});
+  const n=Math.round(Number(gs('cq-lim').value)), nl=Math.round(Number(gs('cq-liml').value));
+  if(!(n>0)||!(nl>0)){ toast('Ingresá números válidos','err'); return; }
+  const ts=new Date().toISOString();
+  const { error }=await _SB.from('facturas_ia_config').upsert([{clave:'ia_limite',valor:{limite:n},actualizado_por:CURRENT_USER.email,actualizado_en:ts},
+    {clave:'ia_limite_lite',valor:{limite:nl},actualizado_por:CURRENT_USER.email,actualizado_en:ts}],{onConflict:'clave'});
   if(error){ toast('No se pudo guardar: '+error.message,'err'); return; }
-  CUOTA.limite=n; closeAlert(); pintarCuota(); toast('Límite diario actualizado','ok');
+  CUOTA.limite=n; CUOTA.limiteLite=nl; closeAlert(); pintarCuota(); toast('Límites diarios actualizados','ok');
 }
+function probarRespaldo(){ CUOTA.probarLite=true; closeAlert(); pintarCuota(); switchTab('escanear'); toast('Listo: la próxima factura que escanees se lee con Flash-Lite','ok'); }
 async function registrarUso(modelo){
   const row={fecha_pacifico:hoyPacifico(),usuario:CURRENT_USER.email};
   if(/lite/i.test(modelo||'')){
     // Respaldo: contador propio del Escáner (no toca el contador de Caja Chica)
-    CUOTA.lite++; CUOTA.flashAgotado=true; pintarCuota();
+    CUOTA.lite++; if(!window._pruebaLite) CUOTA.flashAgotado=true; window._pruebaLite=false; pintarCuota();
     try{ await _SB.from('facturas_ia_uso').insert({...row,modelo}); }catch(e){}
     return;
   }
@@ -1192,7 +1216,8 @@ async function invocar(fn,body){
 }
 async function llamarIA(file, mime){
   const b64=await fileToBase64(file);
-  const body={ image_base64:b64, mime_type:mime, filename:file.name||'factura', prefer_lite:enRespaldo() };
+  const prueba=CUOTA.probarLite; CUOTA.probarLite=false; window._pruebaLite=prueba;
+  const body={ image_base64:b64, mime_type:mime, filename:file.name||'factura', prefer_lite:enRespaldo()||prueba };
   let usada=FN_PRO, r1=null;
   if(FN_PRO_OK!==false){ r1=await invocar(FN_PRO,body); if(r1.error&&r1.sinServicio) FN_PRO_OK=false; else FN_PRO_OK=true; }
   if(!r1||(r1.error&&r1.sinServicio)){
@@ -1205,6 +1230,7 @@ async function llamarIA(file, mime){
   if(data.error) throw new Error(data.error);
   let r=data.factura||data.result||data.data||data;
   if(typeof r==='string'){ try{ r=JSON.parse(r); }catch(_){ throw new Error('La IA devolvió una respuesta que no se pudo leer'); } }
+  if(prueba) setTimeout(()=>showAlert(/lite/i.test(data.modelo||'')?'El respaldo funciona':'El respaldo no respondió',/lite/i.test(data.modelo||'')?'La factura se leyó con <b>'+esc(data.modelo)+'</b>. Cuando se agote el cupo principal, el escáner va a seguir solo con este modelo.':'La factura se leyó con <b>'+esc(data.modelo||usada)+'</b>. Revisá que la función escanear-factura-pro esté actualizada con el código de la v1.8.',/lite/i.test(data.modelo||'')?'✅':'⚠️',!/lite/i.test(data.modelo||'')),600);
   return { r, usada, modelo:data.modelo||'' };
 }
 async function escanearUno(id, enLote){
