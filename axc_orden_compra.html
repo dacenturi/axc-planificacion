@@ -19188,6 +19188,29 @@ function pbtAddNoPresup(pid){
 .dst-m.on{border-color:#1F3864;background:#EEF3FB}
 .dst-m[data-m="ta"].on{border-color:#8A6A0E;background:#FBF6E6}
 .dst-sel{width:100%;margin-top:8px;padding:7px 9px;border:1px solid #C9D0DC;border-radius:8px;font-size:12.5px}
+/* v8.3.6 · Buscador de listas largas (N° y descripción) */
+.oc-cb-src{display:none !important}
+.oc-combo{position:relative;flex:1;min-width:240px;margin-top:8px}
+.oc-cb-box{display:flex;align-items:center;gap:7px;border:1px solid #C9D0DC;border-radius:9px;background:#fff;padding:0 9px;height:36px;cursor:text;transition:border-color .15s,box-shadow .15s}
+.oc-combo.open .oc-cb-box,.oc-cb-box:focus-within{border-color:#1F3864;box-shadow:0 0 0 3px rgba(31,56,100,.12)}
+.oc-cb-ic{font-size:12px;opacity:.6}
+.oc-cb-in{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:12.5px;color:#1A2236;text-overflow:ellipsis}
+.oc-cb-in::placeholder{color:#8893a5}
+.oc-cb-x{display:none;border:0;background:#EEF1F6;color:#4B5568;border-radius:50%;width:18px;height:18px;font-size:10px;line-height:18px;padding:0;cursor:pointer}
+.oc-cb-x:hover{background:#DDE3EE}
+.oc-combo.has .oc-cb-x{display:inline-block}
+.oc-cb-chev{color:#6B7486;font-size:11px;pointer-events:none}
+.oc-cb-list{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:80;background:#fff;border:1px solid #C9D0DC;border-radius:10px;box-shadow:0 14px 34px rgba(20,30,55,.2);max-height:min(340px,50vh);overflow:auto;padding:0 4px 4px}
+.oc-cb-hd{position:sticky;top:0;z-index:1;background:#fff;font-size:10.5px;color:#6B7486;padding:7px 8px 6px;border-bottom:1px solid #EEF1F6;margin:0 -4px 4px;padding-left:12px}
+.oc-cb-it{display:flex;gap:9px;align-items:baseline;padding:7px 9px;border-radius:7px;cursor:pointer;font-size:12.5px;color:#1A2236}
+.oc-cb-it.hi{background:#EEF3FB}
+.oc-cb-it[aria-selected="true"] .oc-cb-rest{font-weight:700;color:#1A2236}
+.oc-cb-cod{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:800;color:#1F3864;white-space:nowrap}
+.oc-cb-rest{color:#4B5568;min-width:0;overflow-wrap:anywhere}
+.oc-cb-sep{color:#B6BDCB}
+.oc-cb-it mark{background:#FFF0B3;color:inherit;border-radius:3px;padding:0 1px}
+.oc-cb-ok{margin-left:auto;color:#1B5524;font-weight:800}
+.oc-cb-vacio{padding:16px 10px;color:#6B7486;font-size:12.5px;text-align:center}
 .dst-hint{margin-top:7px;font-size:11.5px;color:#4B5568;line-height:1.45}.dst-hint i{color:#8893a5}
 .dst-item{display:flex;gap:6px;align-items:center;margin:6px 0 2px;font-size:11px;font-weight:700;color:#4B5568}
 .dst-item select{flex:1;min-width:0;font-size:11.5px;padding:3px 6px;border:1px solid #C9D0DC;border-radius:6px;background:#fff}
@@ -19240,6 +19263,71 @@ async function dstLoad(){
 }
 function dstPP(c){ return DST.pp.filter(function(x){ return x.codigo === c; })[0] || null; }
 function dstTA(c){ return DST.ta.filter(function(x){ return x.codigo === c; })[0] || null; }
+/* v8.3.6 · Buscador sobre un <select> de lista larga: se busca por N° y por cualquier palabra de la descripción
+   (sin importar tildes ni mayúsculas). El <select> sigue siendo la fuente: al elegir se le asigna el valor y se
+   dispara su evento «change», así el resto de la pantalla funciona igual que antes. */
+function ocComboSync(sel){
+  if(!sel) return;
+  const N = function(t){ return String(t==null?'':t).split('').map(function(ch){ return ch.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase(); }).join(''); };
+  const E = function(t){ return String(t==null?'':t).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); };
+  let w = sel._ocw;
+  if(!w){
+    const root = document.createElement('div'); root.className = 'oc-combo';
+    const lid = (sel.id || 'cb') + '-lb';
+    root.innerHTML = '<div class="oc-cb-box"><span class="oc-cb-ic" aria-hidden="true">🔍</span>'+
+      '<input type="text" class="oc-cb-in" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="'+lid+'">'+
+      '<button type="button" class="oc-cb-x" title="Quitar la selección" aria-label="Quitar la selección">✕</button><span class="oc-cb-chev" aria-hidden="true">▾</span></div>'+
+      '<div class="oc-cb-list" id="'+lid+'" role="listbox" hidden></div>';
+    sel.parentNode.insertBefore(root, sel); sel.classList.add('oc-cb-src');
+    const inp = root.querySelector('.oc-cb-in'), list = root.querySelector('.oc-cb-list'), clr = root.querySelector('.oc-cb-x');
+    w = sel._ocw = { root:root, inp:inp, list:list, opts:[], hi:0, abierto:false, vista:[] };
+    const textoSel = function(){ const o = sel.options[sel.selectedIndex]; return (o && o.value) ? o.textContent : ''; };
+    w.restaurar = function(){ inp.value = textoSel(); root.classList.toggle('has', !!sel.value); };
+    w.leer = function(){
+      w.opts = Array.prototype.filter.call(sel.options, function(o){ return o.value !== ''; }).map(function(o){ return { v:o.value, t:o.textContent, n:N(o.textContent) }; });
+      inp.placeholder = ((sel.options[0] && sel.options[0].textContent) || 'Elegí…').replace(/…$/,'') + ' · escribí N° o descripción';
+    };
+    w.pintar = function(){
+      const q = N(inp.value === textoSel() && !w.tecleo ? '' : inp.value).trim();
+      const tk = q.split(/\s+/).filter(Boolean);
+      const hit = w.opts.filter(function(o){ return tk.every(function(t){ return o.n.indexOf(t) >= 0; }); });
+      w.vista = hit; if(w.hi >= hit.length) w.hi = Math.max(0, hit.length-1);
+      const resaltar = function(txt){
+        const n = N(txt); if(!tk.length || n.length !== txt.length) return E(txt);
+        const mk = new Array(txt.length).fill(false);
+        tk.forEach(function(t){ let i = n.indexOf(t); while(i >= 0){ for(let k=i;k<i+t.length;k++) mk[k] = true; i = n.indexOf(t, i+t.length); } });
+        let h = '', ab = false; for(let k=0;k<txt.length;k++){ if(mk[k] && !ab){ h += '<mark>'; ab = true; } if(!mk[k] && ab){ h += '</mark>'; ab = false; } h += E(txt[k]); } return h + (ab ? '</mark>' : '');
+      };
+      const hd = '<div class="oc-cb-hd">'+(tk.length ? (hit.length+' de '+w.opts.length+' resultado'+(hit.length===1?'':'s')) : (w.opts.length+' disponibles'))+' · ↑ ↓ para moverte · Enter para elegir · Esc para cerrar</div>';
+      w.list.innerHTML = hd + (hit.length ? hit.map(function(o, i){
+        const partes = o.t.split(' · '), cod = partes.shift();
+        return '<div class="oc-cb-it'+(i===w.hi?' hi':'')+'" role="option" id="'+list.id+'-'+i+'" data-v="'+E(o.v)+'" aria-selected="'+(o.v===sel.value?'true':'false')+'">'+
+          '<span class="oc-cb-cod">'+resaltar(cod)+'</span><span class="oc-cb-rest">'+partes.map(resaltar).join('<span class="oc-cb-sep"> · </span>')+'</span>'+(o.v===sel.value?'<span class="oc-cb-ok">✓</span>':'')+'</div>';
+      }).join('') : '<div class="oc-cb-vacio">Sin resultados para «'+E(inp.value.trim())+'». Probá con otra palabra o con el N°.</div>');
+      const a = w.list.querySelector('.oc-cb-it.hi'); if(a){ inp.setAttribute('aria-activedescendant', a.id); const t = a.offsetTop, b = t + a.offsetHeight; if(t < w.list.scrollTop + 30) w.list.scrollTop = Math.max(0, t - 34); else if(b > w.list.scrollTop + w.list.clientHeight) w.list.scrollTop = b - w.list.clientHeight + 6; }
+    };
+    w.abrir = function(){ if(sel.disabled) return; if(!w.abierto){ w.abierto = true; w.tecleo = false; w.leer(); const i = w.opts.findIndex(function(o){ return o.v === sel.value; }); w.hi = i >= 0 ? i : 0; } root.classList.add('open'); list.hidden = false; inp.setAttribute('aria-expanded','true'); w.pintar(); };
+    w.cerrar = function(){ w.abierto = false; w.tecleo = false; root.classList.remove('open'); list.hidden = true; inp.setAttribute('aria-expanded','false'); w.restaurar(); };
+    w.elegir = function(v){ sel.value = v; w.cerrar(); sel.dispatchEvent(new Event('change', { bubbles:true })); w.restaurar(); };
+    inp.addEventListener('focus', function(){ w.abrir(); const v0 = inp.value; setTimeout(function(){ if(inp.value === v0){ try{ inp.select(); }catch(e){} } }, 0); });   /* no pisa lo que ya se empezó a escribir */
+    root.querySelector('.oc-cb-box').addEventListener('mousedown', function(e){ if(e.target === clr) return; if(e.target !== inp){ e.preventDefault(); inp.focus(); } if(!w.abierto) w.abrir(); });
+    inp.addEventListener('input', function(){ w.tecleo = true; w.hi = 0; w.abrir(); w.pintar(); });
+    inp.addEventListener('keydown', function(e){
+      if(e.key === 'ArrowDown'){ e.preventDefault(); if(!w.abierto) w.abrir(); else { w.hi = Math.min(w.vista.length-1, w.hi+1); w.pintar(); } }
+      else if(e.key === 'ArrowUp'){ e.preventDefault(); w.hi = Math.max(0, w.hi-1); w.pintar(); }
+      else if(e.key === 'Enter'){ if(w.abierto && w.vista[w.hi]){ e.preventDefault(); w.elegir(w.vista[w.hi].v); } }
+      else if(e.key === 'Escape'){ if(w.abierto){ e.preventDefault(); e.stopPropagation(); w.cerrar(); } }
+      else if(e.key === 'Tab'){ w.cerrar(); }
+    });
+    inp.addEventListener('blur', function(){ setTimeout(function(){ if(w.abierto && document.activeElement !== inp) w.cerrar(); }, 140); });
+    list.addEventListener('mousedown', function(e){ e.preventDefault(); const it = e.target.closest('.oc-cb-it'); if(it) w.elegir(it.getAttribute('data-v')); });
+    list.addEventListener('mousemove', function(e){ const it = e.target.closest('.oc-cb-it'); if(!it) return; const i = Array.prototype.indexOf.call(list.querySelectorAll('.oc-cb-it'), it); if(i >= 0 && i !== w.hi){ w.hi = i; list.querySelectorAll('.oc-cb-it').forEach(function(x, k){ x.classList.toggle('hi', k === i); }); } });
+    clr.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); w.elegir(''); });
+    document.addEventListener('mousedown', function(e){ if(w.abierto && !root.contains(e.target)) w.cerrar(); });
+  }
+  w.root.style.display = (sel.style.display === 'none') ? 'none' : '';
+  w.leer(); if(!w.abierto) w.restaurar();
+}
 function dstRender(){
   const f = wizard.form || {}; const m = f.destino || '';
   const bar = document.getElementById('dstBar'); if(!bar) return;
@@ -19250,6 +19338,7 @@ function dstRender(){
   st.innerHTML = '<option value="">Elegí el trabajo por administración…</option>' + DST.ta.map(function(x){ return '<option value="'+dstEsc(x.codigo)+'"'+(f.trabajo_admin===x.codigo?' selected':'')+'>'+dstEsc(x.codigo+' · '+(x.nombre||'')+' · '+(x.obra||''))+'</option>'; }).join('');
   sp.style.display = m === 'presupuesto' ? '' : 'none';
   st.style.display = m === 'ta' ? '' : 'none';
+  try{ ocComboSync(sp); ocComboSync(st); }catch(eCb){ console.warn('buscador de destino', eCb); }   // v8.3.6
   try{ cbmRenderExtras(); }catch(eX){ console.warn('presupuestos adicionales', eX); }   // v2.9
   if(m === 'presupuesto') h.innerHTML = f._pp ? (cbmMulti() ? '✔ Cada material descuenta del saldo de <b>su</b> presupuesto: <b>'+cbmLista().map(dstEsc).join('</b> · <b>')+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.' : '✔ Los materiales descuentan del saldo de <b>'+dstEsc(f._pp)+'</b>. Si uno se pasa, en el paso 2 se pide una justificación.') : 'Elegí el presupuesto de la obra. <i>Ej.: cemento para el revoque del Nivel 3.</i>' + (DST.loaded && !DST.pp.length ? ' <b>No hay presupuestos aprobados cargados.</b>' : '');
   else if(m === 'ta') h.innerHTML = f.trabajo_admin ? '✔ Los materiales suman al costo de <b>'+dstEsc(f.trabajo_admin)+'</b>, que se liquida al cliente. No descuentan del presupuesto.' : 'Elegí el trabajo por administración. <i>Ej.: porcelanato para el TA-0001 · Renovación del piso.</i>' + (DST.loaded && !DST.ta.length ? ' <b>No hay trabajos por administración abiertos: se crean en Certificación o desde la orden de servicio.</b>' : '');
