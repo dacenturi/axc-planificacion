@@ -758,6 +758,8 @@ table.tb td{font-size:12.5px}
 .ac-it span{font-size:12.5px;color:var(--text)}
 .ac-it small{font-size:11px;color:var(--text-muted)}
 .ac-it mark{background:#FCEFC0;color:inherit;border-radius:3px;padding:0 1px}
+.ac-it em.ac-sub{display:block;font-style:normal;font-size:11px;color:#8893a5}
+.ct-card .ct-nom{display:block;font-size:12.5px;font-weight:700;color:#3b475c;margin-top:2px;line-height:1.3}
 .ac-vacio{padding:18px 13px;font-size:12.5px;color:var(--text-muted);text-align:center}
 .ac-mas{padding:8px 13px;font-size:11.5px;color:var(--text-muted);background:var(--surface-2);text-align:center}
 .presu-chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
@@ -4442,6 +4444,7 @@ function ctAviso(){
     html += '<button type="button" class="ct-card'+(on?' on':'')+'" data-ct="'+c.id+'" title="'+escapeHtml((c.alcance||'').slice(0,300))+'">'+
       '<span class="ct-chk">'+(on?'✓':'')+'</span><span>'+
       '<b>'+escapeHtml(c.numero||'')+(c.estado==='Emitido'?'<span class="ct-firmar">A FIRMAR</span>':'')+'</b>'+
+      (ctNombre(c) ? '<span class="ct-nom">'+escapeHtml(ctNombre(c))+'</span>' : '')+
       '<span class="ct-l2">'+escapeHtml(c.obra||'sin obra')+' · '+escapeHtml(c.presupuesto||'sin presupuesto')+'</span>'+
       '<span class="ct-l3">'+its.length+' trabajo(s) · '+gs(m)+' · saldo '+gs(Math.max(0, m - Math.round(usado)))+'</span>'+
       '</span></button>';
@@ -4910,6 +4913,23 @@ document.addEventListener('click', function(ev){
    lo que se ve; el dato guardado y la clave de la línea no se tocan. */
 const _DESC_GENERICA = /^\s*(m\.?\s*o\.?|mano\s+de\s+obra|gastos?\s+de\s+reserva|reserva|gastos?\s+indirectos?)\s*$/i;
 function esDescGenerica(d){ return _DESC_GENERICA.test(String(d||'')); }
+/* v13.10 · Nombre del TRABAJO (no del insumo de mano de obra).
+   Las líneas de mano de obra del presupuesto traen el nombre del insumo («mano de obra», «M.O. Viga 20×51»),
+   que a veces ni coincide con el trabajo (en el 04.082 decía 20×51 y el trabajo es 20×66). Se muestra, en este orden:
+   el detalle escrito en el contrato → la descripción del ítem del contrato → el nombre del rubro del
+   presupuesto (si el insumo es de mano de obra) → lo de siempre. Solo cambia lo que se ve: el dato guardado
+   y la clave de cada línea no se tocan. */
+const _DESC_MO = /^\s*(m\.?\s*o\.?(\s|$)|mano\s+de\s+obra)/i;
+function tituloLineaCert(l){
+  const det = String(l.contrato_detalle||'').trim(); if(det) return det;
+  const cd = String(l.contrato_desc||'').trim(); if(cd && !esDescGenerica(cd)) return cd;
+  const rd = String(l.rubro_desc||'').trim();
+  if(l.rubro_codigo && rd && !esDescGenerica(rd) && rd !== String(l.rubro_codigo).trim() && !/^fuera de presupuesto$/i.test(rd) && _DESC_MO.test(String(l.descripcion||''))) return rd;
+  return nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc);
+}
+function tituloDistintoCert(l){
+  return !String(l.contrato_detalle||'').trim() && norm(tituloLineaCert(l)) !== norm(l.descripcion||'');
+}
 function nombreRubroDe(cod, desc, rubroDesc){
   if(!esDescGenerica(desc)) return desc || '';
   if(rubroDesc && !esDescGenerica(rubroDesc) && String(rubroDesc).trim() !== String(cod||'').trim()) return rubroDesc;
@@ -5260,8 +5280,8 @@ function lineaFila(l, contratista){
     '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button>'+ordBtnsHtml(k)+'</td>'+
     (function(){
       let dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
-      if(!dl && esDescGenerica(l.descripcion)){
-        const nr = nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc);
+      if(!dl && tituloDistintoCert(l)){   // v13.10
+        const nr = tituloLineaCert(l);
         if(nr && !esDescGenerica(nr)) dl = { principal:nr, ref:[l.rubro_codigo, l.descripcion].filter(Boolean).join(' · ') + (l.contrato_numero ? ' · '+l.contrato_numero : '') };
       }
       if(dl) return '<td class="pl-d"><div class="pl-cod">'+tags+'</div>'+
@@ -5391,7 +5411,7 @@ function lineaHTML(l, contratista){
   const sinSaldo = sinSaldoLinea(l);   // v13.8
   return '<div class="lin'+(cargada?' cargada':'')+(sinRef?' sinref':'')+(excedida?' excedida':'')+(sinSaldo?' sinsaldo':'')+'" data-k="'+escapeHtml(k)+'">'+
     '<div class="lin-h">'+
-      '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(String(l.contrato_detalle||'').trim() || nombreRubroDe(l.rubro_codigo, l.descripcion, l.rubro_desc))+
+      '<div class="lin-nom">'+ordBtnsHtml(k)+'<b'+(l.contrato_detalle?' class="lin-det-tit"':'')+'>'+escapeHtml(tituloLineaCert(l))+
         '<span class="lin-tag '+(esLG?'lg':(l.libre?'sr':(l.esRubro?'rb':'mo')))+'">'+
           (l.libre?(l.rubro_codigo?'sin precio de referencia':'fuera de presupuesto'):(esLG?'logística':(l.esRubro?'rubro completo':'mano de obra')))+'</span>'+
         (sinRef && !l.libre ? '<span class="lin-tag sr" title="La cantidad sí está presupuestada; lo que falta es la mano de obra en la composición del rubro. El pago se hace igual, con el precio del contrato o el que cargues.">sin mano de obra en el presupuesto</span>' : '')+
@@ -5408,7 +5428,7 @@ function lineaHTML(l, contratista){
         (l.admin ? '<span class="lin-tag ta" title="Trabajo por administración: se suma a su costo real">por administración · '+escapeHtml(l.admin)+'</span>' : '')+
         destinoHTML(l, m, k, 'lin')+
       '</b>'+
-        '<small>'+(l.contrato_detalle ? escapeHtml([l.rubro_codigo, l.descripcion].filter(Boolean).join(' · '))+' · ' : '')+(l.rubro_codigo ? (l.contrato_detalle ? '' : escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc))) : 'trabajo libre')+
+        '<small>'+((l.contrato_detalle || tituloDistintoCert(l)) ? escapeHtml([l.rubro_codigo, l.descripcion].filter(Boolean).join(' · '))+' · ' : '')+(l.rubro_codigo ? ((l.contrato_detalle || tituloDistintoCert(l)) ? '' : escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc))) : 'trabajo libre')+
         (l.esRubro ? ' · se certifica el rubro completo' : (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : ''))+'</small></div>'+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>presupuestado</small></div>'
@@ -5576,7 +5596,9 @@ async function ctCargar(nombre, excluirCert){
   try{ await taCargar(); }catch(e){}   // v13.0 · para sugerir el TA de la orden de servicio
   try{
     // v13.0 · La orden de servicio del contrato permite sugerir su trabajo por administración
-    let c = await sb.from('contratos').select('id,numero,estado,obra,presupuesto,contratista_id,tipo,anticipo,alcance,orden_servicio_id')
+    let c = await sb.from('contratos').select('id,numero,estado,obra,presupuesto,contratista_id,tipo,anticipo,alcance,orden_servicio_id,nombre')
+                      .in('estado', ['Emitido','Vigente']);
+    if(c.error && /nombre/i.test(c.error.message||'')) c = await sb.from('contratos').select('id,numero,estado,obra,presupuesto,contratista_id,tipo,anticipo,alcance,orden_servicio_id')   // v13.10 · falta axc_v84_contrato_nombre.sql
                       .in('estado', ['Emitido','Vigente']);
     if(c.error && /orden_servicio_id/i.test(c.error.message||'')) c = await sb.from('contratos').select('id,numero,estado,obra,presupuesto,contratista_id,tipo,anticipo,alcance')
                       .in('estado', ['Emitido','Vigente']);
@@ -5883,16 +5905,23 @@ async function ctAnticipos(){
     }
   }catch(e){ console.warn('anticipo contrato', e); }
 }
+/* v13.10 · Nombre para identificar el contrato: el nombre o, si no tiene, el comienzo de su descripción */
+function ctNombre(c){
+  const n = String((c && c.nombre) || '').trim(); if(n) return n;
+  const a = String((c && c.alcance) || '').replace(/\s+/g,' ').trim();
+  return a ? (a.length > 70 ? a.slice(0,68).trim() + '…' : a) : '';
+}
 function ctUsado(id){ const o = CT.cert[id] || { aprob:0, tramite:0 }; return o.aprob + o.tramite; }
 function ctVincular(){
   const usados = {};
   (ed.lineas||[]).forEach(function(l){
     const ci = ctDeLinea(l);
-    if(!ci){ l.contrato_item_id = null; l.contrato_numero = ''; l.precio_contrato = 0; l.cant_contratada = 0; return; }
+    if(!ci){ l.contrato_item_id = null; l.contrato_numero = ''; l.precio_contrato = 0; l.cant_contratada = 0; l.contrato_desc = ''; return; }
     l.contrato_item_id = ci.id; l.contrato_numero = ci._numero; l.contrato_estado = ci._estado;
     l.precio_contrato = Number(ci.precio_pactado)||0;
     l.cant_contratada = Number(ci.cantidad)||0;
     l.contrato_detalle = ci.detalle || '';
+    l.contrato_desc = ci.descripcion || '';   // v13.10 · el nombre del trabajo según el contrato
     usados[ci.id] = 1;
   });
   // Líneas del contrato que no están en el presupuesto elegido: adicionales,
@@ -6226,7 +6255,7 @@ function sinSaldoBanner(disp){
   const otroSec = sec ? (ed.lineas||[]).filter(function(l){
     return !ed.sel[keyL(l)] && l.sector !== sec && l.contrato_item_id && ctElegido(ctDeItem(l.contrato_item_id));
   }) : [];
-  const nombre = function(l){ return '<b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(String(l.contrato_detalle||l.descripcion||'').slice(0,60)); };
+  const nombre = function(l){ return '<b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(String(tituloTrabajoCert(l)||'').slice(0,60)); };
   let h = '';
   if(agot.length){
     h += '<div><b>'+agot.length+' trabajo'+(agot.length===1?'':'s')+' del contrato sin saldo</b> no '+(agot.length===1?'se agregó':'se agregaron')+' solo'+(agot.length===1?'':'s')+
@@ -6303,7 +6332,7 @@ function trabajoPop(abrir){
   let html = '';
   G.orden.forEach(g=>{
     const filas = G.grupo[g].filter(l => !q ||
-      norm([l.rubro_codigo,l.descripcion,l.rubro_desc,l.codigo_insumo,l.sector].join(' ')).indexOf(q) >= 0);
+      norm([l.rubro_codigo,tituloTrabajoCert(l),l.descripcion,l.rubro_desc,l.codigo_insumo,l.sector].join(' ')).indexOf(q) >= 0);
     if(!filas.length) return;
     html += '<div class="ac-grp">📋 '+escapeHtml(g)+'</div>';
     filas.forEach(l=>{
@@ -6315,7 +6344,7 @@ function trabajoPop(abrir){
       ed.acTrab.push(k);
       html += '<div class="ac-it" data-i="'+i+'" data-k="'+escapeHtml(k)+'">'+
         '<b>'+resaltar(l.rubro_codigo||'libre', q)+'</b>'+
-        '<span>'+resaltar(l.descripcion, q)+'</span>'+
+        '<span>'+resaltar(tituloTrabajoCert(l), q)+'</span>'+(subTrabajoCert(l) ? '<em class="ac-sub">'+escapeHtml(subTrabajoCert(l))+'</em>' : '')+
         '<small>'+(d!=null ? ('disponible <b>'+qty(d)+' '+escapeHtml(l.unidad||'')+'</b>') : 'sin saldo de referencia')+
           (P.pnum ? (' · '+gs(P.pnum)+'/'+escapeHtml(l.unidad||'u')+
                      (P.origen==='pact' ? ' pactado' : (P.origen==='presu' ? ' presupuesto' : ''))) : ' · sin precio')+
@@ -6346,6 +6375,15 @@ function marcarAcTrab(){
   });
 }
 
+/* v13.10 · Nombre del trabajo.
+   El desplegable mostraba la descripción de la MANO DE OBRA del presupuesto («mano de obra», «M.O. Viga…»)
+   y no la del trabajo. Ahora usa el mismo nombre que las filas del certificado: el detalle del contrato o,
+   si no hay, el nombre del rubro. La descripción de la mano de obra queda como dato secundario. */
+function tituloTrabajoCert(l){ return tituloLineaCert(l); }
+function subTrabajoCert(l){
+  const t = norm(tituloLineaCert(l)), d = String(l.descripcion||'').trim();
+  return (d && norm(d) !== t) ? d : '';
+}
 function agregarTrabajo(k){
   if(!k) return;
   ed.sel[k] = true;
