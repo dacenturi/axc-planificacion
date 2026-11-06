@@ -5267,6 +5267,7 @@ function lineaFila(l, contratista){
   const tags =
     (l.contrato_item_id ? '<span class="pl-tag ct" title="Contratado en '+escapeHtml(l.contrato_numero||'')+'">'+escapeHtml(l.contrato_numero||'contrato')+'</span>' : '')+
     iconoDetalle(l.contrato_detalle, l.contrato_numero)+
+    (l._unif && l._unif.length ? '<span class="pl-tag" title="En el presupuesto este trabajo tiene '+(l._unif.length+1)+' líneas de mano de obra (también: '+escapeHtml(l._unif.join(' · '))+'). El contrato fija un solo precio por trabajo, así que se mide una sola vez.">1 trabajo · '+(l._unif.length+1)+' líneas</span>' : '')+
     (CT.items.length && !l.contrato_item_id && !l.libre && !l.adendaPend ? '<span class="pl-tag fc">fuera de contrato</span>' : '')+
     (l.adendaPend ? '<span class="pl-tag ad">adenda al aprobar</span>' : '')+
     (l.indirecto ? '<span class="pl-tag ind">indirecto</span>' : '')+
@@ -5420,6 +5421,7 @@ function lineaHTML(l, contratista){
         (sinSaldo ? '<span class="lin-tag ss" title="'+(l.contrato_item_id?'Lo contratado ya está certificado por completo.':'Lo presupuestado ya está certificado por completo.')+' Si no corresponde medirlo, sacalo con ✕; si cargás cantidad, el sistema pide el motivo.">sin saldo</span>' : '')+
         (l.contrato_item_id ? '<span class="lin-tag ct" title="Contratado con '+escapeHtml(contratista||'')+' · cantidad '+qty(l.cant_contratada)+' '+escapeHtml(l.unidad||'')+' a '+gs(l.precio_contrato)+'">'+escapeHtml(l.contrato_numero||'contrato')+'</span>' : '')+
         iconoDetalle(l.contrato_detalle, l.contrato_numero)+
+        (l._unif && l._unif.length ? '<span class="lin-tag lg" title="En el presupuesto este trabajo tiene '+(l._unif.length+1)+' líneas de mano de obra (también: '+escapeHtml(l._unif.join(' · '))+'). El contrato fija un solo precio por trabajo, así que se mide una sola vez.">1 trabajo · '+(l._unif.length+1)+' líneas</span>' : '')+
         (l.adendaPend ? '<span class="lin-tag ad" title="Rubro del presupuesto: al aprobar el certificado se agrega como adenda al contrato '+escapeHtml(l.adendaPend.numero||'')+'">adenda al aprobar</span>' : '')+
         (CT.items.length && !l.contrato_item_id && !l.libre && !l.adendaPend ? '<span class="lin-tag fc" title="Este trabajo no está en el contrato del contratista: se certifica igual y queda marcado como fuera de contrato.">fuera de contrato</span>' : '')+
         (l.esAdicional ? '<span class="lin-tag ad">adicional del contrato</span>' : '')+
@@ -5989,8 +5991,39 @@ function ctSinDuplicados(){
   if(quitar.length){
     for(let i = ed.lineas.length - 1; i >= 0; i--){ if(quitar.indexOf(ed.lineas[i]) >= 0) ed.lineas.splice(i, 1); }
   }
-  if(dup || quitar.length) console.info('Certificación: se quitaron '+(dup+quitar.length)+' línea(s) repetida(s)');
-  return dup + quitar.length;
+  // 3) v13.12 · Un trabajo del contrato = UNA sola línea.
+  //    El contrato fija un precio por trabajo (rubro). Si el rubro tiene varias líneas de mano de obra en el
+  //    presupuesto (p. ej. «por escalón» y «regleado de escalera», o «gastos indirectos» + «M.O.»), todas se
+  //    vinculan al mismo trabajo y mostraban la misma cantidad y el mismo precio, como si fueran repetidas.
+  //    Se deja una sola (misma obra/presupuesto/sector). Si ya hay medición en más de una, no se toca nada:
+  //    el control de «trabajos repetidos» al guardar sigue protegiendo.
+  let unif = 0;
+  const porCI2 = {};
+  (ed.lineas||[]).forEach(function(l){
+    if(!l.contrato_item_id || l.libre || l.codigo_insumo === 'CT'+l.contrato_item_id) return;
+    const g = l.contrato_item_id+'|'+(l.presupuesto||'')+'|'+norm(l.sector||'');
+    (porCI2[g] = porCI2[g] || []).push(l);
+  });
+  const quitar2 = [];
+  Object.keys(porCI2).forEach(function(g){
+    const L = porCI2[g]; if(L.length < 2) return;
+    const kOf = function(l){ return keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto); };
+    const medida = function(l){ const m = ed.med[kOf(l)]; return !!(m && (Number(m.cant) > 0 || m.ta !== undefined || (m.fotos||[]).length)); };
+    const medidas = L.filter(medida);
+    if(medidas.length > 1) return;
+    const queda = medidas[0]
+      || L.filter(function(l){ return _DESC_MO.test(String(l.descripcion||'')) && !esDescGenerica(l.descripcion); })[0]
+      || L.filter(function(l){ return !esDescGenerica(l.descripcion); })[0]
+      || L[0];
+    queda._unif = L.filter(function(l){ return l !== queda; }).map(function(l){ return String(l.descripcion||'').trim() || l.codigo_insumo; });
+    L.forEach(function(l){ if(l !== queda){ delete ed.med[kOf(l)]; quitar2.push(l); } });
+  });
+  if(quitar2.length){
+    for(let i = ed.lineas.length - 1; i >= 0; i--){ if(quitar2.indexOf(ed.lineas[i]) >= 0) ed.lineas.splice(i, 1); }
+    unif = quitar2.length;
+  }
+  if(dup || quitar.length || unif) console.info('Certificación: se quitaron '+(dup+quitar.length)+' línea(s) repetida(s) y se unificaron '+unif+' línea(s) de un mismo trabajo del contrato');
+  return dup + quitar.length + unif;
 }
 /* Cuánto queda por certificar de una línea: contra el contrato si la línea
    está contratada; si no, contra el presupuesto. */
