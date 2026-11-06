@@ -246,6 +246,22 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .sect small{font-family:'Inter',system-ui,sans-serif;font-weight:500;font-size:12px;color:var(--text-muted)}
 .panel{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;background:var(--surface)}
 .hint{font-size:12px;color:var(--text-muted);margin-top:4px}
+/* v9.3 · Adenda: qué rubros ya están en el contrato y cuáles son nuevos (color discreto) */
+.rchip{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.3px;border-radius:999px;padding:1px 7px;margin-top:3px;white-space:nowrap;border:1px solid transparent}
+.rchip.amp{background:#EDF3FB;color:#1F3864;border-color:#CBD9EE}
+.rchip.nue{background:#EAF5EC;color:#1B5524;border-color:#C2E1C9}
+.rchip.otr{background:#FDF4E3;color:#7a5c10;border-color:#F0E2BD}
+.rchip.adi{background:#F1F2F5;color:#5b6575;border-color:#DDE1E7}
+[data-theme="dark"] .rchip.amp{background:rgba(120,160,230,.14);color:#BCD0F2;border-color:rgba(120,160,230,.3)}
+[data-theme="dark"] .rchip.nue{background:rgba(90,190,120,.14);color:#A9DDB6;border-color:rgba(90,190,120,.3)}
+[data-theme="dark"] .rchip.otr{background:rgba(220,170,60,.14);color:#EBCB86;border-color:rgba(220,170,60,.3)}
+[data-theme="dark"] .rchip.adi{background:rgba(255,255,255,.07);color:#B9C0CC;border-color:rgba(255,255,255,.16)}
+tr.r-amp > td:first-child{box-shadow:inset 3px 0 0 #9DB6E0}
+tr.r-nue > td:first-child{box-shadow:inset 3px 0 0 #8CC59B}
+tr.r-otr > td:first-child{box-shadow:inset 3px 0 0 #E2C06E}
+.ad-resumen{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:12px;color:var(--text-soft)}
+.ad-resumen b{color:var(--navy)}
+[data-theme="dark"] .ad-resumen b{color:var(--gold-soft)}
 /* v9.1 · Descripción del contrato con ejemplos */
 .sel.req{border-color:#C8A028;background:#FFFBEF}
 .desc-ej{margin-top:10px;border:1px dashed #D9CBA6;background:#FBF7EC;border-radius:10px;padding:10px 12px}
@@ -1449,22 +1465,57 @@ function editorLineas(cont, ctx){
   // Conserva el foco al redibujar (ej. al elegir un código y pasar al campo siguiente)
   const ae=document.activeElement, fr=ae && cont.contains(ae) && ae.closest('tr[data-i]');
   const foco = fr ? { i:fr.getAttribute('data-i'), f:ae.getAttribute('data-f') } : null;
-  const ppSel = ctx.pp ? '<select class="sel" id="elPP" style="max-width:420px"><option value="">＋ Agregar un rubro del presupuesto '+esc(ctx.pp.codigo)+'…</option>'+
-    ctx.pp.rubros.map(function(r){
-      const ya=((ctx.pp.otros||{})[r.rubro_codigo]||[]).reduce(function(s,o){ return s+o.cantidad; },0), falta=Math.max(0, r.cantidad-ya);   // v9.2
-      return '<option value="'+esc(r.rubro_codigo)+'">'+esc(r.rubro_codigo+' · '+r.descripcion+' · '+(r.sector||'')+' · presup. '+fmtQ(r.cantidad)+' '+r.unidad+(ya?' · falta contratar '+fmtQ(falta):''))+'</option>'; }).join('')+'</select>' : '';
+  /* v9.3 · En una adenda se distingue, por rubro: ya está en ESTE contrato (se amplía), todavía no está contratado
+     (rubro nuevo) o está con otro contratista. Fuera de las adendas (ctx.miNumero indefinido) todo queda como antes. */
+  const esAd = ctx.miNumero != null;
+  function estRub(cod){
+    const o=((ctx.pp&&ctx.pp.otros)||{})[cod]||[], mio=0;
+    const m=o.filter(function(x){ return x.numero===ctx.miNumero; }), t=o.filter(function(x){ return x.numero!==ctx.miNumero; });
+    const sm=function(a){ return a.reduce(function(s,x){ return s+x.cantidad; },0); };
+    return { mio:sm(m), otro:sm(t), otros:t.map(function(x){ return x.contratista; }).filter(function(v,i,a){ return a.indexOf(v)===i; }) };
+  }
+  function optRub(r){
+    const e=estRub(r.rubro_codigo), ya=e.mio+e.otro, falta=Math.max(0, r.cantidad-ya);
+    let t=r.rubro_codigo+' · '+r.descripcion+' · '+(r.sector||'')+' · ';
+    if(esAd && e.mio>0) t+='en el contrato '+fmtQ(e.mio)+' de '+fmtQ(r.cantidad)+' '+r.unidad+(falta>0?' · falta '+fmtQ(falta):' · completo');
+    else if(esAd && e.otro>0) t+='con '+e.otros.join(', ')+' · '+fmtQ(e.otro)+' de '+fmtQ(r.cantidad)+' '+r.unidad;
+    else t+='presup. '+fmtQ(r.cantidad)+' '+r.unidad+(ya?' · falta contratar '+fmtQ(falta):'');
+    return '<option value="'+esc(r.rubro_codigo)+'">'+esc(t)+'</option>';
+  }
+  function grupoRub(titulo, arr){ return arr.length ? '<optgroup label="'+esc(titulo)+' ('+arr.length+')">'+arr.map(optRub).join('')+'</optgroup>' : ''; }
+  let ppOpts='';
+  if(ctx.pp){
+    if(esAd){
+      const enEste=[], nuevos=[], enOtro=[];
+      ctx.pp.rubros.forEach(function(r){ const e=estRub(r.rubro_codigo); (e.mio>0 ? enEste : (e.otro>0 ? enOtro : nuevos)).push(r); });
+      ppOpts = grupoRub('● Ya están en este contrato · se amplía la cantidad', enEste)+grupoRub('＋ Todavía sin contratar · rubro nuevo', nuevos)+grupoRub('◐ Contratados con otro contratista', enOtro);
+    } else ppOpts = ctx.pp.rubros.map(optRub).join('');
+  }
+  const ppSel = ctx.pp ? '<select class="sel" id="elPP" style="max-width:460px"><option value="">＋ Agregar un rubro del presupuesto '+esc(ctx.pp.codigo)+'…</option>'+ppOpts+'</select>' : '';
   cont.innerHTML = dlRubHtml()+dlSecHtml(ctx.obra, ctx.pp?ctx.pp.rubros.map(function(r){ return r.sector; }):[])+
     '<div class="card"><div class="tbl-wrap"><table class="tbl lin"><thead><tr><th style="width:104px">Rubro</th><th style="width:120px">Sector</th><th>Descripción del trabajo *</th><th style="width:74px">Unid.</th><th class="num" style="width:96px">Cantidad *</th><th class="num" style="width:122px">Precio Gs *</th><th class="num" style="width:110px">Subtotal</th><th class="num" style="width:96px">Referencia</th><th style="width:110px">Detalle</th><th style="width:40px"></th></tr></thead><tbody>'+
     (L.length ? L.map(function(l,i){
       const sub=Math.round((Number(l.cantidad)||0)*(Number(l.precio_pactado)||0));
-      return '<tr data-i="'+i+'">'+
+      const eR = (esAd && l.presupuesto && l.rubro_codigo) ? estRub(l.rubro_codigo) : null;
+      const claseR = eR ? (eR.mio>0 ? 'r-amp' : (eR.otro>0 ? 'r-otr' : 'r-nue')) : '';
+      const chipR = !esAd ? '' : (!l.presupuesto
+        ? '<div><span class="rchip adi" title="Este trabajo no está en el presupuesto: se contrata como adicional, sin rubro">Adicional</span></div>'
+        : (eR.mio>0
+          ? '<div><span class="rchip amp" title="Este rubro ya está en el contrato ('+fmtQ(eR.mio)+' '+esc(l.unidad||'')+'). La adenda suma la cantidad que cargues acá.">Ya contratado</span></div>'
+          : (eR.otro>0
+            ? '<div><span class="rchip otr" title="Este rubro no está en este contrato pero sí con: '+esc(eR.otros.join(', '))+'">Otro contratista</span></div>'
+            : '<div><span class="rchip nue" title="Rubro del presupuesto que todavía no está contratado con nadie">Nuevo</span></div>')));
+      const dato = (esAd && l.presupuesto && eR)
+        ? (eR.mio>0 ? ' · ya en el contrato: '+fmtQ(eR.mio)+' '+esc(l.unidad||'') : (eR.otro>0 ? ' · con '+esc(eR.otros.join(', ')) : ' · sin contratar'))
+        : '';
+      return '<tr data-i="'+i+'"'+(claseR?' class="'+claseR+'"':'')+'>'+
         /* v1.5 · El rubro solo sale del presupuesto. Un trabajo que no está
            presupuestado se carga sin rubro: no se inventan códigos. */
         '<td>'+(l.presupuesto
-          ? '<span class="code" title="Del presupuesto '+esc(l.presupuesto)+'">'+esc(l.rubro_codigo||'—')+'</span>'
-          : '<span class="muted" title="Este trabajo no está en el presupuesto: se contrata como adicional, sin rubro">sin rubro</span>')+'</td>'+
+          ? '<span class="code" title="Del presupuesto '+esc(l.presupuesto)+'">'+esc(l.rubro_codigo||'—')+'</span>'+chipR
+          : '<span class="muted" title="Este trabajo no está en el presupuesto: se contrata como adicional, sin rubro">sin rubro</span>'+chipR)+'</td>'+
         '<td><input class="inp" list="dlSec" data-f="sector" value="'+esc(l.sector)+'"'+(l.presupuesto?' readonly':'')+'></td>'+
-        '<td><input class="inp" data-f="descripcion" value="'+esc(l.descripcion)+'" maxlength="300"'+(l.presupuesto?' readonly':'')+'>'+(l.presupuesto?'<div class="hint">Del presupuesto '+esc(l.presupuesto)+'</div>':'')+'</td>'+
+        '<td><input class="inp" data-f="descripcion" value="'+esc(l.descripcion)+'" maxlength="300"'+(l.presupuesto?' readonly':'')+'>'+(l.presupuesto?'<div class="hint">Del presupuesto '+esc(l.presupuesto)+dato+'</div>':'')+'</td>'+
         '<td><input class="inp" data-f="unidad" value="'+esc(l.unidad)+'" maxlength="12"'+(l.presupuesto?' readonly':'')+'></td>'+
         '<td><input class="inp num" data-f="cantidad" data-q="1" value="'+(l.cantidad?fmtQ(l.cantidad):'')+'"></td>'+
         '<td><input class="inp num" data-f="precio_pactado" data-gs="1" value="'+(l.precio_pactado?fmtGs(l.precio_pactado):'')+'"></td>'+
@@ -1474,6 +1525,11 @@ function editorLineas(cont, ctx){
         '<td><button class="x-del" data-del title="Quitar línea" aria-label="Quitar línea">×</button></td></tr>';
     }).join('') : '<tr><td colspan="10" class="empty"><b>Sin líneas</b>Agregá un trabajo con el botón de abajo.</td></tr>')+
     '</tbody></table></div></div>'+
+    (esAd && L.length ? (function(){
+      let na=0, nn=0, no=0, nd=0;
+      L.forEach(function(l){ if(!l.presupuesto){ nd++; return; } const e=estRub(l.rubro_codigo); if(e.mio>0) na++; else if(e.otro>0) no++; else nn++; });
+      return '<div class="ad-resumen"><span>Esta adenda:</span>'+(na?'<span class="rchip amp">'+na+' ampliación'+(na===1?'':'es')+'</span>':'')+(nn?'<span class="rchip nue">'+nn+' rubro'+(nn===1?'':'s')+' nuevo'+(nn===1?'':'s')+'</span>':'')+(no?'<span class="rchip otr">'+no+' con otro contratista</span>':'')+(nd?'<span class="rchip adi">'+nd+' adicional'+(nd===1?'':'es')+'</span>':'')+'</div>';
+    })() : '')+
     '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap"><button class="btn btn-gh btn-sm" id="elAdd">＋ Agregar trabajo</button>'+ppSel+
     '<span class="hint" style="margin:0">El rubro sale del presupuesto: los trabajos que no están presupuestados se cargan como adicional, sin rubro y sin precio de referencia.</span></div>';
   function pintar(){ editorLineas(cont, ctx); if(ctx.onChange) ctx.onChange(); }
@@ -1976,9 +2032,9 @@ async function nuevaAdenda(c){
   const n=(S.adendas.filter(function(a){ return a.contrato_id===c.id; }).reduce(function(mx,a){ return Math.max(mx,a.numero); },0))+1;
   A.n=n;
   $('adTitle').textContent='Adenda A'+n+' · '+c.numero; $('adSub').textContent=contratistaDe(c.contratista_id).nombre+' · '+c.obra;
-  $('adBody').innerHTML='<div class="note note-i" style="margin-bottom:12px">La adenda agrega trabajos o cantidades al contrato sin tocar lo ya pactado. Para ampliar la cantidad de un rubro, agregá el mismo rubro con la cantidad extra.</div>'+
+  $('adBody').innerHTML='<div class="note note-i" style="margin-bottom:12px">La adenda agrega trabajos o cantidades al contrato sin tocar lo ya pactado. Para ampliar la cantidad de un rubro, agregá el mismo rubro con la cantidad extra.<div class="ad-resumen" style="margin-top:6px"><span class="rchip amp">Ya contratado</span><span>el rubro ya está en este contrato: la adenda suma cantidad</span><span class="rchip nue">Nuevo</span><span>todavía no está contratado</span><span class="rchip otr">Otro contratista</span><span>está con otro</span></div></div>'+
     '<div class="fgrp"><label class="lbl">Motivo de la adenda *</label><input class="inp" id="adMot" maxlength="300" placeholder="Ej. ampliación de mampostería en Nivel 4 por cambio de proyecto"></div><div id="adCont"></div>';
-  editorLineas($('adCont'), { lines:A.lines, obra:c.obra, pp:A.pp });
+  editorLineas($('adCont'), { lines:A.lines, obra:c.obra, pp:A.pp, miNumero:c.numero });
   $('adApprove').classList.toggle('hidden', !S.puedeAprobar);
   openOv('ovAd');
 }
@@ -1998,7 +2054,7 @@ async function editarAdenda(adId){
   $('adTitle').textContent='Editar adenda A'+a.numero+' · '+c.numero; $('adSub').textContent=contratistaDe(c.contratista_id).nombre+' · '+c.obra;
   $('adBody').innerHTML='<div class="note note-i" style="margin-bottom:12px">Estás editando la adenda mientras está en borrador. Al aprobarla, sus trabajos pasan a formar parte del contrato.</div>'+
     '<div class="fgrp"><label class="lbl">Motivo de la adenda *</label><input class="inp" id="adMot" maxlength="300" value="'+esc(a.motivo||'')+'"></div><div id="adCont"></div>';
-  editorLineas($('adCont'), { lines:A.lines, obra:c.obra, pp:A.pp });
+  editorLineas($('adCont'), { lines:A.lines, obra:c.obra, pp:A.pp, miNumero:c.numero });
   $('adApprove').classList.toggle('hidden', !S.puedeAprobar);
   openOv('ovAd');
 }
