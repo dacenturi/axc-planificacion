@@ -10733,6 +10733,14 @@ async function ventaAceptada(presus){
 function _plKey(presu, rubro, ci, desc, sector){
   return [presu||'', keyLinea(rubro, ci, desc), norm(sector||'')].join('#');
 }
+/* v13.18 · Trabajos por administración sin contrato ni presupuesto: el acumulado anterior es lo ya aprobado en el MISMO trabajo
+   por administración, el mismo trabajo (como se agrupa en la bolsa del TA) y el mismo sector. Antes salía siempre en 0.
+   Con PLANILLA_TA_POR_CONTRATISTA = true solo cuentan los certificados del mismo contratista. */
+const PLANILLA_TA_POR_CONTRATISTA = false;
+function _plTaKey(it){
+  return 'ta:' + String(it.trabajo_admin||'') + '|' + norm(it.sector||'') + '|' +
+    (it.rubro_codigo ? String(it.rubro_codigo).toUpperCase() : '99.000|' + norm(it.descripcion||''));
+}
 async function planillaAnterior(c, its){
   /* v11.17 · Acumulado anterior de la planilla:
      · por presupuesto: certificados aprobados del mismo contratista (el nombre
@@ -10743,7 +10751,8 @@ async function planillaAnterior(c, its){
   const out = {};
   const presus = Array.from(new Set((its||[]).map(x=>x.presupuesto).filter(Boolean)));
   const ciIds  = Array.from(new Set((its||[]).map(x=>x.contrato_item_id).filter(Boolean)));
-  if(!c.contratista && !ciIds.length) return out;
+  const taIds  = Array.from(new Set((its||[]).filter(x=>x.trabajo_admin && !x.contrato_item_id).map(x=>x.trabajo_admin)));   // v13.18
+  if(!c.contratista && !ciIds.length && !taIds.length) return out;
   const fc = String(c.fecha||'').slice(0,10), nc = String(c.numero||'');
   const nom = norm(c.contratista);
   const esAntes = function(cab){
@@ -10783,6 +10792,19 @@ async function planillaAnterior(c, its){
         const cab = it.certificados || {};
         if(vistos[it.id] || it.certificado_id === c.id || cab.estado !== 'Aprobado' || !esAntes(cab)) return;
         sumar('ci:'+it.contrato_item_id, it);
+      });
+    }
+    // 3 · Por trabajo por administración (v13.18)
+    if(taIds.length){
+      const { data, error } = await sb.from('certificado_items')
+        .select('id,trabajo_admin,rubro_codigo,descripcion,sector,cantidad,subtotal,certificado_id,contrato_item_id,certificados!inner(id,numero,fecha,estado,contratista)')
+        .eq('certificados.estado','Aprobado').in('trabajo_admin', taIds).limit(5000);
+      if(error) throw error;
+      (data||[]).forEach(function(it){
+        const cab = it.certificados || {};
+        if(it.contrato_item_id || it.certificado_id === c.id || cab.estado !== 'Aprobado' || !esAntes(cab)) return;
+        if(PLANILLA_TA_POR_CONTRATISTA && norm(cab.contratista) !== nom) return;
+        sumar(_plTaKey(it), it);
       });
     }
   }catch(e){
@@ -10903,7 +10925,8 @@ async function generarPlanillaPDF(c, its, opts){
     porSec[sc].forEach(x=>{
       n++;
       const ki = porCt && x.contrato_item_id ? CTI[x.contrato_item_id] : null;
-      const k  = ki ? ('ci:'+x.contrato_item_id) : _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector);
+      const k  = ki ? ('ci:'+x.contrato_item_id)
+               : ((x.trabajo_admin && !x.contrato_item_id) ? _plTaKey(x) : _plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector));   // v13.18
       const a  = ant[k] || { cant:0, monto:0 };
       // v13.11 · Al cliente, lo de administración va a costo ÷ coeficiente del TA
       const esTAc = !!(op.cliente && x.trabajo_admin);
@@ -11058,12 +11081,14 @@ async function generarPlanillaPDF(c, its, opts){
       'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo item del contrato. '+
       'Total contratado (G) = cantidad contratada x precio pactado. '+
       'Los trabajos fuera de contrato (gastos a presupuestar e indirectos) no tienen % ni saldo.'+
+      ((its||[]).some(function(x){ return x.trabajo_admin && !x.contrato_item_id; }) ? ' Trabajos por administracion (TA): el acumulado anterior suma los certificados aprobados anteriores del mismo TA, trabajo y sector.' : '')+
       // v13.0 · Destino del gasto: CT-... > TA-...
       ((its||[]).some(function(x){ return x.contrato_item_id && x.trabajo_admin; }) ? ' "CT > TA": el trabajo se paga por contrato y ademas suma al costo del trabajo por administracion indicado, que se liquida al cliente.' : '')
     : 'Documento de uso interno: residente, supervision y gerencia. Avance contra el presupuesto. '+
       'Acumulado anterior: certificados aprobados de '+pdfSafe(c.contratista||'')+' anteriores a este, del mismo presupuesto, trabajo y sector. '+
       'Total presupuestado (G) = cantidad del presupuesto x precio unitario de este certificado. '+
-      'Los trabajos fuera de presupuesto, y los rubros sin mano de obra cargada, no tienen % ni saldo.';
+      'Los trabajos fuera de presupuesto, y los rubros sin mano de obra cargada, no tienen % ni saldo.'+
+      ((its||[]).some(function(x){ return x.trabajo_admin && !x.contrato_item_id; }) ? ' Trabajos por administracion (TA): el acumulado anterior suma los certificados aprobados anteriores del mismo TA, trabajo y sector.' : '');
   doc.text(doc.splitTextToSize(nota, W-M*2), M, y);
   y += 10;
 
