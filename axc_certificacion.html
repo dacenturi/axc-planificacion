@@ -9494,6 +9494,34 @@ async function eeCargar(certId){
     return { falta:false, abierta: lista.find(function(x){ return x.estado === 'Abierta'; }) || null, lista:lista };
   }catch(e){ return { falta:true, abierta:null, lista:[] }; }
 }
+/* v13.21 · La orden de pago se actualiza sola al aprobar de nuevo un certificado (axc_v90_orden_pago_sincronizar.sql).
+   Acá solo se detecta si está instalada y se informa lo que pasó; el cálculo vive en la base de datos. */
+const OPSYNC = { listo:false, activo:false };
+async function opSyncActivo(){
+  if(OPSYNC.listo) return OPSYNC.activo;
+  OPSYNC.listo = true;
+  try{ const r = await sb.rpc('op_sync_automatico'); OPSYNC.activo = !!(r && !r.error && r.data === true); }catch(e){ OPSYNC.activo = false; }
+  return OPSYNC.activo;
+}
+async function opAvisoTrasAprobar(cierre){
+  if(!cierre) return;
+  let auto = null;
+  try{
+    const ro = await sb.from('orden_pago').select('id,numero,total_certificado,neto_pagar').eq('numero', cierre.orden).maybeSingle();
+    if(ro && ro.data){
+      const ra = await sb.from('orden_pago_ajustes').select('*').eq('orden_id', String(ro.data.id)).order('creado_en', { ascending:false }).limit(1);
+      const a = ra && ra.data && ra.data[0];
+      if(a && (Date.now() - new Date(a.creado_en).getTime()) < 5*60*1000) auto = { aj:a, op:ro.data };
+    }
+  }catch(e){ console.warn('aviso de orden actualizada', e); }
+  if(auto){
+    showToast('Orden '+cierre.orden+' actualizada automáticamente','success', gs(auto.aj.total_antes)+' → '+gs(auto.aj.total_despues)+' · queda registrado en «Órdenes emitidas»');
+  }else if(cierre.diff){
+    showToast('Certificado aprobado con diferencia contra la orden','info', 'La orden '+(cierre.orden || '')+' tenía '+gs(cierre.antes)+' y el certificado ahora es '+gs(cierre.despues)+'. No se actualizó sola: reajustala desde «📜 Órdenes emitidas».');
+  }else{
+    showToast('Certificado aprobado, sin diferencia de monto','success');
+  }
+}
 async function eeCerrar(certId){
   try{
     const ee = await eeCargar(certId); if(!ee.abierta) return null;
@@ -9522,6 +9550,7 @@ async function abrirDetalle(id){
      modifica ni se anula: primero hay que anular la orden. Si no, la orden
      diría una cosa y el certificado otra.                                  */
   const EE = await eeCargar(c.id);                       // v13.17
+  const OPA = await opSyncActivo();                      // v13.21 · ¿la orden se actualiza sola?
   const pagadoOP = !!c.orden_pago;
   const pagado = pagadoOP && !EE.abierta;                // con una edición excepcional abierta, el certificado se puede corregir y aprobar de nuevo
   const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido') && !pagado;
@@ -9543,10 +9572,10 @@ async function abrirDetalle(id){
     const u = EE.lista[0], q = escapeHtml(u.usuario_nombre || '—'), f = fmtFecha(String(u.creado_en || '').slice(0,10));
     let eeHtml = '';
     if(u.estado === 'Abierta'){
-      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional abierta</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b> · monto en la orden: <b>'+gs(u.total_antes)+'</b>.<br>Motivo: '+escapeHtml(u.motivo || '')+'<br>Al aprobarlo de nuevo, la orden conserva su monto original y la diferencia queda registrada.</div>';
+      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional abierta</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b> · monto en la orden: <b>'+gs(u.total_antes)+'</b>.<br>Motivo: '+escapeHtml(u.motivo || '')+'<br>'+(OPA ? 'Al aprobarlo de nuevo, <b>la orden de pago se actualiza sola</b> con el monto nuevo y queda registrado.' : 'Al aprobarlo de nuevo, la orden conserva su monto original: después hay que reajustarla desde «Órdenes emitidas».')+'</div>';
     }else{
       const dif = (Number(u.total_despues) || 0) - (Number(u.total_antes) || 0);
-      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b>: '+gs(u.total_antes)+' → <b>'+gs(u.total_despues)+'</b>'+(dif ? ' (diferencia <b>'+gs(dif)+'</b>, a ajustar por administración)' : ' (sin diferencia de monto)')+'.<br>Motivo: '+escapeHtml(u.motivo || '')+(EE.lista.length > 1 ? ' · '+(EE.lista.length-1)+' edición(es) anterior(es) registrada(s)' : '')+'</div>';
+      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b>: '+gs(u.total_antes)+' → <b>'+gs(u.total_despues)+'</b>'+(dif ? ' (diferencia <b>'+gs(dif)+'</b>'+(OPA ? ', la orden se actualizó sola' : ', a ajustar por administración')+')' : ' (sin diferencia de monto)')+'.<br>Motivo: '+escapeHtml(u.motivo || '')+(EE.lista.length > 1 ? ' · '+(EE.lista.length-1)+' edición(es) anterior(es) registrada(s)' : '')+'</div>';
     }
     document.getElementById('dtBody').insertAdjacentHTML('beforebegin', '<div id="dtEEBox" style="padding:0 2px">'+eeHtml+'</div>');
   }
@@ -9748,7 +9777,7 @@ async function abrirDetalle(id){
         mensaje:'Este certificado ya está incluido en la orden <b>'+escapeHtml(c.orden_pago)+'</b>'+(op ? ' (<b>'+escapeHtml(op.estado || '')+'</b>'+(op.neto_pagar ? ' · neto '+gs(op.neto_pagar) : '')+')' : '')+'. Es un caso excepcional: la regla general es anular la orden primero.',
         lista:[
           'El certificado <b>vuelve a Borrador</b> y hay que <b>aprobarlo de nuevo</b>; se borra la firma del aprobador.',
-          'La orden <b>conserva su monto original</b>: la diferencia queda registrada y la ajusta administración.',
+          (OPA ? 'Al aprobarlo de nuevo, <b>la orden de pago se actualiza sola</b> con el monto nuevo del certificado (queda registrado).' : 'La orden <b>conserva su monto original</b>: después hay que reajustarla desde «Órdenes emitidas».'),
           'Si ya se transfirió el dinero, esto <b>no lo revierte</b>.',
           'Queda registrado <b>quién ('+escapeHtml(quien)+'), cuándo y por qué</b>, y no se puede borrar.'
         ],
@@ -10102,8 +10131,7 @@ async function cambiarEstado(id, estado){
       estado === 'Aprobado' && firmaAprob ? ('Firma de '+(firmaAprob.nombre||quien)+' · sale en el certificado y en la orden de pago') : undefined);
     if(estado === 'Aprobado' || estado === 'Anulado'){   // v13.17 · cierra el registro de la edición excepcional, si había uno abierto
       const cierre = await eeCerrar(id);
-      if(cierre) showToast(cierre.diff ? 'Certificado aprobado con diferencia contra la orden' : 'Certificado aprobado, sin diferencia de monto', cierre.diff ? 'info' : 'success',
-        'La orden '+(cierre.orden || '')+' tenía '+gs(cierre.antes)+'; ahora el certificado es '+gs(cierre.despues)+(cierre.diff ? ' (diferencia '+gs(cierre.diff)+'): avisá a administración' : ''));
+      await opAvisoTrasAprobar(cierre);   // v13.21 · informa si la orden de pago se actualizó sola
     }
     document.getElementById('dtOv').hidden = true;
     await loadList();
