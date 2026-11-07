@@ -621,6 +621,8 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .tb-cf.mal{border-color:#B42B2B;background:#FBEAEA}
 .tb-pr b{color:#1F3864}
 .tb-ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px;color:#5A6272}
+.oph-dif{display:block;margin-top:4px;font-size:11.5px;font-weight:700;color:#8A4B00;background:#FFF1D6;border:1px solid #F0C98A;border-radius:7px;padding:3px 8px}
+.oph-ok{display:block;margin-top:4px;font-size:11.5px;color:#1B5524}
 .dt-ee{width:100%;flex-basis:100%;margin-top:8px;background:#FFF4E0;border:1px solid #F0C98A;border-radius:9px;padding:8px 11px;font-size:12.5px;color:#6B4A0A;line-height:1.45}
 .dt-ee b{color:#4A3306}
 .tb-lock{background:#FFF4E0;border:1px solid #F0C98A;border-radius:10px;padding:9px 12px;margin:10px 0;font-size:13px;color:#6B4A0A}
@@ -8261,11 +8263,85 @@ document.getElementById('opVerEmitidas').onclick = async function(){
     if(error) throw error;
     OPH.data = data || [];
     if(!OPH.data.length){ det.innerHTML = '<div class="vacio"><b>Todavía no se emitió ninguna orden de pago.</b></div>'; return; }
+    await opHistDesfase();   // v13.19 · marca las órdenes que ya no coinciden con sus certificados
     opHistPintar();
   }catch(e){
     det.innerHTML = '<div class="vacio">No se pudo leer el historial.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
   }
 };
+/* v13.19 · Una orden guarda el monto que tenía cada certificado al emitirse. Si después un certificado se corrige
+   (edición excepcional), la orden queda distinta a los certificados: se detecta acá y se puede REAJUSTAR con registro. */
+async function opHistDesfase(){
+  OPH.data.forEach(function(o){ o._dif = 0; o._det = []; o._pend = 0; o._aj = []; });
+  try{
+    const vig = OPH.data.filter(function(o){ return o.estado !== 'Anulada'; }), ids = vig.map(function(o){ return o.id; });
+    if(!ids.length) return;
+    const ri = await sb.from('orden_pago_items').select('orden_id,certificado_id,numero,total').in('orden_id', ids);
+    const items = (ri && ri.data) || [];
+    const cids = Array.from(new Set(items.map(function(x){ return x.certificado_id; }).filter(Boolean)));
+    const rc = cids.length ? await sb.from('certificados').select('id,numero,total,estado').in('id', cids) : { data:[] };
+    const cert = {}; ((rc && rc.data) || []).forEach(function(c){ cert[c.id] = c; });
+    OPH.data.forEach(function(o){
+      items.filter(function(x){ return x.orden_id === o.id; }).forEach(function(x){
+        const c = cert[x.certificado_id]; if(!c) return;
+        if(c.estado !== 'Aprobado'){ o._pend++; return; }
+        const antes = Number(x.total) || 0, ahora = Number(c.total) || 0;
+        if(Math.round(antes) !== Math.round(ahora)){ o._det.push({ certificado_id:x.certificado_id, numero:x.numero || c.numero, antes:antes, ahora:ahora }); o._dif += ahora - antes; }
+      });
+    });
+    const ra = await sb.from('orden_pago_ajustes').select('*').in('orden_id', ids.map(String)).order('creado_en', { ascending:false });
+    if(ra && !ra.error) (ra.data || []).forEach(function(a){ const o = OPH.data.filter(function(x){ return String(x.id) === String(a.orden_id); })[0]; if(o) o._aj.push(a); });
+  }catch(e){ console.warn('diferencias de órdenes', e); }
+}
+async function opReajustar(o){
+  if(!o || !o._det || !o._det.length) return;
+  const quien = (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || '';
+  const totalNuevo = (Number(o.total_certificado) || 0) + o._dif;
+  const neto = totalNuevo - (Number(o.desc_anticipo) || 0) - (Number(o.desc_prestamo) || 0) - (Number(o.retencion) || 0);
+  if(neto < 0){
+    await axcDialog({ tono:'warn', icono:'⚠', titulo:'No se puede reajustar '+o.numero,
+      mensaje:'Con los montos vigentes el neto quedaría <b>negativo</b> ('+gs(neto)+'), porque los descuentos y la retención de la orden son mayores. Hay que revisar la orden con administración (anularla y volver a emitirla).', ok:'Entendido', cancelar:null });
+    return;
+  }
+  let sugerido = '';
+  try{
+    const ids = o._det.map(function(d){ return String(d.certificado_id); });
+    const re = await sb.from('certificado_ediciones').select('numero,motivo').in('certificado_id', ids).order('creado_en', { ascending:false });
+    if(re && !re.error && (re.data || []).length) sugerido = 'Edición excepcional de ' + re.data.slice(0,2).map(function(x){ return (x.numero || '') + ': ' + (x.motivo || ''); }).join(' · ');
+  }catch(e){}
+  const r = await axcDialog({
+    tono:'warn', icono:'🔄', titulo:'Reajustar la orden '+o.numero, subtitulo:o.contratista+' · hoy '+gs(o.neto_pagar)+' netos',
+    mensaje:'Los certificados de esta orden cambiaron después de emitirla. El reajuste pone la orden al día con los <b>montos vigentes</b> y deja constancia de quién, cuándo y por qué.',
+    lista: o._det.map(function(d){ return '<b>'+escapeHtml(d.numero||'')+'</b>: '+gs(d.antes)+' → <b>'+gs(d.ahora)+'</b> ('+(d.ahora-d.antes > 0 ? '+' : '')+gs(d.ahora-d.antes)+')'; })
+      .concat(['<b>Total de la orden:</b> '+gs(o.total_certificado)+' → <b>'+gs(totalNuevo)+'</b>',
+               '<b>Neto a pagar:</b> '+gs(o.neto_pagar)+' → <b>'+gs(neto)+'</b> (anticipo, préstamo y retención se mantienen)',
+               'Si ya se transfirió el dinero, esto <b>no lo revierte</b>: la diferencia se resuelve con el contratista (por ejemplo, descontándola del próximo pago).']),
+    campo:{ label:'Motivo del reajuste (obligatorio)', placeholder:'Ej. el contratista no cumplió con lo certificado previsto para el viernes', valor:sugerido, requerido:true },
+    ok:'Reajustar la orden', cancelar:'Volver'
+  });
+  if(!r.ok) return;
+  const motivo = String(r.valor || '').trim();
+  if(motivo.length < 15){ showToast('El motivo es muy corto','error','Explicá por qué cambió la orden (mínimo 15 caracteres)'); return; }
+  const aj = await sb.from('orden_pago_ajustes').insert({ orden_id:String(o.id), numero:o.numero, total_antes:Number(o.total_certificado) || 0, total_despues:totalNuevo,
+    neto_antes:Number(o.neto_pagar) || 0, neto_despues:neto, detalle:o._det, motivo:motivo, usuario_id:state.user && state.user.id, usuario_nombre:quien }).select().single();
+  if(aj.error){
+    const m = String(aj.error.message || '');
+    if(/does not exist|relation/i.test(m)) await axcDialog({ tono:'warn', icono:'⚠', titulo:'Falta preparar la base de datos', mensaje:'Para reajustar una orden hay que ejecutar <b>axc_v89_orden_pago_ajustes.sql</b> una vez: así queda el registro de quién y por qué.', ok:'Entendido', cancelar:null });
+    else showToast('No se pudo reajustar la orden','error', /row-level|42501|policy/i.test(m) ? 'Solo administración o quien tenga el permiso de emitir órdenes puede reajustarlas.' : m);
+    return;
+  }
+  try{
+    for(let i = 0; i < o._det.length; i++){
+      const d = o._det[i];
+      const u = await sb.from('orden_pago_items').update({ total:d.ahora }).eq('orden_id', o.id).eq('certificado_id', d.certificado_id);
+      if(u && u.error) throw u.error;
+    }
+    const uc = await sb.from('orden_pago').update({ total_certificado:totalNuevo, neto_pagar:neto }).eq('id', o.id);
+    if(uc && uc.error) throw uc.error;
+  }catch(e){ showToast('El reajuste quedó a medias','error', (e.message || String(e))+' · revisá los permisos de la tabla orden_pago'); return; }
+  showToast('Orden '+o.numero+' reajustada','success', gs(o.neto_pagar)+' → '+gs(neto)+' netos · queda registrado');
+  document.getElementById('opVerEmitidas').onclick();
+}
 function opHistPintar(){
   const det = document.getElementById('opDet');
   const contras = Array.from(new Set(OPH.data.map(function(o){ return String(o.contratista||'').trim(); }).filter(Boolean))).sort(function(a,b){ return a.localeCompare(b,'es'); });
@@ -8294,11 +8370,15 @@ function opHistPintar(){
       L.map(function(o){
         const anu = o.estado === 'Anulada';
         return '<tr'+(anu?' class="oph-anu"':'')+'><td><b class="op-num">'+escapeHtml(o.numero)+'</b>'+
-            (anu ? '<div class="op-sub oph-tag">ANULADA'+(o.anulado_por?' · '+escapeHtml(o.anulado_por):'')+'</div>'+(o.anulado_motivo?'<div class="op-sub">'+escapeHtml(o.anulado_motivo)+'</div>':'') : '')+'</td>'+
+            (anu ? '<div class="op-sub oph-tag">ANULADA'+(o.anulado_por?' · '+escapeHtml(o.anulado_por):'')+'</div>'+(o.anulado_motivo?'<div class="op-sub">'+escapeHtml(o.anulado_motivo)+'</div>':'') : '')+
+            (!anu && o._det && o._det.length ? '<span class="oph-dif">⚠ Los certificados cambiaron: '+(o._dif > 0 ? '+' : '')+gs(o._dif)+' contra esta orden</span>' : '')+
+            (!anu && o._pend ? '<span class="oph-dif">✎ '+o._pend+' certificado(s) en edición excepcional</span>' : '')+
+            (!anu && o._aj && o._aj.length ? '<span class="oph-ok">✔ Reajustada '+o._aj.length+' vez/veces · la última el '+fmtFecha(String(o._aj[0].creado_en||'').slice(0,10))+'</span>' : '')+'</td>'+
           '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista||'—')+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
           '<td>'+escapeHtml(o.emitido_por||'—')+'</td>'+
           '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
           '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
+            (!anu && o._det && o._det.length && state.puedeAnularOP ? ' <button type="button" class="btn-ok" data-opaj="'+o.id+'" title="Pone la orden al día con los montos vigentes de sus certificados y deja el registro">🔄 Reajustar</button>' : '')+
             (!anu && state.puedeAnularOP ? ' <button type="button" class="btn-g oph-anular" data-opanu="'+o.id+'" title="Solo administración: libera los certificados y repone los descuentos">🚫 Anular</button>' : '')+
           '</td></tr>';
       }).join('')+'</tbody></table></div>'
@@ -8311,6 +8391,9 @@ function opHistPintar(){
   det.querySelectorAll('button[data-opanu]').forEach(function(b){
     b.onclick = function(){ opAnular(OPH.data.filter(function(x){ return x.id === Number(b.dataset.opanu); })[0]); };
   });
+  det.querySelectorAll('button[data-opaj]').forEach(function(b){
+    b.onclick = function(){ opReajustar(OPH.data.filter(function(x){ return x.id === Number(b.dataset.opaj); })[0]); };
+  });
   det.querySelectorAll('button[data-oprev]').forEach(function(b){
     b.onclick = async function(){
       const id = Number(b.dataset.oprev);
@@ -8321,7 +8404,7 @@ function opHistPintar(){
       }
       const docs = await opOpcionesPDF('Documentos de '+cab.numero, cab.contratista+' · '+(its||[]).length+' certificado(s)', false);
       if(!docs) return;
-      await opPDF({ cab: cab, items: (its||[]).map(function(x){
+      await opPDF({ cab: cab, ajustes: (cab._aj || []), items: (its||[]).map(function(x){
         return { id:x.certificado_id, numero:x.numero, fecha:x.fecha, total:x.total, _obra:x.obra, _ctr:x.contrato, sector:'', _pp:'' };
       }) }, docs);
     };
@@ -8597,7 +8680,21 @@ async function opPDF(O, docs){
     (c.observacion ? pdfSafe(c.observacion) : ''),
     'Los certificados detallados quedan cancelados con esta orden y no se incluyen en otro pago.'
   ].filter(Boolean);
-  doc.text(doc.splitTextToSize(notas.join(' '), W-M*2-96), M, yn);
+  const notasLn = doc.splitTextToSize(notas.join(' '), W-M*2-96);
+  doc.text(notasLn, M, yn);
+  // v13.19 · Orden reajustada: se deja a la vista el monto original, el vigente y el motivo
+  let yAjFin = 0;
+  const AJ = (O.ajustes || []).slice().sort(function(a,b){ return String(a.creado_en||'').localeCompare(String(b.creado_en||'')); });
+  if(AJ.length){
+    const ult = AJ[AJ.length-1], orig = Number(AJ[0].total_antes) || 0;
+    const lin = doc.splitTextToSize(pdfSafe('ORDEN REAJUSTADA el '+fmtFecha(String(ult.creado_en||'').slice(0,10))+' por '+(ult.usuario_nombre||'')+
+      ' (reajuste '+AJ.length+'). Monto original de la orden: Gs '+gsPdf(orig)+'  ->  monto vigente: Gs '+gsPdf(ult.total_despues)+
+      '. Motivo: '+(ult.motivo||'')), W-M*2-8);
+    const yAj = Math.max(yl + 12, yn + notasLn.length*3.7 + 4), hAj = 5 + lin.length*3.6;
+    doc.setFillColor(255,248,230); doc.setDrawColor(242,205,122); doc.roundedRect(M, yAj, W-M*2, hAj, 2, 2, 'FD');
+    doc.setFont('helvetica','bold').setFontSize(8).setTextColor(122,86,0); doc.text(lin, M+4, yAj+5);
+    yAjFin = yAj + hAj;
+  }
 
   // Firmas
   /* v13.10 · La firma del residente ya viene de la aprobación de los
@@ -8614,7 +8711,7 @@ async function opPDF(O, docs){
       fRes = conF.filter(function(x){ return emi && norm(soloNombreC(x.firma_residente_nombre||x.aprobado_por||'')) === emi; })[0] || conF[0] || null;
     }
   }catch(eF){ console.warn('firma residente en la orden', eF); }
-  let yf = Math.max(Math.max(yl, yn) + 34, H - 52);
+  let yf = Math.max(Math.max(yl, yn) + 34, H - 52, yAjFin ? yAjFin + 26 : 0);
   const fw = (W-M*2-16)/3;
   if(fRes){
     try{
@@ -8648,7 +8745,7 @@ async function opPDF(O, docs){
     doc.text('VISTA PREVIA  ·  NO AUTORIZA EL PAGO  ·  la orden definitiva se emite desde el sistema y lleva numero', W/2, H-19, {align:'center'});
   }
   doc.setFontSize(7.5).setTextColor.apply(doc, GRIS);
-  doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  '+(esBorr?'vista previa del ':'emitida el ')+fmtFecha(c.fecha)+'  ·  documento interno', M, H-8);
+  doc.text('AXC Constructora  ·  '+pdfSafe(c.numero||'')+'  ·  '+(esBorr?'vista previa del ':'emitida el ')+fmtFecha(c.fecha)+(AJ.length ? '  ·  reajustada el '+fmtFecha(String(AJ[AJ.length-1].creado_en||'').slice(0,10)) : '')+'  ·  documento interno', M, H-8);
 
   /* Anexo: la planilla de avance de cada certificado, en el mismo archivo.
      Es lo que administración archiva junto con la orden.                    */
