@@ -3206,16 +3206,24 @@ async function taCostos(codigos){
   // v13.1 · Materiales de órdenes de compra imputados al TA (fase 2). Si la columna
   // todavía no existe, el TA sigue mostrando solo los certificados.
   try{
-    const ri = await sb.from('ordenes_compra_items')
+    /* v13.14 · Las columnas «es_prueba», «rubro_codigo» y «sector» pueden no existir en tu base: si la consulta
+       completa falla, se repite con las columnas básicas en vez de descartar en silencio todas las compras del TA. */
+    let ri = await sb.from('ordenes_compra_items')
       .select('id,trabajo_admin,rubro_codigo,producto_nombre,unidad,cantidad,precio_unit,subtotal,sector,oc_id')
       .in('trabajo_admin', codigos);
+    if(ri.error){ console.warn('compras del TA (consulta completa)', ri.error.message || ri.error);
+      ri = await sb.from('ordenes_compra_items').select('id,trabajo_admin,producto_nombre,unidad,cantidad,precio_unit,subtotal,oc_id').in('trabajo_admin', codigos); }
+    if(ri.error) console.warn('compras del TA', ri.error.message || ri.error);
     if(!ri.error && (ri.data||[]).length){
       const ids = Array.from(new Set(ri.data.map(function(x){ return x.oc_id; })));
-      const ro = await sb.from('ordenes_compra').select('id,numero_oc,fecha,estado,proveedor,es_prueba').in('id', ids);
+      let ro = await sb.from('ordenes_compra').select('id,numero_oc,fecha,estado,proveedor,es_prueba').in('id', ids);
+      if(ro.error){ console.warn('cabeceras de OC (con es_prueba)', ro.error.message || ro.error);
+        ro = await sb.from('ordenes_compra').select('id,numero_oc,fecha,estado,proveedor').in('id', ids); }
+      if(ro.error) console.warn('cabeceras de OC', ro.error.message || ro.error);
       const cab = {}; (ro.data||[]).forEach(function(o){ cab[o.id] = o; });
       ri.data.forEach(function(x){
         const oc = cab[x.oc_id]; if(!oc || oc.es_prueba) return;
-        const est = norm(oc.estado||'');
+        const est = String(oc.estado||'').trim().toUpperCase();   /* v13.13 · norm() devuelve minúsculas y acá se compara con mayúsculas */
         if(est === 'RECHAZADO' || est === 'ANULADO') return;
         const aprobada = (est === 'APROBADO' || est === 'ARCHIVADO' || est === 'RECIBIDO');
         const o = out[x.trabajo_admin] = out[x.trabajo_admin] || { aprob:0, tramite:0, items:[] };
@@ -3233,7 +3241,7 @@ async function taCostos(codigos){
       .select('id,trabajo_admin,total,estado,fecha,nro_factura,tipo_comprobante,proveedor,sector,residente,comentario')
       .in('trabajo_admin', codigos);
     if(!rc.error) (rc.data||[]).forEach(function(x){
-      const est = norm(x.estado||'');
+      const est = String(x.estado||'').trim().toUpperCase();   /* v13.13 */
       if(est === 'RECHAZADO' || est === 'ANULADO' || est === 'BORRADOR') return;
       const aprobado = (est === 'APROBADO' || est === 'REPUESTA' || est === 'CERRADA');
       const o = out[x.trabajo_admin] = out[x.trabajo_admin] || { aprob:0, tramite:0, items:[] };
@@ -3526,7 +3534,7 @@ async function taVer(codigo){
       '<div><label class="ax-l">Coeficiente <small>· costo ÷ coef.</small></label><input id="lqCf" class="ax-in" type="number" step="0.0001" min="0.05" max="1" value="'+taN4(cf).replace(',','.')+'"></div></div>'+
       '<div class="ta-prev" id="lqPrev"></div><div class="ax-hint" id="lqErr" style="color:#B42B2B;min-height:1em"></div>'+
       '<div class="tb-btns"><button type="button" class="btn-nav" id="tbPdfInt">📄 Liquidación interna · costos</button><button type="button" class="btn-ok" id="tbPdfCli">📄 Propuesta al cliente · con coeficiente</button></div></div>'+
-    '<div class="ta-nota">Por ahora la bolsa se llena con los certificados. Órdenes de compra y caja chica se suman en la próxima etapa.</div>';
+    '<div class="ta-nota">La bolsa se llena con los certificados, los materiales de las órdenes de compra y los gastos de caja chica imputados a este trabajo.</div>';
   const dbx = document.getElementById('dlgBox'), w0 = dbx ? dbx.style.maxWidth : '', w1 = dbx ? dbx.style.width : '';
   if(dbx){ dbx.style.maxWidth = '1100px'; dbx.style.width = 'min(1100px, 97vw)'; }
   await axcDialog({ tono:'', icono:'🛠', titulo:'Trabajo por administración N.º '+taNum(t.codigo)+' · '+t.codigo, subtitulo:t.nombre+' · '+t.obra+' · '+t.estado+' · responsable '+(t.responsable||'—'),
