@@ -621,6 +621,8 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .tb-cf.mal{border-color:#B42B2B;background:#FBEAEA}
 .tb-pr b{color:#1F3864}
 .tb-ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px;color:#5A6272}
+.dt-ee{width:100%;flex-basis:100%;margin-top:8px;background:#FFF4E0;border:1px solid #F0C98A;border-radius:9px;padding:8px 11px;font-size:12.5px;color:#6B4A0A;line-height:1.45}
+.dt-ee b{color:#4A3306}
 .tb-lock{background:#FFF4E0;border:1px solid #F0C98A;border-radius:10px;padding:9px 12px;margin:10px 0;font-size:13px;color:#6B4A0A}
 .tb-props{margin-top:12px;border:1px solid #DDE2EA;border-radius:12px;padding:10px 12px;background:#fff}
 .tb-props h4{margin:0 0 6px;font-size:14px;color:#1F3864}
@@ -1610,6 +1612,7 @@ async function loadProfileAndApp(){
   const _perm = profile.permisos || {};
   state.puedeAprobar = state.isAdmin || _perm.cert_aprobar === true;
   state.puedeReabrir = state.isAdmin || _perm.cert_editar  === true;
+  state.puedeEditarOP = state.isAdmin || _perm.cert_editar_op === true;   // v13.17 · edición excepcional con orden de pago (se da en Perfiles)
   state.puedeCorregirCta = state.isAdmin || _perm.cta_corregir === true;   // v13.5 · permiso en Perfiles
   // Ver precios de venta y emitir el avance al cliente: mismo permiso que la
   // propuesta comercial en Presupuestos
@@ -9376,6 +9379,27 @@ document.addEventListener('click', function(ev){
   dtGuardarOrden(L, null);
 });
 
+/* v13.17 · Edición excepcional de un certificado ya incluido en una orden de pago.
+   Quién la puede abrir: los administradores y quien tenga «cert_editar_op» en Perfiles. Siempre con una justificación obligatoria
+   y con registro (quién, cuándo, por qué, orden y montos antes/después) en certificado_ediciones. Si falta esa tabla, no se abre. */
+async function eeCargar(certId){
+  try{
+    const r = await sb.from('certificado_ediciones').select('*').eq('certificado_id', String(certId)).order('creado_en', { ascending:false });
+    if(r.error) return { falta:true, abierta:null, lista:[] };
+    const lista = r.data || [];
+    return { falta:false, abierta: lista.find(function(x){ return x.estado === 'Abierta'; }) || null, lista:lista };
+  }catch(e){ return { falta:true, abierta:null, lista:[] }; }
+}
+async function eeCerrar(certId){
+  try{
+    const ee = await eeCargar(certId); if(!ee.abierta) return null;
+    const r = await sb.from('certificados').select('total').eq('id', certId).maybeSingle();
+    const despues = Number(r && r.data && r.data.total) || 0, antes = Number(ee.abierta.total_antes) || 0;
+    const quien = (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || '';
+    await sb.from('certificado_ediciones').update({ estado:'Cerrada', total_despues:despues, cerrado_en:new Date().toISOString(), cerrado_por:quien }).eq('id', ee.abierta.id);
+    return { orden:ee.abierta.orden_pago, antes:antes, despues:despues, diff:despues - antes };
+  }catch(e){ console.warn('cerrar edición excepcional', e); return null; }
+}
 async function abrirDetalle(id){
   const c = state.list.filter(x=>x.id===id)[0];
   if(!c) return;
@@ -9393,10 +9417,13 @@ async function abrirDetalle(id){
   /* v8.4 · Un certificado ya incluido en una orden de pago emitida no se
      modifica ni se anula: primero hay que anular la orden. Si no, la orden
      diría una cosa y el certificado otra.                                  */
-  const pagado = !!c.orden_pago;
+  const EE = await eeCargar(c.id);                       // v13.17
+  const pagadoOP = !!c.orden_pago;
+  const pagado = pagadoOP && !EE.abierta;                // con una edición excepcional abierta, el certificado se puede corregir y aprobar de nuevo
   const enCurso = (c.estado === 'Borrador' || c.estado === 'Medido') && !pagado;
   if(pagado){
     acc.innerHTML = '<span class="dt-lock">🔒 Incluido en la orden <b>'+escapeHtml(c.orden_pago)+'</b> · para modificarlo, anulá la orden primero</span>';
+    if(c.estado === 'Aprobado' && state.puedeEditarOP) acc.innerHTML += ' <button type="button" class="btn-nav" id="dtEdEx" title="Caso excepcional: corregir un certificado ya incluido en una orden de pago, con justificación obligatoria">⚠ Edición excepcional</button>';
   }
   if(enCurso){
     acc.innerHTML = '<button type="button" class="btn-nav" id="dtEditar">Editar</button>';
@@ -9405,6 +9432,19 @@ async function abrirDetalle(id){
   }
   if(c.estado === 'Aprobado' && state.puedeReabrir && !pagado){
     acc.innerHTML += (acc.innerHTML ? ' ' : '') + '<button type="button" class="btn-nav" id="dtReabrir" title="Corregir el certificado: vuelve a borrador y hay que aprobarlo de nuevo">✎ Editar (vuelve a borrador)</button>';
+  }
+  // v13.17 · Registro de ediciones excepcionales de este certificado
+  { const prevEE = document.getElementById('dtEEBox'); if(prevEE) prevEE.remove(); }
+  if(EE.lista.length){
+    const u = EE.lista[0], q = escapeHtml(u.usuario_nombre || '—'), f = fmtFecha(String(u.creado_en || '').slice(0,10));
+    let eeHtml = '';
+    if(u.estado === 'Abierta'){
+      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional abierta</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b> · monto en la orden: <b>'+gs(u.total_antes)+'</b>.<br>Motivo: '+escapeHtml(u.motivo || '')+'<br>Al aprobarlo de nuevo, la orden conserva su monto original y la diferencia queda registrada.</div>';
+    }else{
+      const dif = (Number(u.total_despues) || 0) - (Number(u.total_antes) || 0);
+      eeHtml = '<div class="dt-ee">✎ <b>Edición excepcional</b> el '+f+' por <b>'+q+'</b> · orden <b>'+escapeHtml(u.orden_pago || '—')+'</b>: '+gs(u.total_antes)+' → <b>'+gs(u.total_despues)+'</b>'+(dif ? ' (diferencia <b>'+gs(dif)+'</b>, a ajustar por administración)' : ' (sin diferencia de monto)')+'.<br>Motivo: '+escapeHtml(u.motivo || '')+(EE.lista.length > 1 ? ' · '+(EE.lista.length-1)+' edición(es) anterior(es) registrada(s)' : '')+'</div>';
+    }
+    document.getElementById('dtBody').insertAdjacentHTML('beforebegin', '<div id="dtEEBox" style="padding:0 2px">'+eeHtml+'</div>');
   }
   // v11.7 · El orden se cambia en la misma tabla (▲▼ y ⇅), sin botón aparte
   dtPuedeOrdenar = (c.estado !== 'Anulado' && !pagado && (enCurso || state.puedeAprobar));
@@ -9589,6 +9629,40 @@ async function abrirDetalle(id){
         ob.value = (ed.motivoReapertura + (ob.value.trim() ? '\n'+ob.value.trim() : ''));
       }
       showToast('Motivo registrado','success','Queda en la observación del certificado');
+    };
+    const bEx = document.getElementById('dtEdEx'); if(bEx) bEx.onclick = async function(){
+      if(EE.falta){
+        await axcDialog({ tono:'warn', icono:'⚠', titulo:'Falta preparar la base de datos',
+          mensaje:'Para registrar la edición excepcional hay que ejecutar <b>axc_v88_cert_edicion_excepcional.sql</b> una vez. Sin ese registro no se permite editar un certificado con orden de pago.', ok:'Entendido', cancelar:null });
+        return;
+      }
+      let op = null; try{ const ro = await sb.from('orden_pago').select('numero,estado,fecha,neto_pagar,total_certificado').eq('numero', c.orden_pago).maybeSingle(); op = ro && ro.data; }catch(e){}
+      const quien = (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || '';
+      const r = await axcDialog({
+        tono:'danger', icono:'⚠', titulo:'Edición excepcional con orden de pago',
+        subtitulo:(c.numero || ('#'+c.id))+' · orden '+c.orden_pago,
+        mensaje:'Este certificado ya está incluido en la orden <b>'+escapeHtml(c.orden_pago)+'</b>'+(op ? ' (<b>'+escapeHtml(op.estado || '')+'</b>'+(op.neto_pagar ? ' · neto '+gs(op.neto_pagar) : '')+')' : '')+'. Es un caso excepcional: la regla general es anular la orden primero.',
+        lista:[
+          'El certificado <b>vuelve a Borrador</b> y hay que <b>aprobarlo de nuevo</b>; se borra la firma del aprobador.',
+          'La orden <b>conserva su monto original</b>: la diferencia queda registrada y la ajusta administración.',
+          'Si ya se transfirió el dinero, esto <b>no lo revierte</b>.',
+          'Queda registrado <b>quién ('+escapeHtml(quien)+'), cuándo y por qué</b>, y no se puede borrar.'
+        ],
+        campo:{ label:'Justificación (obligatoria · mínimo 20 caracteres)', placeholder:'Ej. se midió 12 m2 de más en el revoque del Nivel 2; la corrección fue autorizada por la dirección de obra', requerido:true },
+        ok:'Abrir la edición excepcional', cancelar:'Volver'
+      });
+      if(!r.ok) return;
+      const motivo = String(r.valor || '').trim();
+      if(motivo.length < 20){ showToast('La justificación es muy corta','error','Explicá qué se corrige y quién lo autoriza (mínimo 20 caracteres)'); return; }
+      const ins = await sb.from('certificado_ediciones').insert({ certificado_id:String(c.id), numero:c.numero || '', orden_pago:c.orden_pago, op_estado:(op && op.estado) || null,
+        motivo:motivo, total_antes:Number(c.total) || 0, estado:'Abierta', usuario_id:state.user && state.user.id, usuario_nombre:quien }).select().single();
+      if(ins.error){ showToast('No se pudo abrir la edición excepcional','error', /row-level|policy|42501|permiso/i.test(String(ins.error.message || '')) ? 'No tenés el permiso «Editar certificados con orden de pago». Se otorga desde Perfiles.' : String(ins.error.message || '')); return; }
+      document.getElementById('dtOv').hidden = true;
+      await abrirEditor(c.id);
+      ed.motivoReapertura = 'Edición excepcional '+fmtFecha(hoyISO())+' ('+quien+') · orden '+c.orden_pago+': '+motivo;
+      const ob = document.getElementById('edObs');
+      if(ob && ob.value.indexOf(ed.motivoReapertura) < 0) ob.value = ed.motivoReapertura + (ob.value.trim() ? '\n'+ob.value.trim() : '');
+      showToast('Edición excepcional registrada','success','Corregí el certificado y aprobalo de nuevo');
     };
   }catch(e){
     document.getElementById('dtBody').innerHTML = '<div class="vacio">No se pudo cargar el detalle.<br><small>'+escapeHtml(e.message||'')+'</small></div>';
@@ -9922,6 +9996,11 @@ async function cambiarEstado(id, estado){
     if(error) throw error;
     showToast(estado === 'Aprobado' ? 'Certificado aprobado y firmado' : ('Certificado '+estado.toLowerCase()),'success',
       estado === 'Aprobado' && firmaAprob ? ('Firma de '+(firmaAprob.nombre||quien)+' · sale en el certificado y en la orden de pago') : undefined);
+    if(estado === 'Aprobado' || estado === 'Anulado'){   // v13.17 · cierra el registro de la edición excepcional, si había uno abierto
+      const cierre = await eeCerrar(id);
+      if(cierre) showToast(cierre.diff ? 'Certificado aprobado con diferencia contra la orden' : 'Certificado aprobado, sin diferencia de monto', cierre.diff ? 'info' : 'success',
+        'La orden '+(cierre.orden || '')+' tenía '+gs(cierre.antes)+'; ahora el certificado es '+gs(cierre.despues)+(cierre.diff ? ' (diferencia '+gs(cierre.diff)+'): avisá a administración' : ''));
+    }
     document.getElementById('dtOv').hidden = true;
     await loadList();
   }catch(e){ showToast('No se pudo actualizar: '+(e.message||e),'error'); }
