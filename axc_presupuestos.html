@@ -356,6 +356,20 @@ body{
 .pp-toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
 .pp-search{flex:1;min-width:220px;padding:11px 14px;border:1.5px solid var(--border);border-radius:var(--radius);font-size:14px;font-family:inherit;background:var(--surface)}
 .pp-search:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px rgba(31,56,100,.08)}
+/* v10.46 · Buscador de presupuestos */
+.pp-sw{position:relative;flex:1;min-width:260px}
+.pp-sw .pp-search{width:100%;padding-right:40px}
+.pp-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:#E9EDF3;color:#42506a;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:13px;line-height:24px;padding:0;display:none}
+.pp-clear:hover{background:#D5DCE7}
+.pp-fila2{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 14px}
+.pp-chip{border:1px solid var(--border);background:var(--surface);color:#42506a;border-radius:999px;padding:5px 13px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+.pp-chip b{font-weight:800;margin-left:4px;color:#8893a5}
+.pp-chip.on{background:var(--navy);border-color:var(--navy);color:#fff}.pp-chip.on b{color:#C9D6EA}
+.pp-count{margin-left:auto;font-size:12.5px;color:#6B7486}
+.pp-mk{background:#FFE9A8;color:inherit;border-radius:3px;padding:0 1px}
+.pp-nores{text-align:center;padding:34px 16px;color:#42506a}
+.pp-nores b{display:block;font-size:16px;color:var(--navy);margin-bottom:6px}
+.pp-nores button{margin-top:12px;border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:8px 14px;font:inherit;font-weight:700;color:var(--navy);cursor:pointer}
 .pp-list{display:flex;flex-direction:column;gap:10px}
 .pp-row{display:flex;align-items:center;gap:16px;background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:15px 18px;box-shadow:var(--shadow);cursor:pointer;transition:all .15s}
 .pp-row:hover{transform:translateY(-1px);box-shadow:var(--shadow-md);border-color:var(--border)}
@@ -765,8 +779,12 @@ html[data-theme="alto-contraste"]{
   <div id="viewPresu">
     <div class="pp-kpis" id="ppKpis"></div>
     <div class="pp-toolbar">
-      <input type="text" class="pp-search" id="ppSearch" placeholder="Buscar por código, nombre u obra…">
+      <div class="pp-sw">
+        <input type="text" class="pp-search" id="ppSearch" autocomplete="off" placeholder="Buscar por N°, nombre, obra, rubro, estado o usuario…  (tocá / para ir al buscador)">
+        <button type="button" class="pp-clear" id="ppClear" title="Borrar búsqueda (Esc)">✕</button>
+      </div>
     </div>
+    <div class="pp-fila2"><span id="ppChips" style="display:flex;gap:8px;flex-wrap:wrap"></span><span class="pp-count" id="ppCount"></span></div>
     <div class="pp-list" id="ppList"></div>
   </div>
 
@@ -2032,13 +2050,17 @@ async function loadList(){
   try{
     const { data:heads, error } = await sb.from('presupuesto_cab').select('*').order('codigo');
     if(error) throw error;
-    const { data:rub } = await sb.from('presupuesto_rubros').select('presupuesto');
-    const cnt = {}; (rub||[]).forEach(function(r){ cnt[r.presupuesto] = (cnt[r.presupuesto]||0)+1; });
-    state.list = (heads||[]).map(function(h){ return Object.assign({}, h, { _rub: cnt[h.codigo]||0 }); });
+    // v10.46 · se traen también código y descripción de los rubros: así se puede buscar «mampostería» o «05.052»
+    // y llegar al presupuesto que los tiene. «_sbTodo» pagina, así que el conteo ya no se corta a las 1000 filas.
+    let rq = await _sbTodo(function(){ return sb.from('presupuesto_rubros').select('presupuesto,rubro_codigo,descripcion,sector').order('presupuesto').order('orden'); });
+    if(rq.error || !rq.data) rq = await sb.from('presupuesto_rubros').select('presupuesto');
+    const rub = rq.data || [];
+    const cnt = {}, rix = {}; rub.forEach(function(r){ cnt[r.presupuesto] = (cnt[r.presupuesto]||0)+1;
+      (rix[r.presupuesto] = rix[r.presupuesto] || []).push([r.rubro_codigo, r.descripcion, r.sector].filter(Boolean).join(' ')); });
+    state.list = (heads||[]).map(function(h){ const p = Object.assign({}, h, { _rub: cnt[h.codigo]||0 }); _indexarPresupuesto(p, rix[h.codigo] || []); return p; });
     const _ppn = function(c){ const m=/(\d+)/.exec(String(c||'')); return m?parseInt(m[1],10):-1; };
     state.list.sort(function(a,b){ return _ppn(b.codigo) - _ppn(a.codigo) || String(b.codigo).localeCompare(String(a.codigo)); });
-    state.filtered = state.list.slice();
-    renderKpis(); renderList();
+    renderKpis(); aplicarFiltroLista();   // v10.46 · respeta la búsqueda que esté escrita
     _enrichListTotals();
     document.getElementById('pageSubtitle').textContent = state.list.length + ' presupuesto(s)';
   }catch(e){ console.warn('loadList', e); showToast('No se pudieron cargar los presupuestos', 'error'); }
@@ -2080,20 +2102,9 @@ async function _enrichListTotals(){
     // Un clip en la tarjeta avisa que el presupuesto tiene planos o cotizaciones
     const adjByCod={}; (adjs && adjs.data ? adjs.data : []).forEach(function(a){
       adjByCod[a.presupuesto] = (adjByCod[a.presupuesto]||0) + 1; });
-    document.querySelectorAll('.pp-adj').forEach(function(el){
-      const n = adjByCod[el.getAttribute('data-cod')] || 0;
-      el.innerHTML = n ? ('<span class="pp-clip" title="'+n+' archivo(s) adjunto(s)">📎 '+n+'</span>') : '';
-    });
+    state._adjByCod = adjByCod;
     state._ivaPct = ivaByCod;
-    document.querySelectorAll('.pp-total').forEach(function(el){
-      const cod=el.getAttribute('data-cod');
-      const v=Math.round(tot[cod]||0), pct=ivaByCod[cod]||0;
-      const conIva = Math.round(v * (1 + pct/100));
-      el.innerHTML = '<span class="pp-total-v">₲ '+fmtGs(v)+'</span>'+
-                     '<span class="pp-total-l">sin IVA</span>'+
-                     (pct>0 ? '<span class="pp-total-iva">₲ '+fmtGs(conIva)+' <i>con IVA '+pct+'%</i></span>'
-                            : '<span class="pp-total-iva sin"><i>sin IVA cargado</i></span>');
-    });
+    _pintarFilasLista();
     let gran=0, granIva=0;
     Object.keys(tot).forEach(function(k){ gran+=tot[k]; granIva += tot[k]*(1+(ivaByCod[k]||0)/100); });
     const kEl=document.getElementById('kpiMonto');
@@ -2115,28 +2126,143 @@ function renderKpis(){
     '<div class="pp-kpi"><div class="pp-kpi-label">Monto total presupuestado · costo sin IVA</div><div class="pp-kpi-value" id="kpiMonto" style="font-size:20px">…</div></div>';
 }
 
+/* ═══ v10.46 · Buscador de presupuestos ═══
+   Busca por N° (92, PP92, «pp 92»), nombre, obra, quién lo creó o modificó, estado (borrador / publicado / aprobado),
+   fechas (07/11, 07/11/26), número de propuesta (CP92) y por los rubros que tiene (código o descripción).
+   · Sin importar mayúsculas ni tildes («orquideas» encuentra «Orquídeas»).
+   · Varias palabras: tienen que estar todas («baños nivel 3»).
+   · Un número solo busca el N° de presupuesto (92 → PP92, PP920…) y también palabras que empiecen igual (nivel 5).
+   · Los resultados se ordenan: primero el N° exacto, después el que empieza igual, después el resto.
+   · Atajos: «/» va al buscador, «Esc» lo borra. Fichas rápidas: Todos · Publicados · Borradores · Míos. */
+state.q = ''; state.chip = 'todos';
+function _bn(s){ return String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim(); }
+function _alin(s){ return String(s).split('').map(function(ch){ const b = ch.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase(); return b.length === 1 ? b : ch.toLowerCase(); }).join(''); }
+function _fechasTxt(iso){
+  if(!iso) return ''; const d = new Date(iso); if(isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2,'0'), mm = String(d.getMonth()+1).padStart(2,'0'), yy = String(d.getFullYear());
+  return dd+'/'+mm+'/'+yy.slice(2)+' '+dd+'/'+mm+'/'+yy+' '+yy+'-'+mm+'-'+dd;
+}
+function _indexarPresupuesto(p, rubros){
+  const m = /(\d+)/.exec(String(p.codigo||'')); p._num = m ? String(parseInt(m[1],10)) : '';
+  p._rubs = Array.from(new Set(rubros || []));
+  p._ix = _bn([ p.codigo, p._num ? 'cp'+p._num : '', p.descripcion, p.obra, p.cliente, p.observacion, p.creado_por, p.actualizado_por,
+    p.activo ? 'publicado aprobado' : 'borrador', _fechasTxt(p.creado_en), _fechasTxt(p.actualizado_en), _fechasTxt(p.publicado_en),
+    Array.from(new Set(rubros || [])).join(' ') ].filter(Boolean).join(' '));
+}
+function _coincideToken(p, t){
+  if(/^\d+$/.test(t)) return (p._num || '').indexOf(t) === 0 || (' '+p._ix).indexOf(' '+t) >= 0;
+  return (p._ix || '').indexOf(t) >= 0;
+}
+function _puntaje(p, toks){
+  const cod = _bn(p.codigo), nom = _bn(p.descripcion), obra = _bn(p.obra); let best = 9;
+  toks.forEach(function(t){
+    let s = 9;
+    if(cod === t || p._num === t || cod === 'pp'+t) s = 0;
+    else if(cod.indexOf(t) === 0 || (p._num||'').indexOf(t) === 0) s = 1;
+    else if(nom.indexOf(t) === 0 || obra.indexOf(t) === 0 || (' '+nom).indexOf(' '+t) >= 0 || (' '+obra).indexOf(' '+t) >= 0) s = 2;
+    else s = 3;
+    if(s < best) best = s;
+  });
+  return best;
+}
+function _hl(texto, toks){
+  const t = String(texto==null?'':texto);
+  if(!toks || !toks.length) return escapeHtml(t);
+  const al = _alin(t), mark = new Array(t.length).fill(false);
+  toks.forEach(function(k){
+    if(!k || (/^\d+$/.test(k) && k.length < 2)) return;
+    let i = al.indexOf(k); while(i >= 0){ for(let j = i; j < i + k.length && j < mark.length; j++) mark[j] = true; i = al.indexOf(k, i + k.length); }
+  });
+  let out = '', cur = '', on = false;
+  for(let i = 0; i < t.length; i++){
+    if(mark[i] !== on){ out += on ? '<mark class="pp-mk">'+escapeHtml(cur)+'</mark>' : escapeHtml(cur); cur = ''; on = mark[i]; }
+    cur += t[i];
+  }
+  return out + (on ? '<mark class="pp-mk">'+escapeHtml(cur)+'</mark>' : escapeHtml(cur));
+}
+function _esMio(p){ const yo = _bn(_userTag()); return !!yo && (_bn(p.creado_por) === yo || (yo.indexOf('@') > 0 && _bn(p.creado_por) === yo.split('@')[0])); }
+function aplicarFiltroLista(){
+  const toks = _bn(state.q).split(' ').filter(Boolean);
+  state._toks = toks;
+  const porChip = {
+    todos: function(){ return true; }, publicados: function(p){ return !!p.activo; },
+    borradores: function(p){ return !p.activo; }, mios: _esMio };
+  const cuenta = {}; Object.keys(porChip).forEach(function(k){ cuenta[k] = state.list.filter(porChip[k]).length; });
+  let arr = state.list.filter(porChip[state.chip] || porChip.todos);
+  if(toks.length){
+    arr = arr.filter(function(p){ return toks.every(function(t){ return _coincideToken(p, t); }); });
+    arr = arr.map(function(p, i){ return { p:p, s:_puntaje(p, toks), i:i }; }).sort(function(a,b){ return a.s - b.s || a.i - b.i; }).map(function(x){ return x.p; });
+  }
+  state.filtered = arr;
+  const ch = document.getElementById('ppChips');
+  if(ch){
+    ch.innerHTML = [['todos','Todos'],['publicados','Publicados'],['borradores','Borradores'],['mios','Míos']].map(function(c){
+      return '<button type="button" class="pp-chip'+(state.chip === c[0] ? ' on' : '')+'" data-chip="'+c[0]+'">'+c[1]+'<b>'+cuenta[c[0]]+'</b></button>'; }).join('');
+    ch.querySelectorAll('[data-chip]').forEach(function(b){ b.onclick = function(){ state.chip = b.getAttribute('data-chip'); aplicarFiltroLista(); }; });
+  }
+  const ct = document.getElementById('ppCount');
+  if(ct) ct.textContent = (toks.length || state.chip !== 'todos') ? (arr.length+' de '+state.list.length+' presupuesto(s)') : '';
+  const cl = document.getElementById('ppClear'); if(cl) cl.style.display = state.q ? 'block' : 'none';
+  renderList();
+}
+function _pintarFilasLista(){
+  // Totales, IVA y adjuntos de cada tarjeta, con los datos ya calculados: así no se pierden cuando se filtra la lista
+  const tot = state._totals, iva = state._ivaPct || {};
+  if(tot){
+    document.querySelectorAll('.pp-total').forEach(function(el){
+      const cod = el.getAttribute('data-cod'), v = Math.round(tot[cod]||0), pct = iva[cod]||0, conIva = Math.round(v * (1 + pct/100));
+      el.innerHTML = '<span class="pp-total-v">₲ '+fmtGs(v)+'</span>'+
+                     '<span class="pp-total-l">sin IVA</span>'+
+                     (pct>0 ? '<span class="pp-total-iva">₲ '+fmtGs(conIva)+' <i>con IVA '+pct+'%</i></span>'
+                            : '<span class="pp-total-iva sin"><i>sin IVA cargado</i></span>');
+    });
+  }
+  if(state._adjByCod){
+    document.querySelectorAll('.pp-adj').forEach(function(el){
+      const n = state._adjByCod[el.getAttribute('data-cod')] || 0;
+      el.innerHTML = n ? ('<span class="pp-clip" title="'+n+' archivo(s) adjunto(s)">📎 '+n+'</span>') : '';
+    });
+  }
+}
 function renderList(){
   const box = document.getElementById('ppList');
   if(!state.filtered.length){
+    if(state.list.length){
+      box.innerHTML = '<div class="pp-nores"><b>Sin resultados'+(state.q ? ' para «'+escapeHtml(state.q)+'»' : '')+'</b>'+
+        'Probá con el número (92), una parte del nombre, la obra, un rubro (05.052 o «mampostería»), el estado o quién lo creó.'+
+        '<br><button type="button" id="ppNoRes">Limpiar búsqueda y filtros</button></div>';
+      const nb = document.getElementById('ppNoRes'); if(nb) nb.onclick = function(){ state.q = ''; state.chip = 'todos'; const i = document.getElementById('ppSearch'); if(i){ i.value = ''; i.focus(); } aplicarFiltroLista(); };
+      return;
+    }
     box.innerHTML = '<div class="pp-empty"><div class="pp-empty-icon">📋</div><div class="pp-empty-title">No hay presupuestos</div><div>Generá el primero con el botón de arriba.</div></div>';
     return;
   }
+  const _T = state._toks || [];
   box.innerHTML = state.filtered.map(function(p){
     const est = p.activo ? 'activo' : 'borrador';
     const nm = p.descripcion
-      ? '<div class="pp-name">'+escapeHtml(p.descripcion)+'</div>'
+      ? '<div class="pp-name">'+_hl(p.descripcion, _T)+'</div>'
       : '<div class="pp-name vacio">Sin descripción</div>';
-    const meta = [ p.obra ? escapeHtml(p.obra) : 'Sin obra', p._rub + ' rubro' + (p._rub===1?'':'s') ].filter(Boolean).join(' · ');
+    const meta = [ p.obra ? _hl(p.obra, _T) : 'Sin obra', p._rub + ' rubro' + (p._rub===1?'':'s') ].filter(Boolean).join(' · ');
     // línea de control: creó · creado · modificado · publicado
     const bits=[];
-    if(p.creado_por) bits.push('👤 '+escapeHtml(p.creado_por));
+    if(p.creado_por) bits.push('👤 '+_hl(p.creado_por, _T));
     if(p.creado_en) bits.push('🆕 '+_fmtF(p.creado_en,false));
     if(p.actualizado_en && p.actualizado_en!==p.creado_en) bits.push('✏️ '+_fmtF(p.actualizado_en,true)+(p.actualizado_por&&p.actualizado_por!==p.creado_por?(' ('+escapeHtml(p.actualizado_por)+')'):''));
     if(p.publicado_en) bits.push('📢 Publicado '+_fmtF(p.publicado_en,false));
+    // Si la búsqueda coincide por un rubro que no se ve en la tarjeta, se muestra cuál fue
+    let hit = '';
+    if(_T.length && p._rubs && p._rubs.length){
+      const vis = _bn([p.codigo, p.descripcion, p.obra, p.creado_por].join(' '));
+      if(!_T.every(function(t){ return vis.indexOf(t) >= 0; })){
+        const rr = p._rubs.filter(function(r){ const b = _bn(r); return _T.some(function(t){ return b.indexOf(t) >= 0; }); });
+        if(rr.length) hit = '<div class="pp-meta" style="margin-top:3px;color:#1F3864">🔎 En rubros: '+rr.slice(0,2).map(function(r){ return _hl(r.length > 70 ? r.slice(0,70)+'…' : r, _T); }).join(' · ')+(rr.length > 2 ? ' · +'+(rr.length-2)+' más' : '')+'</div>';
+      }
+    }
     const by = bits.length ? '<div class="pp-meta" style="margin-top:3px;color:#9aa4b2;font-size:11px;display:flex;flex-wrap:wrap;gap:4px 10px">'+bits.join('<span style="color:#d7dce3">·</span> ')+'</div>' : '';
     return '<div class="pp-row" data-cod="'+escapeHtml(p.codigo)+'">' +
-      '<div class="pp-code">'+escapeHtml(p.codigo)+'</div>' +
-      '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+'</div>' +
+      '<div class="pp-code">'+_hl(p.codigo, _T)+'</div>' +
+      '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+hit+'</div>' +
       '<div class="pp-total" data-cod="'+escapeHtml(p.codigo)+'"><span class="pp-total-v">…</span></div>' +
       '<span class="pp-adj" data-cod="'+escapeHtml(p.codigo)+'"></span>' +
       '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
@@ -2147,6 +2273,7 @@ function renderList(){
   box.querySelectorAll('button[data-dup]').forEach(function(b){
     b.addEventListener('click', function(ev){ ev.stopPropagation(); duplicarPresupuesto(b.getAttribute('data-dup')); });
   });
+  _pintarFilasLista();
 }
 
 function suggestNextCode(){
@@ -8838,13 +8965,20 @@ document.addEventListener('keydown', function(e){
   const x = top.querySelector('.pm-x, .comp-x, .mini-x, #pmCloseBtn, #pmCancelBtn');
   if(x) x.click();
 });
-document.getElementById('ppSearch').addEventListener('input', function(){
-  const q = this.value.trim().toLowerCase();
-  state.filtered = !q ? state.list.slice() : state.list.filter(function(x){
-    return (x.codigo||'').toLowerCase().includes(q) || (x.descripcion||'').toLowerCase().includes(q) || (x.obra||'').toLowerCase().includes(q);
+(function(){
+  const inp = document.getElementById('ppSearch'), clr = document.getElementById('ppClear');
+  inp.addEventListener('input', function(){ state.q = this.value; aplicarFiltroLista(); });
+  inp.addEventListener('keydown', function(e){ if(e.key === 'Escape' && this.value){ e.stopPropagation(); this.value = ''; state.q = ''; aplicarFiltroLista(); } });
+  clr.addEventListener('click', function(){ inp.value = ''; state.q = ''; aplicarFiltroLista(); inp.focus(); });
+  document.addEventListener('keydown', function(e){
+    if(e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target, tag = t && t.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+    if(document.querySelector('.pm-overlay.show, .comp-overlay.show, .mini-overlay.show, .imp-ov')) return;
+    if(!inp.offsetParent) return;
+    e.preventDefault(); inp.focus(); inp.select();
   });
-  renderList();
-});
+})();
 
 
 // ════════ REPORTE INTEGRADO ════════
@@ -9536,10 +9670,36 @@ async function _detectarCompNuevas(autoAbrir){
       const decidida = dec && dec.decision === 'mantener' && dec.receta_actualizada_en && new Date(dec.receta_actualizada_en).getTime() >= new Date(a).getTime() - 1000;
       if(!decidida) ed.compPend[r.rubro_codigo] = a;
     });
+    /* v10.45 · Presupuesto aprobado = línea base CONGELADA. Los cambios que se hagan después en el catálogo de
+       composiciones no lo alteran ni lo interrumpen: no se abre ningún cuadro ni se marcan los rubros.
+       Queda solo un aviso informativo en el pie, con la comparación a pedido. Aplicarlos se hace reabriendo el
+       presupuesto (con observación), que es el camino formal y deja una versión nueva de la línea base. */
+    if(_estaCongelado()){
+      ed.compInfo = Object.keys(ed.recetaNueva || {});
+      ed.compPend = {};
+      renderRubros(); _pintarAvisoCongelado();
+      return;
+    }
     renderRubros();
     const pend = Object.keys(ed.compPend);
     if(autoAbrir && pend.length) setTimeout(function(){ _revisarComposiciones(pend); }, 250);
   }catch(e){ /* columnas de v9.2 aún no creadas */ }
+}
+function _estaCongelado(){ const h = _cabActual(); return !!(h && h.publicado_en) && !ed.desbloqueado; }
+function _pintarAvisoCongelado(){
+  const pie = document.getElementById('pmLockPie'); if(!pie) return;
+  let el = document.getElementById('pmCompInfo');
+  const n = (ed.compInfo || []).length;
+  if(!n || !ed.bloqueado){ if(el) el.style.display = 'none'; return; }
+  if(!el){
+    el = document.createElement('span'); el.id = 'pmCompInfo'; el.className = 'pm-lockpie';
+    el.style.cssText = 'margin-left:8px;background:#EEF3FB;border:1px solid #C9D6EA;color:#1F3864;cursor:pointer';
+    pie.insertAdjacentElement('afterend', el);
+    el.addEventListener('click', function(){ _revisarComposiciones(ed.compInfo || []); });
+  }
+  el.style.display = '';
+  el.title = 'El presupuesto aprobado no cambia. Tocá para ver la comparación (solo informativa).';
+  el.innerHTML = 'ℹ '+n+' composición'+(n === 1 ? '' : 'es')+' del catálogo cambió después de aprobar · <u>ver comparación</u>';
 }
 /* v9.8 · Rubro con alguna línea en cero: el costo sale incompleto */
 /* v9.9 · Todas las líneas del presupuesto que quedaron en cero */
@@ -9695,12 +9855,13 @@ async function _revisarComposiciones(codes, forzar){
   if(ed._revisando) return; ed._revisando = true;
   try{
     const h = _cabActual(), pub = !!h.publicado_en;
+    const congelado = pub && !ed.desbloqueado;   // v10.45 · aprobado y sin reabrir: solo informativo
     const rubs = (ed.rubros||[]).filter(function(r){ return codes.indexOf(r.rubro_codigo) >= 0 && r.tiene_receta && (Number(r.cantidad)||0) > 0; });
     if(!rubs.length) return;
-    if(forzar) rubs.forEach(function(r){ ed.recetaNueva = ed.recetaNueva||{}; ed.compPend = ed.compPend||{}; const t=new Date().toISOString(); if(!ed.recetaNueva[r.rubro_codigo]) ed.recetaNueva[r.rubro_codigo]=t; ed.compPend[r.rubro_codigo]=ed.recetaNueva[r.rubro_codigo]; });
+    if(forzar && !congelado) rubs.forEach(function(r){ ed.recetaNueva = ed.recetaNueva||{}; ed.compPend = ed.compPend||{}; const t=new Date().toISOString(); if(!ed.recetaNueva[r.rubro_codigo]) ed.recetaNueva[r.rubro_codigo]=t; ed.compPend[r.rubro_codigo]=ed.recetaNueva[r.rubro_codigo]; });
     const puede = _puedeReabrir(h);
     const ajeno = !!(ed.duenio && ed.duenio !== _userTag() && !_esAdmin());
-    const puedeActualizar = puede && !ajeno && (!ed.bloqueado || pub);
+    const puedeActualizar = !congelado && puede && !ajeno && (!ed.bloqueado || pub);
     let cons = {}; if(pub){ try{ cons = await rubrosConConsumo(ed.origCodigo); }catch(e){} }
     const imp = await _impactoComp(rubs);
     if(imp.err){ showToast('No se pudo calcular el impacto','error', imp.err.message||''); return; }
@@ -9709,6 +9870,7 @@ async function _revisarComposiciones(codes, forzar){
       return '<b style="color:'+(d>0?'#B42B2B':'#1E7A3C')+'">'+(d>0?'+':'')+fmtGs(d)+'</b><span style="color:#8893a5">'+pc+'</span>'; };
     const recom = function(r){
       const c = cons[r.rubro_codigo];
+      if(congelado) return { def:'mantener', txt:'Presupuesto congelado: se mantiene el costo aprobado.' + (c ? ' Ya tiene consumo ('+c+').' : '') };
       if(!pub) return { def:'actualizar', txt:'Borrador sin compras ni certificados: conviene actualizar.' };
       if(c) return { def:'mantener', txt:'Ya tiene consumo ('+c+'). Recomendado <b>mantener</b>: lo comprado y certificado sigue cerrando. Si la composición nueva pide más, cargá la diferencia como rubro adicional.' };
       return { def: puedeActualizar ? 'actualizar' : 'mantener', txt:'Publicado sin consumo: se puede actualizar sin riesgo. Se reabre el presupuesto y al guardar se congela una versión nueva.' };
@@ -9724,42 +9886,45 @@ async function _revisarComposiciones(codes, forzar){
         '<td class="n">'+fmtGs(pa)+' → <b>'+fmtGs(pb)+'</b><div>'+dif(pa,pb)+'</div></td>'+
         '<td>'+(c?'<span class="imp-tag imp-tag-w">'+escapeHtml(c)+'</span>':'<span class="imp-tag">sin compras ni certificados</span>')+
           '<div class="imp-rec">'+rc.txt+'</div></td>'+
-        '<td><select class="imp-sel"'+(puedeActualizar?'':' disabled')+'>'+
+        '<td>'+(congelado ? '<span class="imp-tag">🔒 Congelado</span>' : '<select class="imp-sel"'+(puedeActualizar?'':' disabled')+'>'+
           '<option value="actualizar"'+(rc.def==='actualizar'&&puedeActualizar?' selected':'')+(puedeActualizar?'':' disabled')+'>Actualizar</option>'+
-          '<option value="mantener"'+(rc.def==='mantener'||!puedeActualizar?' selected':'')+'>Mantener</option></select></td></tr>';
+          '<option value="mantener"'+(rc.def==='mantener'||!puedeActualizar?' selected':'')+'>Mantener</option></select>')+'</td></tr>';
     }).join('');
     let propNota = '';
     try{
       const cp = (ed.origCodigo||'').replace(/^PP/i,'CP');
       const { data:pv } = await sb.from('propuesta_cab').select('codigo,version,venta_total')
         .eq('codigo', cp).order('version',{ascending:false}).limit(1);
-      if(pv && pv.length) propNota = '<div class="imp-note imp-note-w">Ya hay una propuesta emitida: <b>'+escapeHtml(pv[0].codigo)+' v'+pv[0].version+'</b>'+
+      if(!congelado && pv && pv.length) propNota = '<div class="imp-note imp-note-w">Ya hay una propuesta emitida: <b>'+escapeHtml(pv[0].codigo)+' v'+pv[0].version+'</b>'+
         (pv[0].venta_total?(' por Gs '+fmtGs(pv[0].venta_total)):'')+'. Se emitió con el costo anterior: si actualizás, conviene emitir una versión nueva antes de mandarla al cliente.</div>';
     }catch(e){}
     const ov = document.createElement('div'); ov.className = 'imp-ov';
-    const nota = pub
+    const nota = congelado
+      ? '<div class="imp-note imp-note-i">🔒 Este presupuesto está <b>aprobado y congelado</b>'+(h.base_version?' (línea base v'+h.base_version+')':'')+': sus costos <b>no cambian</b> aunque se modifique el catálogo de composiciones. Esto es solo informativo. '+
+          'Si hace falta aplicar la composición nueva, reabrilo con una observación: se congela una versión nueva de la línea base. Las órdenes de compra, certificados y contratos ya emitidos no se modifican.</div>'
+      : pub
       ? '<div class="imp-note imp-note-i">Este presupuesto está <b>publicado</b>'+(h.base_version?' (línea base v'+h.base_version+')':'')+'. '+
           '«Actualizar» lo reabre con tu observación; al guardar se congela una versión nueva y vuelve a bloquearse. '+
           '«Mantener» no cambia nada y deja el rubro marcado con tu observación.</div>'
       : '<div class="imp-note imp-note-i">Este presupuesto es un <b>borrador</b>. «Actualizar» cambia solo este presupuesto y queda registrado al guardarlo.</div>';
-    const sinPermiso = !puedeActualizar
+    const sinPermiso = (!puedeActualizar && !congelado)
       ? '<div class="imp-note imp-note-w">'+(ajeno||!puede ? 'Este presupuesto lo elaboró <b>'+escapeHtml(_nombreCorto(h.creado_por||ed.duenio))+'</b>: solo esa persona o administración pueden actualizarlo o registrar la decisión.' : 'El presupuesto está abierto por otra persona: por ahora solo se puede consultar.')+'</div>'
       : '';
-    const soloVer = !puede || ajeno;
+    const soloVer = congelado || !puede || ajeno;
     ov.innerHTML = '<div class="imp-box" role="dialog" aria-modal="true">'+
-      '<div class="imp-h"><b>Cambió la composición de '+rubs.length+' rubro'+(rubs.length===1?'':'s')+'</b><span>'+escapeHtml(ed.origCodigo||'')+' · '+(pub?'publicado':'borrador')+' · revisá el impacto y decidí qué hacer</span></div>'+
+      '<div class="imp-h"><b>'+(congelado ? 'Composiciones del catálogo modificadas · '+rubs.length+' rubro'+(rubs.length===1?'':'s') : 'Cambió la composición de '+rubs.length+' rubro'+(rubs.length===1?'':'s'))+'</b><span>'+escapeHtml(ed.origCodigo||'')+' · '+(congelado ? 'aprobado y congelado · comparación informativa' : (pub?'publicado':'borrador')+' · revisá el impacto y decidí qué hacer')+'</span></div>'+
       '<div class="imp-b">'+nota+sinPermiso+propNota+
         '<div class="imp-tw"><table class="imp-t"><thead><tr><th>Rubro</th><th class="n">Costo unitario</th><th class="n">Parcial</th><th>Consumo y recomendación</th><th>Decisión</th></tr></thead><tbody>'+filas+'</tbody>'+
-        '<tfoot><tr><td colspan="2">Total de los rubros si se actualiza todo</td><td class="n">'+fmtGs(imp.tA)+' → '+fmtGs(imp.tD)+'<div>'+dif(imp.tA,imp.tD)+'</div></td><td colspan="2"></td></tr></tfoot></table></div>'+
+        '<tfoot><tr><td colspan="2">'+(congelado ? 'Total de los rubros: aprobado vs. catálogo hoy' : 'Total de los rubros si se actualiza todo')+'</td><td class="n">'+fmtGs(imp.tA)+' → '+fmtGs(imp.tD)+'<div>'+dif(imp.tA,imp.tD)+'</div></td><td colspan="2"></td></tr></tfoot></table></div>'+
         (soloVer ? '' :
           '<label class="imp-lbl">Observación '+(pub?'<em>*</em>':'<span style="font-weight:400;color:#8893a5">(opcional en borrador)</span>')+'</label>'+
           '<textarea class="imp-txt" maxlength="800" placeholder="'+(pub?'Ej. se mantiene: el material ya se compró con la composición anterior · se actualiza: todavía no se compró ni certificó':'Ej. se actualiza por cambio de rendimiento del cemento')+'"></textarea>'+
           '<div class="imp-err"></div>')+
-        '<ul class="imp-l"><li>Se toma la composición nueva: rendimientos, divisores, mermas, materiales y mano de obra. Se respetan las líneas que ajustaste a mano en este presupuesto, la logística y los adicionales.</li>'+
-        '<li>Las órdenes de compra, certificados y contratos ya emitidos no se modifican.</li></ul>'+
+        (congelado ? '' : '<ul class="imp-l"><li>Se toma la composición nueva: rendimientos, divisores, mermas, materiales y mano de obra. Se respetan las líneas que ajustaste a mano en este presupuesto, la logística y los adicionales.</li>'+
+        '<li>Las órdenes de compra, certificados y contratos ya emitidos no se modifican.</li></ul>')+
       '</div>'+
       '<div class="imp-f">'+(soloVer
-        ? '<button type="button" class="imp-no">Entendido</button>'
+        ? (congelado && _puedeReabrir(h) ? '<button type="button" class="imp-reab" style="background:#fff;border:1px solid #1F3864;color:#1F3864;border-radius:9px;padding:9px 14px;font-weight:700;cursor:pointer;margin-right:8px">Reabrir para aplicar…</button>' : '')+'<button type="button" class="imp-no">'+(congelado ? 'Cerrar' : 'Entendido')+'</button>'
         : '<button type="button" class="imp-no">Decidir después</button><button type="button" class="imp-si">Confirmar</button>')+'</div></div>';
     document.body.appendChild(ov);
     // El botón dice exactamente qué va a pasar
@@ -9780,6 +9945,8 @@ async function _revisarComposiciones(codes, forzar){
     function tecla(e){ if(e.key === 'Escape') cerrar(); }
     document.addEventListener('keydown', tecla);
     ov.querySelector('.imp-no').onclick = cerrar;
+    const reab = ov.querySelector('.imp-reab');
+    if(reab) reab.onclick = async function(){ cerrar(); if(await pedirDesbloqueo()){ _detectarCompNuevas(true); } };   // reabierto, se revisan y deciden como siempre
     const si = ov.querySelector('.imp-si');
     if(si) si.onclick = async function(){
       const obs = (ov.querySelector('.imp-txt')||{}).value ? ov.querySelector('.imp-txt').value.trim() : '';
