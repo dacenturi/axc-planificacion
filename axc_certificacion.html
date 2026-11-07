@@ -614,6 +614,28 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .ax-in.ro{background:#F1F4F9;color:#5A6272}
 .tb-head{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:6px 0;color:#1F3864;font-size:13.5px}
 .tb-chk{font-size:12.5px;color:#5A6272;display:flex;gap:6px;align-items:center}
+/* v13.15 · Coeficiente por línea del trabajo por administración */
+.tb-cf{width:78px;padding:4px 6px;border:1px solid #C9D0DC;border-radius:7px;font:inherit;font-size:12.5px;text-align:right;background:#fff;color:#1F3864}
+.tb-cf::placeholder{color:#9AA3B2}
+.tb-cf.on{border-color:#C8A028;background:#FFF8E6;font-weight:700}
+.tb-cf.mal{border-color:#B42B2B;background:#FBEAEA}
+.tb-pr b{color:#1F3864}
+.tb-ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px;color:#5A6272}
+.tb-lock{background:#FFF4E0;border:1px solid #F0C98A;border-radius:10px;padding:9px 12px;margin:10px 0;font-size:13px;color:#6B4A0A}
+.tb-props{margin-top:12px;border:1px solid #DDE2EA;border-radius:12px;padding:10px 12px;background:#fff}
+.tb-props h4{margin:0 0 6px;font-size:14px;color:#1F3864}
+.tb-prow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #EEF1F6;font-size:13px}
+.tb-prow:first-of-type{border-top:0}
+.tb-prow .n{font-weight:800;color:#1F3864;min-width:150px}
+.tb-prow .m{flex:1;color:#4B5568;min-width:200px}
+.tb-pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:800}
+.tb-pill.v{background:#E4F3EA;color:#1F5C3A}.tb-pill.r{background:#EEF1F6;color:#5B6B82}
+.tb-conf{background:#EEF3FB;border:1px solid #C9D6EA;border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;display:none}
+.tb-mini:disabled,.btn-nav:disabled,.btn-ok:disabled{opacity:.5;cursor:not-allowed}
+.tb-mini{border:1px solid #C9D0DC;background:#fff;color:#1F3864;border-radius:8px;padding:5px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+.tb-mini:hover{background:#EEF3FB}
+.tb .tb-sec td.tb-ps,.tb .tb-cap td.tb-pcap,.tb .tb-tot td.tb-ptot{text-align:right}
+.tb td.r,.tb th.r{white-space:nowrap}
 table.tb td{font-size:12.5px}
 .tb .tb-sec td{background:#FBF6E6;color:#8A6A0E;font-weight:800}
 .tb .tb-cap td{background:#EAF0F8;color:#1F3864;font-weight:800}
@@ -3179,6 +3201,33 @@ function taAbiertos(obra){
   return (TA.lista||[]).filter(function(t){ return t.estado === 'Abierto' && (!o || norm(t.obra||'') === o); });
 }
 function taCoef(t){ const c = Number(t && t.coeficiente); return (c > 0 && c <= 1) ? c : 1; }
+/* v13.15 · Coeficiente por línea. Una «línea» es una fila de la bolsa (sector + rubro/trabajo).
+   Se guarda en trabajos_admin.coef_lineas (jsonb, ver axc_v86_ta_coef_lineas.sql); si esa columna todavía no existe,
+   queda en este navegador. Línea sin coeficiente propio = usa el coeficiente general. */
+function taClave(sec, rk){ return sec + '||' + rk; }
+function taOvLeer(t){
+  let o = t && t.coef_lineas;
+  if(typeof o === 'string'){ try{ o = JSON.parse(o); }catch(e){ o = null; } }
+  if(!o || typeof o !== 'object'){ try{ o = JSON.parse(localStorage.getItem('axc_ta_coef_' + (t && t.codigo)) || 'null'); }catch(e){ o = null; } }
+  const out = {}; Object.keys(o || {}).forEach(function(k){ const c = Number(o[k]); if(c >= 0.05 && c <= 1) out[k] = c; });
+  return out;
+}
+function taPrecios(B, cfGen, ov){
+  const R = { filas:{}, caps:{}, secs:{}, costo:0, precio:0, propios:0 };
+  Object.keys(B).forEach(function(sec){
+    let ps = 0, cs = 0;
+    Object.keys(B[sec]).forEach(function(cc){
+      const c = B[sec][cc]; let pc = 0, ccs = 0;
+      Object.keys(c.rubros).forEach(function(rk){
+        const r = c.rubros[rk], key = taClave(sec, rk), par = r.mo + r.mat, propio = !!(ov && ov[key] >= 0.05 && ov[key] <= 1), cf = propio ? ov[key] : cfGen, pr = Math.round(par / cf);
+        R.filas[key] = { costo:par, coef:cf, precio:pr, propio:propio }; if(propio) R.propios++; pc += pr; ccs += par;
+      });
+      R.caps[sec + '||' + cc] = { costo:ccs, precio:pc }; ps += pc; cs += ccs;
+    });
+    R.secs[sec] = { costo:cs, precio:ps }; R.costo += cs; R.precio += ps;
+  });
+  return R;
+}
 function taN4(v){ return (Number(v)||0).toFixed(4).replace('.',','); }
 function taN2(v){ return (Number(v)||0).toFixed(2).replace('.',','); }
 async function taAvisoSQL(){
@@ -3260,6 +3309,99 @@ function taProximoCodigo(){
   let max = 0;
   (TA.lista||[]).forEach(function(t){ const m = /^TA-(\d+)$/i.exec(String(t.codigo||'')); if(m) max = Math.max(max, Number(m[1])); });
   return 'TA-' + String(max + 1).padStart(4, '0');
+}
+/* v13.16 · Propuesta al cliente guardada. Se toma una instantánea exacta de lo que se entrega (líneas, coeficientes, precios y
+   totales) para poder volver a descargar el mismo PDF aunque después cambien los certificados, las compras o los coeficientes. */
+function taSnapshot(t, C, conTramite, ov){
+  const its = C.items.filter(function(i){ return conTramite || i._cert.estado === 'Aprobado'; });
+  const B = taBolsa(its), cfG = taCoef(t), P = taPrecios(B, cfG, ov), items = [];
+  Object.keys(B).sort().forEach(function(sec){
+    Object.keys(B[sec]).sort().forEach(function(cc){
+      const c = B[sec][cc];
+      Object.keys(c.rubros).sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); }).forEach(function(rk){
+        const r = c.rubros[rk], f = P.filas[taClave(sec, rk)];
+        items.push({ sec:sec, capCod:c.cap.cod, capNom:c.cap.nom, cod:r.cod, nom:r.nom, un:r.un, cant:r.cant, costo:f.costo, coef:f.coef, precio:f.precio, propio:f.propio });
+      });
+    });
+  });
+  return { ta:{ codigo:t.codigo, nombre:t.nombre, obra:t.obra, estado:t.estado, solicitado_por:taSolTxt(t)||'', responsable:t.responsable||'', descripcion:t.descripcion||'', fecha_inicio:t.fecha_inicio||'' },
+    general:{ coef:cfG, margen:Number(t.margen_pct)||0 }, con_tramite:!!conTramite, items:items, totales:{ costo:P.costo, precio:P.precio, propios:P.propios } };
+}
+async function taPropuestasCargar(codigo){
+  try{
+    const r = await sb.from('ta_propuestas').select('*').eq('ta_codigo', codigo).order('version', { ascending:false });
+    if(r.error) return { falta:true, lista:[], msg:String(r.error.message||'') };
+    return { falta:false, lista:r.data||[] };
+  }catch(e){ return { falta:true, lista:[], msg:String(e && e.message || e) }; }
+}
+/* PDF de la propuesta al cliente a partir de una instantánea (vista previa o emitida) */
+function taPDFPropuesta(snap, meta){
+  meta = meta || {};
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 13;
+  const NAVY = [31,56,100], GOLD = [200,160,40], CAPBG = [234,240,248], SECBG = [251,246,230];
+  const s = function(x){ return pdfSafe(x == null ? '' : String(x)); };
+  const T = snap.ta, G = snap.general;
+  try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M, 10, 36, 12.5); }catch(e){}
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor.apply(doc, NAVY);
+  doc.text('PROPUESTA ECONOMICA', W-M, 15, { align:'right' });
+  doc.setFontSize(10.5); doc.setTextColor.apply(doc, GOLD);
+  doc.text('Trabajo por administracion N.o '+taNum(T.codigo)+'  ·  '+s(T.codigo), W-M, 21, { align:'right' });
+  doc.setFontSize(8); doc.setTextColor(110,110,110); doc.setFont('helvetica','normal');
+  const hayProp = snap.items.some(function(i){ return i.propio; });
+  doc.text(meta.borrador ? 'VISTA PREVIA · sin validez · '+fmtFecha(hoyISO())
+    : s('Propuesta '+(meta.numero||'')+'  ·  Emitida '+fmtFecha(String(meta.fecha||hoyISO()).slice(0,10))+'  ·  Elaboro: '+(meta.elaborado||'')), W-M, 25.5, { align:'right' });
+  doc.text('Precios con coeficiente '+(hayProp ? 'por linea (general '+taN4(G.coef)+')' : taN4(G.coef)), W-M, 29.3, { align:'right' });
+  doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(0.6); doc.line(M, 31.5, W-M, 31.5);
+  doc.autoTable({ startY:34, margin:{ left:M, right:M }, theme:'grid',
+    styles:{ fontSize:8.5, cellPadding:1.5, lineColor:[225,229,236], lineWidth:0.15, textColor:[30,30,30] },
+    columnStyles:{ 0:{ fontStyle:'bold', textColor:NAVY, cellWidth:32, fillColor:[244,247,251] }, 2:{ fontStyle:'bold', textColor:NAVY, cellWidth:28, fillColor:[244,247,251] } },
+    body:[['TRABAJO', s(T.nombre), 'OBRA', s(T.obra)], ['SOLICITADO POR', s(T.solicitado_por||'-'), 'RESPONSABLE', s(T.responsable||'-')],
+          ['INICIO', fmtFecha(T.fecha_inicio), 'ESTADO', s(T.estado)]]
+      .concat(T.descripcion ? [[{ content:'ALCANCE', styles:{ fontStyle:'bold', textColor:NAVY, fillColor:[244,247,251] } }, { content:s(T.descripcion), colSpan:3 }]] : []) });
+  const body = [];
+  const secs = []; snap.items.forEach(function(i){ if(secs.indexOf(i.sec) < 0) secs.push(i.sec); });
+  secs.forEach(function(sec){
+    const deSec = snap.items.filter(function(i){ return i.sec === sec; });
+    body.push([{ content:'SECTOR: '+s(sec), colSpan:5, styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold' } }, { content:gsPdf(deSec.reduce(function(a,i){ return a + i.precio; }, 0)), styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold', halign:'right' } }]);
+    const caps = []; deSec.forEach(function(i){ if(caps.indexOf(i.capCod) < 0) caps.push(i.capCod); });
+    caps.forEach(function(cc){
+      const deCap = deSec.filter(function(i){ return i.capCod === cc; });
+      body.push([{ content:s(cc), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:s(deCap[0].capNom), colSpan:4, styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:gsPdf(deCap.reduce(function(a,i){ return a + i.precio; }, 0)), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold', halign:'right' } }]);
+      deCap.forEach(function(r){ body.push([s(r.cod), s(r.nom), s(r.un), qty(r.cant), gsPdf(r.cant ? Math.round(r.precio / r.cant) : 0), gsPdf(r.precio)]); });
+    });
+  });
+  if(!body.length) body.push([{ content:'Sin gastos '+(snap.con_tramite ? 'imputados' : 'aprobados')+' todavia.', colSpan:6, styles:{ halign:'center', textColor:[120,120,120] } }]);
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 5, margin:{ left:M, right:M },
+    head:[['Item','Descripcion','Unid.','Cant.','Precio unit.','Precio total']], body:body, theme:'grid',
+    styles:{ fontSize:8, cellPadding:1.5, lineColor:[225,229,236], lineWidth:0.15, textColor:[30,30,30] },
+    headStyles:{ fillColor:NAVY, textColor:255, fontStyle:'bold', halign:'center' },
+    columnStyles:{ 0:{ cellWidth:16 }, 2:{ cellWidth:14, halign:'center' }, 3:{ cellWidth:16, halign:'right' }, 4:{ cellWidth:26, halign:'right' }, 5:{ cellWidth:28, halign:'right', fontStyle:'bold' } } });
+  let y = doc.lastAutoTable.finalY + 4; if(y > H - 75){ doc.addPage(); y = 20; }
+  const filas = [['TOTAL DEL TRABAJO', gsPdf(snap.totales.precio)]];
+  doc.autoTable({ startY:y, margin:{ left: W/2 - 6, right:M }, theme:'grid', body:filas,
+    styles:{ fontSize:9, cellPadding:2, lineColor:[225,229,236], lineWidth:0.15 },
+    columnStyles:{ 0:{ fontStyle:'bold', textColor:NAVY }, 1:{ halign:'right', cellWidth:38, fontStyle:'bold' } },
+    didParseCell:function(d){ if(d.row.index === filas.length-1){ d.cell.styles.fillColor = NAVY; d.cell.styles.textColor = 255; } } });
+  y = doc.lastAutoTable.finalY + 4;
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.6); doc.setTextColor(110,110,110);
+  doc.text(doc.splitTextToSize('Trabajo ejecutado por administracion: se liquida a costo real de mano de obra, materiales y gastos, mas el coeficiente indicado. Precios en guaranies.', W - 2*M), M, y);
+  y = Math.max(y + 24, H - 44);
+  const F = [['POR EL CLIENTE', T.solicitado_por||''], ['POR AXC CONSTRUCTORA', meta.borrador ? '' : (meta.elaborado||'')]];
+  F.forEach(function(f, i){
+    const w = (W - 2*M - (F.length-1)*10)/F.length, x = M + i*(w + 10);
+    doc.setDrawColor(150,150,150); doc.setLineWidth(0.3); doc.line(x + 6, y, x + w - 6, y);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(30,30,30); doc.text(f[0], x + w/2, y + 4.5, { align:'center' });
+    doc.setFont('helvetica','normal'); doc.setTextColor(110,110,110); doc.text(s(f[1]), x + w/2, y + 9, { align:'center' });
+  });
+  const n = doc.internal.getNumberOfPages();
+  for(let p = 1; p <= n; p++){
+    doc.setPage(p); doc.setFont('helvetica','normal'); doc.setFontSize(6.8); doc.setTextColor(150,150,150);
+    doc.text('Resumen elaborado por Conexdata  ·  AXC Constructora  ·  '+s(T.codigo)+'  ·  '+(meta.borrador ? 'VISTA PREVIA' : s(meta.numero||'propuesta al cliente')+(meta.estado === 'Reemplazada' ? ' (reemplazada)' : '')), M, H - 7);
+    doc.text('Pagina '+p+' de '+n, W - M, H - 7, { align:'right' });
+  }
+  doc.save(meta.borrador ? 'Propuesta_'+String(T.codigo).replace(/[^A-Za-z0-9-]/g,'_')+'_VISTA_PREVIA.pdf' : 'Propuesta_'+String(T.codigo).replace(/[^A-Za-z0-9-]/g,'_')+'_v'+(meta.version||1)+'.pdf');
 }
 /* Cabecera: alta y edición */
 async function taForm(t, obraPref, op){
@@ -3485,6 +3627,11 @@ async function taVer(codigo){
   try{ C = (await taCostos([codigo]))[codigo] || { aprob:0, tramite:0, items:[] }; }catch(e){ C = { aprob:0, tramite:0, items:[] }; }
   const k = function(l,v,s){ return '<div class="ta-k"><span>'+l+'</span><b>'+v+'</b>'+(s?'<small>'+s+'</small>':'')+'</div>'; };
   const cf = taCoef(t);
+  const PR = await taPropuestasCargar(codigo);
+  const yo = (state.user && state.user.id) || '';
+  const vig = (PR.lista || []).find(function(p){ return p.estado === 'Vigente'; });
+  const bloqueado = !!(vig && vig.elaborado_por && vig.elaborado_por !== yo);
+  let OV = taOvLeer(t), ULT = null;
   const tabla = function(conTramite){
     const its = C.items.filter(function(i){ return conTramite || i._cert.estado === 'Aprobado'; });
     if(!its.length) return C.items.length
@@ -3494,26 +3641,31 @@ async function taVer(codigo){
         '<li>Elegí <b>'+escapeHtml(t.codigo)+'</b> y el <b>rubro</b>: del catálogo o fuera de catálogo (99.001…).</li>'+
         '<li>Cargá cantidad, costo, sector y justificación. Al <b>aprobar</b> el certificado, aparece acá.</li></ol></div>';
     const B = taBolsa(its); let tot = 0, filas = '';
+    const cfG = (typeof ULT === 'object' && ULT && ULT.cfG) ? ULT.cfG : cf;
+    const P = taPrecios(B, cfG, OV); ULT = { B:B, cfG:cfG };
     Object.keys(B).sort().forEach(function(sec){
       const caps = B[sec]; let tSec = 0;
       let body = '';
       Object.keys(caps).sort().forEach(function(cc){
         const c = caps[cc], rs = Object.keys(c.rubros).sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
         const tCap = rs.reduce(function(a,r){ return a + c.rubros[r].mo + c.rubros[r].mat; }, 0); tSec += tCap;
-        body += '<tr class="tb-cap"><td>'+escapeHtml(c.cap.cod)+'</td><td colspan="6">'+escapeHtml(c.cap.nom)+'</td><td class="r">'+gs(tCap)+'</td><td></td></tr>';
+        body += '<tr class="tb-cap"><td>'+escapeHtml(c.cap.cod)+'</td><td colspan="6">'+escapeHtml(c.cap.nom)+'</td><td class="r">'+gs(tCap)+'</td><td></td><td class="r tb-pcap" data-k="'+escapeHtml(sec+'||'+cc)+'">'+gs(P.caps[sec+'||'+cc].precio)+'</td><td></td></tr>';
         rs.forEach(function(rc){
-          const r = c.rubros[rc], cu = r.cant ? (r.mo + r.mat)/r.cant : 0;
+          const r = c.rubros[rc], cu = r.cant ? (r.mo + r.mat)/r.cant : 0, key = taClave(sec, rc), f = P.filas[key];
           body += '<tr><td class="tb-cod">'+escapeHtml(r.cod)+'</td><td>'+escapeHtml(r.nom)+'</td><td>'+escapeHtml(r.un)+'</td><td class="r">'+qty(r.cant)+'</td>'+
             '<td class="r">'+(r.mat ? gs(Math.round(r.mat/r.cant)) : '—')+'</td><td class="r">'+(r.mo ? gs(Math.round(r.mo/(r.cant||1))) : '—')+'</td><td class="r">'+gs(Math.round(cu))+'</td>'+
-            '<td class="r"><b>'+gs(r.mo + r.mat)+'</b></td><td class="tb-docs">'+Object.keys(r.docs).join(', ')+'</td></tr>';
+            '<td class="r"><b>'+gs(r.mo + r.mat)+'</b></td>'+
+            '<td class="r"><input class="tb-cf'+(f.propio ? ' on' : '')+'" type="number" step="0.0001" min="0.05" max="1" data-k="'+escapeHtml(key)+'" value="'+(f.propio ? String(f.coef) : '')+'" placeholder="'+taN4(cfG)+'" title="Coeficiente de esta línea. Vacío = usa el coeficiente general ('+taN4(cfG)+')"></td>'+
+            '<td class="r tb-pr" data-k="'+escapeHtml(key)+'"><b>'+gs(f.precio)+'</b></td>'+
+            '<td class="tb-docs">'+Object.keys(r.docs).join(', ')+'</td></tr>';
         });
       });
       tot += tSec;
-      filas += '<tr class="tb-sec"><td colspan="7">'+escapeHtml(sec)+'</td><td class="r">'+gs(tSec)+'</td><td></td></tr>'+body;
+      filas += '<tr class="tb-sec"><td colspan="7">'+escapeHtml(sec)+'</td><td class="r">'+gs(tSec)+'</td><td></td><td class="r tb-ps" data-k="'+escapeHtml(sec)+'">'+gs(P.secs[sec].precio)+'</td><td></td></tr>'+body;
     });
     return '<div class="op-tabla"><table class="op-t tb"><thead><tr><th>Código</th><th>Rubro</th><th>Unid.</th><th class="r">Cantidad</th>'+
-      '<th class="r">Material ₲/u</th><th class="r">M. obra ₲/u</th><th class="r">C. unitario</th><th class="r">C. parcial</th><th>Certificados</th></tr></thead><tbody>'+filas+
-      '<tr class="tb-tot"><td colspan="7">COSTO TOTAL'+(conTramite ? ' (incluye lo que está en trámite)' : ' (certificados aprobados)')+'</td><td class="r">'+gs(tot)+'</td><td></td></tr></tbody></table></div>';
+      '<th class="r">Material ₲/u</th><th class="r">M. obra ₲/u</th><th class="r">C. unitario</th><th class="r">C. parcial</th><th class="r" title="Coeficiente propio de la línea; vacío = el general">Coef.</th><th class="r">Precio cliente</th><th>Certificados</th></tr></thead><tbody>'+filas+
+      '<tr class="tb-tot"><td colspan="7">COSTO TOTAL'+(conTramite ? ' (incluye lo que está en trámite)' : ' (certificados aprobados)')+'</td><td class="r">'+gs(tot)+'</td><td></td><td class="r tb-ptot">'+gs(P.precio)+'</td><td></td></tr></tbody></table></div>';
   };
   const nRub = Object.keys(C.items.reduce(function(a,i){ a[i.rubro_codigo || ('99.000|'+norm(i.descripcion||''))] = 1; return a; }, {})).length;
   const html =
@@ -3524,16 +3676,20 @@ async function taVer(codigo){
     (t.descripcion ? '<p class="ta-alc"><b>Alcance:</b> '+escapeHtml(t.descripcion)+'</p>' : '')+
     '<div class="tb-head"><b>Bolsa del trabajo</b> · por sector y capítulo, como un presupuesto'+
       (C.tramite ? '<label class="tb-chk"><input type="checkbox" id="tbTram"> incluir lo que está en trámite</label>' : '')+'</div>'+
+    '<div class="tb-ctl"><span>Coeficiente por línea: dejalo vacío para usar el general.</span><button type="button" class="tb-mini" id="tbQuitar" title="Borra los coeficientes propios de todas las líneas">↺ Todas con el coeficiente general</button></div>'+
     '<div id="tbTabla">'+tabla(false)+'</div>'+
     (C.items.length ? '<details class="tb-det"><summary>Detalle de cada imputación ('+C.items.length+')</summary><div class="op-tabla"><table class="op-t"><thead><tr><th>Fecha</th><th>Certificado</th><th>Contratista</th><th>Rubro</th><th>Detalle</th><th class="r">Cantidad</th><th class="r">Subtotal</th><th>Estado</th></tr></thead><tbody>'+
       C.items.map(function(it){ return '<tr><td>'+fmtFecha(it._cert.fecha)+'</td><td>'+escapeHtml(it._cert.numero||'')+'</td><td>'+escapeHtml(it._cert.contratista||'')+'</td><td>'+escapeHtml(it.rubro_codigo||'—')+'</td>'+
         '<td>'+escapeHtml(it.descripcion||'')+'</td><td class="r">'+qty(it.cantidad)+' '+escapeHtml(it.unidad||'')+'</td><td class="r">'+gs(it.subtotal)+'</td><td>'+escapeHtml(it._cert.estado||'')+'</td></tr>'; }).join('')+'</tbody></table></div></details>' : '')+
+    (bloqueado ? '<div class="tb-lock">🔒 <b>La propuesta vigente ('+escapeHtml(vig.numero)+') fue elaborada por '+escapeHtml(vig.elaborado_por_nombre || vig.elaborado_por_email || 'otro residente')+'.</b> Solo esa persona puede modificarla o emitir una nueva versión. Vos podés ver y descargar lo que se entregó al cliente.</div>' : '')+
     '<div class="ta-coef" style="margin-top:12px"><div class="ta-coef-t">Precio al cliente <small>mismo formato que la propuesta de Presupuestos</small></div>'+
       '<div class="ta-g3"><div><label class="ax-l">Costo aprobado</label><div class="sc-par">'+gs(C.aprob)+'</div></div>'+
       '<div><label class="ax-l">Margen general %</label><input id="lqMg" class="ax-in" type="number" step="0.01" min="0" max="95" value="'+(Number(t.margen_pct)||0)+'"></div>'+
       '<div><label class="ax-l">Coeficiente <small>· costo ÷ coef.</small></label><input id="lqCf" class="ax-in" type="number" step="0.0001" min="0.05" max="1" value="'+taN4(cf).replace(',','.')+'"></div></div>'+
       '<div class="ta-prev" id="lqPrev"></div><div class="ax-hint" id="lqErr" style="color:#B42B2B;min-height:1em"></div>'+
-      '<div class="tb-btns"><button type="button" class="btn-nav" id="tbPdfInt">📄 Liquidación interna · costos</button><button type="button" class="btn-ok" id="tbPdfCli">📄 Propuesta al cliente · con coeficiente</button></div></div>'+
+      '<div class="tb-btns"><button type="button" class="btn-nav" id="tbGuardar">💾 Guardar coeficientes</button><button type="button" class="btn-nav" id="tbPdfInt">📄 Liquidación interna · costos</button><button type="button" class="btn-nav" id="tbPdfCli" title="Muestra cómo quedaría. No se guarda ni vale como propuesta.">👁 Vista previa (no se guarda)</button><button type="button" class="btn-ok" id="tbEmitir">✅ Emitir propuesta al cliente</button></div>'+
+      '<div class="tb-conf" id="tbConf"></div></div>'+
+    '<div class="tb-props" id="tbProps"></div>'+
     '<div class="ta-nota">La bolsa se llena con los certificados, los materiales de las órdenes de compra y los gastos de caja chica imputados a este trabajo.</div>';
   const dbx = document.getElementById('dlgBox'), w0 = dbx ? dbx.style.maxWidth : '', w1 = dbx ? dbx.style.width : '';
   if(dbx){ dbx.style.maxWidth = '1100px'; dbx.style.width = 'min(1100px, 97vw)'; }
@@ -3541,43 +3697,111 @@ async function taVer(codigo){
     html:html, ok:'Cerrar', soloOk:true,
     alRender:function(box){
       const mg = box.querySelector('#lqMg'), c2 = box.querySelector('#lqCf'), pv = box.querySelector('#lqPrev');
-      const prev = function(){ const c = Number(c2.value)||1; pv.innerHTML = 'Costo <b>'+gs(C.aprob)+'</b> ÷ coeficiente <b>'+taN4(c)+'</b> = precio al cliente <b>'+gs(Math.round(C.aprob/c))+'</b>'+(c === 1 ? ' · con 1,0000 se cobra el costo, sin margen' : ''); };
-      mg.addEventListener('input', function(){ const m = Math.min(95, Math.max(0, Number(mg.value)||0)); c2.value = (1 - m/100).toFixed(4); prev(); });
-      c2.addEventListener('input', function(){ const c = Number(c2.value); if(c > 0 && c <= 1) mg.value = ((1 - c)*100).toFixed(2); prev(); });
-      prev();
-      const tr = box.querySelector('#tbTram'); if(tr) tr.addEventListener('change', function(){ box.querySelector('#tbTabla').innerHTML = tabla(tr.checked); });
-      const pdf = async function(tipo){
-        const c = Number(c2.value);
-        if(!(c >= 0.05 && c <= 1)){ axMarcar(box,'#lqCf','#lqErr','<b>Coeficiente:</b> tiene que estar entre 0,05 y 1. Con 1 se cobra el costo sin margen.'); return; }
-        const mgN = Number(mg.value)||0;
-        if(mgN !== Number(t.margen_pct||0) || c !== taCoef(t)){
-          try{ await sb.from('trabajos_admin').update({ margen_pct:mgN, coeficiente:c, actualizado_por:taQuien(), actualizado_en:new Date().toISOString() }).eq('id', t.id); }catch(e){}
-          t.margen_pct = mgN; t.coeficiente = c;
-        }
-        taPDF(t, C, tipo, !!(tr && tr.checked));
+      const cfGen = function(){ const c = Number(c2.value); return (c >= 0.05 && c <= 1) ? c : 1; };
+      const leerOV = function(){ const o = {}; box.querySelectorAll('.tb-cf').forEach(function(i){ const v = Number(i.value), hay = i.value !== '', ok = v >= 0.05 && v <= 1; i.classList.toggle('on', hay && ok); i.classList.toggle('mal', hay && !ok); if(hay && ok) o[i.getAttribute('data-k')] = v; }); return o; };
+      const recalc = function(){
+        OV = leerOV(); const g = cfGen(); ULT.cfG = g;
+        const P = taPrecios(ULT.B, g, OV);
+        box.querySelectorAll('.tb-cf').forEach(function(i){ i.placeholder = taN4(g); });
+        box.querySelectorAll('.tb-pr').forEach(function(td){ const f = P.filas[td.getAttribute('data-k')]; if(f) td.innerHTML = '<b>'+gs(f.precio)+'</b>'; });
+        box.querySelectorAll('.tb-pcap').forEach(function(td){ const f = P.caps[td.getAttribute('data-k')]; if(f) td.textContent = gs(f.precio); });
+        box.querySelectorAll('.tb-ps').forEach(function(td){ const f = P.secs[td.getAttribute('data-k')]; if(f) td.textContent = gs(f.precio); });
+        const tt = box.querySelector('.tb-ptot'); if(tt) tt.textContent = gs(P.precio);
+        pv.innerHTML = P.propios
+          ? 'Costo <b>'+gs(P.costo)+'</b> · precio al cliente <b>'+gs(P.precio)+'</b> · coeficiente general <b>'+taN4(g)+'</b> y <b>'+P.propios+'</b> línea(s) con coeficiente propio (efectivo '+taN4(P.precio ? P.costo/P.precio : 1)+')'
+          : 'Costo <b>'+gs(P.costo)+'</b> ÷ coeficiente <b>'+taN4(g)+'</b> = precio al cliente <b>'+gs(P.precio)+'</b>'+(g === 1 ? ' · con 1,0000 se cobra el costo, sin margen' : '');
+        const q = box.querySelector('#tbQuitar'); if(q) q.style.display = P.propios ? '' : 'none';
       };
+      mg.addEventListener('input', function(){ const m = Math.min(95, Math.max(0, Number(mg.value)||0)); c2.value = (1 - m/100).toFixed(4); recalc(); });
+      c2.addEventListener('input', function(){ const c = Number(c2.value); if(c > 0 && c <= 1) mg.value = ((1 - c)*100).toFixed(2); recalc(); });
+      box.addEventListener('input', function(e){ if(e.target && e.target.classList && e.target.classList.contains('tb-cf')) recalc(); });
+      box.querySelector('#tbQuitar').addEventListener('click', function(){ box.querySelectorAll('.tb-cf').forEach(function(i){ i.value = ''; }); recalc(); });
+      recalc();
+      const tr = box.querySelector('#tbTram'); if(tr) tr.addEventListener('change', function(){ box.querySelector('#tbTabla').innerHTML = tabla(tr.checked); recalc(); });
+      const guardar = async function(aviso){
+        if(bloqueado){ OV = leerOV(); return true; }   // quien no elaboró la propuesta vigente no modifica nada
+        const c = Number(c2.value);
+        if(!(c >= 0.05 && c <= 1)){ axMarcar(box,'#lqCf','#lqErr','<b>Coeficiente:</b> tiene que estar entre 0,05 y 1. Con 1 se cobra el costo sin margen.'); return false; }
+        if(box.querySelector('.tb-cf.mal')){ showToast('Revisá los coeficientes por línea','error','Cada coeficiente tiene que estar entre 0,05 y 1, o vacío para usar el general.'); return false; }
+        const mgN = Number(mg.value)||0; OV = leerOV();
+        const base = { margen_pct:mgN, coeficiente:c, actualizado_por:taQuien(), actualizado_en:new Date().toISOString() };
+        let enSistema = true;
+        try{
+          let r = await sb.from('trabajos_admin').update(Object.assign({ coef_lineas:OV }, base)).eq('id', t.id);
+          if(r && r.error){ enSistema = false; r = await sb.from('trabajos_admin').update(base).eq('id', t.id); }
+        }catch(e){ enSistema = false; }
+        try{ localStorage.setItem('axc_ta_coef_'+t.codigo, JSON.stringify(OV)); }catch(e){}
+        t.margen_pct = mgN; t.coeficiente = c; t.coef_lineas = OV;
+        if(aviso !== false) showToast(enSistema ? 'Coeficientes guardados' : 'Coeficientes guardados en este navegador', enSistema ? 'ok' : 'info', enSistema ? '' : 'Para guardar los coeficientes por línea en el sistema hay que ejecutar axc_v86_ta_coef_lineas.sql una vez.');
+        return true;
+      };
+      const pdf = async function(tipo){ if(!(await guardar(false))) return; taPDF(t, C, tipo, !!(tr && tr.checked), OV); };
+      /* v13.16 · Propuestas emitidas: historial, descarga y emisión con confirmación */
+      const pintarProps = function(){
+        const el = box.querySelector('#tbProps'); if(!el) return;
+        if(PR.falta){ el.innerHTML = '<h4>Propuestas emitidas al cliente</h4><div class="tb-lock" style="margin:0">Para que las propuestas queden guardadas hay que ejecutar <b>axc_v87_ta_propuestas.sql</b> una vez. Mientras tanto se puede ver la vista previa, pero no emitir.</div>'; return; }
+        el.innerHTML = '<h4>Propuestas emitidas al cliente</h4>'+(PR.lista.length ? PR.lista.map(function(p, i){
+          return '<div class="tb-prow"><span class="n">'+escapeHtml(p.numero)+'</span><span class="tb-pill '+(p.estado === 'Vigente' ? 'v' : 'r')+'">'+escapeHtml(p.estado)+'</span>'+
+            '<span class="m">'+fmtFecha(String(p.creado_en||'').slice(0,10))+' · elaboró <b>'+escapeHtml(p.elaborado_por_nombre || p.elaborado_por_email || '—')+'</b> · '+gs(p.total_precio)+'</span>'+
+            '<button type="button" class="tb-mini" data-prop-dl="'+i+'">⬇ Descargar PDF</button></div>'; }).join('')
+          : '<div class="tb-nota" style="font-size:13px;color:#5A6272">Todavía no se emitió ninguna propuesta. «Emitir» guarda una copia exacta de lo que se le entrega al cliente.</div>')+
+          '<div style="font-size:12px;color:#5A6272;margin-top:6px">Una propuesta emitida no se edita: para cambiarla, quien la elaboró emite una versión nueva y la anterior queda en este historial.</div>';
+        el.querySelectorAll('[data-prop-dl]').forEach(function(b){ b.onclick = function(){ const p = PR.lista[Number(b.getAttribute('data-prop-dl'))];
+          taPDFPropuesta(p.snapshot, { numero:p.numero, version:p.version, estado:p.estado, fecha:p.creado_en, elaborado:p.elaborado_por_nombre || p.elaborado_por_email || '' }); }; });
+      };
+      pintarProps();
+      const conf = box.querySelector('#tbConf');
+      const pedirEmision = async function(){
+        if(bloqueado) return;
+        if(!(await guardar(false))) return;
+        const incl = !!(tr && tr.checked), snap = taSnapshot(t, C, incl, OV);
+        if(!snap.items.length){ showToast('No hay gastos para proponer','error','Todavía no hay certificados aprobados. Tildá «incluir lo que está en trámite» si querés incluirlos.'); return; }
+        const sig = (PR.lista.length ? Math.max.apply(null, PR.lista.map(function(p){ return p.version; })) : 0) + 1;
+        conf.style.display = 'block';
+        conf.innerHTML = '<b>Emitir la propuesta v'+sig+' de '+escapeHtml(t.codigo)+'</b> por <b>'+gs(snap.totales.precio)+'</b>'+(snap.totales.propios ? ' ('+snap.totales.propios+' línea(s) con coeficiente propio)' : '')+'.<br>'+
+          'Queda guardada a nombre de <b>'+escapeHtml(taQuien())+'</b>. No se puede editar: si hay que cambiarla, solo vos podés emitir una versión nueva'+(vig ? ' (la '+escapeHtml(vig.numero)+' pasaría a «Reemplazada»)' : '')+'.<div style="margin-top:8px;display:flex;gap:8px"><button type="button" class="btn-ok" id="tbEmiOk">Confirmar y descargar PDF</button><button type="button" class="tb-mini" id="tbEmiNo">Cancelar</button></div>';
+        conf.querySelector('#tbEmiNo').onclick = function(){ conf.style.display = 'none'; };
+        conf.querySelector('#tbEmiOk').onclick = async function(){
+          const ok = conf.querySelector('#tbEmiOk'); ok.disabled = true;
+          if(PR.falta){ conf.style.display = 'none'; showToast('La propuesta NO quedó guardada','error','Falta ejecutar axc_v87_ta_propuestas.sql. Se descarga el PDF igualmente.'); taPDFPropuesta(snap, { borrador:false, numero:'(sin guardar)', version:sig, elaborado:taQuien(), fecha:hoyISO() }); return; }
+          const fila = { ta_codigo:t.codigo, snapshot:snap, total_costo:snap.totales.costo, total_precio:snap.totales.precio, coef_general:snap.general.coef, margen_pct:snap.general.margen, con_tramite:incl,
+            elaborado_por:yo, elaborado_por_email:(state.user && state.user.email) || '', elaborado_por_nombre:taQuien() };
+          let r; try{ r = await sb.from('ta_propuestas').insert(fila).select().single(); }catch(e){ r = { error:e }; }
+          if(r.error || !r.data){ ok.disabled = false; const m = String((r.error && r.error.message) || '');
+            showToast(/otra persona|elaborada|42501/i.test(m) ? 'No podés emitir esta propuesta' : 'No se pudo guardar la propuesta', 'error', /otra persona|elaborada|42501/i.test(m) ? 'La propuesta vigente la elaboró otro residente: solo esa persona puede modificarla.' : m); return; }
+          const rec = Object.assign({ version:sig, numero:'PROP-'+t.codigo+'-v'+sig, estado:'Vigente', creado_en:new Date().toISOString() }, r.data);
+          PR.lista.forEach(function(p){ if(p.estado === 'Vigente'){ p.estado = 'Reemplazada'; p.reemplazada_por = rec.version; } });
+          PR.lista.unshift(rec); conf.style.display = 'none'; pintarProps();
+          showToast('Propuesta '+rec.numero+' emitida y guardada', 'ok');
+          taPDFPropuesta(snap, { numero:rec.numero, version:rec.version, estado:rec.estado, fecha:rec.creado_en, elaborado:taQuien() });
+        };
+      };
+      box.querySelector('#tbEmitir').onclick = pedirEmision;
+      if(bloqueado) box.querySelectorAll('#lqMg,#lqCf,.tb-cf,#tbQuitar,#tbGuardar,#tbEmitir').forEach(function(el){ el.disabled = true; });
+      box.querySelector('#tbGuardar').onclick = function(){ guardar(true); };
       box.querySelector('#tbPdfInt').onclick = function(){ pdf('interna'); };
       box.querySelector('#tbPdfCli').onclick = function(){ pdf('cliente'); };
     } });
   if(dbx){ dbx.style.maxWidth = w0; dbx.style.width = w1; }
 }
 /* PDF con formato de presupuesto: interno (costos) o para el cliente (con coeficiente) */
-function taPDF(t, C, tipo, conTramite){
+function taPDF(t, C, tipo, conTramite, ov){
   tipo = tipo || 'interna';
   const cli = tipo === 'cliente';
+  if(cli){ taPDFPropuesta(taSnapshot(t, C, conTramite, ov || taOvLeer(t)), { borrador:true }); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'mm', format:'a4' });
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 13;
   const NAVY = [31,56,100], GOLD = [200,160,40], CAPBG = [234,240,248], SECBG = [251,246,230];
   const s = function(x){ return pdfSafe(x == null ? '' : String(x)); };
-  const cf = taCoef(t), V = function(v){ return cli ? Math.round(v / cf) : Math.round(v); };
+  const cf = taCoef(t); ov = ov || taOvLeer(t);
   try{ doc.addImage(AXC_LOGO_DATA_URL, 'PNG', M, 10, 36, 12.5); }catch(e){}
   doc.setFont('helvetica','bold'); doc.setFontSize(cli ? 13 : 14); doc.setTextColor.apply(doc, NAVY);
   doc.text(cli ? 'PROPUESTA ECONOMICA' : 'TRABAJO POR ADMINISTRACION', W-M, 15, { align:'right' });
   doc.setFontSize(10.5); doc.setTextColor.apply(doc, GOLD);
   doc.text((cli ? 'Trabajo por administracion ' : '')+'N.o '+taNum(t.codigo)+'  ·  '+s(t.codigo), W-M, 21, { align:'right' });
   doc.setFontSize(8); doc.setTextColor(110,110,110); doc.setFont('helvetica','normal');
-  doc.text((cli ? 'Precios con coeficiente ' : 'Liquidacion interna · costos  ·  ')+(cli ? taN4(cf)+'  ·  ' : '')+'Emitido '+fmtFecha(hoyISO()), W-M, 25.5, { align:'right' });
+  doc.text((cli ? 'Precios con coeficiente ' : 'Liquidacion interna · costos  ·  ')+(cli ? (Object.keys(ov).length ? 'por linea (general '+taN4(cf)+')' : taN4(cf))+'  ·  ' : '')+'Emitido '+fmtFecha(hoyISO()), W-M, 25.5, { align:'right' });
   doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(0.6); doc.line(M, 29, W-M, 29);
   doc.autoTable({ startY:32, margin:{ left:M, right:M }, theme:'grid',
     styles:{ fontSize:8.5, cellPadding:1.5, lineColor:[225,229,236], lineWidth:0.15, textColor:[30,30,30] },
@@ -3586,20 +3810,20 @@ function taPDF(t, C, tipo, conTramite){
           ['INICIO', fmtFecha(t.fecha_inicio), 'ESTADO', s(t.estado)]]
       .concat(t.descripcion ? [[{ content:'ALCANCE', styles:{ fontStyle:'bold', textColor:NAVY, fillColor:[244,247,251] } }, { content:s(t.descripcion), colSpan:3 }]] : []) });
   const its = C.items.filter(function(i){ return conTramite || i._cert.estado === 'Aprobado'; });
-  const B = taBolsa(its); const body = []; let tot = 0;
+  const B = taBolsa(its); const body = []; let tot = 0; const PR = taPrecios(B, cf, ov);
   Object.keys(B).sort().forEach(function(sec){
     const caps = B[sec];
     const tSec = Object.keys(caps).reduce(function(a,cc){ return a + Object.keys(caps[cc].rubros).reduce(function(b,r){ return b + caps[cc].rubros[r].mo + caps[cc].rubros[r].mat; }, 0); }, 0);
     tot += tSec;
-    body.push([{ content:'SECTOR: '+s(sec), colSpan: cli ? 5 : 7, styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold' } }, { content:gsPdf(V(tSec)), styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold', halign:'right' } }]);
+    body.push([{ content:'SECTOR: '+s(sec), colSpan: cli ? 5 : 7, styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold' } }, { content:gsPdf(cli ? PR.secs[sec].precio : tSec), styles:{ fillColor:SECBG, textColor:[138,106,14], fontStyle:'bold', halign:'right' } }]);
     Object.keys(caps).sort().forEach(function(cc){
       const c = caps[cc], rs = Object.keys(c.rubros).sort(function(a,b){ return a.localeCompare(b,'es',{numeric:true}); });
       const tCap = rs.reduce(function(a,r){ return a + c.rubros[r].mo + c.rubros[r].mat; }, 0);
-      body.push([{ content:s(c.cap.cod), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:s(c.cap.nom), colSpan: cli ? 4 : 6, styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:gsPdf(V(tCap)), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold', halign:'right' } }]);
+      body.push([{ content:s(c.cap.cod), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:s(c.cap.nom), colSpan: cli ? 4 : 6, styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold' } }, { content:gsPdf(cli ? PR.caps[sec+'||'+cc].precio : tCap), styles:{ fillColor:CAPBG, textColor:NAVY, fontStyle:'bold', halign:'right' } }]);
       rs.forEach(function(rc){
-        const r = c.rubros[rc], par = r.mo + r.mat, cu = r.cant ? par / r.cant : 0;
+        const r = c.rubros[rc], par = r.mo + r.mat, cu = r.cant ? par / r.cant : 0, fl = PR.filas[taClave(sec, rc)];
         body.push(cli
-          ? [s(r.cod), s(r.nom), s(r.un), qty(r.cant), gsPdf(V(cu)), gsPdf(V(par))]
+          ? [s(r.cod), s(r.nom), s(r.un), qty(r.cant), gsPdf(r.cant ? Math.round(fl.precio / r.cant) : 0), gsPdf(fl.precio)]
           : [s(r.cod), s(r.nom), s(r.un), qty(r.cant), r.mat ? gsPdf(Math.round(r.mat/r.cant)) : '-', (r.mo ? gsPdf(Math.round(r.mo/(r.cant||1))) : '-'), gsPdf(Math.round(cu)), gsPdf(par)]);
       });
     });
@@ -3615,8 +3839,10 @@ function taPDF(t, C, tipo, conTramite){
       : { 0:{ cellWidth:15 }, 2:{ cellWidth:12, halign:'center' }, 3:{ cellWidth:14, halign:'right' }, 4:{ cellWidth:21, halign:'right' }, 5:{ cellWidth:21, halign:'right' }, 6:{ cellWidth:21, halign:'right' }, 7:{ cellWidth:25, halign:'right', fontStyle:'bold' } } });
   let y = doc.lastAutoTable.finalY + 4; if(y > H - 75){ doc.addPage(); y = 20; }
   const filas = cli
-    ? [['TOTAL DEL TRABAJO', gsPdf(V(tot))]]
-    : [['COSTO DIRECTO', gsPdf(tot)], ['Coeficiente (margen '+taN2(t.margen_pct)+' %)', taN4(cf)], ['PRECIO AL CLIENTE  (costo / coeficiente)', gsPdf(Math.round(tot/cf))]];
+    ? [['TOTAL DEL TRABAJO', gsPdf(PR.precio)]]
+    : [['COSTO DIRECTO', gsPdf(tot)], ['Coeficiente general (margen '+taN2(t.margen_pct)+' %)', taN4(cf)]]
+        .concat(PR.propios ? [['Lineas con coeficiente propio', String(PR.propios)+'  (efectivo '+taN4(PR.precio ? tot/PR.precio : 1)+')']] : [])
+        .concat([['PRECIO AL CLIENTE  (costo / coeficiente)', gsPdf(PR.precio)]]);
   if(!cli && t.estimado) filas.splice(1, 0, ['Estimado en la cabecera', gsPdf(t.estimado)+'  ('+Math.round(tot*100/t.estimado)+' %)']);
   doc.autoTable({ startY:y, margin:{ left: W/2 - 6, right:M }, theme:'grid', body:filas,
     styles:{ fontSize:9, cellPadding:2, lineColor:[225,229,236], lineWidth:0.15 },
