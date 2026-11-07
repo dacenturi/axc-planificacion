@@ -8272,7 +8272,7 @@ document.getElementById('opVerEmitidas').onclick = async function(){
 /* v13.19 · Una orden guarda el monto que tenía cada certificado al emitirse. Si después un certificado se corrige
    (edición excepcional), la orden queda distinta a los certificados: se detecta acá y se puede REAJUSTAR con registro. */
 async function opHistDesfase(){
-  OPH.data.forEach(function(o){ o._dif = 0; o._det = []; o._pend = 0; o._aj = []; });
+  OPH.data.forEach(function(o){ o._dif = 0; o._det = []; o._pend = 0; o._aj = []; o._todos = []; });
   try{
     const vig = OPH.data.filter(function(o){ return o.estado !== 'Anulada'; }), ids = vig.map(function(o){ return o.id; });
     if(!ids.length) return;
@@ -8282,11 +8282,13 @@ async function opHistDesfase(){
     const rc = cids.length ? await sb.from('certificados').select('id,numero,total,estado').in('id', cids) : { data:[] };
     const cert = {}; ((rc && rc.data) || []).forEach(function(c){ cert[c.id] = c; });
     OPH.data.forEach(function(o){
-      items.filter(function(x){ return x.orden_id === o.id; }).forEach(function(x){
-        const c = cert[x.certificado_id]; if(!c) return;
-        if(c.estado !== 'Aprobado'){ o._pend++; return; }
-        const antes = Number(x.total) || 0, ahora = Number(c.total) || 0;
-        if(Math.round(antes) !== Math.round(ahora)){ o._det.push({ certificado_id:x.certificado_id, numero:x.numero || c.numero, antes:antes, ahora:ahora }); o._dif += ahora - antes; }
+      items.filter(function(x){ return String(x.orden_id) === String(o.id); }).forEach(function(x){
+        const c = cert[x.certificado_id], antes = Number(x.total) || 0;
+        if(!c){ o._todos.push({ certificado_id:x.certificado_id, numero:x.numero || ('#'+x.certificado_id), antes:antes, ahora:null, estado:'no encontrado', cambia:false, pend:true }); o._pend++; return; }
+        if(c.estado !== 'Aprobado'){ o._pend++; o._todos.push({ certificado_id:x.certificado_id, numero:x.numero || c.numero, antes:antes, ahora:Number(c.total) || 0, estado:c.estado, cambia:false, pend:true }); return; }
+        const ahora = Number(c.total) || 0, cambia = Math.round(antes) !== Math.round(ahora);
+        o._todos.push({ certificado_id:x.certificado_id, numero:x.numero || c.numero, antes:antes, ahora:ahora, estado:c.estado, cambia:cambia, pend:false });
+        if(cambia){ o._det.push({ certificado_id:x.certificado_id, numero:x.numero || c.numero, antes:antes, ahora:ahora }); o._dif += ahora - antes; }
       });
     });
     const ra = await sb.from('orden_pago_ajustes').select('*').in('orden_id', ids.map(String)).order('creado_en', { ascending:false });
@@ -8312,7 +8314,12 @@ async function opReajustar(o){
   const r = await axcDialog({
     tono:'warn', icono:'🔄', titulo:'Reajustar la orden '+o.numero, subtitulo:o.contratista+' · hoy '+gs(o.neto_pagar)+' netos',
     mensaje:'Los certificados de esta orden cambiaron después de emitirla. El reajuste pone la orden al día con los <b>montos vigentes</b> y deja constancia de quién, cuándo y por qué.',
-    lista: o._det.map(function(d){ return '<b>'+escapeHtml(d.numero||'')+'</b>: '+gs(d.antes)+' → <b>'+gs(d.ahora)+'</b> ('+(d.ahora-d.antes > 0 ? '+' : '')+gs(d.ahora-d.antes)+')'; })
+    lista: (o._todos || []).map(function(d){
+        if(d.cambia) return '<b>'+escapeHtml(d.numero||'')+'</b>: '+gs(d.antes)+' → <b>'+gs(d.ahora)+'</b> ('+(d.ahora-d.antes > 0 ? '+' : '')+gs(d.ahora-d.antes)+')';
+        if(d.pend) return '<b>'+escapeHtml(d.numero||'')+'</b>: <span style="color:#8A4B00">'+escapeHtml(d.estado||'')+' — todavía no se aprobó de nuevo, <b>no se reajusta ahora</b></span> (en la orden: '+gs(d.antes)+')';
+        return '<b>'+escapeHtml(d.numero||'')+'</b>: sin cambios ('+gs(d.antes)+')';
+      })
+      .concat(o._pend ? ['⚠ <b>Falta aprobar de nuevo '+o._pend+' certificado(s).</b> Conviene aprobarlos primero y reajustar una sola vez; si reajustás ahora, después habrá que volver a reajustar.'] : [])
       .concat(['<b>Total de la orden:</b> '+gs(o.total_certificado)+' → <b>'+gs(totalNuevo)+'</b>',
                '<b>Neto a pagar:</b> '+gs(o.neto_pagar)+' → <b>'+gs(neto)+'</b> (anticipo, préstamo y retención se mantienen)',
                'Si ya se transfirió el dinero, esto <b>no lo revierte</b>: la diferencia se resuelve con el contratista (por ejemplo, descontándola del próximo pago).']),
@@ -8371,8 +8378,8 @@ function opHistPintar(){
         const anu = o.estado === 'Anulada';
         return '<tr'+(anu?' class="oph-anu"':'')+'><td><b class="op-num">'+escapeHtml(o.numero)+'</b>'+
             (anu ? '<div class="op-sub oph-tag">ANULADA'+(o.anulado_por?' · '+escapeHtml(o.anulado_por):'')+'</div>'+(o.anulado_motivo?'<div class="op-sub">'+escapeHtml(o.anulado_motivo)+'</div>':'') : '')+
-            (!anu && o._det && o._det.length ? '<span class="oph-dif">⚠ Los certificados cambiaron: '+(o._dif > 0 ? '+' : '')+gs(o._dif)+' contra esta orden</span>' : '')+
-            (!anu && o._pend ? '<span class="oph-dif">✎ '+o._pend+' certificado(s) en edición excepcional</span>' : '')+
+            (!anu && o._det && o._det.length ? '<span class="oph-dif">⚠ '+o._det.length+' de '+o._todos.length+' certificado(s) cambiaron: '+(o._dif > 0 ? '+' : '')+gs(o._dif)+' contra esta orden</span>' : '')+
+            (!anu && o._pend ? '<span class="oph-dif">✎ '+o._pend+' de '+o._todos.length+' certificado(s) todavía sin aprobar de nuevo: '+o._todos.filter(function(d){ return d.pend; }).map(function(d){ return escapeHtml(d.numero||'')+' ('+escapeHtml(d.estado||'')+')'; }).join(', ')+'</span>' : '')+
             (!anu && o._aj && o._aj.length ? '<span class="oph-ok">✔ Reajustada '+o._aj.length+' vez/veces · la última el '+fmtFecha(String(o._aj[0].creado_en||'').slice(0,10))+'</span>' : '')+'</td>'+
           '<td>'+fmtFecha(o.fecha)+'</td><td>'+escapeHtml(o.contratista||'—')+'</td><td>'+escapeHtml(o.obras||'—')+'</td>'+
           '<td>'+escapeHtml(o.emitido_por||'—')+'</td>'+
