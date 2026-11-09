@@ -4222,6 +4222,8 @@ body{
 .cons-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .cons-leg .ej i{background:#1B5524}.cons-leg .re i{background:#C8A028}.cons-leg .ca i{background:#2f6fd0}.cons-leg .lib i{background:#dfe6f1}
 .cons-hint{font-size:11.5px;color:#6b7688;padding:4px 2px 0}
+.cons-ro{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#eef3fb;border:1px solid #c9d6ea;color:#1F3864;border-radius:9px;padding:8px 12px;margin:10px 0 2px;font-size:12.5px}
+.cons-ro button{margin-left:auto;border:1.5px solid #1F3864;background:#fff;color:#1F3864;border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
 .cons-foot b{font-size:16px;color:#1F3864;margin-left:8px}
 .cons-foot button{border:1.5px solid #d3d9e3;background:#fff;color:#5a6677;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
 
@@ -9943,7 +9945,8 @@ document.addEventListener('click', function(ev){
    y queda registrado como desvío, igual que al cargarlo desde «Traer del
    presupuesto». Los cambios se aplican al carrito y al borrador.
    ═══════════════════════════════════════════════════════════════════ */
-var CONS = { abiertos:{}, filtro:'', soloExc:false, map:{}, listo:false };
+var CONS = { abiertos:{}, filtro:'', soloExc:false, map:{}, listo:false, fuente:null };   // fuente: null = carrito del asistente · {oc, items} = orden ya creada (solo consulta)
+function consItems(){ return CONS.fuente ? (CONS.fuente.items || []) : (wizard.cart || []); }
 function _consNorm(s){ return String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase(); }
 function consPaso(unidad){ return /^(unid|un|u|und|pza|pieza|bolsa|caja|rollo|barra|plancha|par|juego|jgo|gl|glb)/i.test(String(unidad||'').trim()) ? 1 : 0.1; }
 function consRedondear(v){ return Math.round((Number(v)||0)*100)/100; }
@@ -9967,6 +9970,38 @@ function consDispLinea(it){
     });
   }catch(e){ return null; }
 }
+function consDispLineaOC(it, oc){
+  if(!it || it.es_mano_obra || it.trabajo_admin || it.sin_presupuesto) return null;
+  const pp = String(it.presupuesto || (oc && oc.presupuesto) || '').trim();
+  if(!pp || !CBM.cache[pp]) return null;
+  try{
+    return cbmWith(pp, function(){
+      if(cartBudget.pp !== pp || !Array.isArray(cartBudget.mats)) return null;
+      const rk = it.rubro_codigo || '';
+      let ins = it.codigo_insumo || '';
+      if(!ins) ins = _cbResolveIns(it.producto_id) || '';
+      let m = ins ? cartBudget.mats.filter(function(x){ return x.codigo_insumo === ins && (x.rubro_codigo||'') === rk; })[0] : null;
+      if(!m){ const pid = _mapKey(it.producto_id); m = pid ? cartBudget.mats.filter(function(x){ return _mapKey(x.prod_cong) === pid && (x.rubro_codigo||'') === rk; })[0] : null; if(m) ins = m.codigo_insumo; }
+      if(!m) return null;
+      let ejec = 0, reserv = 0;
+      (cartBudget.ocItems || []).forEach(function(x){
+        if(oc && x.oc_id === oc.id) return;   // esta orden se cuenta aparte
+        if((x.codigo_insumo || _cbResolveIns(x.producto_id)) !== ins || (x.rubro_codigo||'') !== rk) return;
+        if(_CB_EJEC.indexOf(x.estado) >= 0) ejec += x.cantidad; else if(_CB_RESERVA.indexOf(x.estado) >= 0) reserv += x.cantidad;
+      });
+      let otros = 0;
+      consItems().forEach(function(o){
+        if(o === it || o.es_mano_obra || o.trabajo_admin || o.sin_presupuesto) return;
+        if(String(o.presupuesto || (oc && oc.presupuesto) || '').trim() !== pp || (o.rubro_codigo||'') !== rk) return;
+        const oi = o.codigo_insumo || _cbResolveIns(o.producto_id) || '';
+        if(oi === ins) otros += Number(o.cantidad) || 0;
+      });
+      const lim = Number(m.limite) || 0;
+      return { pp:pp, rubro:rk, ins:ins, lim:lim, ejec:ejec, reserv:reserv, otros:otros, dispAntes: lim - ejec - reserv - otros, pu:Number(m.precio_cong) || 0 };
+    });
+  }catch(e){ return null; }
+}
+function consDisp(it){ return CONS.fuente ? consDispLineaOC(it, CONS.fuente.oc) : consDispLinea(it); }
 function consEstado(it, d, v){
   if(!d){
     const t = it.trabajo_admin ? 'Trabajo por administración' : ((it.sin_presupuesto || it._extraPresu) ? 'No presupuestado' : (it.es_mano_obra ? 'Servicio · se controla por monto' : 'Sin presupuesto'));
@@ -9978,7 +10013,7 @@ function consEstado(it, d, v){
   return { cls:'ok', txt:'Dentro del presupuesto', queda:Math.max(0,queda), exc:false };
 }
 function _consLineaHTML(c, it, i){
-  const v = Number(it.cantidad)||0, d = consDispLinea(it), st = consEstado(it, d, v), un = c.unidad ? (' ' + escapeHtml(c.unidad)) : '';
+  const v = Number(it.cantidad)||0, d = consDisp(it), st = consEstado(it, d, v), un = c.unidad ? (' ' + escapeHtml(c.unidad)) : '', ro = !!CONS.fuente;   // ro: orden ya creada, solo consulta
   const rub = _consRubros(it).join(' · ');
   const dest = it.trabajo_admin ? ('TA ' + it.trabajo_admin) : ((it.sin_presupuesto || it._extraPresu) ? 'No presupuestado' : (d ? d.pp : (it.es_mano_obra ? 'Servicio' : '')));
   const paso = consPaso(c.unidad);
@@ -9990,37 +10025,39 @@ function _consLineaHTML(c, it, i){
     '<div class="num">' + (d ? (_cbQty(d.lim) + un) : '—') + '</div>' +
     '<div class="num">' + (d ? ('<span title="Aprobado">' + _cbQty(d.ejec) + '</span>' + ((d.reserv > 0) ? ' <small style="display:inline;color:#8a6d10" title="Reservado en órdenes sin aprobar">+' + _cbQty(d.reserv) + ' res.</small>' : '')) : '—') + '</div>' +
     '<div class="num' + ((d && d.dispAntes < 0) ? ' neg' : '') + '">' + (d ? (_cbQty(Math.max(0, d.dispAntes)) + un + (d.otros > 0 ? '<small>otras líneas: ' + _cbQty(d.otros) + '</small>' : '')) : '—') + '</div>' +
+    (ro ? '<div class="num" style="font-size:14px;color:#1F3864">' + _cbQty(v) + un + '</div>' :
     '<div><div class="cons-qe"><button type="button" data-cons-step="-1" title="Restar ' + paso + '">−</button>' +
       '<input type="text" inputmode="decimal" class="cons-qin' + (st.exc ? ' exc' : '') + '" value="' + String(v).replace('.', ',') + '" data-q0="' + v + '" aria-label="Cantidad de ' + escapeHtml(c.producto_nombre) + ' en ' + escapeHtml(rub) + '">' +
       '<button type="button" data-cons-step="1" title="Sumar ' + paso + '">+</button></div>' +
-      ((d && d.dispAntes > 0 && Math.abs(d.dispAntes - v) > 1e-9) ? '<button type="button" class="cons-max" data-cons-max="1" title="Poner todo lo disponible">usar disponible (' + _cbQty(d.dispAntes) + ')</button>' : '') + '</div>' +
+      ((d && d.dispAntes > 0 && Math.abs(d.dispAntes - v) > 1e-9) ? '<button type="button" class="cons-max" data-cons-max="1" title="Poner todo lo disponible">usar disponible (' + _cbQty(d.dispAntes) + ')</button>' : '') + '</div>') +
     '<div class="num' + ((st.queda != null && st.queda < 0) ? ' neg' : '') + '" data-queda>' + (st.queda == null ? '—' : (st.exc ? ('−' + _cbQty(-st.queda)) : _cbQty(st.queda)) + un) + '</div>' +
     '<div class="num" data-sub>' + _consGs(it.subtotal) + '</div>' +
-    '<div><button type="button" class="cons-dx" data-cons-del="1" title="Quitar esta línea de la orden">×</button></div>' +
+    '<div>' + (ro ? '' : '<button type="button" class="cons-dx" data-cons-del="1" title="Quitar esta línea de la orden">×</button>') + '</div>' +
     bar + '</div>';
 }
 function _consDetalleHTML(c){
   return '<div class="cons-det"><div class="cons-lh"><div>Dónde se aplica</div><div class="r">Presup.</div><div class="r">Ya consumido</div><div class="r">Disponible</div><div class="r">En esta orden</div><div class="r">Queda</div><div class="r">Costo</div><div></div></div>' +
     c.its.map(function(it, i){ return _consLineaHTML(c, it, i); }).join('') +
-    '<div class="cons-hint">Corregí la cantidad de cada línea: se aplica al carrito y al borrador. Si pasa el saldo, se pide el motivo y queda como desvío.</div></div>';
+    '<div class="cons-hint">' + (CONS.fuente ? 'Vista de consulta. Para corregir cantidades o precios de una orden ya creada usá «✎ Editar» en el detalle.' : 'Corregí la cantidad de cada línea: se aplica al carrito y al borrador. Si pasa el saldo, se pide el motivo y queda como desvío.') + '</div></div>';
 }
 function _consExcede(c){
-  return c.its.some(function(it){ const d = consDispLinea(it); return consEstado(it, d, Number(it.cantidad)||0).exc; });
+  return c.its.some(function(it){ const d = consDisp(it); return consEstado(it, d, Number(it.cantidad)||0).exc; });
 }
 function consRender(){
   const body = document.getElementById('consBody'); if(!body) return;
   const scroll = body.scrollTop;
-  const lista = consolidarItems(wizard.cart||[]);
+  const lista = consolidarItems(consItems());
   CONS.map = {}; lista.forEach(function(c){ CONS.map[c.key] = c; c._exc = _consExcede(c); });
   const total = lista.reduce(function(a,c){ return a + (Number(c.subtotal)||0); }, 0);
   const nExc = lista.filter(function(c){ return c._exc; }).length;
   const sub = document.getElementById('consSub');
-  if(sub) sub.textContent = lista.length + ' material' + (lista.length===1?'':'es') + ' distinto' + (lista.length===1?'':'s') + ' · ' + (wizard.cart||[]).length + ' línea(s) en el carrito' + (nExc ? (' · ' + nExc + ' exceden el presupuesto') : '');
+  if(sub) sub.textContent = (CONS.fuente ? (((CONS.fuente.oc && CONS.fuente.oc.numero_oc) || 'Orden') + ' · ' + ((CONS.fuente.oc && CONS.fuente.oc.estado) || '') + ' · ') : '') + lista.length + ' material' + (lista.length===1?'':'es') + ' distinto' + (lista.length===1?'':'s') + ' · ' + consItems().length + (CONS.fuente ? ' línea(s) en la orden' : ' línea(s) en el carrito') + (nExc ? (' · ' + nExc + ' exceden el presupuesto') : '');
   if(!lista.length){ body.innerHTML = '<div class="fp-mk-empty">El carrito está vacío.</div>'; }
   else{
     const f = _consNorm(CONS.filtro).trim();
     const vis = lista.filter(function(c){ return (!CONS.soloExc || c._exc) && (!f || _consNorm(c.producto_nombre + ' ' + c.aplic.map(function(a){ return a.rubro; }).join(' ')).indexOf(f) >= 0); });
     body.innerHTML =
+      (CONS.fuente ? '<div class="cons-ro">👁 Vista de consulta de la orden <b>' + escapeHtml((CONS.fuente.oc && CONS.fuente.oc.numero_oc) || '') + '</b>.' + (CONS.fuente.cargando ? ' <i>Calculando la disponibilidad contra el presupuesto…</i>' : '') + (CONS.fuente.puedeEditar ? ' <button type="button" id="consIrEditar">✎ Editar la orden</button>' : '') + '</div>' : '') +
       '<div class="cons-tools"><input type="search" id="consQ" placeholder="Buscar material o rubro…" value="' + escapeHtml(CONS.filtro) + '">' +
         '<button type="button" id="consAll">Abrir todos</button><button type="button" id="consNone">Cerrar todos</button>' +
         (nExc ? '<button type="button" id="consSoloExc" class="cons-exc' + (CONS.soloExc ? ' on' : '') + '">⚠ ' + nExc + ' exceden el presupuesto</button>' : '') + '</div>' +
@@ -10048,6 +10085,7 @@ function consRender(){
 }
 function consAbrir(){
   const ov = document.getElementById('consOv'); if(!ov) return;
+  CONS.fuente = null;   // carrito del asistente
   _alFrente(ov);
   consWire();
   consRender();
@@ -10065,6 +10103,7 @@ function _consPrevia(row, v){
   if(q){ q.classList.toggle('neg', exc); q.textContent = exc ? ('−' + _cbQty(-queda)) : _cbQty(Math.max(0, queda)); }
 }
 async function consCommit(c, i, valor){
+  if(CONS.fuente) return;   // orden ya creada: solo consulta
   const it = c && c.its ? c.its[i] : null; if(!it) return;
   const prev = Number(it.cantidad)||0, v = consRedondear(valor);
   if(!(v > 0)){ showToast('La cantidad tiene que ser mayor que 0','error','Para sacar el material de la orden usá la × de la línea'); consRender(); return; }
@@ -10086,6 +10125,7 @@ async function consCommit(c, i, valor){
   showToast('Cantidad actualizada', exc ? 'info' : 'success', it.producto_nombre + ': ' + _cbQty(prev) + ' → ' + _cbQty(v) + (exc ? ' · excede el presupuesto, queda registrado como desvío' : ''));
 }
 function consQuitarLinea(c, i){
+  if(CONS.fuente) return;
   const it = c && c.its ? c.its[i] : null; if(!it) return;
   const idx = (wizard.cart||[]).indexOf(it); if(idx < 0) return;
   const rub = _consRubros(it).join(' · ');
@@ -10107,6 +10147,7 @@ function consWire(){
     if(t.id === 'consAll'){ Object.keys(CONS.map).forEach(function(k){ CONS.abiertos[k] = true; }); consRender(); return; }
     if(t.id === 'consNone'){ CONS.abiertos = {}; consRender(); return; }
     if(t.id === 'consSoloExc'){ CONS.soloExc = !CONS.soloExc; consRender(); return; }
+    if(t.id === 'consIrEditar'){ consCerrar(); const be = document.getElementById('detailBtnEdit'); if(be) be.click(); return; }
     const f = fila(t); if(!f) return;
     if(t.hasAttribute('data-cons-del')){ consQuitarLinea(f.c, f.i); return; }
     const inp = f.r.querySelector('.cons-qin'), paso = Number(f.r.getAttribute('data-paso'))||1;
@@ -10127,7 +10168,36 @@ function consWire(){
     if(ev.key === 'Escape'){ ev.stopPropagation(); consRender(); }
   });
 }
-function consCerrar(){ const ov = document.getElementById('consOv'); if(ov) ov.hidden = true; }
+function consCerrar(){ const ov = document.getElementById('consOv'); if(ov) ov.hidden = true; CONS.fuente = null; }
+/* v8.4.1 · «Ver como consolidado» desde el detalle de una orden ya creada (solo consulta) */
+async function consAbrirDeOC(){
+  const ov = document.getElementById('consOv'); const oc = detail && detail.oc; if(!ov || !oc) return;
+  const items = (detail.items || []).slice();
+  if(!items.length){ showToast('La orden no tiene materiales','info'); return; }
+  CONS.fuente = { oc:oc, items:items, cargando:false, puedeEditar: !!document.getElementById('detailBtnEdit') && !detail.isEditing };
+  CONS.abiertos = {}; CONS.filtro = ''; CONS.soloExc = false;
+  _alFrente(ov); consWire();
+  const pps = Array.from(new Set(items.filter(function(i){ return !i.trabajo_admin && !i.sin_presupuesto && !i.es_mano_obra; }).map(function(i){ return String(i.presupuesto || oc.presupuesto || '').trim(); }).filter(Boolean)));
+  const faltan = pps.filter(function(pp){ return !CBM.cache[pp] || !wizard.open; });
+  CONS.fuente.cargando = faltan.length > 0;
+  consRender(); ov.hidden = false;
+  if(faltan.length){
+    const fuente = CONS.fuente;
+    try{
+      // Si nunca se abrió el asistente, el carrito todavía no se inicializó: se hace ANTES de cargar el presupuesto,
+      // porque esa primera inicialización reinicia el presupuesto activo y cortaría la carga.
+      if(!wizard.open){ try{ cartBudgetInit(); }catch(e){} try{ await loadProductoMap(); }catch(e){} }
+      for(let k = 0; k < faltan.length; k++){ if(!wizard.open) delete CBM.cache[faltan[k]]; await cbmEnsure(faltan[k]); }
+    }catch(e){ console.warn('disponibilidad de la orden', e); }
+    if(CONS.fuente === fuente){ fuente.cargando = false; consRender(); }
+  }
+}
+document.addEventListener('click', function(ev){
+  const t = ev.target && ev.target.closest ? ev.target.closest('#detailBtnConsol') : null;
+  if(!t) return;
+  ev.preventDefault();
+  try{ consAbrirDeOC(); }catch(e){ console.error('consolidado de la orden', e); showToast('No se pudo abrir el consolidado: '+(e.message||e),'error'); }
+});
 // Respaldo por delegación: si por cualquier motivo no llegó a correr consInit,
 // el botón igual responde.
 document.addEventListener('click', function(ev){
@@ -12729,6 +12799,7 @@ function renderItemsSection(editing){
           <span style="font-size:14px">📦</span>
           <span>Items (${items.length})</span>
         </div>
+        <button type="button" class="detail-section-action" id="detailBtnConsol" title="Junta el mismo material aunque esté en varios rubros y muestra cómo está contra el presupuesto">📦 Ver como consolidado</button>
       </div>
       ${editHint}
       <div style="overflow-x:auto">
