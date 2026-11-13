@@ -8624,6 +8624,20 @@ async function opPDF(O, docs){
     if(!porObra[o]){ porObra[o] = []; ord.push(o); }
     porObra[o].push(x);
   });
+  // v13.23 · Descripción discreta del trabajo por administración de cada certificado, para saber qué se está pagando
+  const taPorCert = {};
+  try{
+    try{ await taCargar(); }catch(e){}
+    const ids = its.map(function(x){ return x.id; }).filter(Boolean);
+    if(ids.length){
+      const rq = await sb.from('certificado_items').select('certificado_id,trabajo_admin').in('certificado_id', ids);
+      ((rq && rq.data) || []).forEach(function(r){
+        if(!r.trabajo_admin) return;
+        const k = String(r.certificado_id); (taPorCert[k] = taPorCert[k] || []);
+        if(taPorCert[k].indexOf(r.trabajo_admin) < 0) taPorCert[k].push(r.trabajo_admin);
+      });
+    }
+  }catch(e){ console.warn('TA de la orden de pago', e); }
   const body = [];
   ord.forEach(function(o){
     const sub = porObra[o].reduce(function(a,x){ return a+(Number(x.total)||0); }, 0);
@@ -8635,6 +8649,11 @@ async function opPDF(O, docs){
     porObra[o].forEach(function(x){
       body.push([ pdfSafe(x.numero||''), fmtFecha(x.fecha), pdfSafe(x._ctr||'sin contrato'),
                   pdfSafe(x._pp||x.presupuesto||'-'), gsPdf(x.total) ]);
+      const _tas = taPorCert[String(x.id)] || [];
+      if(_tas.length){
+        const _tt = _tas.map(function(cod){ const T = taPorCodigo(cod); return cod + (T ? ' - ' + taTxtCorto(T, 130) : ''); }).join('   |   ');
+        body.push(pdfFilaNota('Trabajo por administracion: ' + pdfSafe(_tt), 5));
+      }
     });
   });
   doc.autoTable({
@@ -10387,7 +10406,15 @@ async function pedirPDF(c, its){
 
 /* Ubicación y observación de cada línea: van en una fila chica, en gris y
    cursiva, pegada debajo del trabajo, para que no compitan con los números. */
-function pdfNotaLinea(x){
+/* v13.23 · Descripción del trabajo por administración, discreta: el residente ve de qué TA se trata sin tener que ir a buscarlo. */
+function taTxtCorto(t, max){
+  if(!t) return '';
+  const nom = String(t.nombre || '').trim(), alc = String(t.descripcion || '').trim();
+  let txt = nom;
+  if(alc && alc.toLowerCase() !== nom.toLowerCase()) txt += (txt ? ' — ' : '') + alc;
+  return (max && txt.length > max) ? (txt.slice(0, max - 1).trim() + '…') : txt;
+}
+function pdfNotaLinea(x, conTA){
   const p = [];
   // v6.2 · Con detalle cargado, el codigo y el nombre del rubro pasan acá
   if(String(x.detalle||'').trim()){
@@ -10396,7 +10423,15 @@ function pdfNotaLinea(x){
     if(ref.trim()) p.push(pdfSafe(ref.trim()));
   }
   if(String(x.ubicacion||'').trim())   p.push('Ubicacion: '+pdfSafe(String(x.ubicacion).trim()));
-  if(String(x.observacion||'').trim()) p.push('Obs.: '+pdfSafe(String(x.observacion).trim()));
+  let _obs = String(x.observacion||'').trim();
+  const _tc = conTA && x.trabajo_admin ? String(x.trabajo_admin).trim() : '';
+  const _T = _tc && typeof taPorCodigo === 'function' ? taPorCodigo(_tc) : null;
+  if(_T && String(_T.nombre||'').trim()){
+    const nom = String(_T.nombre).trim();
+    if(_obs && _obs.indexOf(_tc) >= 0 && _obs.indexOf(nom) < 0) _obs = _obs.replace(_tc, _tc + ' (' + nom + ')');
+    else if(!_obs || _obs.indexOf(_tc) < 0) p.push('TA ' + pdfSafe(_tc + ' - ' + nom));
+  }
+  if(_obs) p.push('Obs.: '+pdfSafe(_obs));
   return p.join('   |   ');
 }
 function pdfFilaNota(nota, colSpan){
@@ -10968,6 +11003,7 @@ async function pedirPlanilla(c, its){
 
 async function generarPlanillaPDF(c, its, opts){
   try{ await catCargar(); }catch(e){}   // v11.33 · nombres de rubro del catálogo
+  try{ await taCargar(); }catch(e){}    // v13.23 · descripción de los trabajos por administración
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
   showToast('Armando la planilla de avance…','info');
   const ant = await planillaAnterior(c, its);
@@ -11097,7 +11133,7 @@ async function generarPlanillaPDF(c, its, opts){
       st.G += G; st.C += C; st.D += D; st.E += E; if(S != null) st.S += S;
       const cod = (x.rubro_codigo||'').trim();
       const pctTxt = pct == null ? '-' : (Math.round(pct*10)/10).toLocaleString('es-PY')+'%';
-      const nota = pdfNotaLinea(x);
+      const nota = pdfNotaLinea(x, !op.cliente);
       rows.push([
         { content:String(n), rowSpan: nota ? 2 : 1 },
         String(x.detalle||'').trim()
@@ -11213,6 +11249,22 @@ async function generarPlanillaPDF(c, its, opts){
     doc.setFont('helvetica','bold').setFontSize(7.6).setTextColor(26,34,54);
     const to = doc.splitTextToSize('Observaciones: '+pdfSafe(_obsPl), W-M*2);
     doc.text(to, M, y); y += to.length*3.4 + 3;
+  }
+  if(!op.cliente){
+    const _cods = Array.from(new Set((its||[]).map(function(x){ return String(x.trabajo_admin||'').trim(); }).filter(Boolean)));
+    const _lin = _cods.map(function(cod){
+      const T = taPorCodigo(cod); if(!T) return null;
+      const sol = (typeof taSolTxt === 'function') ? String(taSolTxt(T) || '').trim() : '';
+      return cod + ' - ' + taTxtCorto(T, 170) + (sol ? '  |  pidio: ' + sol : '');
+    }).filter(Boolean);
+    if(_lin.length){
+      if(y > H - 40){ doc.addPage(); y = 22; }
+      doc.setFont('helvetica','bold').setFontSize(6.6).setTextColor(31,92,58);
+      doc.text('TRABAJOS POR ADMINISTRACION EN ESTE CERTIFICADO', M, y); y += 3.1;
+      doc.setFont('helvetica','italic').setFontSize(6.8).setTextColor(112,120,138);
+      _lin.forEach(function(t){ const tl = doc.splitTextToSize(pdfSafe(t), W-M*2); doc.text(tl, M, y); y += tl.length*2.9 + 0.6; });
+      y += 1.5;
+    }
   }
   doc.setFont('helvetica','normal').setFontSize(6.8).setTextColor(90,99,119);
   const nota = op.cliente
@@ -11367,6 +11419,7 @@ function ordenarItems(c, its){
 }
 
 async function generarPDF(c, its, conFotos){
+  try{ await taCargar(); }catch(e){}   // v13.23 · descripción de los trabajos por administración
   // conFotos acepta el booleano de antes o {fotos, adjuntos}
   const opA = (conFotos && typeof conFotos === 'object') ? conFotos : { fotos: !!conFotos, adjuntos:false };
   if(!window.jspdf || !window.jspdf.jsPDF){ showToast('La librería de PDF aún se está cargando','error'); return; }
@@ -11449,7 +11502,7 @@ async function generarPDF(c, its, conFotos){
       const cod = (x.rubro_codigo||'').trim();
       const desc = String(x.descripcion||'').trim();
       const rdesc = String(x.rubro_desc||'').trim();
-      const nota = pdfNotaLinea(x);
+      const nota = pdfNotaLinea(x, true);
       rows.push([
         { content:String(n), rowSpan: nota ? 2 : 1 },
         String(x.detalle||'').trim()
