@@ -10646,6 +10646,11 @@ async function pedirReportes(c, its){
      Ahora: los trabajos por administración se valorizan a costo ÷ coeficiente
      del TA; los del presupuesto, a la propuesta aceptada. Si algo no tiene
      precio al cliente, se avisa con un cuadro que no se cierra solo.       */
+  /* v13.24 · Se genera TODO lo marcado. Antes, «Avance al cliente» salía como
+     archivo aparte y las descargas seguidas las bloquea el navegador. Ahora:
+     con «Un solo archivo» todo va en un mismo PDF (liquidación, planilla y
+     avance al cliente); sin marcar, un archivo por documento, espaciados. */
+  let cliOps = null;
   if(r.cliente){
     const pc = await precioClienteCert(c, its);
     let seguir = true;
@@ -10669,30 +10674,46 @@ async function pedirReportes(c, its){
       seguir = !!d.ok;
     }
     if(seguir){
-      await generarPlanillaPDF(c, its, Object.assign({}, r.clienteOps, {
+      cliOps = Object.assign({}, r.clienteOps, {
         cliente:true, venta:(pc.va ? pc.va.venta : {}), propVersion:(pc.va ? pc.va.cab.version : ''),
-        taCoef:pc.taCoef, clienteNombre:pc.cliente, ivaPct:pc.ivaPct }));
-      showToast('Avance al cliente generado','success', pc.taCods.length ? ('Por administración: costo ÷ coeficiente de '+pc.taCods.join(', ')) : undefined);
+        taCoef:pc.taCoef, clienteNombre:pc.cliente, ivaPct:pc.ivaPct });
     }
-    if(!r.planilla && !r.orden) return;
   }
+  const nDoc = (r.orden?1:0) + (r.planilla?1:0) + (cliOps?1:0);
+  if(!nDoc) return;
+  const espera = ms => new Promise(function(ok){ setTimeout(ok, ms); });
 
-  // Un archivo por documento
-  if(!r.unico || !(r.planilla && r.orden)){
-    if(r.orden)    await generarOrdenPago(c, its, r.ordenOps);
-    if(r.planilla) await generarPlanillaPDF(c, its, r.planillaOps);
+  // Un archivo por documento (o el único documento marcado)
+  if(!r.unico || nDoc < 2){
+    let k = 0;
+    const sep = async ()=>{ if(k++) await espera(1000); };
+    if(r.orden){    await sep(); await generarOrdenPago(c, its, r.ordenOps); }
+    if(r.planilla){ await sep(); await generarPlanillaPDF(c, its, r.planillaOps); }
+    if(cliOps){     await sep(); await generarPlanillaPDF(c, its, cliOps); }
+    if(nDoc > 1) showToast(nDoc+' documentos generados','success','Si el navegador pide permiso para descargar varios archivos, aceptalo.');
     return;
   }
 
-  // Los dos en un mismo PDF: primero la orden de pago (vertical), después la
-  // planilla de avance (apaisada) y al final sus anexos.
-  let doc = await generarOrdenPago(c, its, Object.assign({}, r.ordenOps, { noSave:true, sinAnexos:true }));
-  if(!doc) return;
-  doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, { doc:doc, noSave:true, sinAnexos:true }));
-  if(!doc) return;
+  // Todo lo marcado en un mismo PDF: liquidación (vertical), planilla y avance
+  // al cliente (apaisados) y, al final, los anexos.
+  let doc = null;
+  if(r.orden){
+    doc = await generarOrdenPago(c, its, Object.assign({}, r.ordenOps, { noSave:true, sinAnexos:true }));
+    if(!doc) return;
+  }
+  if(r.planilla){
+    doc = await generarPlanillaPDF(c, its, Object.assign({}, r.planillaOps, doc ? { doc:doc } : {}, { noSave:true, sinAnexos:true }));
+    if(!doc) return;
+  }
+  if(cliOps){
+    doc = await generarPlanillaPDF(c, its, Object.assign({}, cliOps, doc ? { doc:doc } : {}, { noSave:true, sinAnexos:true }));
+    if(!doc) return;
+  }
   const _dm = dimsBase(doc), W = _dm.W, H = _dm.H, M = 16;   // v11.16 · formato de la hoja base
-  if(r.planillaOps.fotos)    await anexoFotos(doc, c, its, W, H, M);
-  if(r.planillaOps.adjuntos) await anexoAdjuntos(doc, c, W, H, M);
+  const conFotos = (r.planilla && r.planillaOps.fotos) || (cliOps && cliOps.fotos);
+  const conAdj   = (r.planilla && r.planillaOps.adjuntos) || (cliOps && cliOps.adjuntos);
+  if(conFotos) await anexoFotos(doc, c, its, W, H, M);
+  if(conAdj)   await anexoAdjuntos(doc, c, W, H, M);
   doc.save(nombreArchivo(c, 'certificado'));
 }
 
