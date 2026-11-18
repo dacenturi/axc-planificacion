@@ -1084,7 +1084,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.7 · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.25 · muestra si el presupuesto está aprobado por el cliente · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -1682,6 +1682,38 @@ async function loadListas(){
   }catch(e){ console.warn('listas', e); }
 }
 
+/* ── v91 · Aprobación del cliente: etiqueta de cada presupuesto ─────────────────────────────────
+   Un presupuesto se consume solo si el cliente lo aprobó. Los que ya estaban publicados antes de este
+   cambio siguen funcionando con la marca «sin aprobación» hasta que se registre la aprobación.
+   Se lee de v_propuestas_estado (sin precios); si todavía no existe, de propuesta_cab. */
+const APR = { mapa:null, ok:false };
+async function aprCargar(force){
+  if(APR.mapa && !force) return APR.mapa;
+  const mapa = {}; let ok = false;
+  for(const t of ['v_propuestas_estado','propuesta_cab']){
+    try{
+      const filas = []; let bien = true;
+      for(let off = 0; off < 50000; off += 1000){
+        const r = await sb.from(t).select('presupuesto,version,aceptada').range(off, off + 999);
+        if(r.error){ bien = false; break; }
+        Array.prototype.push.apply(filas, r.data || []);
+        if((r.data || []).length < 1000) break;
+      }
+      if(bien && filas.length){
+        filas.forEach(function(x){ if(x.aceptada){ const m = mapa[x.presupuesto]; if(!m || x.version > m) mapa[x.presupuesto] = x.version; } });
+        ok = true; break;
+      }
+    }catch(e){ /* se prueba la siguiente fuente */ }
+  }
+  APR.ok = ok; APR.mapa = mapa; return mapa;
+}
+function aprTxt(codigo){ if(!APR.ok) return ''; return APR.mapa[codigo] ? 'Aprobado v' + APR.mapa[codigo] : '⚠ sin aprobación'; }
+function aprBadge(codigo){
+  const t = aprTxt(codigo); if(!t) return '';
+  const ok = t.indexOf('Aprobado') === 0;
+  return '<span style="display:inline-block;margin-top:2px;font-size:9.5px;font-weight:800;border-radius:999px;padding:1px 7px;border:1px solid '+(ok?'#bfe0c7':'#E6C66B')+';background:'+(ok?'#e6f4ea':'#FBEFCB')+';color:'+(ok?'#1B5524':'#8a5a00')+'">'+t+'</span>';
+}
+
 async function loadPresupuestos(){
   try{
     const { data } = await sb.from('presupuesto_cab')
@@ -1699,6 +1731,7 @@ async function loadPresupuestos(){
       if(o && !state.listas.obras.some(x=>norm(x)===norm(o))) state.listas.obras.push(o);
     });
     state.listas.obras.sort((a,b)=>a.localeCompare(b,'es'));
+    try{ await aprCargar(); }catch(eA){ console.warn('aprobación del cliente', eA); }   // v13.25
   }catch(e){ console.warn('presupuestos', e); }
 }
 
@@ -2209,7 +2242,7 @@ function presuPop(abrir){
       html += '<div class="ac-it" data-i="'+i+'" data-cod="'+escapeHtml(p.codigo)+'">'+
         '<b>📋 '+resaltar(p.codigo,q)+'</b>'+
         '<span>'+resaltar(p.descripcion||'(sin descripción)',q)+'</span>'+
-        (pie ? '<small>'+escapeHtml(pie)+'</small>' : '')+
+        (pie ? '<small>'+escapeHtml(pie)+'</small>' : '')+aprBadge(p.codigo)+
       '</div>';
     });
   });
@@ -2257,6 +2290,7 @@ function presuEtiqueta(p){
   if(f) partes.push(fmtFecha(String(f).slice(0,10)));
   const quien = p.publicado_por || p.creado_por;
   if(quien) partes.push(String(quien).split('@')[0]);
+  if(aprTxt(p.codigo)) partes.push(aprTxt(p.codigo));
   return escapeHtml(partes.join('  ·  '));
 }
 
@@ -10667,15 +10701,15 @@ async function pedirReportes(c, its){
     }else if(pc.sinPrecio.length){
       const d = await axcDialog({ tono:'warn', icono:'🧾', titulo:'Hay trabajos sin precio al cliente',
         subtitulo: pc.sinPrecio.length+' de '+(its||[]).length+' trabajo(s)',
-        mensaje:'Estos trabajos no están en la propuesta aceptada ni en un trabajo por administración. En el avance al cliente salen <b>en 0</b>:',
-        lista: pc.sinPrecio.slice(0,6).map(function(x){ return escapeHtml((x.rubro_codigo ? x.rubro_codigo+' · ' : '')+(x.descripcion||x.rubro_desc||'')); })
+        mensaje:'Estos trabajos no tienen precio en la propuesta aceptada de <b>su presupuesto</b> ni están en un trabajo por administración. En el avance al cliente salen <b>en 0</b>:',
+        lista: pc.sinPrecio.slice(0,6).map(function(x){ return escapeHtml((x.rubro_codigo ? x.rubro_codigo+' · ' : '')+(x.descripcion||x.rubro_desc||'')+(x._motivoSinPrecio ? '  ['+x._motivoSinPrecio+']' : '')); })
                .concat(pc.sinPrecio.length > 6 ? ['y '+(pc.sinPrecio.length-6)+' más'] : []),
         ok:'Generar igual', cancelar:'Cancelar' });
       seguir = !!d.ok;
     }
     if(seguir){
       cliOps = Object.assign({}, r.clienteOps, {
-        cliente:true, venta:(pc.va ? pc.va.venta : {}), propVersion:(pc.va ? pc.va.cab.version : ''),
+        cliente:true, venta:(pc.va ? pc.va.venta : {}), propVersion:(pc.va ? pc.va.cab.version : ''), propVersiones:(pc.va ? pc.va.cabs.reduce(function(m,k){ m[k.presupuesto]=k.version; return m; },{}) : {}),
         taCoef:pc.taCoef, clienteNombre:pc.cliente, ivaPct:pc.ivaPct });
     }
   }
@@ -10877,10 +10911,15 @@ async function precioClienteCert(c, its){
     }catch(e){ console.warn('coeficiente TA', e); }
     taCods.forEach(function(k){ if(!taCoefs[k]) taCoefs[k] = 1; });
   }
+  const _conAcept = {}; ((va && va.cabs) || []).forEach(function(k){ _conAcept[k.presupuesto] = k.version; });
   const sinPrecio = (its||[]).filter(function(x){
     if(x.trabajo_admin) return false;
-    const v = va && va.venta[x.rubro_codigo];
-    return !(v && Number(v.precio_unit) > 0);
+    const v = ventaDeLinea(va, x, presus);
+    if(v && Number(v.precio_unit) > 0) return false;
+    const pp = String(x.presupuesto||'').trim() || (presus.length === 1 ? presus[0] : '');
+    x._motivoSinPrecio = !x.rubro_codigo || !pp ? 'trabajo libre, sin presupuesto'
+      : (_conAcept[pp] ? 'no está en la propuesta v'+_conAcept[pp]+' de '+pp : pp+' no tiene propuesta aceptada');
+    return true;
   });
   let iva = va ? Number(va.cab.iva_pct)||0 : null;
   if(iva == null){
@@ -10894,31 +10933,53 @@ async function precioClienteCert(c, its){
   return { presus:presus, va:va, taCods:taCods, taCoef:taCoefs, sinPrecio:sinPrecio, ivaPct:iva, cliente:cliente };
 }
 
+/* v13.24 · Cada presupuesto del certificado se valoriza con SU propuesta aceptada.
+   Antes se tomaba una sola propuesta aceptada para todo el certificado y los
+   precios se buscaban solo por código de rubro: una línea de PP64-2 podía salir
+   con el precio de PP75-2, o en 0 si había otra aceptada. Ahora la clave es
+   «presupuesto#rubro». */
+function ventaClave(presu, rubro){ return String(presu||'').trim()+'#'+String(rubro||'').trim(); }
+function ventaDeLinea(va, x, presus){
+  if(!va || !x || !x.rubro_codigo) return null;
+  let pp = String(x.presupuesto||'').trim();
+  if(!pp && presus && presus.length === 1) pp = presus[0];
+  return va.venta[ventaClave(pp, x.rubro_codigo)] || null;
+}
 async function ventaAceptada(presus){
   const L = (presus||[]).filter(Boolean);
   if(!L.length) return null;
   try{
     const { data:cabs, error } = await sb.from('propuesta_cab')
       .select('id,presupuesto,version,cliente,venta_total')
-      .in('presupuesto', L).eq('aceptada', true).limit(1);
+      .in('presupuesto', L).eq('aceptada', true);
     if(error) throw error;
-    const cab = (cabs||[])[0];
-    if(!cab) return null;
-    // El IVA vive en la cabecera del presupuesto
-    try{
-      const { data:pc } = await sb.from('presupuesto_cab')
-        .select('iva_pct').eq('codigo', cab.presupuesto).limit(1);
-      cab.iva_pct = (pc && pc[0] && pc[0].iva_pct) || 0;
-    }catch(e){ cab.iva_pct = 0; }
-    const { data:its } = await sb.from('propuesta_items')
-      .select('rubro_codigo,descripcion,unidad,cantidad,precio_unit,precio_total')
-      .eq('propuesta_id', cab.id);
-    const venta = {};
-    (its||[]).forEach(function(x){
-      if(!x.rubro_codigo) return;
-      venta[x.rubro_codigo] = { cantidad:Number(x.cantidad)||0, precio_unit:Number(x.precio_unit)||0 };
+    const lista = [], vistos = {};
+    (cabs||[]).forEach(function(c){
+      const prev = vistos[c.presupuesto];
+      if(!prev || Number(c.version) > Number(prev.version)) vistos[c.presupuesto] = c;
     });
-    return { cab:cab, venta:venta };
+    Object.keys(vistos).forEach(function(k){ lista.push(vistos[k]); });
+    if(!lista.length) return null;
+    const venta = {};
+    for(let i = 0; i < lista.length; i++){
+      const cab = lista[i];
+      // El IVA vive en la cabecera del presupuesto
+      try{
+        const { data:pc } = await sb.from('presupuesto_cab').select('iva_pct').eq('codigo', cab.presupuesto).limit(1);
+        cab.iva_pct = (pc && pc[0] && pc[0].iva_pct) || 0;
+      }catch(e){ cab.iva_pct = 0; }
+      const { data:its } = await sb.from('propuesta_items')
+        .select('rubro_codigo,descripcion,unidad,cantidad,precio_unit,precio_total')
+        .eq('propuesta_id', cab.id);
+      (its||[]).forEach(function(x){
+        if(!x.rubro_codigo) return;
+        venta[ventaClave(cab.presupuesto, x.rubro_codigo)] = { cantidad:Number(x.cantidad)||0, precio_unit:Number(x.precio_unit)||0 };
+      });
+    }
+    // «cab» sigue siendo la primera (IVA y cliente); «cabs» tiene todas
+    const cab0 = lista[0];
+    cab0.version_txt = lista.map(function(c){ return c.presupuesto+' v'+c.version; }).join(' · ');
+    return { cab:cab0, cabs:lista, venta:venta };
   }catch(e){ console.warn('venta aceptada', e); return null; }
 }
 
@@ -11092,7 +11153,7 @@ async function generarPlanillaPDF(c, its, opts){
   const sectorTxt = _sec.length ? _sec.join(', ') : (c.sector || '-');
   const info = op.cliente
     ? [['CLIENTE', op.clienteNombre||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
-       ['PROPUESTA', (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
+       ['PROPUESTA', (op.cliente && op.propVersiones && Object.keys(op.propVersiones).length > 1) ? Object.keys(op.propVersiones).map(function(k){ return k+' v'+op.propVersiones[k]; }).join(' / ') : (c.presupuesto||'-')+' v'+(op.propVersion||'-')],
        ['MEDIDO POR', c.medido_por||'-'], ['APROBADO POR', APROBADOR_DOC], ['FECHA', fmtFecha(c.fecha)]]
     : [['CONTRATISTA', c.contratista||'-'], ['OBRA', c.obra||'-'], ['SECTOR', sectorTxt],
        porCt ? ['CONTRATOS', Array.from(new Set(Object.keys(CTI).map(function(k){ return CTI[k].numero ? (CTI[k].numero + (CTI[k].pres ? ' ('+CTI[k].pres+')' : '')) : ''; }).filter(Boolean))).join(', ') || '-']
@@ -11134,11 +11195,11 @@ async function generarPlanillaPDF(c, its, opts){
       // v13.11 · Al cliente, lo de administración va a costo ÷ coeficiente del TA
       const esTAc = !!(op.cliente && x.trabajo_admin);
       const cp = esTAc ? 0
-               : op.cliente ? Number(((op.venta||{})[x.rubro_codigo]||{}).cantidad || x.cant_presup || 0)
+               : op.cliente ? Number(((op.venta||{})[ventaClave(x.presupuesto, x.rubro_codigo)]||{}).cantidad || x.cant_presup || 0)
                : porCt ? (ki ? ki.cant : 0)
                        : (Number(x.cant_presup)||0);
       const pu = esTAc ? Math.round((Number(x.precio_unit)||0) / (((op.taCoef||{})[x.trabajo_admin]) || 1))
-               : op.cliente ? Number(((op.venta||{})[x.rubro_codigo]||{}).precio_unit || 0)
+               : op.cliente ? Number(((op.venta||{})[ventaClave(x.presupuesto, x.rubro_codigo)]||{}).precio_unit || 0)
                             : (Number(x.precio_unit)||0);
       // Contra el contrato: el total contratado sale del precio pactado
       const puG = (porCt && ki && ki.pu) ? ki.pu : pu;
@@ -11167,7 +11228,7 @@ async function generarPlanillaPDF(c, its, opts){
         // v11.14 · Lo que no tiene presupuesto dice qué es, en lugar de un guion
         (function(){
           if(op.cliente && x.trabajo_admin) return { content:pdfSafe(x.trabajo_admin+' / coef. '+taN4((op.taCoef||{})[x.trabajo_admin]||1)), styles:{ textColor:[31,92,58], fontStyle:'bold' } };
-          if(op.cliente) return pdfSafe(x.presupuesto ? (x.presupuesto+(op.propVersion ? ' v'+op.propVersion : '')) : '-');
+          if(op.cliente){ const _vv = (op.propVersiones||{})[x.presupuesto] || ''; return pdfSafe(x.presupuesto ? (x.presupuesto+(_vv ? ' v'+_vv : '')) : '-'); }
           if(porCt && ki && x.trabajo_admin) return { content:pdfSafe((ki.numero || '-')+' > '+x.trabajo_admin), styles:{ textColor:[31,92,58], fontStyle:'bold' } };   // v13.0
           if(porCt && ki) return ki.pres ? { content:pdfSafe(ki.numero || '-'), _pp:ki.pres, styles:{ cellPadding:{ top:1.3, right:1, bottom:4.4, left:1 } } } : pdfSafe(ki.numero || '-');
           if(porCt && x.clasificacion !== 'a_presupuestar' && x.clasificacion !== 'indirecto') return { content:'Fuera de contrato', styles:{ textColor:[138,90,0], fontStyle:'bold' } };
