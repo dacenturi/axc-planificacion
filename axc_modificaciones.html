@@ -266,20 +266,53 @@ async function cargarPerfil(){
   await cargarPresupuestos();
 }
 
+/* ── v91 · Aprobación del cliente: etiqueta de cada presupuesto ─────────────────────────────────
+   Un presupuesto se consume solo si el cliente lo aprobó. Los que ya estaban publicados antes de este
+   cambio siguen funcionando con la marca «sin aprobación» hasta que se registre la aprobación.
+   Se lee de v_propuestas_estado (sin precios); si todavía no existe, de propuesta_cab. */
+const APR = { mapa:null, ok:false };
+async function aprCargar(force){
+  if(APR.mapa && !force) return APR.mapa;
+  const mapa = {}; let ok = false;
+  for(const t of ['v_propuestas_estado','propuesta_cab']){
+    try{
+      const filas = []; let bien = true;
+      for(let off = 0; off < 50000; off += 1000){
+        const r = await sb.from(t).select('presupuesto,version,aceptada').range(off, off + 999);
+        if(r.error){ bien = false; break; }
+        Array.prototype.push.apply(filas, r.data || []);
+        if((r.data || []).length < 1000) break;
+      }
+      if(bien && filas.length){
+        filas.forEach(function(x){ if(x.aceptada){ const m = mapa[x.presupuesto]; if(!m || x.version > m) mapa[x.presupuesto] = x.version; } });
+        ok = true; break;
+      }
+    }catch(e){ /* se prueba la siguiente fuente */ }
+  }
+  APR.ok = ok; APR.mapa = mapa; return mapa;
+}
+function aprTxt(codigo){ if(!APR.ok) return ''; return APR.mapa[codigo] ? 'Aprobado v' + APR.mapa[codigo] : '⚠ sin aprobación'; }
+function aprBadge(codigo){
+  const t = aprTxt(codigo); if(!t) return '';
+  const ok = t.indexOf('Aprobado') === 0;
+  return '<span style="display:inline-block;margin-top:2px;font-size:9.5px;font-weight:800;border-radius:999px;padding:1px 7px;border:1px solid '+(ok?'#bfe0c7':'#E6C66B')+';background:'+(ok?'#e6f4ea':'#FBEFCB')+';color:'+(ok?'#1B5524':'#8a5a00')+'">'+t+'</span>';
+}
+
 /* ── Datos ── */
 async function cargarPresupuestos(){
   var r = await sb.from('presupuesto_cab').select('*');
+  try{ await aprCargar(); }catch(eA){}   // v8.4
   var todos = (r.data || []).slice().sort(function(a, b){
     var na = parseInt((/(\d+)/.exec(a.codigo) || [])[1] || '0', 10), nb = parseInt((/(\d+)/.exec(b.codigo) || [])[1] || '0', 10);
     return nb - na;
   });
-  // Las modificaciones se piden sobre presupuestos APROBADOS o PUBLICADOS. Un borrador se corrige
-  // directamente en Presupuestos: no se muestra acá para no generar confusión.
+  // Las modificaciones se piden sobre presupuestos APROBADOS por el cliente. Un borrador o un presupuesto
+  // enviado se corrige directamente en Presupuestos: no se muestra acá para no generar confusión.
   var pedido = todos.filter(function(c){ return c.codigo === S.pp; })[0];
   S.borrador = (pedido && pedido.activo !== true) ? pedido.codigo : '';
   S.cabs = todos.filter(function(c){ return c.activo === true; });
   var sel = $('#selPP');
-  sel.innerHTML = S.cabs.map(function(c){ return '<option value="' + esc(c.codigo) + '">' + esc(c.codigo) + (c.obra ? ' · ' + esc(c.obra) : '') + '</option>'; }).join('');
+  sel.innerHTML = S.cabs.map(function(c){ return '<option value="' + esc(c.codigo) + '">' + esc(c.codigo) + (c.obra ? ' · ' + esc(c.obra) : '') + (aprTxt(c.codigo) ? ' · ' + esc(aprTxt(c.codigo)) : '') + '</option>'; }).join('');
   if(!S.pp || !S.cabs.some(function(c){ return c.codigo === S.pp; })) S.pp = S.cabs.length ? S.cabs[0].codigo : '';
   sel.value = S.pp;
   sel.onchange = function(){ S.pp = sel.value; S.rubroIni = ''; cargarPresupuesto(); };
@@ -309,7 +342,7 @@ async function cargarPresupuesto(){
 function render(){
   var av = '', sinElig = !S.cabs.length;
   $('#toolbar').hidden = sinElig; $('#kpis').hidden = sinElig; $('#cardLista').hidden = sinElig;
-  if(sinElig) av += '<div class="note info"><b>Todavía no hay presupuestos aprobados o publicados.</b> Las modificaciones se piden sobre un presupuesto ya aprobado. Mientras está en borrador, se corrige directamente en Presupuestos.</div>';
+  if(sinElig) av += '<div class="note info"><b>Todavía no hay presupuestos aprobados por el cliente.</b> Las modificaciones se piden sobre un presupuesto ya aprobado. Mientras está en borrador, se corrige directamente en Presupuestos.</div>';
   else if(S.borrador) av += '<div class="note info"><b>' + esc(S.borrador) + ' está en borrador.</b> Un presupuesto en borrador se corrige directamente en Presupuestos; las modificaciones se piden cuando ya está aprobado o publicado. Se muestra ' + esc(S.pp) + '.</div>';
   if(!S.modsOk) av += '<div class="note err">Falta correr <b>axc_v83_modificaciones.sql</b> en la base: todavía no se pueden registrar modificaciones.</div>';
   else if(!S.conVista) av += '<div class="note warn">La vista de presupuesto vigente no está disponible: se muestra el presupuesto base.</div>';
