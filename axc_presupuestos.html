@@ -388,6 +388,11 @@ body{
 .pp-total-l{display:block;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:#9aa4b2}
 .pp-pill.borrador{background:var(--state-archivado-bg);color:var(--state-archivado-tx)}
 .pp-pill.activo{background:var(--state-aprobado-bg);color:var(--state-aprobado-tx)}
+.pp-pill.aprobado{background:var(--state-aprobado-bg);color:var(--state-aprobado-tx)}
+.pp-pill.enviado{background:#E3ECF9;color:#1F4F94}
+.pp-pill.legado{background:#FBEFCB;color:#8a5a00}
+.pp-kpi.alerta{border-color:#E6C66B;background:#FFFBEF}
+.pp-kpi.alerta .pp-kpi-value{color:#8a5a00}
 .pp-pill.cerrado{background:var(--state-observado-bg);color:var(--state-observado-tx)}
 .pp-chev{color:var(--text-muted);font-size:20px}
 .pp-empty{padding:48px 24px;text-align:center;color:var(--text-muted)}
@@ -741,7 +746,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.53 · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Presupuestos v10.70 · aprobación del cliente: Borrador → Enviado → Aprobado, el presupuesto enviado se congela y solo el aprobado se consume · propuesta solo con opcionales · resiste cortes de conexión · presupuesto de gastos RG-0001 · residente en Obra no presupuestada · tema elegido en Perfiles · presupuesto de gastos para obras sin presupuesto · Obra no presupuestada · el aviso de composición dice quién la cambió, deja ver el historial y avisa si ya hay una propuesta emitida</p>
   </div>
 </div>
 
@@ -1894,6 +1899,10 @@ html[data-theme="alto-contraste"]{
   .pm-estbadge{display:inline-block;font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;padding:5px 14px;border-radius:999px}
   .pm-estbadge.borrador{background:#eceff4;color:#5a6677}
   .pm-estbadge.publicado{background:#e7f6ea;color:#1B5524}
+  .pm-estbadge.aprobado{background:#e7f6ea;color:#1B5524}
+  .pm-estbadge.enviado{background:#E3ECF9;color:#1F4F94}
+  .pm-estbadge.legado{background:#FBEFCB;color:#8a5a00}
+  #pmBajaBtn{border:1px solid #C9D0DC;background:#fff;color:#5a6677;font-weight:700;padding:9px 14px;border-radius:9px;cursor:pointer;margin-right:8px}
   .pm-toggle{margin-right:auto;border:1px solid #c8a028;background:#fff;color:#8a6d10;font-weight:700;padding:9px 16px;border-radius:9px;cursor:pointer}
   .pm-toggle.publicar{background:#1B5524;border-color:#1B5524;color:#fff}
 </style>
@@ -2044,12 +2053,71 @@ async function loadProfileAndApp(){
 // ════════════════════════════════════════════════════════
 const ed = { open:false, isNew:true, origCodigo:'', duenio:'', rubros:[], insumos:[], arbol:null, arbolByCod:{}, insList:null, precioByIns:{}, precioMeta:{}, listasLoaded:false };
 
+/* ═══ v10.70 · APROBACIÓN DEL CLIENTE ═══════════════════════════════════
+   Un presupuesto solo se consume (órdenes de compra, contratos, certificados) cuando el
+   cliente lo aprobó. Desaparece «Publicado»: el estado se lee de las propuestas.
+     Borrador  → se elabora y se edita libremente.
+     Enviado   → propuesta enviada: queda congelada hasta que el cliente responde.
+     Aprobado  → el cliente aprobó la versión vN (con respaldo): se consume.
+   «En uso · sin aprobación» es transitorio: los presupuestos que ya estaban publicados
+   antes de este cambio siguen funcionando hasta que se registre la aprobación.        */
+state.prop = {}; state.propOk = false;
+async function _cargarPropInfo(codigo){
+  /* Se lee la vista v_propuestas_estado (script v91: solo estado y respaldo, sin precios, así la ven todos los perfiles).
+     Si todavía no existe, se lee propuesta_cab directamente. */
+  const COLS = 'presupuesto,version,numero_envio,estado,aceptada,aceptada_en,aceptada_por,aceptada_obs,emitido_en,emitido_por';
+  const leer = async function(tabla){
+    const mk = function(){ let q = sb.from(tabla).select(COLS); if(codigo) q = q.eq('presupuesto', codigo); return q.order('version', { ascending:false }); };
+    return await _sbTodo(mk);
+  };
+  try{
+    let r = await leer('v_propuestas_estado');
+    if(r.error || !r.data) r = await leer('propuesta_cab');
+    if(r.error || !r.data) throw (r.error || new Error('sin datos'));
+    /* Si no vino ninguna fila no se puede afirmar nada (p. ej. el perfil no ve las propuestas): se cae al modo «Publicado». */
+    if(!codigo && !r.data.length) throw new Error('sin propuestas visibles');
+    if(codigo) delete state.prop[codigo]; else state.prop = {};
+    r.data.forEach(function(x){
+      const m = state.prop[x.presupuesto] = state.prop[x.presupuesto] || { n:0, aprobada:null, enviada:null };
+      m.n++;
+      if(x.aceptada && (!m.aprobada || x.version > m.aprobada.version)) m.aprobada = x;
+      if(x.estado === 'enviada' && !x.aceptada && (!m.enviada || x.version > m.enviada.version)) m.enviada = x;
+    });
+    state.propOk = true;
+  }catch(e){ console.warn('propuestas (estado de aprobación)', e); if(!codigo){ state.propOk = false; state.prop = {}; } }
+}
+/* Estado de aprobación de un presupuesto (p = fila de presupuesto_cab). */
+function _aprobEstado(p){
+  const act = !!(p && p.activo);
+  const info = (state.prop || {})[p && p.codigo] || {};
+  if(!state.propOk){
+    return act ? { k:'publicado', cls:'activo', label:'Publicado', pill:'Publicado', tip:'Publicado' }
+               : { k:'borrador', cls:'borrador', label:'Borrador', pill:'Borrador', tip:'Borrador' };
+  }
+  if(act && info.aprobada){
+    const a = info.aprobada;
+    return { k:'aprobado', cls:'aprobado', version:a.version, envio:a.numero_envio, info:a,
+             label:'Aprobado v'+a.version, pill:'Aprobado v'+a.version,
+             tip:'Aprobado por el cliente' + (a.numero_envio ? ' · Propuesta '+a.numero_envio : '') + (a.aceptada_en ? ' · '+_fmtF(a.aceptada_en,false) : '') };
+  }
+  if(act) return { k:'legado', cls:'legado', label:'En uso · sin aprobación', pill:'Sin aprobación',
+                   tip:'Se usa en compras, pero no tiene la aprobación del cliente registrada' };
+  if(info.enviada) return { k:'enviado', cls:'enviado', info:info.enviada, label:'Enviado · esperando al cliente', pill:'Enviado',
+                   tip:'Propuesta '+(info.enviada.numero_envio||'')+' enviada: esperando la aprobación del cliente' };
+  return { k:'borrador', cls:'borrador', label:'Borrador', pill:'Borrador', tip:'Todavía no se envió al cliente' };
+}
+function _estadoPdf(){
+  const st = _aprobEstado(Object.assign({}, _cabActual(), { activo:!!ed.activo, codigo:ed.origCodigo }));
+  return st.k === 'aprobado' ? 'APROBADO v'+st.version : st.k === 'legado' ? 'EN USO · SIN APROBACIÓN' : st.k === 'enviado' ? 'ENVIADO AL CLIENTE' : st.k === 'publicado' ? 'PUBLICADO' : 'BORRADOR';
+}
+
 // ── Lista ───────────────────────────────────────────────
 async function loadList(){
   document.getElementById('pageSubtitle').textContent = 'Cargando presupuestos…';
   try{
     const { data:heads, error } = await sb.from('presupuesto_cab').select('*').order('codigo');
     if(error) throw error;
+    await _cargarPropInfo();   // v10.70 · estado de aprobación de cada presupuesto
     // v10.46 · se traen también código y descripción de los rubros: así se puede buscar «mampostería» o «05.052»
     // y llegar al presupuesto que los tiene. «_sbTodo» pagina, así que el conteo ya no se corta a las 1000 filas.
     let rq = await _sbTodo(function(){ return sb.from('presupuesto_rubros').select('presupuesto,rubro_codigo,descripcion,sector').order('presupuesto').order('orden'); });
@@ -2118,11 +2186,13 @@ async function _enrichListTotals(){
 
 function renderKpis(){
   const tot = state.list.length;
-  const act = state.list.filter(function(x){ return x.activo; }).length;
+  const c = { aprobado:0, enviado:0, legado:0, borrador:0, publicado:0 };
+  state.list.forEach(function(x){ c[_aprobEstado(x).k]++; });
   document.getElementById('ppKpis').innerHTML =
     '<div class="pp-kpi"><div class="pp-kpi-label">Presupuestos</div><div class="pp-kpi-value">'+tot+'</div></div>' +
-    '<div class="pp-kpi"><div class="pp-kpi-label">Publicados</div><div class="pp-kpi-value">'+act+'</div></div>' +
-    '<div class="pp-kpi"><div class="pp-kpi-label">Borradores</div><div class="pp-kpi-value">'+(tot-act)+'</div></div>' +
+    '<div class="pp-kpi"><div class="pp-kpi-label">Aprobados por el cliente</div><div class="pp-kpi-value">'+(c.aprobado + c.publicado)+'</div></div>' +
+    (c.legado ? '<div class="pp-kpi alerta" title="Se usan en compras, contratos y certificados, pero no tienen la aprobación del cliente registrada"><div class="pp-kpi-label">En uso · sin aprobación</div><div class="pp-kpi-value">'+c.legado+'</div></div>' : '') +
+    '<div class="pp-kpi"><div class="pp-kpi-label">Borradores y enviados</div><div class="pp-kpi-value">'+(c.borrador + c.enviado)+'</div></div>' +
     '<div class="pp-kpi"><div class="pp-kpi-label">Monto total presupuestado · costo sin IVA</div><div class="pp-kpi-value" id="kpiMonto" style="font-size:20px">…</div></div>';
 }
 
@@ -2146,7 +2216,8 @@ function _indexarPresupuesto(p, rubros){
   const m = /(\d+)/.exec(String(p.codigo||'')); p._num = m ? String(parseInt(m[1],10)) : '';
   p._rubs = Array.from(new Set(rubros || []));
   p._ix = _bn([ p.codigo, p._num ? 'cp'+p._num : '', p.descripcion, p.obra, p.cliente, p.observacion, p.creado_por, p.actualizado_por,
-    p.activo ? 'publicado aprobado' : 'borrador', _fechasTxt(p.creado_en), _fechasTxt(p.actualizado_en), _fechasTxt(p.publicado_en),
+    (function(){ const e = _aprobEstado(p); return e.k === 'aprobado' ? 'aprobado publicado aprobado por el cliente v'+e.version+(e.envio ? ' propuesta '+e.envio : '')
+        : e.k === 'legado' ? 'en uso sin aprobacion publicado' : e.k === 'enviado' ? 'enviado esperando cliente' : e.k === 'publicado' ? 'publicado' : 'borrador'; })(), _fechasTxt(p.creado_en), _fechasTxt(p.actualizado_en), _fechasTxt(p.publicado_en),
     Array.from(new Set(rubros || [])).join(' ') ].filter(Boolean).join(' '));
 }
 function _coincideToken(p, t){
@@ -2185,8 +2256,11 @@ function aplicarFiltroLista(){
   const toks = _bn(state.q).split(' ').filter(Boolean);
   state._toks = toks;
   const porChip = {
-    todos: function(){ return true; }, publicados: function(p){ return !!p.activo; },
-    borradores: function(p){ return !p.activo; }, mios: _esMio };
+    todos: function(){ return true; },
+    aprobados: function(p){ const k = _aprobEstado(p).k; return k === 'aprobado' || k === 'publicado'; },
+    sinaprob: function(p){ return _aprobEstado(p).k === 'legado'; },
+    enviados: function(p){ return _aprobEstado(p).k === 'enviado'; },
+    borradores: function(p){ return _aprobEstado(p).k === 'borrador'; }, mios: _esMio };
   const cuenta = {}; Object.keys(porChip).forEach(function(k){ cuenta[k] = state.list.filter(porChip[k]).length; });
   let arr = state.list.filter(porChip[state.chip] || porChip.todos);
   if(toks.length){
@@ -2196,7 +2270,7 @@ function aplicarFiltroLista(){
   state.filtered = arr;
   const ch = document.getElementById('ppChips');
   if(ch){
-    ch.innerHTML = [['todos','Todos'],['publicados','Publicados'],['borradores','Borradores'],['mios','Míos']].map(function(c){
+    ch.innerHTML = [['todos','Todos'],['aprobados','Aprobados'],['sinaprob','Sin aprobación'],['enviados','Enviados'],['borradores','Borradores'],['mios','Míos']].filter(function(c){ return c[0] !== 'sinaprob' || cuenta.sinaprob > 0 || state.chip === 'sinaprob'; }).map(function(c){
       return '<button type="button" class="pp-chip'+(state.chip === c[0] ? ' on' : '')+'" data-chip="'+c[0]+'">'+c[1]+'<b>'+cuenta[c[0]]+'</b></button>'; }).join('');
     ch.querySelectorAll('[data-chip]').forEach(function(b){ b.onclick = function(){ state.chip = b.getAttribute('data-chip'); aplicarFiltroLista(); }; });
   }
@@ -2239,7 +2313,7 @@ function renderList(){
   }
   const _T = state._toks || [];
   box.innerHTML = state.filtered.map(function(p){
-    const est = p.activo ? 'activo' : 'borrador';
+    const _st = _aprobEstado(p);
     const nm = p.descripcion
       ? '<div class="pp-name">'+_hl(p.descripcion, _T)+'</div>'
       : '<div class="pp-name vacio">Sin descripción</div>';
@@ -2249,7 +2323,10 @@ function renderList(){
     if(p.creado_por) bits.push('👤 '+_hl(p.creado_por, _T));
     if(p.creado_en) bits.push('🆕 '+_fmtF(p.creado_en,false));
     if(p.actualizado_en && p.actualizado_en!==p.creado_en) bits.push('✏️ '+_fmtF(p.actualizado_en,true)+(p.actualizado_por&&p.actualizado_por!==p.creado_por?(' ('+escapeHtml(p.actualizado_por)+')'):''));
-    if(p.publicado_en) bits.push('📢 Publicado '+_fmtF(p.publicado_en,false));
+    if(_st.k === 'aprobado'){ bits.push('✓ Aprobado por el cliente'+(_st.info && _st.info.aceptada_en ? ' el '+_fmtF(_st.info.aceptada_en,false) : '')+(_st.envio ? ' · Propuesta '+_st.envio : '')); }
+    else if(_st.k === 'legado'){ bits.push('<span style="color:#8a5a00;font-weight:700">⚠ En uso sin aprobación registrada</span>'); }
+    else if(_st.k === 'enviado'){ bits.push('📨 Propuesta '+((_st.info && _st.info.numero_envio)||'')+' enviada'+(_st.info && _st.info.emitido_en ? ' el '+_fmtF(_st.info.emitido_en,false) : '')); }
+    else if(p.publicado_en) bits.push('📢 Publicado '+_fmtF(p.publicado_en,false));
     // Si la búsqueda coincide por un rubro que no se ve en la tarjeta, se muestra cuál fue
     let hit = '';
     if(_T.length && p._rubs && p._rubs.length){
@@ -2265,7 +2342,7 @@ function renderList(){
       '<div class="pp-info">'+nm+'<div class="pp-meta">'+meta+'</div>'+by+hit+'</div>' +
       '<div class="pp-total" data-cod="'+escapeHtml(p.codigo)+'"><span class="pp-total-v">…</span></div>' +
       '<span class="pp-adj" data-cod="'+escapeHtml(p.codigo)+'"></span>' +
-      '<span class="pp-pill '+est+'">'+(p.activo?'publicado':'borrador')+'</span>' +
+      '<span class="pp-pill '+_st.cls+'" title="'+escapeHtml(_st.tip)+'">'+escapeHtml(_st.pill)+'</span>' +
       '<button type="button" class="pp-dup" data-dup="'+escapeHtml(p.codigo)+'" title="Duplicar este presupuesto">⧉</button>' +
       '<span class="pp-chev">›</span></div>';
   }).join('');
@@ -3079,7 +3156,12 @@ function _esAdmin(){ return !!state.isAdmin; }
 
 function aplicarBloqueo(h){
   const pub = !!(h && h.publicado_en);
-  ed.bloqueado = pub && !ed.desbloqueado;
+  /* v10.70 · Una propuesta enviada congela el presupuesto (real y comercial) hasta que el cliente
+     responde: así lo que aprueba el cliente es exactamente lo que se enviará a consumir. */
+  const _inf = (state.prop || {})[ed.origCodigo] || {};
+  const env = !pub && !ed.activo && !!_inf.enviada;
+  const congel = pub || env;
+  ed.bloqueado = congel && !ed.desbloqueado;
   // Los adjuntos se dibujan al abrir; si el candado cambia (reabrir / publicar)
   // hay que volver a mostrar u ocultar «Agregar archivos» y «Quitar».
   try{ if(typeof renderAdjuntos==='function') renderAdjuntos(); }catch(e){}
@@ -3095,29 +3177,49 @@ function aplicarBloqueo(h){
   if(pie)  pie.style.display  = ed.bloqueado ? '' : 'none';
 
   if(!bar) return;
-  if(!pub){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  if(!congel){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
 
+  const st = _aprobEstado(Object.assign({}, h || {}, { activo: !!(h && h.activo) || !!ed.activo, codigo: ed.origCodigo }));
   bar.style.display = 'flex';
   if(ed.bloqueado){
+    const quien = _puedeReabrir(h)
+      ? null : 'Lo puede reabrir '+escapeHtml(_nombreCorto(h && h.creado_por))+', que lo elaboró, un administrador o quien tenga el permiso «Reabrir presupuesto congelado»';
+    let tit, cuerpo, btn;
+    if(env){
+      tit = '📨 Propuesta '+(_inf.enviada.numero_envio||'')+' enviada al cliente · congelado';
+      cuerpo = 'Mientras el cliente decide, el presupuesto <b>no se modifica</b>: lo que apruebe es exactamente lo que se va a consumir. '+
+        'Todavía <b>no se puede usar</b> en órdenes de compra, contratos ni certificados. '+
+        'Cuando el cliente responda, registrá su aprobación. Si pide cambios, reabrilo y emití una versión nueva.';
+      btn = 'Reabrir: el cliente pidió cambios';
+    } else if(st.k === 'aprobado'){
+      tit = 'Aprobado por el cliente · v'+st.version+' · congelado';
+      cuerpo = (st.info && st.info.aceptada_en ? 'Aprobado el '+_fmtF(st.info.aceptada_en,false)+(st.info.aceptada_por ? ' · registró '+escapeHtml(_nombreCorto(st.info.aceptada_por)) : '')+'. ' : '')+
+        (h.base_version ? '<b>Línea base v'+h.base_version+' congelada</b>: es la foto contra la que se comparan las órdenes de compra y los certificados. ' : '')+
+        'Contra este presupuesto se emiten órdenes de compra, contratos y certificados: cambiarlo movería saldos ya usados. '+
+        'Para cambios chicos usá «📝 Modificaciones»; si cambia el alcance, reabrilo para una versión nueva. Podés consultarlo, imprimirlo y ver sus reportes.';
+      btn = 'Reabrir para una versión nueva';
+    } else {
+      tit = 'En uso · congelado · falta registrar la aprobación del cliente';
+      cuerpo = 'Se publicó antes de que el sistema exigiera la aprobación del cliente'+(h.publicado_en ? ' (el '+_fmtF(h.publicado_en,false)+(h.publicado_por?(' por '+escapeHtml(h.publicado_por)):'')+')' : '')+'. '+
+        'Sigue funcionando en compras, contratos y certificados, pero conviene regularizarlo: emití la propuesta con este contenido y registrá la aprobación del cliente con su respaldo.';
+      btn = 'Reabrir para editar';
+    }
     bar.innerHTML =
-      '<div class="ico">🔒</div>'+
-      '<div><b>Presupuesto aprobado · no se puede editar</b>'+
-      '<p>Publicado el '+_fmtF(h.publicado_en,false)+(h.publicado_por?(' por '+escapeHtml(h.publicado_por)):'')+'. '+
-      (h.base_version ? '<b>Línea base v'+h.base_version+' congelada</b>: es la foto contra la que se comparan las órdenes de compra y los certificados. ' : '')+
-      'Contra este presupuesto se emiten órdenes de compra y certificados: cambiarlo ahora movería saldos ya usados. '+
-      'Podés consultarlo, imprimirlo y ver sus reportes.</p></div>'+
-      (_puedeReabrir(h)
-        ? '<div class="acc"><button type="button" id="pmDesbloq">🔓 Reabrir para editar</button></div>'
-        : '<div class="acc"><span style="font-size:12px;color:#7A5600">Lo puede reabrir '+escapeHtml(_nombreCorto(h.creado_por))+', que lo elaboró, un administrador o quien tenga el permiso «Reabrir presupuesto congelado»</span></div>');
+      '<div class="ico">'+(env?'📨':(st.k==='aprobado'?'🔒':'⚠️'))+'</div>'+
+      '<div><b>'+tit+'</b><p>'+cuerpo+'</p></div>'+
+      (quien ? '<div class="acc"><span style="font-size:12px;color:#7A5600">'+quien+'</span></div>'
+             : '<div class="acc"><button type="button" id="pmDesbloq">🔓 '+btn+'</button></div>');
     const b = document.getElementById('pmDesbloq');
     if(b) b.onclick = function(){ pedirDesbloqueo(); };
   }else{
     bar.innerHTML =
       '<div class="ico">🔓</div>'+
       '<div><b>Reabierto para edición</b>'+
-      '<p>Este presupuesto estaba aprobado. Al guardar se congela una <b>versión nueva</b> de la línea base: '+
-      (h.base_version ? 'la v'+h.base_version+' queda como estaba, para seguir comparando contra lo pactado. ' : '')+
-      'Los cambios afectan los saldos de las órdenes de compra y de los certificados ya emitidos. '+
+      '<p>'+(env
+        ? 'Este presupuesto estaba enviado al cliente. Hacé los cambios, guardá y emití una <b>versión nueva</b> de la propuesta: la anterior queda como reemplazada.'
+        : 'Este presupuesto estaba aprobado. Al guardar se congela una <b>versión nueva</b> de la línea base: '+
+          (h.base_version ? 'la v'+h.base_version+' queda como estaba, para seguir comparando contra lo pactado. ' : '')+
+          'Los cambios afectan los saldos de las órdenes de compra y de los certificados ya emitidos. ')+
       'El motivo queda registrado en las observaciones.</p></div>';
   }
 }
@@ -3125,39 +3227,108 @@ function aplicarBloqueo(h){
 /* v9.3 · pedirDesbloqueo() está junto a la revisión de composiciones */
 
 function renderEstadoUI(){
-  const pub = !!ed.activo;
-  const b = document.getElementById('pmEstadoBadge');
-  if(b){ b.className = 'pm-estbadge ' + (pub?'publicado':'borrador'); b.textContent = pub ? '● Publicado' : '● Borrador'; }
-  const h = document.getElementById('pmEstadoHint');
-  if(h) h.textContent = pub ? 'Disponible en la orden de compra.' : 'No aparece en la orden de compra hasta publicarlo.';
+  const h = Object.assign({}, _cabActual(), { activo: !!ed.activo, codigo: ed.origCodigo });
+  const st = _aprobEstado(h);
+  const bdg = document.getElementById('pmEstadoBadge');
+  if(bdg){ bdg.className = 'pm-estbadge ' + st.cls; bdg.textContent = '● ' + st.label; }
+  const hint = document.getElementById('pmEstadoHint');
+  const inf = ((state.prop||{})[ed.origCodigo]) || {};
+  const _txt = {
+    aprobado:  'Aprobado por el cliente'+(st.info && st.info.aceptada_en ? ' el '+_fmtF(st.info.aceptada_en,false) : '')+'. Disponible en órdenes de compra, contratos y certificados.',
+    enviado:   'Propuesta '+(inf.enviada && inf.enviada.numero_envio || '')+' enviada. Está congelado hasta que el cliente responda y todavía no se puede usar en compras.',
+    legado:    'Se usa en compras, contratos y certificados, pero no tiene la aprobación del cliente registrada. Regularizalo.',
+    borrador:  'Todavía no se puede usar en compras: primero se envía al cliente y se registra su aprobación.',
+    publicado: 'Disponible en la orden de compra.'
+  };
+  if(hint) hint.textContent = _txt[st.k] || '';
   const t = document.getElementById('pmToggleBtn');
-  if(t){ if(pub){ t.textContent = 'Pasar a borrador'; t.className = 'pm-toggle'; } else { t.textContent = '🚀 Publicar'; t.className = 'pm-toggle publicar'; } }
+  let baja = document.getElementById('pmBajaBtn');
+  if(baja) baja.style.display = 'none';
+  if(!t) return;
+  t.style.display = '';
+  if(st.k === 'aprobado'){ t.style.display = 'none'; return; }
+  if(st.k === 'publicado'){ t.textContent = 'Pasar a borrador'; t.className = 'pm-toggle'; return; }
+  if(st.k === 'borrador'){ t.textContent = '📨 Enviar al cliente'; t.className = 'pm-toggle publicar'; return; }
+  t.textContent = '✓ Registrar aprobación del cliente'; t.className = 'pm-toggle publicar';
+  if(st.k === 'legado'){
+    if(!baja){ baja = document.createElement('button'); baja.type = 'button'; baja.id = 'pmBajaBtn'; baja.textContent = 'Pasar a borrador';
+      t.parentNode.insertBefore(baja, t.nextSibling); baja.addEventListener('click', function(){ _toggleEstadoLegacy(); }); }
+    baja.style.display = '';
+  }
 }
 
 async function toggleEstado(){
+  const st = _aprobEstado(Object.assign({}, _cabActual(), { activo: !!ed.activo, codigo: ed.origCodigo }));
+  if(st.k === 'publicado') return _toggleEstadoLegacy();
+  if(st.k === 'aprobado') return;
+  if(st.k === 'borrador') return _enviarAlCliente();
+  return _registrarAprobacion();
+}
+
+/* v10.70 · «Enviar al cliente»: emite la propuesta económica; al emitirla el presupuesto queda congelado. */
+async function _enviarAlCliente(){
+  if(!ed.origCodigo){ showToast('Guardá primero el presupuesto','error','Se envía un presupuesto ya guardado.'); return; }
+  if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar: la propuesta se emite con lo guardado.'); return; }
+  if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error','Cargá los rubros antes de enviarlo al cliente'); return; }
+  if(_bloqueoSinCodigo('envió')) return;
+  const c = _chequeoPresupuesto();
+  if(!state.puedeVerMargen){
+    await _confirmarAccion({
+      titulo:'Enviar al cliente', sub:ed.origCodigo, tono:'warn',
+      intro:'La propuesta al cliente la emite quien tiene el permiso <b>«Coeficiente y márgenes»</b>, porque es ahí donde se aplica el coeficiente y se define el precio de venta.',
+      riesgos:['Pedile a un administrador, o a quien tenga ese permiso, que la emita.',
+               'Al enviarla, el presupuesto (costo y precio de venta) queda <b>congelado</b> hasta que el cliente responda.'],
+      ok:'Entendido', cancelar:'Cerrar' });
+    return;
+  }
+  const r = await _confirmarAccion({
+    titulo:'Enviar el presupuesto al cliente', sub:ed.origCodigo+' · '+(document.getElementById('pmObra').value||''),
+    tono: c.graves ? 'warn' : '',
+    intro:'Vas a aplicar el coeficiente y emitir la propuesta. <b>Al enviarla, el presupuesto queda congelado</b> (el costo real y el precio de venta) hasta que el cliente responda.',
+    checks:c.lista,
+    riesgos:[
+      'Todavía <b>no se podrá usar</b> en órdenes de compra, contratos ni certificados: eso ocurre cuando registres la aprobación del cliente.',
+      'Si el cliente pide cambios, se reabre con un motivo y se emite una <b>versión nueva</b>; la enviada queda como reemplazada.',
+      (c.graves ? 'Hay observaciones marcadas en rojo: corregilas antes de enviar para que el cliente no reciba un costo incompleto.' : 'No hay observaciones graves.')
+    ],
+    ok:'Continuar con la propuesta', cancelar:'Volver al presupuesto'
+  });
+  if(r === null) return;
+  openPropuesta(true);
+}
+
+/* v10.70 · «Registrar aprobación del cliente»: elige la versión (la enviada, o una de las emitidas) y pide el respaldo. */
+async function _refrescarTrasAprobar(){
+  try{ await _cargarPropInfo(ed.origCodigo); }catch(e){}
+  try{ await loadList(); }catch(e){}
+  try{ const h = _cabActual(); renderEstadoUI(); aplicarBloqueo(h); }catch(e){}
+}
+async function _registrarAprobacion(){
+  if(!state.puedeAprobarCliente){
+    showToast('No tenés permiso para registrar la aprobación del cliente','error','Lo hace administración o quien tenga «Aprobar la versión del cliente» en Perfiles');
+    return;
+  }
+  if(!ed.origCodigo){ showToast('Guardá primero el presupuesto','error'); return; }
+  if(ed.tocado){ showToast('Guardá primero el presupuesto','error','Tenés cambios sin guardar.'); return; }
+  const inf = ((state.prop||{})[ed.origCodigo]) || {};
+  if(inf.enviada){ await aprobarParaCliente(ed.origCodigo, inf.enviada.version, _refrescarTrasAprobar); return; }
+  if(inf.n > 0){ await openPropuestasLista(); await _refrescarTrasAprobar(); return; }
+  const r = await _confirmarAccion({
+    titulo:'Falta la propuesta enviada al cliente', sub:ed.origCodigo, tono:'warn',
+    intro:'Para registrar la aprobación tiene que existir la propuesta que recibió el cliente: es lo que queda como <b>versión aprobada</b> (precio de venta y costo).',
+    riesgos:['Emití la propuesta con el contenido actual del presupuesto y después registrá la aprobación con su respaldo.'],
+    ok:'Emitir la propuesta ahora', cancelar:'Cerrar' });
+  if(r !== null) openPropuesta(true);
+}
+
+/* Camino anterior (solo para presupuestos «publicados» sin datos de propuestas, o para retirar uno de circulación). */
+async function _toggleEstadoLegacy(){
   const target = !ed.activo;
   const h = (state.list||[]).find(function(x){ return x.codigo === ed.origCodigo; }) || {};
   const _yaPub = h.publicado_en;
   if(target){
-    const c = _chequeoPresupuesto();
-    if(!ed.rubros.length){ showToast('El presupuesto no tiene rubros','error','Cargá los rubros antes de publicarlo'); return; }
-    if(_bloqueoSinCodigo('publicó')) return;   // v10.46
-    const r = await _confirmarAccion({
-      titulo:'Publicar el presupuesto', sub:(ed.origCodigo||'')+' · '+(document.getElementById('pmObra').value||''),
-      tono: c.graves ? 'warn' : '',
-      intro:'Publicar deja el presupuesto <b>disponible para toda la obra</b> y congela la foto contra la que se comparan las compras, los certificados y los contratos.',
-      checks:c.lista,
-      riesgos:[
-        'Queda disponible en la <b>orden de compra</b>, en la <b>certificación</b> y en el módulo <b>Contratos</b>.',
-        'Se congela la <b>línea base'+(_yaPub && h.base_version ? ' v'+(Number(h.base_version)+1) : '')+'</b>: es el punto de comparación de los saldos.',
-        'Desde ahí <b>no se edita</b>: para corregirlo hay que reabrirlo, y solo puede hacerlo quien lo elaboró o un administrador.',
-        (c.graves ? 'Hay observaciones marcadas en rojo: si publicás así, los saldos y la certificación van a salir con esos errores.' : 'No hay observaciones graves.')
-      ],
-      nota: _yaPub ? null : { label:'Con qué se aprobó', placeholder:'Ej. acta de reunión del 20/09 · correo del cliente · aprobado por el Arq. Vladimir' },
-      ok:'Publicar presupuesto', cancelar:'Volver al presupuesto'
-    });
-    if(r === null) return;
-    if(!_yaPub) ed.obsLineaBase = (typeof r === 'string' && r) ? r : null;
+    showToast('Un presupuesto nuevo se publica enviándolo al cliente','error','Usá «Enviar al cliente» y después «Registrar aprobación del cliente»');
+    return;
   } else {
     const r = await _confirmarAccion({
       titulo:'Pasar a borrador', sub:(ed.origCodigo||''), tono:'warn',
@@ -3165,15 +3336,20 @@ async function toggleEstado(){
       riesgos:[
         'Deja de estar disponible para <b>nuevas órdenes de compra</b>, certificados y contratos.',
         'Las órdenes, certificados y contratos <b>ya emitidos no se modifican</b>.',
-        'La línea base congelada se conserva.'
+        'La línea base congelada se conserva.',
+        'Para volver a usarlo hay que enviarlo al cliente y registrar su aprobación.'
       ],
       ok:'Pasar a borrador', cancelar:'Volver'
     });
     if(r === null) return;
+    if(ed.bloqueado){
+      const ok = await pedirDesbloqueo();   // congelado: primero se reabre, con motivo
+      if(!ok) return;
+    }
   }
   ed.activo = target; renderEstadoUI();
   ed._saltarChequeo = true;
-  await saveBudget();   // publicar / despublicar persiste el cambio
+  await saveBudget();   // despublicar persiste el cambio
 }
 
 // ── Rubros (memoria) ────────────────────────────────────
@@ -4673,7 +4849,7 @@ async function saveBudget(){
   }
 
   if(ed.bloqueado){
-    showToast('Este presupuesto está aprobado y no se puede editar','error','Pedí al administrador que lo reabra');
+    showToast('Este presupuesto está congelado y no se puede editar','error','Reabrilo con un motivo (lo hace quien lo elaboró, administración o quien tenga el permiso)');
     return;
   }
   // v10.1 · Antes de grabar se muestra qué se va a guardar y qué quedó flojo
@@ -4681,10 +4857,10 @@ async function saveBudget(){
     const c = _chequeoPresupuesto();
     if(c.graves){
       const r = await _confirmarAccion({
-        titulo:'Guardar el presupuesto', sub:(codigo||'')+' · '+(activo?'publicado':'borrador'), tono:'warn',
+        titulo:'Guardar el presupuesto', sub:(codigo||'')+' · '+_estadoPdf().toLowerCase(), tono:'warn',
         intro:'Se va a guardar el presupuesto con estas observaciones:',
         checks:c.lista,
-        riesgos:['Guardar <b>no publica</b> el presupuesto'+(activo?', pero este ya está publicado: los saldos se recalculan con lo que guardes.':': queda en borrador y se puede seguir editando.'),
+        riesgos:['Guardar <b>no lo envía al cliente</b>'+(activo?', pero este ya está en uso: los saldos se recalculan con lo que guardes.':': queda como está y se puede seguir editando.'),
                  'Las observaciones en rojo afectan el costo, la certificación y los contratos.'],
         ok:'Guardar igual', cancelar:'Volver a revisar'
       });
@@ -4987,10 +5163,14 @@ async function saveBudget(){
     showToast('Presupuesto guardado en el sistema', 'success',
       (ed.codigo||'')+' · '+ed.rubros.length+' rubro'+(ed.rubros.length===1?'':'s')+
       ' · '+ed.insumos.length+' línea'+(ed.insumos.length===1?'':'s')+' de insumos · '+
-      (activo ? 'publicado · ya disponible en la orden de compra' : 'queda en borrador, no aparece en la orden de compra hasta publicarlo'));
+      (activo ? 'en uso · disponible en la orden de compra' : 'todavía no se puede usar en compras: falta enviarlo al cliente y registrar su aprobación'));
     _audit('presupuesto', codigo, 'guardar', {obra: obra, rubros: ed.rubros.length, insumos: ed.insumos.length});
     closeModal(); await loadList();
-  }catch(e){ console.warn('saveBudget', e); showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
+  }catch(e){ console.warn('saveBudget', e);
+    if(/PRES_SIN_APROBACION/i.test((e && e.message) || '')){
+      ed.activo = false; try{ renderEstadoUI(); }catch(_e1){}
+      showToast('Falta la propuesta enviada al cliente', 'error', 'Un presupuesto solo queda disponible cuando el cliente lo aprobó: enviá la propuesta y registrá la aprobación.');
+    } else showToast(_esCorteRed(e) ? 'No se pudo guardar: sin conexión' : 'No se pudo guardar', 'error', _msgError(e)); }
   finally{ btn.disabled = false; try{ if(txt) txt.textContent = old; }catch(_eTxt){ /* v10.60 · salida temprana: «txt» todavía no existe */ } }
 }
 
@@ -5224,9 +5404,7 @@ async function openPropuestasLista(){
                 : (state.puedeAprobarCliente
                     ? '<button type="button" class="pl-b pl-b-mk" data-plapr="'+c.version+'" title="Elegí esta versión como la que aprobó el cliente: queda oficial comercial y de costo">✓ <span>Aprobar para el cliente</span></button>'+
                       '<div style="font-size:10.5px;margin-top:3px;color:'+(_coincide(a)?'#1B5524':'#8a6d10')+'">'+(_coincide(a)?'coincide con el presupuesto':'tiene diferencias con el presupuesto')+'</div>'
-                  : _coincide(a)
-                    ? '<button type="button" class="pl-b pl-b-mk" data-placep="'+c.version+'" title="Coincide con el presupuesto '+_refTxt+': marcala si es la que aceptó el cliente">✓ <span>Marcar aceptada</span></button>'
-                    : '<span class="pl-b" style="cursor:default;color:#8893a5;border-style:dashed;white-space:normal;font-weight:600;font-size:11px" title="Solo se acepta la propuesta que coincide con el presupuesto '+_refTxt+'">No coincide con el '+(ed.activo?'publicado':'presupuesto actual')+'</span>'))+
+                  : '<span class="pl-b" style="cursor:default;color:#8893a5;border-style:dashed;white-space:normal;font-weight:600;font-size:11px" title="La aprobación del cliente la registra administración o quien tenga el permiso">La aprueba quien tenga el permiso «Aprobar la versión del cliente»</span>')) +
             '</td></tr>';
         };
       const _tabla = function(lista){ return '<table class="ins-tbl"><thead><tr><th>Versión</th><th>Emitida</th><th>Por</th>'+
@@ -6621,7 +6799,7 @@ function buildCotizacion(anexos){
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
   const obra   = (document.getElementById('pmObra').value||'').trim();
   const desc   = (document.getElementById('pmDescripcion').value||'').trim();
-  const estado = ed.activo ? 'PUBLICADO' : 'BORRADOR';
+  const estado = _estadoPdf();
   const D = _reporteCompute();
   // Los materiales se compran por entero: el costo de cada rubro se recalcula con la
   // cantidad redondeada, igual que el consolidado. Mano de obra y logística no se redondean.
@@ -6725,7 +6903,7 @@ function buildCotizacion(anexos){
   // presupuesto no terminen con el mismo nombre de archivo.
   const _fArch = new Date().toISOString().slice(0,10).split('-').reverse().join('-');
   const _titPlan = ['Planilla '+codigo, (obra||'').trim(), (desc||'').trim(),
-                    (ed.activo?'publicado':'borrador'), _fArch].filter(Boolean).join(' · ');
+                    _estadoPdf().toLowerCase(), _fArch].filter(Boolean).join(' · ');
 
   const w = window.open('', '_blank');
   if(!w){ showToast('El navegador bloqueó la ventana','error','Permití las ventanas emergentes para este sitio'); return; }
@@ -6837,7 +7015,7 @@ ivaFilas(soloOpcC ? D.totalOpc : total, (ed.iva_pct!=null?ed.iva_pct:ivaGet()), 
 '</div>'+
 '<div class="pie"><span>AXC Constructora · '+escapeHtml(codigo)+
   (obra?' · '+escapeHtml(obra):'')+(desc?' · '+escapeHtml(desc):'')+
-  ' · '+(ed.activo?'publicado':'borrador')+'</span>'+
+  ' · '+_estadoPdf().toLowerCase()+'</span>'+
 '<span>Precios en guaraníes'+(((ed.iva_pct!=null?ed.iva_pct:ivaGet())||0)>0?', IVA incluido en el total':', sin IVA')+' · Cantidades de material redondeadas a entero · Emitido '+new Date().toLocaleString('es-PY')+'</span></div>'+
 '</div></body></html>');
   w.document.close();
@@ -6851,7 +7029,7 @@ function buildReporte(anexos){
   const codigo = (document.getElementById('pmCodigo').value||'').trim();
   const obra = (document.getElementById('pmObra').value||'').trim();
   const descripcion = (document.getElementById('pmDescripcion').value||'').trim();
-  const estado = ed.activo ? 'PUBLICADO' : 'BORRADOR';
+  const estado = _estadoPdf();
   const cab = (state.list||[]).find(function(p){ return p.codigo===codigo; }) || {};
   const autor = cab.actualizado_por || cab.creado_por || _userTag() || '—';
   const fIso = cab.actualizado_en || cab.creado_en || new Date().toISOString();
@@ -8470,7 +8648,8 @@ async function abrirPlanillaIntegral(){
         '<button type="button" id="piPdf" class="pm-toggle" style="border:1px solid #C9D0DC">🖨 Generar PDF</button>'+
         '<button type="button" id="piDocs" class="pm-toggle" style="border:1px solid #C9D0DC">📄 Planilla de costos</button>'+
         (verCom?'<button type="button" id="piIrProp" class="pm-toggle" style="border:1px solid #C9D0DC">💼 Emitir propuesta</button>':'')+
-        '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0"'+(ed.activo?' disabled':'')+'>🚀 Publicar</button>'+
+        (function(){ const _s = _aprobEstado(Object.assign({}, _cabActual(), { activo:!!ed.activo, codigo:ed.origCodigo }));
+          return _s.k === 'aprobado' ? '' : '<button type="button" id="piPublicar" class="pm-toggle" style="background:#1B5524;color:#fff;border:0">'+(_s.k === 'borrador' ? '📨 Enviar al cliente' : (_s.k === 'publicado' ? 'Pasar a borrador' : '✓ Registrar aprobación'))+'</button>'; })()+
         '<button type="button" id="piGuardar" class="pm-save" style="padding:9px 16px">'+(ed.tocado?'● ':'')+'Guardar presupuesto</button></div>';
     document.getElementById('piSub').textContent = ed.bloqueado
       ? (ed.activo ? 'Presupuesto aprobado · solo lectura. Para cambiar materiales usá «📝 Modificaciones»; para corregir un error, reabrilo desde el presupuesto.'
@@ -9612,12 +9791,27 @@ async function pedirDesbloqueo(motivoDirecto){
     return false;
   }
   let motivo = (typeof motivoDirecto === 'string') ? motivoDirecto.trim() : '';
+  const _enviadoPend = !h.publicado_en && !ed.activo && !!(((state.prop||{})[ed.origCodigo]||{}).enviada);
+  if(!motivo && _enviadoPend){
+    motivo = await _modalTexto({
+      titulo:'Reabrir: el cliente pidió cambios', sub:ed.origCodigo||'', alerta:true,
+      html:'<p>La propuesta enviada al cliente deja de estar congelada. Tené en cuenta:</p>'+
+        '<ul class="imp-l">'+
+          '<li>Hacé los cambios, guardá y emití una <b>versión nueva</b> de la propuesta: la anterior queda como <b>reemplazada</b>.</li>'+
+          '<li>Mientras tanto el presupuesto sigue sin poder usarse en compras, contratos ni certificados.</li>'+
+          '<li>Tu motivo queda en el presupuesto y en el historial, con tu nombre y la fecha.</li>'+
+        '</ul>',
+      label:'Qué pidió el cliente', placeholder:'Ej. el cliente pidió quitar el revoque del Nivel 5 y agregar la pintura de fachada',
+      ok:'Reabrir para editar'
+    });
+    if(!motivo) return false;
+  }
   if(!motivo){
     let cons = {}; try{ cons = await rubrosConConsumo(ed.origCodigo); }catch(e){}
     const ks = Object.keys(cons);
     motivo = await _modalTexto({
       titulo:'Reabrir presupuesto aprobado', sub:(ed.origCodigo||'')+(h.base_version?' · línea base v'+h.base_version:''), alerta:true,
-      html:'<p>Vas a modificar un presupuesto que ya está publicado. Tené en cuenta:</p>'+
+      html:'<p>Vas a modificar un presupuesto que ya está congelado. Tené en cuenta:</p>'+
         '<ul class="imp-l">'+
           '<li>Podés agregar, quitar o cambiar rubros. Al guardar se congela una <b>versión nueva de la línea base</b>'+(h.base_version?' (la v'+h.base_version+' queda guardada para comparar)':'')+' y el presupuesto se vuelve a bloquear solo.</li>'+
           '<li>Las órdenes de compra, certificados y contratos ya emitidos <b>no se modifican</b>, pero sus saldos se calculan contra lo nuevo.</li>'+
@@ -9685,7 +9879,7 @@ async function _detectarCompNuevas(autoAbrir){
     if(autoAbrir && pend.length) setTimeout(function(){ _revisarComposiciones(pend); }, 250);
   }catch(e){ /* columnas de v9.2 aún no creadas */ }
 }
-function _estaCongelado(){ const h = _cabActual(); return !!(h && h.publicado_en) && !ed.desbloqueado; }
+function _estaCongelado(){ const h = _cabActual(); return (!!(h && h.publicado_en) || !!(!ed.activo && ((state.prop||{})[ed.origCodigo]||{}).enviada)) && !ed.desbloqueado; }
 function _pintarAvisoCongelado(){
   const pie = document.getElementById('pmLockPie'); if(!pie) return;
   let el = document.getElementById('pmCompInfo');
@@ -12683,7 +12877,7 @@ async function aprobarParaCliente(presu, version, repintar){
   const pub = ed.activo;
   let explic, accion = null, accionTxt = '';
   if(sinCambios){
-    explic = '<div class="ap-ok">✓ La v'+version+' <b>coincide con el presupuesto</b>. Al aprobarla queda como la versión oficial del cliente'+(pub?'':' y el presupuesto se <b>publica</b>')+'.</div>';
+    explic = '<div class="ap-ok">✓ La v'+version+' <b>coincide con el presupuesto</b>. Al aprobarla queda como la versión oficial del cliente'+(pub?'':' y el presupuesto queda <b>aprobado y disponible</b> para órdenes de compra, contratos y certificados')+'.</div>';
     accion = 'igual'; accionTxt = '✓ Aprobar para el cliente';
   } else if(A.tipo === 'cant'){
     if(pub){
@@ -12710,7 +12904,10 @@ async function aprobarParaCliente(presu, version, repintar){
       explic+
       (filas ? '<div class="ap-tw"><table class="ap-t"><thead><tr><th>Rubro</th><th>Qué cambió</th><th class="n">En la v'+version+'</th><th class="n">En el presupuesto</th></tr></thead><tbody>'+filas+'</tbody></table>'+
         (A.dif.length>40?'<div style="font-size:11px;color:#8893a5;padding:6px">… y '+(A.dif.length-40)+' más</div>':'')+'</div>' : '')+
-      (accion ? '<label class="ap-l">¿Cómo aprobó el cliente? <span style="color:#c0392b">*</span></label><textarea id="apObs" rows="2" maxlength="300" placeholder="Ej. aprobado por correo del Ing. Pérez el 26/09 · acta de reunión del 25/09"></textarea>'+
+      (accion ? '<div class="ap-fila"><div><label class="ap-l">Respaldo de la aprobación <span style="color:#c0392b">*</span></label>'+
+          '<select id="apTipo"><option value="">Elegí…</option><option>Acta de reunión</option><option>Correo del cliente</option><option>Mensaje del cliente (WhatsApp)</option><option>Contrato u orden firmada</option><option>Otro</option></select></div>'+
+          '<div><label class="ap-l">Fecha en que aprobó <span style="color:#c0392b">*</span></label><input type="date" id="apFecha" max="'+new Date().toISOString().slice(0,10)+'" value="'+new Date().toISOString().slice(0,10)+'"></div></div>'+
+        '<label class="ap-l">Detalle del respaldo <span style="color:#c0392b">*</span></label><textarea id="apObs" rows="2" maxlength="300" placeholder="Ej. correo del Ing. Pérez del 26/09 aprobando la propuesta · acta de la reunión del 25/09"></textarea>'+
         (accion==='costo'?'<label class="ap-l">Motivo de aprobar con diferencia <span style="color:#c0392b">*</span></label><textarea id="apMot" rows="2" maxlength="300" placeholder="Ej. el cliente aprobó la v25; los precios de materiales se actualizaron después"></textarea>':'') : '')+
       '<div class="ap-err2" id="apErr"></div>'+
     '</div>'+
@@ -12722,9 +12919,16 @@ async function aprobarParaCliente(presu, version, repintar){
   const si = ov.querySelector('#apSi'); if(!si) return;
   si.onclick = async function(){
     const er = ov.querySelector('#apErr');
-    const obs = (ov.querySelector('#apObs').value||'').trim();
+    const _tipo = (ov.querySelector('#apTipo').value||'').trim();
+    const _fecha = (ov.querySelector('#apFecha').value||'').trim();
+    const _det = (ov.querySelector('#apObs').value||'').trim();
     const mot = accion === 'costo' ? (ov.querySelector('#apMot').value||'').trim() : '';
-    if(obs.length < 8){ er.textContent = 'Escribí cómo aprobó el cliente (correo, acta, reunión).'; return; }
+    if(!_tipo){ er.textContent = 'Elegí con qué respaldo aprobó el cliente (acta, correo, mensaje…).'; return; }
+    if(!_fecha){ er.textContent = 'Indicá la fecha en que aprobó el cliente.'; return; }
+    if(_fecha > new Date().toISOString().slice(0,10)){ er.textContent = 'La fecha de aprobación no puede ser futura.'; return; }
+    if(_det.length < 8){ er.textContent = 'Escribí el detalle del respaldo (quién aprobó y dónde consta).'; return; }
+    const _fTxt = _fecha.split('-').reverse().join('/');
+    const obs = '['+_tipo+' · '+_fTxt+'] '+_det;
     if(accion === 'costo' && mot.length < 10){ er.textContent = 'Escribí el motivo de aprobar con diferencia.'; return; }
     si.disabled = true; si.textContent = 'Aprobando…';
     /* Quien tiene el permiso puede publicar y ajustar aunque no haya elaborado el presupuesto.
@@ -12785,9 +12989,12 @@ async function aprobarParaCliente(presu, version, repintar){
         }
         await sb.from('propuesta_cab').update(upd).eq('presupuesto', presu).eq('version', version);
       }catch(eS){ console.warn('estado de la propuesta', eS); }
+      try{   // v10.70 · respaldo estructurado (columnas del script v91; si aún no existen, queda igual en el texto)
+        await sb.from('propuesta_cab').update({ respaldo_tipo:_tipo, respaldo_fecha:_fecha }).eq('presupuesto', presu).eq('version', version);
+      }catch(eR){ console.warn('respaldo estructurado', eR); }
       try{ _propEstadoPresu(presu); }catch(eE){}
       cerrar();
-      showToast('v'+version+' aprobada para el cliente','success', 'Quedó oficial: comercial y de costo. El presupuesto está publicado.');
+      showToast('v'+version+' aprobada para el cliente','success', 'Quedó oficial: comercial y de costo. Ya se puede usar en órdenes de compra, contratos y certificados.');
       if(typeof repintar === 'function') await repintar();
     }catch(e){
       console.error('aprobar para el cliente', e);
@@ -12799,6 +13006,7 @@ async function aprobarParaCliente(presu, version, repintar){
 
 /* v10.61 · Una línea en el presupuesto: cuál es la propuesta oficial o cuál está esperando aprobación */
 async function _propEstadoPresu(presu){
+  try{ await _cargarPropInfo(presu); renderEstadoUI(); if(ed.open && ed.origCodigo === presu) aplicarBloqueo(_cabActual()); }catch(eU){ console.warn('estado tras propuesta', eU); }   // v10.70
   let el = document.getElementById('pmPropEstado');
   const badge = document.getElementById('pmEstadoBadge');
   if(!el && badge){ el = document.createElement('span'); el.id = 'pmPropEstado'; el.style.cssText = 'margin-left:8px;font-size:11.5px;font-weight:800;border-radius:999px;padding:3px 10px;display:none'; badge.parentNode.insertBefore(el, badge.nextSibling); }
@@ -12851,7 +13059,9 @@ async function _propEstadoPresu(presu){
 .ap-t{width:100%;border-collapse:collapse;font-size:12px}.ap-t th{position:sticky;top:0;background:#F4F6FA;text-align:left;padding:6px 9px;font-size:10.5px;color:#6B7486;text-transform:uppercase}
 .ap-t td{padding:6px 9px;border-top:1px solid #EEF1F6}.ap-t .n{text-align:right;white-space:nowrap}
 .ap-l{display:block;font-weight:700;font-size:12px;color:#4B5568;margin:8px 0 4px}
-.ap-body textarea{width:100%;box-sizing:border-box;border:1px solid #C9D0DC;border-radius:8px;padding:8px 9px;font:inherit}
+.ap-body textarea,.ap-body select,.ap-body input[type=date]{width:100%;box-sizing:border-box;border:1px solid #C9D0DC;border-radius:8px;padding:8px 9px;font:inherit;background:#fff}
+.ap-fila{display:grid;grid-template-columns:1.3fr 1fr;gap:10px}
+@media (max-width:640px){.ap-fila{grid-template-columns:1fr}}
 .ap-err2{color:#c0392b;font-size:12px;min-height:16px;margin-top:6px}
 .ap-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid #e2e6ee}
 .ap-si{background:#1B5524;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:800;cursor:pointer}
