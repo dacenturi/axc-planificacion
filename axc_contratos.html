@@ -467,7 +467,7 @@ html[data-theme="alto-contraste"]{
       <div class="fgrp"><label class="lbl" for="password">Contraseña</label><input class="inp" type="password" id="password" required autocomplete="current-password"></div>
       <button class="btn btn-pri btn-block" id="btnLogin" type="submit">Ingresar</button>
     </form>
-    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.4 · el contratista nuevo queda también en la lista maestra · orden de servicio y su trabajo por administración · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
+    <p class="muted" style="font-size:11.5px;text-align:center;margin-top:18px">Conexdata · AXC Contratos v3.5 · muestra si el presupuesto está aprobado por el cliente · el contratista nuevo queda también en la lista maestra · orden de servicio y su trabajo por administración · nuevo contrato desde Certificación · creado por en la lista · al aprobar queda vigente · detalle destacado y orden de líneas · cambio de estado por administración · tema elegido en Perfiles</p>
   </div>
 </div>
 
@@ -788,6 +788,7 @@ async function cargarTodo(){
       sb.from('presupuesto_cab').select('codigo,obra,descripcion,activo,publicado_en').order('codigo')
     ]);
     if(c.error) throw c.error;
+    try{ await aprCargar(); }catch(eA){ console.warn('aprobación del cliente', eA); }   // v3.5
     S.contratos=c.data||[]; S.items=it.data||[]; S.adendas=ad.data||[]; S.contratistas=con.data||[]; S.ppCab=pp.data||[];
     const obras={}; const addO=function(v){ const k=norm(v); if(k && !obras[k]) obras[k]=String(v).trim(); };
     (lis.data||[]).forEach(function(l){ if((l.tipo==='obras_presu'||l.tipo==='obras') && l.activo!==false) addO(l.valor); });
@@ -1137,13 +1138,45 @@ function erroresLineas(){
 }
 
 /* ── Paso 1: datos ────────────────────────────────────────── */
+/* ── v91 · Aprobación del cliente: etiqueta de cada presupuesto ─────────────────────────────────
+   Un presupuesto se consume solo si el cliente lo aprobó. Los que ya estaban publicados antes de este
+   cambio siguen funcionando con la marca «sin aprobación» hasta que se registre la aprobación.
+   Se lee de v_propuestas_estado (sin precios); si todavía no existe, de propuesta_cab. */
+const APR = { mapa:null, ok:false };
+async function aprCargar(force){
+  if(APR.mapa && !force) return APR.mapa;
+  const mapa = {}; let ok = false;
+  for(const t of ['v_propuestas_estado','propuesta_cab']){
+    try{
+      const filas = []; let bien = true;
+      for(let off = 0; off < 50000; off += 1000){
+        const r = await sb.from(t).select('presupuesto,version,aceptada').range(off, off + 999);
+        if(r.error){ bien = false; break; }
+        Array.prototype.push.apply(filas, r.data || []);
+        if((r.data || []).length < 1000) break;
+      }
+      if(bien && filas.length){
+        filas.forEach(function(x){ if(x.aceptada){ const m = mapa[x.presupuesto]; if(!m || x.version > m) mapa[x.presupuesto] = x.version; } });
+        ok = true; break;
+      }
+    }catch(e){ /* se prueba la siguiente fuente */ }
+  }
+  APR.ok = ok; APR.mapa = mapa; return mapa;
+}
+function aprTxt(codigo){ if(!APR.ok) return ''; return APR.mapa[codigo] ? 'Aprobado v' + APR.mapa[codigo] : '⚠ sin aprobación'; }
+function aprBadge(codigo){
+  const t = aprTxt(codigo); if(!t) return '';
+  const ok = t.indexOf('Aprobado') === 0;
+  return '<span style="display:inline-block;margin-top:2px;font-size:9.5px;font-weight:800;border-radius:999px;padding:1px 7px;border:1px solid '+(ok?'#bfe0c7':'#E6C66B')+';background:'+(ok?'#e6f4ea':'#FBEFCB')+';color:'+(ok?'#1B5524':'#8a5a00')+'">'+t+'</span>';
+}
+
 function opt(v, t, sel){ return '<option value="'+esc(v)+'"'+(String(v)===String(sel)?' selected':'')+'>'+esc(t)+'</option>'; }
 function pasoDatos(){
   const c=E.cab, pp = E.tipo==='presupuesto';
   const ppsObra = S.ppCab.filter(function(p){ return p.activo && (!c.obra || norm(p.obra)===norm(c.obra)); });
   const conOpts = '<option value="">Elegí el contratista…</option>'+S.contratistas.filter(function(k){ return k.activo!==false || k.id===c.contratista_id; }).map(function(k){ return opt(k.id,k.nombre,c.contratista_id); }).join('');
   const obraOpts = '<option value="">Elegí la obra…</option>'+S.obras.map(function(o){ return opt(o,o,c.obra); }).join('');
-  const ppOpts = '<option value="">'+(ppsObra.length?'Elegí el presupuesto…':'No hay presupuestos aprobados para esta obra')+'</option>'+ppsObra.map(function(p){ return opt(p.codigo, p.codigo+(p.descripcion?' · '+p.descripcion:''), c.presupuesto); }).join('');
+  const ppOpts = '<option value="">'+(ppsObra.length?'Elegí el presupuesto…':'No hay presupuestos aprobados para esta obra')+'</option>'+ppsObra.map(function(p){ return opt(p.codigo, p.codigo+(p.descripcion?' · '+p.descripcion:'')+(aprTxt(p.codigo)?' · '+aprTxt(p.codigo):''), c.presupuesto); }).join('');
   const bloqueTipo = E.id && E.origIds.length;
   $('edBody').innerHTML =
     '<div class="tipo-pick">'+
@@ -2140,7 +2173,7 @@ async function cerrarSP(c){
 async function vincularPP(c){
   const pps=S.ppCab.filter(function(p){ return p.activo && norm(p.obra)===norm(c.obra); });
   if(!pps.length){ toast('No hay presupuestos aprobados de '+c.obra,'error','Cuando se apruebe uno, volvé a esta opción'); return; }
-  const pick=await ask({ title:'Vincular a un presupuesto', html:'<p>Elegí el presupuesto. Las líneas con código de rubro se emparejan solas; las líneas libres quedan como están.</p><div class="fgrp" style="margin-top:12px"><select class="sel" id="vpSel">'+pps.map(function(p){ return '<option value="'+esc(p.codigo)+'">'+esc(p.codigo+(p.descripcion?' · '+p.descripcion:''))+'</option>'; }).join('')+'</select></div>', ok:'Ver emparejamiento' });
+  const pick=await ask({ title:'Vincular a un presupuesto', html:'<p>Elegí el presupuesto. Las líneas con código de rubro se emparejan solas; las líneas libres quedan como están.</p><div class="fgrp" style="margin-top:12px"><select class="sel" id="vpSel">'+pps.map(function(p){ return '<option value="'+esc(p.codigo)+'">'+esc(p.codigo+(p.descripcion?' · '+p.descripcion:'')+(aprTxt(p.codigo)?' · '+aprTxt(p.codigo):''))+'</option>'; }).join('')+'</select></div>', ok:'Ver emparejamiento' });
   if(!pick) return;
   const cod=$('vpSel').value; busy(true,'Emparejando…');
   let pp; try{ pp=await cargarPP(cod, c.id); }catch(e){ busy(false); toast('No se pudo cargar el presupuesto','error',errMsg(e)); return; }
@@ -2621,9 +2654,9 @@ function pintarAvance(){
   const T = AV.tot;
   let h = '<div class="toolbar"><select class="sel" id="avObra"><option value="">Todas las obras</option>'+
     S.obras.map(function(o){ return opt(o,o,AV.obra); }).join('')+'</select>'+
-    '<span class="soft" style="font-size:12.5px">'+(AV.pps.length ? AV.pps.length+' presupuesto(s) publicado(s) · '+AV.filas.length+' rubro(s)' : 'Sin presupuestos publicados')+'</span></div>';
+    '<span class="soft" style="font-size:12.5px">'+(AV.pps.length ? AV.pps.length+' presupuesto(s) aprobado(s) · '+AV.filas.length+' rubro(s)' : 'Sin presupuestos aprobados')+'</span></div>';
   if(!AV.filas.length){
-    h += '<div class="empty"><b>No hay datos para mostrar</b>Elegí una obra con presupuesto publicado.</div>';
+    h += '<div class="empty"><b>No hay datos para mostrar</b>Elegí una obra con presupuesto aprobado.</div>';
     $('avBody').innerHTML = h;
     $('avObra').addEventListener('change', async function(){ AV.obra = this.value; $('avBody').innerHTML='<div class="empty" style="padding:30px"><b>Calculando…</b></div>'; await avCargar(AV.obra); pintarAvance(); });
     return;
@@ -2743,7 +2776,7 @@ function avancePDF(){
     '<div class="hoja page"><div class="top"><img src="'+AXC_LOGO_DATA_URL+'" alt="AXC">'+
       '<div><div class="k">CONTROL DE OBRA · DOCUMENTO CONFIDENCIAL</div>'+
       '<div class="t">Avance físico y financiero</div>'+
-      '<div class="s">'+esc(obra)+' · '+AV.pps.length+' presupuesto(s) publicado(s) · '+AV.filas.length+' rubro(s)</div></div>'+
+      '<div class="s">'+esc(obra)+' · '+AV.pps.length+' presupuesto(s) aprobado(s) · '+AV.filas.length+' rubro(s)</div></div>'+
       '<div class="uso">USO INTERNO<br><span style="font-weight:600">no entregar al cliente</span></div></div><div class="gold"></div>'+
     '<div class="kp">'+
       '<div><div class="l">Presupuestado</div><div class="v">₲ '+fmtGs(T.mPres)+'</div><div class="s">material + mano de obra</div></div>'+
@@ -2763,7 +2796,7 @@ function avancePDF(){
       '<td class="n">'+fmtGs(T.mCert)+'</td><td class="n">'+fmtGs(T.mComp)+'</td><td class="n">'+fmtGs(T.saldoPres)+'</td>'+
       '<td class="n">'+fmtGs(T.saldoCtr)+'</td><td class="n">'+(T.desvio>0?'+':'')+fmtGs(T.desvio)+'</td>'+
       '<td class="n">'+Math.round(T.avance)+' %</td></tr></tbody></table>'+
-    '<div class="notas"><b>Cómo se lee:</b> «Presupuestado» es material más mano de obra del presupuesto publicado. '+
+    '<div class="notas"><b>Cómo se lee:</b> «Presupuestado» es material más mano de obra del presupuesto aprobado. '+
       '«Contratado» es lo pactado con los contratistas; «Certificado», la mano de obra ya medida y aprobada; «Comprado», los materiales de las órdenes de compra. '+
       '<b>Saldo del presupuesto</b> = presupuestado − certificado − comprado. <b>Saldo del contrato</b> = contratado − certificado. '+
       '<b>Desvío</b> = (certificado + comprado) − presupuestado: en rojo, el rubro ya gastó más de lo previsto. '+
