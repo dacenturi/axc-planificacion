@@ -603,6 +603,7 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .tar-nuevo{border-style:dashed!important;border-color:#C8A028!important;background:#FFFBEA!important;color:#6B5310!important;margin-top:4px}
 .tar-cambiar{border:0;background:transparent;color:#2E6B45;text-decoration:underline;cursor:pointer;font-size:12px;font-family:inherit;padding:0 2px}
 .tar-mo{margin-top:4px;color:#1F3864}
+.tar-ult{color:#1B5524}
 #scRubQ.ok{border-color:#1F7A3F;background:#F3FAF5;font-weight:600}
 .tar{background:#F4F7FB;border:1px solid #D6E0EE;border-radius:10px;padding:10px 12px;margin:10px 0}
 .tar-cat,.tar-new{margin-top:8px}.tar-cat[hidden],.tar-new[hidden]{display:none}
@@ -3962,6 +3963,46 @@ async function moDeComposicion(cod){
     return hay ? Math.round(mo) : null;
   }catch(e){ return null; }
 }
+/* v13.25 · Último costo unitario cargado para un trabajo por administración.
+   Se busca, en este orden, el precio más reciente:
+     1. en este mismo certificado (líneas ya agregadas, todavía sin guardar);
+     2. en el mismo Trabajo por Administración (mismo código de trabajo y de rubro);
+     3. solo para rubros del catálogo (los 99.xxx se numeran por trabajo y no se comparan entre trabajos):
+        a) del mismo contratista en cualquier trabajo por administración,
+        b) de cualquier contratista.
+   No se toman certificados anulados. Devuelve { precio, fuente, numero, fecha, ta, contratista } o null. */
+async function ultimoPrecioTA(taCod, rubCod, contratista){
+  if(!rubCod) return null;
+  // 1 · Este certificado
+  const enEste = (ed.lineas||[]).filter(function(l){ return l.admin === taCod && l.rubro_codigo === rubCod; })
+    .map(function(l){ return ed.med[keyLinea(l.rubro_codigo, l.codigo_insumo, l.descripcion, l.presupuesto)] || {}; })
+    .filter(function(m){ return Number(m.precio) > 0; });
+  if(enEste.length) return { precio:Number(enEste[enEste.length-1].precio), fuente:'este', ta:taCod };
+  const es99 = /^99\./.test(String(rubCod));
+  try{
+    let q = sb.from('certificado_items')
+      .select('precio_unit,trabajo_admin,certificado_id,certificados!inner(numero,fecha,estado,contratista)')
+      .eq('rubro_codigo', rubCod).not('trabajo_admin','is',null).gt('precio_unit', 0).limit(500);
+    if(es99) q = q.eq('trabajo_admin', taCod);
+    const { data, error } = await q;
+    if(error) throw error;
+    const L = (data||[]).filter(function(x){
+      const c = x.certificados || {};
+      return !/^anulad/i.test(String(c.estado||'')) && !(ed.id && x.certificado_id === ed.id);
+    }).sort(function(a,b){
+      const fa = String((a.certificados||{}).fecha||''), fb = String((b.certificados||{}).fecha||'');
+      return fb.localeCompare(fa) || String((b.certificados||{}).numero||'').localeCompare(String((a.certificados||{}).numero||''));
+    });
+    const nom = norm(contratista||'');
+    const pick = L.filter(function(x){ return x.trabajo_admin === taCod; })[0]
+              || (!es99 && nom ? L.filter(function(x){ return norm((x.certificados||{}).contratista||'') === nom; })[0] : null)
+              || (!es99 ? L[0] : null);
+    if(!pick) return null;
+    const c = pick.certificados || {};
+    return { precio:Number(pick.precio_unit), numero:c.numero||'', fecha:c.fecha||'', ta:pick.trabajo_admin, contratista:c.contratista||'',
+             fuente: pick.trabajo_admin === taCod ? 'trabajo' : (nom && norm(c.contratista||'') === nom ? 'contratista' : 'otro') };
+  }catch(e){ console.warn('ultimo precio TA', e); return null; }
+}
 function capDe(cod){
   const c = String(cod||'').split('.')[0].padStart(2,'0');
   if(c === '99') return { cod:'99', nom:'TRABAJOS FUERA DE CATÁLOGO' };
@@ -4521,7 +4562,9 @@ async function trabajoSinContrato(tipoFijo, taPre){
         let _prAuto = false;
         const fijar = async function(r){
           box._rub = r;
-          if(!r){ inf.innerHTML = ''; un.readOnly = false; un.classList.remove('ro'); rq.classList.remove('ok'); return; }
+          if(!r){ inf.innerHTML = ''; un.readOnly = false; un.classList.remove('ro'); rq.classList.remove('ok');
+                  if(_prAuto){ pr.value = ''; _prAuto = false; pr.dispatchEvent(new Event('input')); }   // v13.25 · el costo sugerido era del trabajo anterior
+                  return; }
           const cap = capDe(r.cod);
           rq.value = (r.origen === 'nuevo' ? '' : r.cod+' · ') + r.nom; rq.classList.add('ok');
           res.innerHTML = '';
@@ -4533,12 +4576,28 @@ async function trabajoSinContrato(tipoFijo, taPre){
           box.querySelector('#scRubCambiar').onclick = function(){ fijar(null); rq.value = ''; rq.classList.remove('ok'); buscar(); rq.focus(); };
           if(r.un){ un.value = r.un; un.readOnly = true; un.classList.add('ro'); } else { un.readOnly = false; un.classList.remove('ro'); }
           if(!ds.value.trim()) ds.value = r.nom;
-          // Composición con mano de obra: sugerir el costo unitario
+          // v13.25 · Último costo cargado en el sistema: es el precio real, tiene prioridad sobre la composición
+          const taCodAct = (box.querySelector('#scTa')||{}).value || '';
+          const contrAct = String((document.getElementById('edContra')||{}).value||'').trim();
+          const up = (r.origen === 'nuevo' && !taRubs.some(function(x){ return x.cod === r.cod; })) ? null
+                   : await ultimoPrecioTA(taCodAct, r.cod, contrAct);
+          if(box._rub !== r) return;
+          if(up && up.precio > 0){
+            if(!String(pr.value||'').trim() || _prAuto){ pr.value = Math.round(up.precio).toLocaleString('es-PY'); _prAuto = true; pr.dispatchEvent(new Event('input')); }
+            const origenTxt = up.fuente === 'este' ? 'ya cargado en este certificado'
+              : (up.fuente === 'trabajo' ? 'en este mismo trabajo' : (up.fuente === 'contratista' ? 'para '+escapeHtml(up.contratista)+' en '+escapeHtml(up.ta) : 'en '+escapeHtml(up.ta)+(up.contratista ? ' · '+escapeHtml(up.contratista) : '')))
+              + (up.numero ? ' · '+escapeHtml(up.numero) : '') + (up.fecha ? ' del '+fmtFecha(String(up.fecha).slice(0,10)) : '');
+            inf.innerHTML += '<div class="tar-mo tar-ult">💾 Último costo cargado: <b>'+gs(up.precio)+'</b> por '+escapeHtml(r.un||un.value||'unidad')+
+              ' ('+origenTxt+') · se cargó como costo unitario (podés cambiarlo)</div>';
+          }
+          // Composición con mano de obra: sugerir el costo unitario (solo si no hay un costo ya cargado)
           if(r.origen !== 'nuevo' && r.receta){
             const mo = await moDeComposicion(r.cod);
             if(mo && box._rub === r){
-              if(!String(pr.value||'').trim() || _prAuto){ pr.value = Math.round(mo).toLocaleString('es-PY'); _prAuto = true; pr.dispatchEvent(new Event('input')); }
-              inf.innerHTML += '<div class="tar-mo">🧩 Mano de obra según la composición: <b>'+gs(mo)+'</b> por '+escapeHtml(r.un||'unidad')+' · se cargó como costo unitario (podés cambiarlo)</div>';
+              const yaUlt = !!(up && up.precio > 0);
+              if(!yaUlt && (!String(pr.value||'').trim() || _prAuto)){ pr.value = Math.round(mo).toLocaleString('es-PY'); _prAuto = true; pr.dispatchEvent(new Event('input')); }
+              inf.innerHTML += '<div class="tar-mo">🧩 Mano de obra según la composición: <b>'+gs(mo)+'</b> por '+escapeHtml(r.un||'unidad')+
+                (yaUlt ? ' · referencia' : ' · se cargó como costo unitario (podés cambiarlo)')+'</div>';
             }
           }
         };
@@ -4578,7 +4637,7 @@ async function trabajoSinContrato(tipoFijo, taPre){
             fijar({ cod:x.codigo, nom:x.nombre, un:x.unidad||'', cant:0, origen:'catalogo', receta: !!x.tiene_receta, capLbl: String(x.capitulo||'').trim() });
           }; });
         };
-        rq.addEventListener('input', function(){ if(box._rub){ box._rub = null; inf.innerHTML = ''; rq.classList.remove('ok'); un.readOnly = false; un.classList.remove('ro'); } buscar(); });
+        rq.addEventListener('input', function(){ if(box._rub){ fijar(null); } buscar(); });
         rq.addEventListener('focus', function(){ if(!box._rub) buscar(); });
         buscar();
       }
