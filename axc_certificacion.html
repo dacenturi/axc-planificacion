@@ -843,6 +843,14 @@ table.tb td{font-size:12.5px}
 .det-tbl tr.obra-h td{background:#EDF3FB;color:var(--navy);font-family:'Syne',sans-serif;font-weight:700;font-size:13.5px;padding:9px 10px;border-top:2px solid var(--navy)}
 .det-tbl tr.obra-s td{background:var(--surface-2);font-weight:700;color:var(--navy);border-top:1px solid var(--border)}
 .det-obs{font-size:12.5px;color:var(--text-muted);margin-top:4px}
+.det-tbl td.m,.det-tbl th.m{white-space:nowrap}
+/* v13.24 · Detalle del certificado con montos acumulados: más columnas, más compacto */
+.det-scroll{overflow-x:auto}
+.det-cert{font-size:12.5px}
+.det-cert th{padding:10px 8px;font-size:10.5px;letter-spacing:.2px}
+.det-cert td{padding:10px 8px}
+.det-cert tbody td:nth-child(2){min-width:240px}
+.det-tbl td.neg{color:#b42318;font-weight:600}
 .det-fotos{display:flex;gap:9px;flex-wrap:wrap;margin-top:9px}
 .det-fotos img{width:104px;height:104px;object-fit:cover;border-radius:9px;border:1px solid var(--border);cursor:pointer;background:var(--surface-2)}
 .det-fotos img:hover{border-color:var(--navy2);transform:scale(1.02)}
@@ -5210,7 +5218,7 @@ function nombreRubroDe(cod, desc, rubroDesc){
   const r = ((typeof CAT !== 'undefined' && CAT.rubros) || []).filter(function(x){ return String(x.codigo) === base; })[0];
   return (r && r.nombre) || desc || '';
 }
-/* v13.20 · Nombre que acompaña al código en las referencias «13.066 · …».
+/* v13.24 · Nombre que acompaña al código en las referencias «13.066 · …».
    Es el nombre del RUBRO del presupuesto, no el del insumo de mano de obra de su receta
    (una receta puede reutilizar una M.O. genérica, p. ej. 13.066 «Instalación de bacha»
    con la M.O. «Instalación de agua corriente interno»). Si el rubro no tiene un nombre
@@ -5220,6 +5228,40 @@ function nomRubroRef(cod, rubroDesc, desc){
   if(cod && rd && !esDescGenerica(rd) && rd !== String(cod).trim() &&
      !/^(fuera del? (presupuesto|contrato)|gasto indirecto|gasto a presupuestar)/i.test(rd)) return rd;
   return String(desc||'').trim() || rd;
+}
+/* v13.24 · Avance de un ítem certificado — criterio único para la vista, la planilla y el PDF.
+   · Con ítem de contrato: se mide contra el total del ítem contratado (cantidad × precio pactado).
+       avance acumulado = (monto aprobado antes + monto de este certificado) ÷ total contratado
+       avance de este certificado = monto de este certificado ÷ total contratado
+   · Sin contrato, con presupuesto: medición ÷ cantidad presupuestada (más lo medido antes).
+   · Trabajo libre / fuera de presupuesto: sin porcentaje (no hay contra qué comparar).
+   ci  = fila de contrato_items { cantidad, precio_pactado } o null
+   ant = { cant, monto } aprobado antes para ese ítem (planillaAnterior) o null
+   Devuelve también los montos en guaraníes: anterior, acumulado (anterior + este) y saldo del contrato. */
+function avanceItemCert(x, ci, ant){
+  const sub = Number(x.subtotal)||0, med = Number(x.cantidad)||0;
+  const aM = (ant && Number(ant.monto))||0, aC = (ant && Number(ant.cant))||0;
+  if(ci){
+    const cant = Number(ci.cantidad)||0, pu = Number(ci.precio_pactado)||0, tot = cant * pu;
+    if(tot > 0) return {
+      base:'contrato', cantRef:cant, tot:tot,
+      antMonto:aM, acumMonto:aM + sub, saldo:tot - (aM + sub),
+      pct: Math.round((aM + sub) / tot * 100), pctEste: Math.round(sub / tot * 100), hayAnt: aM > 0,
+      formula: (aM > 0 ? '(Anterior '+gs(aM)+' + este certificado '+gs(sub)+')' : 'Este certificado '+gs(sub))+
+               ' ÷ total contratado '+gs(tot)+' ('+qty(cant)+' '+(x.unidad||'')+' × '+gs(pu)+')'
+    };
+  }
+  const cp = Number(x.cant_presup)||0;
+  if(x.rubro_codigo && cp > 0) return {
+    base:'presupuesto', cantRef:cp, tot:0,
+    antMonto:aM, acumMonto:aM + sub, saldo:null,
+    pct: Math.round((aC + med) / cp * 100), pctEste: Math.round(med / cp * 100), hayAnt: aC > 0,
+    formula: (aC > 0 ? '(Anterior '+qty(aC)+' + este certificado '+qty(med)+')' : 'Medición '+qty(med))+
+             ' ÷ cantidad presupuestada '+qty(cp)+' '+(x.unidad||'')
+  };
+  // Trabajo libre o por administración: montos sí (como la planilla), porcentaje y saldo no
+  return { base:null, cantRef:null, tot:0, antMonto:aM, acumMonto:aM + sub, saldo:null,
+           pct:null, pctEste:null, hayAnt:aM > 0, formula:'' };
 }
 function descLinea(desc, detalle, cod, ctNum){
   const d = String(detalle||'').trim();
@@ -9703,6 +9745,17 @@ async function abrirDetalle(id){
     if(bAd) bAd.textContent = '📎 Adjuntos'+(dtAdj.length?' ('+dtAdj.length+')':'');
     const porItem = {};
     fotos.forEach(f=>{ (porItem[f.item_id] = porItem[f.item_id]||[]).push(f); });
+    // v13.24 · Ítems del contrato y acumulado anterior: mismo criterio que la Planilla de Avance
+    const ctIt = {};
+    const ctIds = (its||[]).map(x=>x.contrato_item_id).filter(Boolean);
+    if(ctIds.length){
+      try{
+        const { data:ci } = await sb.from('contrato_items').select('id,cantidad,precio_pactado').in('id', ctIds);
+        (ci||[]).forEach(function(r){ ctIt[r.id] = r; });
+      }catch(e){ console.warn('avance contrato', e); }
+    }
+    let antIt = {};
+    try{ antIt = await planillaAnterior(c, its) || {}; }catch(e){ console.warn('avance anterior', e); }
 
     // Residente que creó el certificado (si no quedó, el que midió)
     const residenteCert = c.creado_por || c.medido_por || '—';
@@ -9717,16 +9770,40 @@ async function abrirDetalle(id){
 
     let n = 0;
     dtFlat = [];
+    // v13.24 · La columna Obra solo aporta con más de una obra (si no, ya está en la cabecera)
+    const verObra = ordObra.length > 1;
+    // v13.24 · Totales en guaraníes por obra y generales (anterior, este certificado, acumulado, saldo)
+    const TOT = {}, TG = { ant:0, este:0, acum:0, saldo:0, hayS:false };
+    const tAcc = function(o, av, x){
+      const t = TOT[o] = TOT[o] || { ant:0, este:0, acum:0, saldo:0, hayS:false };
+      [t, TG].forEach(function(z){
+        z.ant += av.antMonto || 0; z.este += Number(x.subtotal) || 0; z.acum += av.acumMonto || 0;
+        if(av.saldo != null){ z.saldo += av.saldo; z.hayS = true; }
+      });
+    };
+    const celdasTot = function(t){
+      return '<td class="r m">'+gs(t.ant)+'</td><td class="r m">'+gs(t.este)+'</td><td class="r m">'+gs(t.acum)+'</td>'+
+             '<td class="r m">'+(t.hayS ? gs(t.saldo) : '—')+'</td>';
+    };
     const filas = ordObra.map(o=>{
       const sub = porObra[o].reduce((a,x)=>a+(Number(x.subtotal)||0),0);
       const cab = ordObra.length>1
-        ? '<tr class="obra-h"><td colspan="11">🏗 '+escapeHtml(o)+'</td></tr>' : '';
+        ? '<tr class="obra-h"><td colspan="14">🏗 '+escapeHtml(o)+'</td></tr>' : '';
       const cuerpo = porObra[o].map(x=>{
         n++;
         const fs = (porItem[x.id]||[]).map(f=>
           '<img src="'+escapeHtml(f._url||'')+'" alt="'+escapeHtml(f.nombre||'')+'" onclick="window.open(this.src)">'
         ).join('');
-        const pct = x.cant_presup > 0 ? Math.round((Number(x.cantidad)/Number(x.cant_presup))*100) : null;
+        const ci  = x.contrato_item_id ? ctIt[x.contrato_item_id] : null;
+        const antX = x.contrato_item_id ? antIt['ci:'+x.contrato_item_id]
+                   : (x.trabajo_admin ? antIt[_plTaKey(x)]
+                   : antIt[_plKey(x.presupuesto, x.rubro_codigo, x.codigo_insumo, x.descripcion, x.sector)]);
+        const av  = avanceItemCert(x, ci, antX);
+        tAcc(o, av, x);
+        const cantRef = av.cantRef != null
+          ? qty(av.cantRef)+'<div class="det-obs">'+(av.base === 'contrato' ? 'contratado' : 'presupuestado')+'</div>' : '—';
+        const pctHtml = av.pct != null
+          ? '<b>'+av.pct+'%</b>'+(av.hayAnt ? '<div class="det-obs">este cert. '+av.pctEste+'%</div>' : '') : '—';
         // v10.2 · Obra de la línea (o la del certificado) y residente que lo cargó
         const obraL = x.obra || (c.obra && c.obra !== 'Sin obra' && c.obra !== 'Varias obras' ? c.obra : '') || '—';
         dtFlat.push(x);
@@ -9744,29 +9821,34 @@ async function abrirDetalle(id){
                   ? ' <span class="lin-tag sr" title="El rubro está en el presupuesto, pero no tiene mano de obra cargada: no hay contra qué comparar el precio certificado">sin precio de referencia</span>'
                   : (x.trabajo_admin ? '' : ' <span class="lin-tag sr" title="Este trabajo no está en el presupuesto">fuera de presupuesto</span>'))
               : '')+
-            '<div class="det-obs'+(String(x.detalle||'').trim()?' det-ref':'')+'">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(nomRubroRef(x.rubro_codigo, x.rubro_desc, x.descripcion)):'trabajo libre')+'</div>'+
+            '<div class="det-obs'+(String(x.detalle||'').trim()?' det-ref':'')+'">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+(function(){ const nr = nomRubroRef(x.rubro_codigo, x.rubro_desc, x.descripcion);
+              const tit = String(x.detalle||'').trim() || x.descripcion || '';
+              return norm(nr) === norm(tit) ? '' : ' · '+escapeHtml(nr); })():'trabajo libre')+'</div>'+
             (x.ubicacion?'<div class="det-obs">📍 '+escapeHtml(x.ubicacion)+'</div>':'')+
             (x.observacion?'<div class="det-obs">'+escapeHtml(x.observacion)+'</div>':'')+
             (fs?'<div class="det-fotos">'+fs+'</div>':'')+
           '</td>'+
-          '<td>'+escapeHtml(obraL)+'</td>'+
+          (verObra ? '<td>'+escapeHtml(obraL)+'</td>' : '')+
           '<td>'+escapeHtml(residenteCert)+'</td>'+
           '<td>'+escapeHtml(x.clasificacion === 'a_presupuestar' ? '—' : (x.presupuesto||'—'))+'</td>'+
           '<td>'+escapeHtml(x.sector||'—')+'</td>'+
-          '<td class="r">'+(x.cant_presup!=null?qty(x.cant_presup):'—')+'</td>'+
+          '<td class="r">'+cantRef+'</td>'+
           '<td class="r">'+qty(x.cantidad)+' '+escapeHtml(x.unidad||'')+'</td>'+
-          '<td class="r">'+(pct!=null?pct+'%':'—')+'</td>'+
-          '<td class="r">'+gs(x.precio_unit)+
+          '<td class="r m" title="'+escapeHtml(av.formula)+'">'+pctHtml+'</td>'+
+          '<td class="r m">'+gs(x.precio_unit)+
             (x.precio_origen === 'pactado'
               ? '<div class="det-obs" style="color:#1B5524">pactado'+(x.precio_alcance?('<br>'+escapeHtml(x.precio_alcance)):'')+'</div>'
               : (x.precio_origen === 'manual' ? '<div class="det-obs" style="color:#8a6d10">cargado a mano</div>' : ''))+
             (x.precio_presup > 0 && Number(x.precio_unit) !== Number(x.precio_presup)
               ? '<div class="det-obs">presup. '+gs(x.precio_presup)+'</div>' : '')+'</td>'+
-          '<td class="r"><b>'+gs(x.subtotal)+'</b></td>'+
+          '<td class="r m">'+(av.antMonto != null ? gs(av.antMonto) : '—')+'</td>'+
+          '<td class="r m"><b>'+gs(x.subtotal)+'</b></td>'+
+          '<td class="r m">'+(av.acumMonto != null ? gs(av.acumMonto) : '—')+'</td>'+
+          '<td class="r m'+(av.saldo != null && av.saldo < 0 ? ' neg' : '')+'"'+(av.saldo != null && av.saldo < 0 ? ' title="Lo certificado supera el total contratado"' : '')+'>'+(av.saldo != null ? gs(av.saldo) : '—')+'</td>'+
         '</tr>';
       }).join('');
       const pie = ordObra.length>1
-        ? '<tr class="obra-s"><td colspan="10" class="r">Subtotal '+escapeHtml(o)+'</td><td class="r">'+gs(sub)+'</td></tr>' : '';
+        ? '<tr class="obra-s"><td colspan="10" class="r">Subtotal '+escapeHtml(o)+'</td>'+celdasTot(TOT[o])+'</tr>' : '';
       return cab + cuerpo + pie;
     }).join('');
 
@@ -9789,10 +9871,12 @@ async function abrirDetalle(id){
         (c.aprobado_por?campo('Aprobado por', escapeHtml(c.aprobado_por)):'')+
       '</div>'+
       (_po.obs?'<div class="aviso-dup" style="margin-bottom:14px">'+escapeHtml(_po.obs).replace(/\n/g,'<br>')+'</div>':'')+
-      '<table class="det-tbl"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th><th>Obra</th><th>Residente</th><th>Presup.</th><th>Sector</th>'+
-      '<th class="r">Cant. presup.</th><th class="r">Medición</th><th class="r">Avance</th><th class="r">Precio unit.</th><th class="r">Subtotal</th></tr></thead>'+
+      '<div class="det-scroll"><table class="det-tbl det-cert"><thead><tr><th class="ord-th">#'+(dtPuedeOrdenar && (its||[]).length > 1 ? '<button type="button" class="ord-az" id="dtOrdAZ" title="Ordenar por código de rubro">⇅</button>' : '')+'</th><th>Trabajo</th>'+(verObra ? '<th>Obra</th>' : '')+'<th>Residente</th><th>Presup.</th><th>Sector</th>'+
+      '<th class="r" title="Cantidad del ítem en el contrato; si el trabajo no tiene contrato, la del presupuesto">Cant. base</th><th class="r">Medición</th><th class="r" title="Avance acumulado del ítem (certificados aprobados anteriores + este) sobre el total contratado. Pasá el mouse sobre cada porcentaje para ver la cuenta.">Avance acum.</th><th class="r">Precio unit.</th>'+
+      '<th class="r m" title="Certificados aprobados anteriores a este, del mismo ítem">Acum. anterior ₲</th><th class="r m">Este certificado ₲</th>'+
+      '<th class="r m" title="Acumulado anterior + este certificado">Acum. total ₲</th><th class="r m" title="Total contratado − acumulado total">Saldo ₲</th></tr></thead>'+
       '<tbody>'+filas+'</tbody>'+
-      '<tfoot><tr><td colspan="10" class="r">TOTAL GENERAL CERTIFICADO</td><td class="r">'+gs(c.total)+'</td></tr></tfoot></table>'+
+      '<tfoot><tr><td colspan="'+(verObra ? 10 : 9)+'" class="r">TOTAL GENERAL</td>'+celdasTot(TG)+'</tr></tfoot></table></div>'+
       liquidacionHTML(c)+
       (_po.reaperturas.length
         ? '<div style="margin-top:16px;padding-top:10px;border-top:1px solid #eef1f6;font-size:11.5px;color:#8893a5;line-height:1.6">'+
@@ -11568,6 +11652,15 @@ async function generarPDF(c, its, conFotos){
   });
   ordObra.sort((a,b)=>a.localeCompare(b,'es'));
 
+  // v13.24 · Cantidad base del ítem: la del contrato si lo tiene (mismo criterio que la vista y la planilla)
+  const ctItP = {};
+  try{
+    const idsP = Array.from(new Set((its||[]).map(function(x){ return x.contrato_item_id; }).filter(Boolean)));
+    if(idsP.length){
+      const { data:kp } = await sb.from('contrato_items').select('id,cantidad,precio_pactado').in('id', idsP);
+      (kp||[]).forEach(function(r){ ctItP[r.id] = r; });
+    }
+  }catch(e){ console.warn('pdf contrato', e); }
   const rows = []; let n = 0; const total = (its||[]).reduce((a,x)=>a+(Number(x.subtotal)||0),0);
   const NC = 8;   // columnas de la tabla
   const variosSec = _secs.length > 1;
@@ -11600,11 +11693,11 @@ async function generarPDF(c, its, conFotos){
         { content:String(n), rowSpan: nota ? 2 : 1 },
         String(x.detalle||'').trim()
           ? { content: pdfSafe(String(x.detalle).trim()), styles:{ fontStyle:'bold' } }
-          : (pdfSafe((cod ? cod+'  ' : '') + desc) +
-             (rdesc && norm(rdesc) !== norm(desc) && norm(rdesc) !== 'fuera de presupuesto' ? ('\nRubro: '+pdfSafe(rdesc)) : '')),
+          : pdfSafe((cod ? cod+'  ' : '') + (cod ? nomRubroRef(cod, rdesc, desc) : desc)),   // v13.24 · nombre del rubro, no el del insumo de M.O.
         pdfSafe(x.presupuesto||'-'),
         pdfSafe(x.unidad||'-'),
-        (x.cant_presup!=null? String(x.cant_presup).replace('.',',') : '-'),
+        (function(){ const av = avanceItemCert(x, x.contrato_item_id ? ctItP[x.contrato_item_id] : null, null);
+                     return av.cantRef != null ? String(av.cantRef).replace('.',',') + (av.base === 'contrato' ? '\ncontratado' : '') : '-'; })(),
         String(x.cantidad).replace('.',','),
         Math.round(Number(x.precio_unit)||0).toLocaleString('es-PY') +
           (x.precio_origen === 'pactado' ? ('\npactado' + (x.precio_alcance ? ('\n'+String(x.precio_alcance)) : ''))
@@ -11625,7 +11718,7 @@ async function generarPDF(c, its, conFotos){
 
   doc.autoTable({
     startY: y,
-    head: [['#','Trabajo ejecutado','Presup.','Unid.','Cant. presup.','Medicion','P. Unit.','Subtotal']],
+    head: [['#','Trabajo ejecutado','Presup.','Unid.','Cant. base','Medicion','P. Unit.','Subtotal']],
     body: rows,
     foot: [[{ content:'TOTAL GENERAL CERTIFICADO', colSpan:NC-1, styles:{halign:'right',fontStyle:'bold'} },
             { content:'Gs. '+Math.round(total).toLocaleString('es-PY'), styles:{halign:'right',fontStyle:'bold'} }]],
