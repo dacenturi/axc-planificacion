@@ -5210,6 +5210,17 @@ function nombreRubroDe(cod, desc, rubroDesc){
   const r = ((typeof CAT !== 'undefined' && CAT.rubros) || []).filter(function(x){ return String(x.codigo) === base; })[0];
   return (r && r.nombre) || desc || '';
 }
+/* v13.20 · Nombre que acompaña al código en las referencias «13.066 · …».
+   Es el nombre del RUBRO del presupuesto, no el del insumo de mano de obra de su receta
+   (una receta puede reutilizar una M.O. genérica, p. ej. 13.066 «Instalación de bacha»
+   con la M.O. «Instalación de agua corriente interno»). Si el rubro no tiene un nombre
+   válido, se usa la descripción de la línea como antes. */
+function nomRubroRef(cod, rubroDesc, desc){
+  const rd = String(rubroDesc||'').trim();
+  if(cod && rd && !esDescGenerica(rd) && rd !== String(cod).trim() &&
+     !/^(fuera del? (presupuesto|contrato)|gasto indirecto|gasto a presupuestar)/i.test(rd)) return rd;
+  return String(desc||'').trim() || rd;
+}
 function descLinea(desc, detalle, cod, ctNum){
   const d = String(detalle||'').trim();
   if(!d) return null;
@@ -5448,7 +5459,7 @@ async function ajustarAcum(k){
   const un = l.unidad || '';
   const html =
     '<div class="aa-box">'+
-      '<div class="aa-t">'+escapeHtml(l.rubro_codigo||'')+' · '+escapeHtml(l.descripcion||'')+'</div>'+
+      '<div class="aa-t">'+escapeHtml(l.rubro_codigo||'')+' · '+escapeHtml(nomRubroRef(l.rubro_codigo, l.rubro_desc, l.descripcion))+'</div>'+
       '<div class="aa-g">'+
         '<div><span>'+(l.contrato_item_id ? 'Contratado' : 'Presupuestado')+'</span><b>'+qty(base)+' '+escapeHtml(un)+'</b></div>'+
         '<div><span>Acum. anterior hoy</span><b>'+qty(ant)+' '+escapeHtml(un)+'</b><i>'+qty(h.aprob)+' aprobado · '+qty(h.tramite)+' en trámite</i></div>'+
@@ -5553,10 +5564,10 @@ function lineaFila(l, contratista){
   return '<tr class="pl-r'+(cargada?' ok':'')+(excedida?' exc':'')+(sinSaldoLinea(l)?' sinsaldo':'')+'" data-fila="'+escapeHtml(k)+'">'+
     '<td class="pl-ab"><button type="button" class="pl-x" data-abrir="'+escapeHtml(k)+'" title="Abrir el detalle: ubicación, observación y fotos">▸</button>'+ordBtnsHtml(k)+'</td>'+
     (function(){
-      let dl = descLinea(l.descripcion, l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
+      let dl = descLinea(nomRubroRef(l.rubro_codigo, l.rubro_desc, l.descripcion), l.contrato_detalle, l.rubro_codigo, l.contrato_numero);
       if(!dl && tituloDistintoCert(l)){   // v13.10
         const nr = tituloLineaCert(l);
-        if(nr && !esDescGenerica(nr)) dl = { principal:nr, ref:[l.rubro_codigo, l.descripcion].filter(Boolean).join(' · ') + (l.contrato_numero ? ' · '+l.contrato_numero : '') };
+        if(nr && !esDescGenerica(nr)) dl = { principal:nr, ref:[l.rubro_codigo, nomRubroRef(l.rubro_codigo, l.rubro_desc, l.descripcion)].filter(Boolean).join(' · ') + (l.contrato_numero ? ' · '+l.contrato_numero : '') };
       }
       if(dl) return '<td class="pl-d"><div class="pl-cod">'+tags+'</div>'+
         '<div class="pl-desc pl-desdet" title="'+escapeHtml(dl.principal)+'">'+escapeHtml(dl.principal)+'</div>'+
@@ -5703,7 +5714,7 @@ function lineaHTML(l, contratista){
         (l.admin ? '<span class="lin-tag ta" title="Trabajo por administración: se suma a su costo real">por administración · '+escapeHtml(l.admin)+'</span>' : '')+
         destinoHTML(l, m, k, 'lin')+
       '</b>'+
-        '<small>'+((l.contrato_detalle || tituloDistintoCert(l)) ? escapeHtml([l.rubro_codigo, l.descripcion].filter(Boolean).join(' · '))+' · ' : '')+(l.rubro_codigo ? ((l.contrato_detalle || tituloDistintoCert(l)) ? '' : escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc))) : 'trabajo libre')+
+        '<small>'+((l.contrato_detalle || tituloDistintoCert(l)) ? escapeHtml([l.rubro_codigo, nomRubroRef(l.rubro_codigo, l.rubro_desc, l.descripcion)].filter(Boolean).join(' · '))+' · ' : '')+(l.rubro_codigo ? ((l.contrato_detalle || tituloDistintoCert(l)) ? '' : escapeHtml(l.rubro_codigo)+(l.esRubro?'':' · '+escapeHtml(l.rubro_desc))) : 'trabajo libre')+
         (l.esRubro ? ' · se certifica el rubro completo' : (l.codigo_insumo ? ' · '+escapeHtml(l.codigo_insumo) : ''))+'</small></div>'+
       (l.libre
         ? '<div class="lin-num"><b>—</b><small>presupuestado</small></div>'
@@ -9257,7 +9268,7 @@ async function controlRepetidas(M){
   if(!rep.length) return true;
   const filas = rep.map(function(r){
     const l = r.x.linea;
-    return '<li><b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(l.descripcion||l.rubro_desc||'')+
+    return '<li><b>'+escapeHtml(l.rubro_codigo||'')+'</b> '+escapeHtml(nomRubroRef(l.rubro_codigo, l.rubro_desc, l.descripcion))+
       ' · '+escapeHtml(r.x.sector||l.sector||'')+(l.contrato_numero ? ' · '+escapeHtml(l.contrato_numero) : '')+
       ' — <b>'+r.veces+' veces</b> ('+qty(r.x.cantidad)+' '+escapeHtml(l.unidad||'')+' · '+gs(r.x.subtotal)+' cada una)</li>';
   }).join('');
@@ -9733,7 +9744,7 @@ async function abrirDetalle(id){
                   ? ' <span class="lin-tag sr" title="El rubro está en el presupuesto, pero no tiene mano de obra cargada: no hay contra qué comparar el precio certificado">sin precio de referencia</span>'
                   : (x.trabajo_admin ? '' : ' <span class="lin-tag sr" title="Este trabajo no está en el presupuesto">fuera de presupuesto</span>'))
               : '')+
-            '<div class="det-obs'+(String(x.detalle||'').trim()?' det-ref':'')+'">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(String(x.detalle||'').trim() ? (x.descripcion||x.rubro_desc||'') : (x.rubro_desc||'')):'trabajo libre')+'</div>'+
+            '<div class="det-obs'+(String(x.detalle||'').trim()?' det-ref':'')+'">'+(x.rubro_codigo?escapeHtml(x.rubro_codigo)+' · '+escapeHtml(nomRubroRef(x.rubro_codigo, x.rubro_desc, x.descripcion)):'trabajo libre')+'</div>'+
             (x.ubicacion?'<div class="det-obs">📍 '+escapeHtml(x.ubicacion)+'</div>':'')+
             (x.observacion?'<div class="det-obs">'+escapeHtml(x.observacion)+'</div>':'')+
             (fs?'<div class="det-fotos">'+fs+'</div>':'')+
@@ -10702,7 +10713,7 @@ async function pedirReportes(c, its){
       const d = await axcDialog({ tono:'warn', icono:'🧾', titulo:'Hay trabajos sin precio al cliente',
         subtitulo: pc.sinPrecio.length+' de '+(its||[]).length+' trabajo(s)',
         mensaje:'Estos trabajos no tienen precio en la propuesta aceptada de <b>su presupuesto</b> ni están en un trabajo por administración. En el avance al cliente salen <b>en 0</b>:',
-        lista: pc.sinPrecio.slice(0,6).map(function(x){ return escapeHtml((x.rubro_codigo ? x.rubro_codigo+' · ' : '')+(x.descripcion||x.rubro_desc||'')+(x._motivoSinPrecio ? '  ['+x._motivoSinPrecio+']' : '')); })
+        lista: pc.sinPrecio.slice(0,6).map(function(x){ return escapeHtml((x.rubro_codigo ? x.rubro_codigo+' · ' : '')+nomRubroRef(x.rubro_codigo, x.rubro_desc, x.descripcion)+(x._motivoSinPrecio ? '  ['+x._motivoSinPrecio+']' : '')); })
                .concat(pc.sinPrecio.length > 6 ? ['y '+(pc.sinPrecio.length-6)+' más'] : []),
         ok:'Generar igual', cancelar:'Cancelar' });
       seguir = !!d.ok;
@@ -11464,7 +11475,7 @@ function ordenarItems(c, its){
       '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eef1f6">'+
         '<b style="width:22px;text-align:right;color:#64748b">'+(i+1)+'</b>'+
         '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">'+
-          (x.rubro_codigo?'<span style="color:#1f3864">'+escapeHtml(x.rubro_codigo)+'</span> · ':'')+escapeHtml(x.descripcion||'')+'</div>'+
+          (x.rubro_codigo?'<span style="color:#1f3864">'+escapeHtml(x.rubro_codigo)+'</span> · ':'')+escapeHtml(nomRubroRef(x.rubro_codigo, x.rubro_desc, x.descripcion))+'</div>'+
           '<div style="font-size:11.5px;color:#64748b">'+escapeHtml(x.sector||'')+' · '+qty(Number(x.cantidad)||0)+' '+escapeHtml(x.unidad||'')+' · '+gs(x.subtotal)+'</div></div>'+
         '<button type="button" class="btn-g" data-up="'+i+'" '+(i===0?'disabled':'')+' title="Subir">▲</button>'+
         '<button type="button" class="btn-g" data-dn="'+i+'" '+(i===lista.length-1?'disabled':'')+' title="Bajar">▼</button>'+
