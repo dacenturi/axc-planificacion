@@ -1407,7 +1407,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.56';
+const APP_VERSION='Caja Chica v7.57';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -7143,6 +7143,13 @@ async function doLogout(){ await _SB.auth.signOut(); window.location.href='index
      · Si falta correr axc_caja_chica_v7.56_imputacion.sql, el bloque no aparece
        y la app sigue funcionando exactamente como la v7.55.
    ────────────────────────────────────────────────────────────────── */
+/* v7.57 · La obra del presupuesto/TA se compara de forma tolerante: igual, o un nombre contiene al otro
+   («Top Internacional» ↔ «Top Internacional - Torre B»). Sin tildes, mayúsculas ni la «s» final. */
+function _ipObraOk(a, b){
+  if(_obraMatch(a, b)) return true;
+  const x = _obraKey(a).replace(/[^a-z0-9ñ ]/g,' ').replace(/\s+/g,' ').trim(), y = _obraKey(b).replace(/[^a-z0-9ñ ]/g,' ').replace(/\s+/g,' ').trim();
+  return x.length >= 4 && y.length >= 4 && (x.indexOf(y) >= 0 || y.indexOf(x) >= 0);
+}
 const IMP_COL = ['#58a6ff','#a78bfa','#3fb950','#f0a500','#f778ba','#0EA5E9','#e07a00','#8b949e'];
 const IMP = { ok:false, listo:false, pps:[], tas:[], rub:{}, mapa:{},
   m:'sin', pp:'', rbs:[], modo:'linea', montos:{}, ta:'', manual:false,
@@ -7176,8 +7183,22 @@ async function impInit(){
   }
   try{
     const r = await _SB.from('presupuesto_cab').select('*').order('codigo');
-    IMP.pps = (r.data||[]).filter(x => x.activo === true).map(x => Object.assign({}, x, { nombre: x.nombre || x.descripcion || '' }));
-  }catch(e){ IMP.pps = []; }
+    // v7.57 · Se imputa solo a presupuestos PUBLICADOS (activo = true, el mismo criterio que la Orden de Compra).
+    // Los demás (borrador o enviados al cliente sin aprobar) se guardan aparte para avisar que existen.
+    const todos = (r.data||[]).map(x => Object.assign({}, x, { nombre: x.nombre || x.descripcion || '' }));
+    IMP.pps = todos.filter(x => x.activo === true);
+    IMP.ppsNoPub = todos.filter(x => x.activo !== true);
+  }catch(e){ IMP.pps = []; IMP.ppsNoPub = []; }
+  // v7.57 · Aprobación del cliente (misma fuente que la Orden de Compra): última versión aceptada por presupuesto
+  IMP.apr = { ok:false, mapa:{} };
+  for(const t of ['v_propuestas_estado','propuesta_cab']){
+    try{
+      const rr = await _SB.from(t).select('presupuesto,version,aceptada').limit(20000);
+      if(rr.error || !(rr.data||[]).length) continue;
+      (rr.data||[]).forEach(x => { if(x.aceptada){ const v = IMP.apr.mapa[x.presupuesto]; if(!v || x.version > v) IMP.apr.mapa[x.presupuesto] = x.version; } });
+      IMP.apr.ok = true; break;
+    }catch(e){}
+  }
   try{
     const r2 = await _SB.from('trabajos_admin').select('codigo,nombre,obra,estado').eq('estado','Abierto').order('codigo');
     IMP.tas = r2.error ? [] : (r2.data||[]);
@@ -7206,7 +7227,7 @@ function impSkeleton(){
       '</div>'+
       '<div class="ip-recall" id="ip-recall"><span>🕘</span><span id="ip-recall-t"></span><span style="flex:1"></span><button type="button" class="ip-link" id="ip-recall-x">Quitar</button></div>'+
       '<div class="ip-pane" id="ip-pane-pp" hidden>'+
-        '<span class="ip-lbl">Presupuesto aprobado <span class="req">*</span></span>'+
+        '<span class="ip-lbl">Presupuesto publicado <span class="req">*</span></span>'+
         '<div class="ip-cb" id="ip-cb-pp"><div class="ip-cb-box"><span class="ip-cb-ic">🔍</span><input type="text" placeholder="Buscá por N° o descripción" autocomplete="off" spellcheck="false"><button type="button" class="ip-cb-x" title="Quitar">✕</button></div><div class="ip-cb-list"></div></div>'+
         '<div id="ip-rb-wrap" hidden>'+
           '<div class="ip-rb-tools"><span class="ip-lbl" style="margin:0">Rubros del presupuesto <span class="req">*</span></span><input id="ip-rb-q" placeholder="Filtrar por código o descripción…"></div>'+
@@ -7236,22 +7257,28 @@ function impSkeleton(){
     items: () => _ipPPdeObra().map(p => {
       const R = IMP.rub[p.codigo];
       const extra = R ? ' · ' + R.rows.length + ' rubros · ' + _ipG(R.rows.reduce((s,r)=>s+r.lim,0)) : '';
-      return { v:p.codigo, a:p.nombre || '', b:_ipE(p.obra||'') + extra, badge:'<span class="ip-chip ok">Aprobado</span>' };
+      return { v:p.codigo, a:p.nombre || '', b:_ipE(p.obra||'') + extra, badge:_ipAprBadge(p.codigo) };
     }),
-    empty: () => _ipObra() ? 'La obra <b>'+_ipE(_ipObra())+'</b> no tiene presupuestos aprobados. Usá <b>Sin presupuesto</b>.' : 'No hay presupuestos aprobados.',
-    onPick: v => { if(v !== IMP.pp) _ipResetRep(); IMP.pp = v; IMP.manual = true; _ipHideRecall(); const p = _ipPP(v); if(p && p.obra && !_obraMatch(p.obra, _ipObra())) _ipFijarObra(p.obra); impCargarRubros(v); impRender(); }
+    foot: () => { const n = _ipNoPubDeObra(); return n.length ? '<div class="ip-cb-empty" style="border-top:1px dashed var(--border2)">ℹ️ '+n.length+' presupuesto'+(n.length>1?'s':'')+' más de esta obra no se '+(n.length>1?'pueden':'puede')+' imputar porque todavía no '+(n.length>1?'están publicados':'está publicado')+' (borrador o enviado al cliente sin aprobar): <b>'+n.map(p => _ipE(p.codigo)).join(', ')+'</b>. Se publican desde Presupuestos.</div>' : ''; },
+    empty: () => _ipObra() ? 'La obra <b>'+_ipE(_ipObra())+'</b> no tiene presupuestos publicados. Usá <b>Sin presupuesto</b>.' : 'No hay presupuestos publicados.',
+    onPick: v => { if(v !== IMP.pp) _ipResetRep(); IMP.pp = v; IMP.manual = true; _ipHideRecall(); const p = _ipPP(v); if(p && p.obra && !_ipObraOk(p.obra, _ipObra())) _ipFijarObra(p.obra); impCargarRubros(v); impRender(); }
   });
   IMP.cbTA = _ipCombo(gs('ip-cb-ta'), {
     items: () => _ipTAdeObra().map(t => ({ v:t.codigo, a:t.nombre||'', b:_ipE(t.obra||''), badge:'<span class="ip-chip ta">Abierto</span>' })),
     empty: () => _ipObra() ? 'La obra <b>'+_ipE(_ipObra())+'</b> no tiene trabajos por administración abiertos.' : 'No hay trabajos por administración abiertos.',
-    onPick: v => { IMP.ta = v; IMP.manual = true; _ipHideRecall(); const t = _ipTA(v); if(t && t.obra && !_obraMatch(t.obra, _ipObra())) _ipFijarObra(t.obra); impCargarTA(v); impRender(); }
+    onPick: v => { IMP.ta = v; IMP.manual = true; _ipHideRecall(); const t = _ipTA(v); if(t && t.obra && !_ipObraOk(t.obra, _ipObra())) _ipFijarObra(t.obra); impCargarTA(v); impRender(); }
   });
 }
-function _ipPPdeObra(){ const o = _ipObra(); return IMP.pps.filter(p => !o || _obraMatch(p.obra, o)); }
-function _ipTAdeObra(){ const o = _ipObra(); return IMP.tas.filter(t => !o || _obraMatch(t.obra, o)); }
+function _ipPPdeObra(){ const o = _ipObra(); return IMP.pps.filter(p => !o || _ipObraOk(p.obra, o)); }
+function _ipNoPubDeObra(){ const o = _ipObra(); return o ? (IMP.ppsNoPub||[]).filter(p => _ipObraOk(p.obra, o)) : []; }
+function _ipAprBadge(c){
+  if(!IMP.apr || !IMP.apr.ok) return '<span class="ip-chip ok">Publicado</span>';
+  return IMP.apr.mapa[c] ? '<span class="ip-chip ok" title="Aprobado por el cliente">Aprobado v'+_ipE(IMP.apr.mapa[c])+'</span>' : '<span class="ip-chip wr" title="Se usa en compras, pero no tiene la aprobación del cliente registrada">Sin aprobación</span>';
+}
+function _ipTAdeObra(){ const o = _ipObra(); return IMP.tas.filter(t => !o || _ipObraOk(t.obra, o)); }
 function _ipFijarObra(obra){
   const sel = gs('c-obra'); if(!sel) return;
-  const op = [...sel.options].find(o => o.value && _obraMatch(o.value, obra));
+  const op = [...sel.options].find(o => o.value && _ipObraOk(o.value, obra));
   if(op){ sel.value = op.value; filtrarSectorComprobante(op.value); }
 }
 function _ipResetRep(){ IMP.rbs = []; IMP.montos = {}; IMP.modo = 'linea'; document.querySelectorAll('#lines-body tr').forEach(tr => { tr.dataset.imprb = ''; }); }
@@ -7270,7 +7297,7 @@ function _ipCombo(root, cfg){
     if(W.hi >= W.view.length) W.hi = 0;
     list.innerHTML = '<div class="ip-cb-hd">'+(tk.length ? W.view.length+' de '+all.length+' resultados' : all.length+' disponibles')+' · ↑ ↓ y Enter para elegir · Esc para cerrar</div>' +
       (W.view.length ? W.view.map((i,k) => '<div class="ip-cb-it'+(k===W.hi?' hi':'')+'" data-v="'+_ipE(i.v)+'"><span class="ip-cb-cod">'+_ipE(i.v)+'</span><span class="ip-cb-main"><div class="a">'+_ipE(i.a)+'</div><div class="b">'+i.b+'</div></span>'+(i.badge||'')+(i.v===W.val?'<span style="color:var(--green);font-weight:700">✓</span>':'')+'</div>').join('')
-        : '<div class="ip-cb-empty">'+(all.length ? 'Sin resultados para «'+_ipE(inp.value)+'». Probá con otra palabra o con el N°.' : cfg.empty())+'</div>');
+        : '<div class="ip-cb-empty">'+(all.length ? 'Sin resultados para «'+_ipE(inp.value)+'». Probá con otra palabra o con el N°.' : cfg.empty())+'</div>') + (cfg.foot ? cfg.foot() : '');
     const a = list.querySelector('.ip-cb-it.hi'); if(a){ const t = a.offsetTop; if(t < list.scrollTop + 30) list.scrollTop = Math.max(0, t - 34); else if(t + a.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = t + a.offsetHeight - list.clientHeight; }
   };
   W.open = () => { if(root.classList.contains('open')) return; W.typing = false; const i = cfg.items().findIndex(x => x.v === W.val); W.hi = i >= 0 ? i : 0; root.classList.add('open'); W.paint(); setTimeout(() => { try{ inp.select(); }catch(e){} }, 0); };
@@ -7367,8 +7394,8 @@ async function impCargarTA(c){
 function impOnObra(desdePick){
   if(!IMP.listo) return;
   const o = _ipObra();
-  if(IMP.pp){ const p = _ipPP(IMP.pp); if(!p || (o && !_obraMatch(p.obra, o))){ IMP.pp=''; _ipResetRep(); } }
-  if(IMP.ta){ const t = _ipTA(IMP.ta); if(!t || (o && !_obraMatch(t.obra, o))) IMP.ta=''; }
+  if(IMP.pp){ const p = _ipPP(IMP.pp); if(!p || (o && !_ipObraOk(p.obra, o))){ IMP.pp=''; _ipResetRep(); } }
+  if(IMP.ta){ const t = _ipTA(IMP.ta); if(!t || (o && !_ipObraOk(t.obra, o))) IMP.ta=''; }
   if(!desdePick && !IMP.edit){
     const pr = (ccGetPrefs().imp || {})[_obraKey(o)];
     if(o && pr && !IMP.manual && (pr.m === 'sin' || (pr.m === 'presupuesto' && _ipPP(pr.pp)) || (pr.m === 'ta' && _ipTA(pr.ta)))){
@@ -7436,7 +7463,8 @@ function impRender(){
   if(IMP.lock) return;
   const nPP = _ipPPdeObra().length, nTA = _ipTAdeObra().length;
   document.querySelectorAll('#ip .ip-op').forEach(b => { const on = b.dataset.m === IMP.m; b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); });
-  gs('ip-od-pp').textContent = o ? (nPP ? nPP+' presupuesto'+(nPP>1?'s':'')+' aprobado'+(nPP>1?'s':'')+' en esta obra.' : 'Esta obra no tiene presupuestos aprobados.') : 'Descuenta del saldo de uno o varios rubros.';
+  const nNP = _ipNoPubDeObra().length;
+  gs('ip-od-pp').textContent = o ? ((nPP ? nPP+' presupuesto'+(nPP>1?'s':'')+' publicado'+(nPP>1?'s':'')+' en esta obra' : 'Esta obra no tiene presupuestos publicados') + (nNP ? ' ('+nNP+' sin publicar)' : '') + '.') : 'Descuenta del saldo de uno o varios rubros.';
   gs('ip-od-ta').textContent = o ? (nTA ? nTA+' trabajo'+(nTA>1?'s':'')+' abierto'+(nTA>1?'s':'')+' en esta obra.' : 'Esta obra no tiene trabajos abiertos.') : 'Suma al costo del TA que se liquida al cliente.';
   document.querySelector('#ip .ip-op[data-m="presupuesto"]').classList.toggle('off', !!o && !nPP);
   document.querySelector('#ip .ip-op[data-m="ta"]').classList.toggle('off', !!o && !nTA);
@@ -7475,7 +7503,7 @@ function impRender(){
       else msg = '<div class="ip-note ok">✔ Comprobante repartido en <b>'+IMP.rbs.length+' rubros</b> y todos entran en su saldo.</div>';
       gs('ip-msg').innerHTML = msg;
     }
-  } else gs('ip-msg').innerHTML = (o && !nPP) ? '<div class="ip-note wr">La obra <b>'+_ipE(o)+'</b> no tiene presupuestos aprobados. Elegí <b>Sin presupuesto</b> o un Trabajo por Administración.</div>' : '';
+  } else gs('ip-msg').innerHTML = (o && !nPP) ? '<div class="ip-note wr">La obra <b>'+_ipE(o)+'</b> no tiene presupuestos publicados. Elegí <b>Sin presupuesto</b> o un Trabajo por Administración.</div>' : '';
   gs('ip-mot-w').hidden = !(IMP.m === 'presupuesto' && hayExc);
 
   // Trabajo por administración
@@ -7781,8 +7809,8 @@ async function impAbrirCambio(id){
   bg.querySelector('#ipc-rep').addEventListener('click', ev => { const b = ev.target.closest('[data-eresto]'); if(!b) return; const k = b.dataset.eresto; IPC.montos[k] = Math.max(0, (Number(IPC.montos[k])||0) + (Number(IPC.mov.total||0) - _ipcSuma())); _ipcPintar(); });
   _ipcSync();
 }
-function _ipPPdeObraDe(o){ return IMP.pps.filter(p => !o || _obraMatch(p.obra, o)).slice(); }
-function _ipTAdeObraDe(o){ return IMP.tas.filter(t => !o || _obraMatch(t.obra, o)).slice(); }
+function _ipPPdeObraDe(o){ return IMP.pps.filter(p => !o || _ipObraOk(p.obra, o)).slice(); }
+function _ipTAdeObraDe(o){ return IMP.tas.filter(t => !o || _ipObraOk(t.obra, o)).slice(); }
 function _ipcSuma(){ return Object.values(IPC.montos).reduce((s,v) => s + (Number(v)||0), 0); }
 function _ipcModo(){ const r = document.querySelector('input[name="ipc-m"]:checked'); return r ? r.value : 'sin'; }
 function _ipcSync(){
