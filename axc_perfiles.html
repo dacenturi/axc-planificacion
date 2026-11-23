@@ -155,7 +155,7 @@ tr:hover td{background:var(--bg3)}
     <!-- ===== PERMISOS ===== -->
     <div class="panel" id="panel-permisos">
       <div class="intro">
-        Habilitá accesos por usuario. Los <b>administradores</b> entran a todo por su rol; las casillas sirven para darle a un <b>residente</b> un acceso puntual —aprobar rendiciones, aprobar certificados de obra, registrar pagos de órdenes de compra, entrar al Libro de Obra, a Control de Asistencia o al informe de Compras por mes— sin cambiarle el rol. Los cambios se aplican la próxima vez que la persona entra al portal.
+        Habilitá accesos por usuario. Los <b>administradores</b> entran a todo por su rol; las casillas sirven para darle a un <b>residente</b> un acceso puntual —aprobar rendiciones, cambiar la imputación de comprobantes de caja chica, aprobar certificados de obra, registrar pagos de órdenes de compra, entrar al Libro de Obra, a Control de Asistencia o al informe de Compras por mes— sin cambiarle el rol. Los cambios se aplican la próxima vez que la persona entra al portal.
       </div>
       <div class="searchbar"><input id="buscar" placeholder="Buscar por nombre, email o residente..." oninput="renderPermisos()"></div>
       <div id="lista-usuarios"><div class="loading">Cargando usuarios...</div></div>
@@ -185,7 +185,7 @@ tr:hover td{background:var(--bg3)}
   </div>
 </div>
 
-<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.9</div>
+<div class="footer">Desarrollado por <b>CONEXDATA</b> · Perfiles y Permisos v1.10</div>
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -208,6 +208,9 @@ const PERMISOS_CC = [
   {key:'cc_excepcion',        label:'Aprobar excepciones',        desc:'Aprobar comprobantes que superan el tope', grupo:'Caja Chica'},
   {key:'cc_ver_todas',        label:'Ver todas las cajas',        desc:'No solo la caja propia', grupo:'Caja Chica'},
   {key:'cc_ia',               label:'Escanear con IA',            desc:'Leer facturas con inteligencia artificial', grupo:'Caja Chica'},
+
+  // Caja Chica · imputación del gasto (v1.10). Ni el supervisor de caja lo tiene por su rol: solo el administrador.
+  {key:'cc_cambiar_imputacion',label:'Cambiar imputación',        desc:'Botón «🔀 Imputación» en los comprobantes ya guardados: cambiar si el gasto va a un presupuesto (y a qué rubros, con su monto), a un trabajo por administración o sin presupuesto. Pide motivo y queda en el historial. El residente elige la imputación al cargar el comprobante; después solo la cambia quien tenga este permiso', grupo:'Caja Chica · Imputación'},
 
   // Presupuestos · el coeficiente de ganancia es información sensible
   {key:'pres_reabrir',        label:'Reabrir presupuesto congelado', desc:'Reabrir un presupuesto enviado o aprobado por el cliente cuando pide cambios: queda el motivo registrado y, al guardar y volver a enviarlo, se genera una versión nueva que el cliente debe aprobar', grupo:'Presupuestos'},
@@ -250,6 +253,9 @@ const PERMISOS_CC = [
 
 // Grupos que un admin o supervisor de caja NO necesita tildar: ya entra por su rol.
 const GRUPOS_CC = ['Caja Chica'];
+// v1.10 · «Cambiar imputación» no viene con el rol de supervisor de caja: se le muestra la casilla.
+// Al administrador no, porque ya lo tiene por su rol.
+const GRUPOS_SOLO_ADMIN = ['Caja Chica · Imputación'];
 
 function gs(id){ return document.getElementById(id); }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -325,7 +331,7 @@ function permGrid(u, opts){
     const items = lista.filter(p=>(p.grupo||'General')===g).map(p=>{
       const id='chk_'+u.id+'_'+p.key;
       const ck = perm[p.key]===true ? 'checked' : '';
-      const sens = (p.key==='pres_margen' || p.key==='contr_estado' || p.key==='oc_pagar' || p.key==='av_ver' || p.key==='cm_ver' || p.key==='fac_cargar' || p.key==='cert_editar_op') ? ' sensible' : '';
+      const sens = (p.key==='pres_margen' || p.key==='contr_estado' || p.key==='oc_pagar' || p.key==='av_ver' || p.key==='cm_ver' || p.key==='fac_cargar' || p.key==='cert_editar_op' || p.key==='cc_cambiar_imputacion') ? ' sensible' : '';
       return `<label class="perm-item${sens}" for="${id}">
         <input type="checkbox" id="${id}" ${ck}>
         <span><span class="pl">${escapeHtml(p.label)}</span><span class="pd">${escapeHtml(p.desc)}</span></span>
@@ -352,8 +358,8 @@ function renderPermisos(){
     if(esSuper){
       return `<div class="user-card">
         <div class="user-head"><span class="user-name">${titulo}</span>${rolBadge(u.rol)}<span class="user-meta">${escapeHtml(meta)}</span></div>
-        <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. ${u.rol==='admin'?'Como administrador también entra a todos los módulos del portal sin tildar nada.':'Los módulos de abajo sí se habilitan con estas casillas.'}</div>
-        ${permGrid(u, {excluirGrupos:GRUPOS_CC})}
+        <div class="perm-note">✓ Tiene <b>acceso total</b> a Caja Chica por su rol. ${u.rol==='admin'?'Como administrador también entra a todos los módulos del portal sin tildar nada, incluido cambiar la imputación de los comprobantes.':'Cambiar la imputación de los comprobantes y los módulos de abajo sí se habilitan con estas casillas.'}</div>
+        ${permGrid(u, {excluirGrupos: u.rol==='admin' ? GRUPOS_CC.concat(GRUPOS_SOLO_ADMIN) : GRUPOS_CC})}
         <div class="user-actions">
           <button class="btn btn-primary btn-sm" onclick="guardarPermisos('${u.id}')">Guardar permisos</button>
         </div>
