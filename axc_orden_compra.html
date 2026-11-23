@@ -4501,7 +4501,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.7 · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.8 · un mismo sector se puede cargar en obras distintas y se elimina si no tiene uso en su obra · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -16689,6 +16689,7 @@ function openAddListModal(tipo){
     // Pre-seleccionar la obra del wizard si ya hay
     const obraActual = document.getElementById('fldObra')?.value;
     if(obraActual) extraSelect.value = obraActual;
+    extraSelect.onchange = function(){ renderExistingItems(document.getElementById('addListExistingSearch').value || ''); };   // v8.8
   } else {
     extraField.style.display = 'none';
   }
@@ -16711,6 +16712,11 @@ function renderExistingItems(filterText){
     const _p = (document.getElementById('fldProveedor')?.value || '').trim().toLowerCase();
     lista = lista.filter(x => (x.obra_ref||'').trim().toLowerCase() === _p);
   }
+  // v8.8 · Sectores: mostrar solo los de la obra elegida en el modal (antes salían los 175 de todas las obras)
+  if(cfg.needsObra){
+    const _o = (document.getElementById('addListExtraSelect')?.value || '').trim();
+    lista = lista.filter(x => _o ? _obraMatch(x.obra_ref, _o) : !(x.obra_ref||'').trim());
+  }
   const isAdmin = state.profile?.rol === 'admin';
   const search = (filterText || '').toLowerCase().trim();
 
@@ -16720,7 +16726,7 @@ function renderExistingItems(filterText){
   });
 
   const titleEl = document.getElementById('addListExistingTitle');
-  if(titleEl) titleEl.textContent = isAdmin ? 'Valores existentes (podés eliminar)' : 'Valores existentes';
+  if(titleEl) titleEl.textContent = (cfg.needsObra ? 'Sectores de esta obra' : 'Valores existentes') + (isAdmin ? ' (podés eliminar los que no se usan)' : '');
   document.getElementById('addListExistingCount').textContent = `${filtered.length}/${lista.length}`;
 
   const body = document.getElementById('addListExistingBody');
@@ -16796,12 +16802,19 @@ async function confirmAddListItem(){
   // Vendedores: el mismo nombre puede repetirse en proveedores distintos, así que el
   // duplicado se evalúa SOLO dentro del proveedor elegido (obra_ref).
   const _provActual = (document.getElementById('fldProveedor')?.value || '').trim().toLowerCase();
+  // v8.8 · Sectores: el mismo nombre puede repetirse en obras distintas («Vereda» en
+  // San Telmo y en San Telmo - Ampliación). El duplicado se evalúa SOLO dentro de la obra.
+  const _obraSel = cfg.needsObra ? (document.getElementById('addListExtraSelect')?.value || '').trim() : '';
+  const _mismoNombre = x => (x.valor||'').toLowerCase().trim() === val.toLowerCase();
   const dup = (cfg.listKey === 'vendedores')
-    ? lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase()
-        && (x.obra_ref||'').toLowerCase().trim() === _provActual)
-    : lista.find(x => (x.valor||'').toLowerCase().trim() === val.toLowerCase());
+    ? lista.find(x => _mismoNombre(x) && (x.obra_ref||'').toLowerCase().trim() === _provActual)
+    : (cfg.needsObra
+        ? lista.find(x => _mismoNombre(x) && (_obraSel ? _obraMatch(x.obra_ref, _obraSel) : !(x.obra_ref||'').trim()))
+        : lista.find(_mismoNombre));
   if(dup){
-    errBox.textContent = `Ya existe "${dup.valor}" en la lista. Seleccionalo del menú desplegable.`;
+    errBox.textContent = cfg.needsObra
+      ? `Ya existe "${dup.valor}" en ${_obraSel ? 'la obra ' + _obraSel : 'los sectores generales'}. Seleccionalo del menú desplegable.`
+      : `Ya existe "${dup.valor}" en la lista. Seleccionalo del menú desplegable.`;
     errBox.classList.add('visible');
     return;
   }
@@ -16887,7 +16900,9 @@ async function confirmAddListItem(){
     closeAddListModal();
   }catch(e){
     console.error('Error guardando:', e);
-    errBox.textContent = 'No se pudo guardar: ' + (e.message || 'error desconocido');
+    errBox.textContent = (e && (e.code === '23505' || /duplicate key|unique/i.test(e.message||'')))
+      ? 'La base de datos no permite repetir este nombre aunque sea de otra obra. Avisá al administrador del sistema (hay que ajustar una restricción en la tabla «listas»).'
+      : 'No se pudo guardar: ' + (e.message || 'error desconocido');
     errBox.classList.add('visible');
   }finally{
     confirmBtn.disabled = false;
@@ -16964,6 +16979,9 @@ async function requestDeleteListItem(id, valor){
   deleteListState.valor = valor;
   deleteListState.tipo = cfg.listKey;
 
+  // v8.8 · Sector: se identifica por nombre + obra (puede repetirse en otras obras)
+  const _itDel = (wizard.listas[cfg.listKey] || []).find(x => String(x.id) === String(id)) || {};
+  const _obraDel = cfg.listKey === 'sectores' ? (_itDel.obra_ref || '').trim() : '';
   // Verificar uso en ordenes_compra
   const col = TIPO_TO_OC_COLUMN[cfg.listKey];
 
@@ -16981,22 +16999,34 @@ async function requestDeleteListItem(id, valor){
   if(col){
     try{
       // Contar cuántas OC usan este valor
-      const {count, error} = await sb
-        .from('ordenes_compra')
-        .select('*', {count:'exact', head:true})
-        .eq(col, valor);
+      let q = sb.from('ordenes_compra').select('*', {count:'exact', head:true}).eq(col, valor);
+      if(_obraDel) q = q.ilike('obra', _obraDel);
+      const {count, error} = await q;
       if(error) throw error;
+      // v8.8 · Sector: también puede estar cargado en caja chica (si la tabla no tiene esa columna, se omite)
+      let countCC = 0;
+      if(cfg.listKey === 'sectores'){
+        try{
+          let q2 = sb.from('caja_chica_movimientos').select('*', {count:'exact', head:true}).eq('sector', valor);
+          if(_obraDel) q2 = q2.ilike('obra', _obraDel);
+          const r2 = await q2;
+          if(!r2.error) countCC = r2.count || 0;
+        }catch(_){}
+      }
 
-      if(count && count > 0){
+      if((count && count > 0) || countCC > 0){
         // Está siendo usado: no se puede eliminar
-        msgEl.innerHTML = `<strong>"${escapeHtml(valor)}"</strong> está siendo utilizado en <strong>${count} orden${count===1?'':'es'} de compra</strong>.<br><br>No es posible eliminarlo. Si lo necesitás retirar, primero modificá las OC que lo usan.`;
+        const usos = [];
+        if(count) usos.push(`${count} orden${count===1?'':'es'} de compra`);
+        if(countCC) usos.push(`${countCC} comprobante${countCC===1?'':'s'} de caja chica`);
+        msgEl.innerHTML = `<strong>"${escapeHtml(valor)}"</strong>${_obraDel ? ' (' + escapeHtml(_obraDel) + ')' : ''} está siendo utilizado en <strong>${usos.join(' y ')}</strong>.<br><br>No es posible eliminarlo. Si lo necesitás retirar, primero modificá los registros que lo usan.`;
         confirmBtn.style.display = 'none';
         document.getElementById('confirmDeleteCancel').textContent = 'Entendido';
         return;
       }
 
       // No está en uso: se puede eliminar
-      msgEl.innerHTML = `Vas a eliminar <strong>"${escapeHtml(valor)}"</strong> de la lista de ${escapeHtml(cfg.listKey)}.<br><br>Esta acción no se puede deshacer.`;
+      msgEl.innerHTML = `Vas a eliminar <strong>"${escapeHtml(valor)}"</strong>${_obraDel ? ' de la obra <strong>' + escapeHtml(_obraDel) + '</strong>' : ' de la lista de ' + escapeHtml(cfg.listKey)}. No tiene órdenes de compra${cfg.listKey === 'sectores' ? ' ni caja chica' : ''} cargadas.<br><br>Esta acción no se puede deshacer.`;
       confirmBtn.style.display = 'inline-flex';
       document.getElementById('confirmDeleteCancel').textContent = 'Cancelar';
     }catch(e){
