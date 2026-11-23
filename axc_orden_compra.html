@@ -4501,7 +4501,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.6 · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v8.7 · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -11057,7 +11057,21 @@ async function cartBudgetLoad(pp){
         (_re.data||[]).forEach(function(r){ const c = Number(r.contenido_compra) || 0; if(c > 0) AXC_ENVASE[r.codigo] = { c:c, u:String(r.contenido_unidad || 'kg') }; else delete AXC_ENVASE[r.codigo]; });
       }
     }catch(eEnv){ console.warn('contenido de envases', eEnv); }
-    if(cartBudget.pp===pp){ cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; cartBudget.allRubros = allRubros; cartBudget.prodNombre = prodNombre; cartBudget.prodUnidad = prodUnidad; }
+    // v8.7 · Caja chica imputada a los rubros de este presupuesto (Caja Chica v7.56): también consume el monto del rubro.
+    //        Sin la tabla (falta el SQL de caja chica) queda en cero y todo sigue como antes.
+    let ccRub = {};
+    try{
+      const _rc = await sb.from('caja_chica_mov_rubros').select('movimiento_id,rubro_codigo,monto').eq('presupuesto', pp).limit(10000);
+      if(!_rc.error && (_rc.data||[]).length){
+        const _ids = Array.from(new Set(_rc.data.map(function(x){ return x.movimiento_id; }))), _est = {};
+        for(let _i = 0; _i < _ids.length; _i += 200){
+          const _m = await sb.from('caja_chica_movimientos').select('id,estado').in('id', _ids.slice(_i, _i + 200));
+          (_m.data||[]).forEach(function(x){ _est[x.id] = x.estado; });
+        }
+        _rc.data.forEach(function(x){ if(/anulad|rechaz/i.test(String(_est[x.movimiento_id]||''))) return; const k = String(x.rubro_codigo||''); ccRub[k] = (ccRub[k]||0) + (Number(x.monto)||0); });
+      }
+    }catch(eCC){ console.warn('caja chica imputada', eCC); }
+    if(cartBudget.pp===pp){ cartBudget.ccRub = ccRub; cartBudget.mats = mats; cartBudget.rubros = rubros; cartBudget.ocItems = ocItems; cartBudget.allRubros = allRubros; cartBudget.prodNombre = prodNombre; cartBudget.prodUnidad = prodUnidad; }
   }catch(e){ console.warn('cartBudgetLoad', e); if(cartBudget.pp===pp){ cartBudget.mats = []; cartBudget.rubros = []; cartBudget.ocItems = []; cartBudget.allRubros = []; } }
   if(wizard.open && typeof renderCart === 'function') renderCart(); else cartBudgetRender();
 }
@@ -11177,6 +11191,8 @@ function ocMontoRubro(rk, panel){
     if(ej) ejec += monto; else reserv += monto;
     sumar(_cbInsDeOcItem(x), Number(x.cantidad)||0, monto, _cbPrecioLinea(x), x.fecha, false);
   });
+  // 1b · v8.7 · Caja chica imputada al rubro (Caja Chica v7.56): es dinero ya gastado en el rubro, sin detalle de insumo
+  const caja = Math.round(Number((cartBudget.ccRub || {})[rk]) || 0);
   // 2 · Esta orden: el carrito (sin las líneas que el panel va a reemplazar) + el panel
   const usaPanel = Array.isArray(panel) && panel.some(function(e){ return Number(e.cant) > 0; });
   (wizard.cart||[]).forEach(function(it){
@@ -11200,7 +11216,7 @@ function ocMontoRubro(rk, panel){
     if(o.pc > 0) varPreProy += (pref - o.pc) * resto;
     o.resto = resto; o.pref = pref;
   });
-  const comprado = ejec + reserv + esta;
+  const comprado = ejec + reserv + esta + caja;   // v8.7 · suma la caja chica imputada
   const proy = comprado + falta;
   const pctC = comprado / presup * 100, pctP = proy / presup * 100;
   const nivel = (Math.round(pctC) > OC_MONTO_ROJO || Math.round(pctP) > OC_MONTO_ROJO) ? 'rojo'
@@ -11223,7 +11239,7 @@ function ocMontoRubro(rk, panel){
   if(fuera > 0) causas.push({ tipo:'fuera', monto:fuera, txt:'materiales que no están en el presupuesto del rubro (₲ ' + Math.round(fuera).toLocaleString('es-PY') + ')' });
   causas.sort(function(a,b){ return b.monto - a.monto; });
   return { pp:pp, rubro:rk, desc:(cartBudget.rubroDesc && cartBudget.rubroDesc[rk]) || '',
-           presup:presup, ejec:ejec, reserv:reserv, esta:esta, fuera:fuera, comprado:comprado, falta:falta, proy:proy,
+           presup:presup, ejec:ejec, reserv:reserv, esta:esta, caja:caja, fuera:fuera, comprado:comprado, falta:falta, proy:proy,
            pctC:pctC, pctP:pctP, nivel:nivel, causa:(nivel !== 'verde' && causas[0]) ? causas[0] : null,
            sinPrecio:sinPrecio, nMats:mats.length };
 }
@@ -11256,7 +11272,7 @@ function ocMontoRubroHTML(r){
   const ico = r.nivel === 'rojo' ? '🔴' : (r.nivel === 'amarillo' ? '🟡' : '🟢');
   const tip = 'Control por monto del rubro (materiales)' +
     '\nPresupuesto: ' + _ocMontoTxt(r.presup) +
-    '\nAprobado: ' + _ocMontoTxt(r.ejec) + '\nReservado (OC sin aprobar): ' + _ocMontoTxt(r.reserv) + '\nEsta orden: ' + _ocMontoTxt(r.esta) +
+    '\nAprobado: ' + _ocMontoTxt(r.ejec) + '\nReservado (OC sin aprobar): ' + _ocMontoTxt(r.reserv) + (r.caja ? '\nCaja chica imputada: ' + _ocMontoTxt(r.caja) : '') + '\nEsta orden: ' + _ocMontoTxt(r.esta) +
     '\nComprado con esta orden: ' + _ocMontoTxt(r.comprado) + ' (' + _ocMontoPct(r.pctC) + ')' +
     '\nFalta comprar (al precio de esta orden o el último pagado): ' + _ocMontoTxt(r.falta) +
     '\nProyección al terminar el rubro: ' + _ocMontoTxt(r.proy) + ' (' + _ocMontoPct(r.pctP) + ')' +
@@ -20562,7 +20578,7 @@ function fpmSincronizarRubros(){
    demás se guardan en CBM.cache y se intercambian con cbmWith().
    ────────────────────────────────────────────────────────────────── */
 var CBM = { cache:{}, _cargando:false, _pend:{} };
-var _CBM_KEYS = ['pp','mats','rubros','ocItems','allRubros','rubroDesc','rubroSector','nombre','obra','sectorCab','prodNombre','prodUnidad','ocCabs'];
+var _CBM_KEYS = ['pp','mats','rubros','ocItems','ccRub','allRubros','rubroDesc','rubroSector','nombre','obra','sectorCab','prodNombre','prodUnidad','ocCabs'];
 function cbmSnap(){ const s = {}; _CBM_KEYS.forEach(function(k){ s[k] = cartBudget[k]; }); return s; }
 function cbmPut(s){ _CBM_KEYS.forEach(function(k){ cartBudget[k] = s[k]; }); }
 function cbmLista(){
