@@ -371,6 +371,7 @@ table.cob td.n{text-align:right}
    · vw_compras_imputadas                                        → compras por rubro / insumo (cada línea de OC cuenta UNA vez)
    · ordenes_compra (Aprobado / Archivado)                       → costo real de materiales de la obra
    · caja_chica_movimientos (aprobado)                           → gastos menores de la obra
+   · caja_chica_mov_rubros (v1.2)                                → caja chica imputada a cada rubro
    · obra_plan_avance (opcional)                                 → curva programada (plan de obra)
 
    Avance físico de un rubro:
@@ -507,6 +508,8 @@ async function cargar(){
       todo(function(){ return sb.from('certificados').select('id,numero,fecha,estado,contratista,presupuesto,total').ilike('obra', obra).eq('estado','Aprobado'); }).then(function(d){ R.certs=d; }),
       todo(function(){ return sb.from('ordenes_compra').select('*').ilike('obra', obra); }).then(function(d){ R.ocs=d; }).catch(function(e){ console.warn('oc',e); R.ocs=[]; R.errOC=(e&&e.message)||'error'; }),
       todo(function(){ return sb.from('caja_chica_movimientos').select('id,fecha,total,estado').ilike('obra', obra).eq('estado','aprobado'); }).then(function(d){ R.caja=d; }).catch(function(e){ console.warn('caja',e); R.caja=[]; }),
+      // v1.2 · Caja chica imputada a rubros del presupuesto (Caja Chica v7.56). Sin la tabla: como antes.
+      todo(function(){ return sb.from('caja_chica_mov_rubros').select('movimiento_id,presupuesto,rubro_codigo,monto').in('presupuesto', pps); }).then(function(d){ R.ccRub=d; }).catch(function(){ R.ccRub=[]; }),
       cargarPlan(obra),
       sb.from('obra_cobros').select('*').eq('obra', obra).then(function(r){ if(r.error){ R.cobros=[]; R.sinTablaCob=true; } else R.cobros=r.data||[]; })
     ];
@@ -697,6 +700,16 @@ function calcular(R, F){
     });
   }
 
+  // 5b) v1.2 · Caja chica imputada a cada rubro: solo comprobantes aprobados hasta la fecha de corte
+  //      (el mismo criterio que la caja chica del costo real de la obra)
+  const _ccOk = {}; (R.caja||[]).forEach(function(m){ if(String(m.fecha||'').slice(0,10) <= F.corte) _ccOk[m.id] = 1; });
+  CX.ccPP = {};
+  (R.ccRub||[]).forEach(function(x){
+    if(!_ccOk[x.movimiento_id]) return;
+    const mc = N(x.monto); CX.ccPP[x.presupuesto] = (CX.ccPP[x.presupuesto]||0) + mc;
+    const o = RB[x.presupuesto + '|' + x.rubro_codigo]; if(o) o.ccMonto = (o.ccMonto||0) + mc;
+  });
+
   // 6) Avance por rubro
   const L = orden.map(function(k){ return RB[k]; });
   L.forEach(function(o){
@@ -704,7 +717,7 @@ function calcular(R, F){
     else if(o.costoMat>0 && o.matComp>0){ o.av=Math.min(1, o.matComp/o.costoMat); o.metodo='compras'; }
     else { o.av=0; o.metodo='na'; }
     o.ev=o.av*o.costo; o.evv=o.av*o.venta;
-    o.ac=o.certPag+o.matComp+N(o.npMonto);   // v1.1 · lo no presupuestado también es costo real del rubro
+    o.ac=o.certPag+o.matComp+N(o.npMonto)+N(o.ccMonto);   // v1.1 · lo no presupuestado también es costo real del rubro · v1.2 · y la caja chica imputada
     // Materiales comprados que todavía no se incorporaron a la obra (acopio)
     o.acopio = (o.metodo==='mo') ? Math.max(0, o.matComp - o.av*o.costoMat) : 0;
     o.desv = o.ev-(o.ac-o.acopio);
@@ -737,7 +750,8 @@ function calcular(R, F){
   const caja=(R.caja||[]).filter(function(m){ return String(m.fecha||'').slice(0,10)<=F.corte; });
   T.ocEje=ocEje.reduce(function(a,o){ return a+N(o.valor_total); },0);
   T.ocRes=ocRes.reduce(function(a,o){ return a+N(o.valor_total); },0);
-  T.caja=F.ppSel ? 0 : caja.reduce(function(a,m){ return a+N(m.total); },0);   // la caja chica es de la obra, no de un presupuesto
+  // la caja chica es de la obra; con un presupuesto elegido cuenta solo la imputada a ese presupuesto (v1.2)
+  T.caja=F.ppSel ? N((CX.ccPP||{})[F.ppSel]) : caja.reduce(function(a,m){ return a+N(m.total); },0);
   T.moTot=items.filter(function(x){ return !F.ppSel || x.presupuesto===F.ppSel; }).reduce(function(a,x){ return a+(N(x.subtotal)||N(x.cantidad)*N(x.precio_unit)); },0);
   T.ac = T.moTot + T.ocEje + T.caja;
   // CPI sobre el costo ya incorporado a la obra: los materiales en acopio
@@ -1125,7 +1139,7 @@ function tablaHTML(D){
         ((o.mods&&o.mods.length)?'<span class="metodo c" title="Modificaciones aprobadas de este rubro">✎ '+esc(o.mods.join(', '))+'</span>':'')+
         '<span class="mini">'+esc(o.pp)+(secs.length?' · '+esc(secs.slice(0,3).join(', '))+(secs.length>3?' +'+(secs.length-3):''):'')+'</span></td>'+
         '<td>'+esc(o.unidad)+'</td><td>'+num(o.cant)+'</td><td>'+gs(o.costo)+(Math.abs(o.costo-(o.costoBase!=null?o.costoBase:o.costo))>=1?'<span class="mini" style="display:block" title="Costo del presupuesto aprobado, sin modificaciones">base '+gs(o.costoBase)+'</span>':'')+'</td><td>'+(o.venta?gs(o.venta):'—')+'</td><td>'+barP(o.av)+'</td>'+
-        '<td>'+gs(o.ev)+'</td><td>'+(o.venta?gs(o.evv):'—')+'</td><td>'+gs(o.certPag)+'</td><td>'+gs(o.matComp)+(o.npMonto?'<span class="mini" style="display:block" title="Compras no presupuestadas aplicadas a este rubro">+ '+gs(o.npMonto)+' no presup.</span>':'')+'</td><td>'+(o.acopio?gs(o.acopio):'—')+'</td><td>'+gs(o.ac)+'</td>'+
+        '<td>'+gs(o.ev)+'</td><td>'+(o.venta?gs(o.evv):'—')+'</td><td>'+gs(o.certPag)+'</td><td>'+gs(o.matComp)+(o.npMonto?'<span class="mini" style="display:block" title="Compras no presupuestadas aplicadas a este rubro">+ '+gs(o.npMonto)+' no presup.</span>':'')+(o.ccMonto?'<span class="mini" style="display:block" title="Caja chica imputada a este rubro">+ '+gs(o.ccMonto)+' caja chica</span>':'')+'</td><td>'+(o.acopio?gs(o.acopio):'—')+'</td><td>'+gs(o.ac)+'</td>'+
         '<td class="'+(o.desv<0?'neg':(o.desv>0?'pos':''))+'">'+gs(o.desv)+'</td><td>'+(o.cpi!=null?idx(o.cpi):'—')+'</td></tr>';
       if(S.showComp && o.comp.length){
         h+='<tr class="comp-h"><td class="l" style="padding-left:34px">Composición · insumo</td><td>Unid.</td><td>Cant. presup.</td><td>Costo presup.</td><td>P. unit.</td><td>Ejecutado / comprado</td><td>Cant. ejecutada</td><td>Monto real</td><td colspan="6"></td></tr>';
