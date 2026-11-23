@@ -14,7 +14,8 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <!--
   AXC · Informe de compras por mes (Órdenes de compra + Caja chica)
-  v1.4 · 23/11/2026 · Desarrollado por Conexdata
+  v1.5 · 23/11/2026 · Desarrollado por Conexdata
+  v1.5: monto total sobre cada barra de los gráficos (opción «Mostrar el monto en cada barra»).
   v1.4: las OC de tipo «Caja chica» se suman por defecto (coincide con el Dashboard OC).
   v1.3: detalle de cada compra (ítems y adjuntos de la OC o del comprobante, con PDF), gráficos por
         obra, proveedor, residente y cantidad, y panel «Personalizar» (orígenes, estados, gráficos y PDF).
@@ -209,6 +210,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 .op-t{font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:2px 0 6px}
 .op-g label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 2px;cursor:pointer;border-radius:6px}
 .op-g label:hover{background:var(--surface-2)}
+.op-g label.op-sub{margin-top:4px;padding-top:7px;border-top:1px dashed var(--border-soft);border-radius:0}
 .op-g input{width:15px;height:15px;accent-color:var(--navy);flex:none}
 .op-pie{display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--border-soft);font-size:11px;color:var(--text-muted)}
 .lnk{background:none;border:none;color:var(--serie-oc);font-weight:600;font-size:12px;cursor:pointer;padding:0}
@@ -290,7 +292,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.4</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.5</div>
   </div>
 </div>
 
@@ -357,6 +359,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
             <label><input type="checkbox" data-opt="gProv"> Principales proveedores</label>
             <label><input type="checkbox" data-opt="gRes"> Compras por residente</label>
             <label><input type="checkbox" data-opt="gCant"> Cantidad de compras por mes</label>
+            <label class="op-sub"><input type="checkbox" data-opt="gValores"> Mostrar el monto en cada barra</label>
           </div>
           <div class="op-g"><div class="op-t">Contenido del PDF</div>
             <label><input type="checkbox" data-opt="pdfGraf"> Incluir los gráficos visibles</label>
@@ -413,7 +416,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.4</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.5</div>
 </main>
 
 <div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
@@ -524,7 +527,7 @@ async function iniciar(){
 /* ─── Opciones de la vista (panel «Personalizar») ──────────────────────── */
 // Se recuerdan por navegador. Por defecto: el criterio acordado con AXC.
 const OPTS_DEF = { oc:true, cc:true, sumarHist:true, aprob:true, pend:true,
-  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, pdfGraf:true, pdfObra:false };
+  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, gValores:true, pdfGraf:true, pdfObra:false };
 const OPTS_KEY = 'axc_cm_opciones_v2';
 function cargarOpts(){ try{ const o = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); return Object.assign({}, OPTS_DEF, o || {}); }catch(e){ return Object.assign({}, OPTS_DEF); } }
 function guardarOpts(){ try{ localStorage.setItem(OPTS_KEY, JSON.stringify(S.opts)); }catch(e){} }
@@ -750,6 +753,49 @@ function renderKpis(R){
 /* ─── Gráficos ─────────────────────────────────────────────────────────── */
 const TICK = { color:'#5A6377', font:{ size:11, family:'Inter' } };
 const TICK_M = { color:'#8B93A7', font:{ size:10.5, family:'Inter' } };
+/* Monto sobre cada barra (opción «Mostrar el monto en cada barra»).
+   Se escribe el TOTAL de la barra apilada (OC + caja chica), al final de la barra.
+   Si el monto completo no entra en el ancho de la barra, se usa el formato corto (₲ 24,1 M). */
+const VALORES_PLUGIN = {
+  id:'valoresBarra',
+  afterDatasetsDraw(chart, args, opts){
+    if(!S.opts.gValores || !opts || !opts.fmt) return;
+    const ctx = chart.ctx, horiz = chart.options.indexAxis === 'y';
+    const metas = chart.data.datasets.map((d, i) => chart.getDatasetMeta(i)).filter(m => !m.hidden && m.data.length);
+    if(!metas.length) return;
+    const n = chart.data.labels.length;
+    ctx.save();
+    ctx.font = '600 11px Inter, sans-serif'; ctx.fillStyle = '#1F3864';
+    for(let i = 0; i < n; i++){
+      let tot = 0; chart.data.datasets.forEach(d => { tot += Number(d.data[i]) || 0; });
+      if(!tot) continue;
+      // extremo de la barra = el elemento más alejado del eje
+      let ext = null;
+      metas.forEach(m => { const el = m.data[i]; if(!el) return; const v = horiz ? el.x : el.y; if(ext === null || (horiz ? v > ext : v < ext)) ext = v; });
+      const el0 = metas[0].data[i];
+      let txt = opts.fmt(tot);
+      if(horiz){
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(txt, ext + 6, el0.y);
+      } else {
+        const slot = chart.chartArea.width / n - 4;
+        if(opts.corto && ctx.measureText(txt).width > slot) txt = opts.corto(tot);
+        if(ctx.measureText(txt).width > slot + 8) continue;   // no entra ni corto: se omite (queda el tooltip)
+        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText(txt, el0.x, ext - 4);
+      }
+    }
+    ctx.restore();
+  }
+};
+// Espacio extra para que el monto no se corte: arriba (barras verticales) o a la derecha (horizontales)
+function padValores(horiz, lista, fmt){
+  if(!S.opts.gValores) return { top:0, right:0 };
+  if(!horiz) return { top:18, right:0 };
+  const c = document.createElement('canvas').getContext('2d'); c.font = '600 11px Inter, sans-serif';
+  const w = Math.max(0, ...lista.map(v => c.measureText(fmt(v)).width));
+  return { top:0, right:Math.ceil(w) + 12 };
+}
 function destruir(k){ if(S.charts[k]){ S.charts[k].destroy(); delete S.charts[k]; } }
 function leyendaHTML(){ const O = S.opts; return (O.oc ? '<span><i class="dot oc"></i>Órdenes de compra</span>' : '') + (O.cc ? '<span><i class="dot cc"></i>Caja chica</span>' : ''); }
 function tooltipBase(){ return { backgroundColor:'#FFFFFF', titleColor:'#1A2236', bodyColor:'#5A6377', borderColor:'#E2E6EE', borderWidth:1, padding:10, boxPadding:4, usePointStyle:true,
@@ -777,9 +823,9 @@ function chartTrend(R){
   if(O.oc) ds.push({ label:'Órdenes de compra', data:filas.map(m => m.ocM), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4, topRight:4 }, maxBarThickness:42 });
   if(O.cc) ds.push({ label:'Caja chica', data:filas.map(m => m.ccM), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderColor:'#FFFFFF', borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:42 });
   S.charts.trend = new Chart(cv, {
-    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds },
-    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false },
-      plugins:{ legend:{ display:false }, tooltip:{ enabled:false, external:function(ctx){
+    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC }, tooltip:{ enabled:false, external:function(ctx){
         const t = ctx.tooltip;
         if(!t || t.opacity === 0){ tip.style.opacity = 0; return; }
         const i = t.dataPoints && t.dataPoints[0] ? t.dataPoints[0].dataIndex : -1; if(i < 0) return;
@@ -825,9 +871,10 @@ function chartBarrasH(key, canvasId, lista, etiqueta){
     footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (total > 0 ? ' · ' + Math.round(a.tot / total * 100) + ' % del período' : ''); },
   };
   S.charts[key] = new Chart(cv, {
-    type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds },
+    type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds }, plugins:[VALORES_PLUGIN],
     options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false, axis:'y' },
-      plugins:{ legend:{ display:false }, tooltip:tt },
+      layout:{ padding:padValores(true, items.map(a => (O.oc ? a.oc : 0) + (O.cc ? a.cc : 0)), gs) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs }, tooltip:tt },
       scales:{ x:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:5 }, TICK_M) },
                y:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:TICK } } } });
 }
@@ -844,9 +891,9 @@ function chartCantidad(R){
     footer: c => { const m = filas[c[0].dataIndex]; const n = (O.oc ? m.ocN : 0) + (O.cc ? m.ccN : 0); return 'Total ' + n.toLocaleString('es-PY') + ' compras · promedio ' + gs(n ? m.tot / n : 0); },
   };
   S.charts.cant = new Chart($('chCant'), {
-    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds },
-    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false },
-      plugins:{ legend:{ display:false }, tooltip:tt },
+    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:v => v.toLocaleString('es-PY') }, tooltip:tt },
       scales:{ x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:Object.assign({ maxRotation:0, autoSkip:true }, TICK) },
                y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ precision:0, maxTicksLimit:6 }, TICK_M) } } } });
 }
