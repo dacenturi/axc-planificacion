@@ -14,7 +14,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <!--
   AXC · Informe de compras por mes (Órdenes de compra + Caja chica)
-  v1.5 · 23/11/2026 · Desarrollado por Conexdata
+  v1.7 · 23/11/2026 · Desarrollado por Conexdata
+  v1.7: en cada barra, OC + caja chica = total (opción «Separar OC + caja chica en el monto»).
+  v1.6: gráficos del PDF redibujados al tamaño de la hoja (alta resolución, letra legible);
+        en los rankings, el resto se informa en una nota en lugar de la barra «Otros».
   v1.5: monto total sobre cada barra de los gráficos (opción «Mostrar el monto en cada barra»).
   v1.4: las OC de tipo «Caja chica» se suman por defecto (coincide con el Dashboard OC).
   v1.3: detalle de cada compra (ítems y adjuntos de la OC o del comprobante, con PDF), gráficos por
@@ -211,6 +214,8 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 .op-g label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 2px;cursor:pointer;border-radius:6px}
 .op-g label:hover{background:var(--surface-2)}
 .op-g label.op-sub{margin-top:4px;padding-top:7px;border-top:1px dashed var(--border-soft);border-radius:0}
+.op-g label.op-sub2{padding-left:26px}
+.op-g label.op-sub2.off{opacity:.45}
 .op-g input{width:15px;height:15px;accent-color:var(--navy);flex:none}
 .op-pie{display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--border-soft);font-size:11px;color:var(--text-muted)}
 .lnk{background:none;border:none;color:var(--serie-oc);font-weight:600;font-size:12px;cursor:pointer;padding:0}
@@ -221,6 +226,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 .g2 .card{margin-bottom:14px;min-width:0}
 .g2 .card.full{grid-column:1/-1}
 .chart-h{position:relative;padding:10px 16px 10px}
+.ch-nota{padding:0 18px 14px;font-size:12px;color:var(--text-muted);font-style:italic}
 .ch-vacio{padding:30px;text-align:center;color:var(--text-muted);font-size:13px}
 .card-h .card-m{margin-top:1px}
 .kpi-na{font-size:15px!important;color:var(--text-muted)!important}
@@ -292,7 +298,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.5</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.7</div>
   </div>
 </div>
 
@@ -360,6 +366,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
             <label><input type="checkbox" data-opt="gRes"> Compras por residente</label>
             <label><input type="checkbox" data-opt="gCant"> Cantidad de compras por mes</label>
             <label class="op-sub"><input type="checkbox" data-opt="gValores"> Mostrar el monto en cada barra</label>
+            <label class="op-sub2"><input type="checkbox" data-opt="gDetalle"> Separar OC + caja chica en el monto</label>
           </div>
           <div class="op-g"><div class="op-t">Contenido del PDF</div>
             <label><input type="checkbox" data-opt="pdfGraf"> Incluir los gráficos visibles</label>
@@ -416,7 +423,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.5</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.7</div>
 </main>
 
 <div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
@@ -527,7 +534,7 @@ async function iniciar(){
 /* ─── Opciones de la vista (panel «Personalizar») ──────────────────────── */
 // Se recuerdan por navegador. Por defecto: el criterio acordado con AXC.
 const OPTS_DEF = { oc:true, cc:true, sumarHist:true, aprob:true, pend:true,
-  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, gValores:true, pdfGraf:true, pdfObra:false };
+  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, gValores:true, gDetalle:true, pdfGraf:true, pdfObra:false };
 const OPTS_KEY = 'axc_cm_opciones_v2';
 function cargarOpts(){ try{ const o = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); return Object.assign({}, OPTS_DEF, o || {}); }catch(e){ return Object.assign({}, OPTS_DEF); } }
 function guardarOpts(){ try{ localStorage.setItem(OPTS_KEY, JSON.stringify(S.opts)); }catch(e){} }
@@ -635,6 +642,7 @@ function sincronizarPanel(){
   const n = Object.keys(OPTS_DEF).filter(k => S.opts[k] !== OPTS_DEF[k]).length;
   $('optsBadge').textContent = n ? String(n) : '';
   $('optsBadge').classList.toggle('hidden', !n);
+  const sd = document.querySelector('#panelOpts label.op-sub2'); if(sd){ sd.classList.toggle('off', !S.opts.gValores); sd.querySelector('input').disabled = !S.opts.gValores; }
   if(typeof ubicarPanel === 'function') requestAnimationFrame(ubicarPanel);
 }
 function ubicarPanel(){
@@ -754,52 +762,152 @@ function renderKpis(R){
 const TICK = { color:'#5A6377', font:{ size:11, family:'Inter' } };
 const TICK_M = { color:'#8B93A7', font:{ size:10.5, family:'Inter' } };
 /* Monto sobre cada barra (opción «Mostrar el monto en cada barra»).
-   Se escribe el TOTAL de la barra apilada (OC + caja chica), al final de la barra.
+   Total de la barra en negrita y, si está la opción «Separar OC y caja chica», debajo el monto de cada origen
+   con su cuadradito de color: OC + Caja chica = Total.
    Si el monto completo no entra en el ancho de la barra, se usa el formato corto (₲ 24,1 M). */
+const VAL_FONT = 'Inter, Helvetica, Arial, sans-serif';
+function valPartes(chart, i){
+  return chart.data.datasets.map((d, j) => ({ v:Number(d.data[i]) || 0, color:d.backgroundColor, sig:/caja/i.test(d.label) ? 'CC' : 'OC', meta:chart.getDatasetMeta(j) }))
+    .filter(p => !p.meta.hidden);
+}
+function valDetalle(){ return S.opts.gValores && S.opts.gDetalle && S.opts.oc && S.opts.cc; }
+// Dibuja «■ OC 207,9 M   ■ CC 8,7 M» empezando en x (alineado a la izquierda); devuelve el ancho
+function valLineaPartes(ctx, partes, fmt, x, y, k, medir){
+  let w = 0; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  partes.forEach((p, n) => {
+    const t = p.sig + ' ' + fmt(p.v), sq = 7 * k, gap = 4 * k, sep = n ? 10 * k : 0;
+    if(!medir){
+      ctx.fillStyle = p.color; ctx.fillRect(x + w + sep, y - sq / 2, sq, sq);
+      ctx.fillStyle = '#5A6377'; ctx.fillText(t, x + w + sep + sq + gap, y);
+    }
+    w += sep + sq + gap + ctx.measureText(t).width;
+  });
+  return w;
+}
 const VALORES_PLUGIN = {
   id:'valoresBarra',
   afterDatasetsDraw(chart, args, opts){
     if(!S.opts.gValores || !opts || !opts.fmt) return;
-    const ctx = chart.ctx, horiz = chart.options.indexAxis === 'y';
+    const k = opts.k || 1, ctx = chart.ctx, horiz = chart.options.indexAxis === 'y', det = valDetalle();
     const metas = chart.data.datasets.map((d, i) => chart.getDatasetMeta(i)).filter(m => !m.hidden && m.data.length);
     if(!metas.length) return;
-    const n = chart.data.labels.length;
+    const n = chart.data.labels.length, F1 = '700 ' + (11 * k) + 'px ' + VAL_FONT, F2 = '500 ' + (9.5 * k) + 'px ' + VAL_FONT;
+    const fPart = opts.corto || opts.fmt;
     ctx.save();
-    ctx.font = '600 11px Inter, sans-serif'; ctx.fillStyle = '#1F3864';
     for(let i = 0; i < n; i++){
-      let tot = 0; chart.data.datasets.forEach(d => { tot += Number(d.data[i]) || 0; });
+      const partes = valPartes(chart, i), tot = partes.reduce((t, p) => t + p.v, 0);
       if(!tot) continue;
-      // extremo de la barra = el elemento más alejado del eje
-      let ext = null;
+      let ext = null;   // extremo de la barra = el elemento más alejado del eje
       metas.forEach(m => { const el = m.data[i]; if(!el) return; const v = horiz ? el.x : el.y; if(ext === null || (horiz ? v > ext : v < ext)) ext = v; });
       const el0 = metas[0].data[i];
       let txt = opts.fmt(tot);
+      ctx.textBaseline = 'middle';
       if(horiz){
-        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-        ctx.fillText(txt, ext + 6, el0.y);
+        const x = ext + 6 * k;
+        ctx.font = F1; ctx.textAlign = 'left'; ctx.fillStyle = '#1F3864';
+        if(det){
+          ctx.fillText(txt, x, el0.y - 6 * k);
+          ctx.font = F2; valLineaPartes(ctx, partes, fPart, x, el0.y + 7 * k, k);
+        } else ctx.fillText(txt, x, el0.y);
       } else {
-        const slot = chart.chartArea.width / n - 4;
+        const slot = chart.chartArea.width / n - 4 * k;
+        ctx.font = F1;
         if(opts.corto && ctx.measureText(txt).width > slot) txt = opts.corto(tot);
-        if(ctx.measureText(txt).width > slot + 8) continue;   // no entra ni corto: se omite (queda el tooltip)
-        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-        ctx.fillText(txt, el0.x, ext - 4);
+        if(ctx.measureText(txt).width > slot + 8 * k) continue;   // no entra ni corto: se omite (queda el tooltip)
+        let y = ext - 9 * k;
+        if(det){
+          // de abajo hacia arriba: CC, OC y el total arriba de todo
+          ctx.font = F2;
+          const lineas = partes.slice().reverse().map(p => [p]);
+          const anchos = lineas.map(l => valLineaPartes(ctx, l, fPart, 0, 0, k, true));
+          if(Math.max(...anchos) <= slot + 8 * k){
+            lineas.forEach((l, j) => { valLineaPartes(ctx, l, fPart, el0.x - anchos[j] / 2, y, k); y -= 13 * k; });
+            y -= 2 * k;
+          }
+        }
+        ctx.font = F1; ctx.textAlign = 'center'; ctx.fillStyle = '#1F3864';
+        ctx.fillText(txt, el0.x, y);
       }
     }
     ctx.restore();
   }
 };
 // Espacio extra para que el monto no se corte: arriba (barras verticales) o a la derecha (horizontales)
-function padValores(horiz, lista, fmt){
-  if(!S.opts.gValores) return { top:0, right:0 };
-  if(!horiz) return { top:18, right:0 };
-  const c = document.createElement('canvas').getContext('2d'); c.font = '600 11px Inter, sans-serif';
-  const w = Math.max(0, ...lista.map(v => c.measureText(fmt(v)).width));
-  return { top:0, right:Math.ceil(w) + 12 };
+function padValores(horiz, items, fmt, k, corto){
+  k = k || 1;
+  const base = { top:4 * k, right:8 * k, bottom:0, left:0 };
+  if(!S.opts.gValores) return base;
+  const det = valDetalle();
+  if(!horiz) return Object.assign(base, { top:(det ? 48 : 20) * k });
+  const c = document.createElement('canvas').getContext('2d');
+  let w = 0;
+  (items || []).forEach(a => {
+    const tot = (S.opts.oc ? a.oc : 0) + (S.opts.cc ? a.cc : 0);
+    c.font = '700 ' + (11 * k) + 'px ' + VAL_FONT; w = Math.max(w, c.measureText(fmt(tot)).width);
+    if(det){ c.font = '500 ' + (9.5 * k) + 'px ' + VAL_FONT; w = Math.max(w, valLineaPartes(c, [{ sig:'OC', v:a.oc }, { sig:'CC', v:a.cc }], corto || fmt, 0, 0, k, true)); }
+  });
+  return Object.assign(base, { right:Math.ceil(w) + 14 * k });
 }
+// Escala de letras y trazos: 1 en pantalla; mayor al dibujar para el PDF
+function tk(base, k){ return { color:base.color, font:{ size:base.font.size * k, family:'Inter, Helvetica, Arial, sans-serif' } }; }
+function ejesVert(k, fmtY, extraY){
+  return { x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3', width:k }, ticks:Object.assign({ maxRotation:0, autoSkip:true, padding:4 * k }, tk(TICK, k)) },
+           y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5', lineWidth:k }, ticks:Object.assign({ maxTicksLimit:6, padding:6 * k }, fmtY ? { callback:fmtY } : {}, extraY || {}, tk(TICK_M, k)) } };
+}
+function dsVert(O, datos, k, maxBar, stack){
+  const ds = [];
+  if(O.oc) ds.push({ label:'Órdenes de compra', data:datos.oc, backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack, borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 * k } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4 * k, topRight:4 * k }, maxBarThickness:maxBar * k, categoryPercentage:0.72, barPercentage:0.9 });
+  if(O.cc) ds.push({ label:'Caja chica', data:datos.cc, backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack, borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4 * k, topRight:4 * k }, maxBarThickness:maxBar * k, categoryPercentage:0.72, barPercentage:0.9 });
+  return ds;
+}
+
 function destruir(k){ if(S.charts[k]){ S.charts[k].destroy(); delete S.charts[k]; } }
 function leyendaHTML(){ const O = S.opts; return (O.oc ? '<span><i class="dot oc"></i>Órdenes de compra</span>' : '') + (O.cc ? '<span><i class="dot cc"></i>Caja chica</span>' : ''); }
 function tooltipBase(){ return { backgroundColor:'#FFFFFF', titleColor:'#1A2236', bodyColor:'#5A6377', borderColor:'#E2E6EE', borderWidth:1, padding:10, boxPadding:4, usePointStyle:true,
   titleFont:{ family:'Inter', weight:'700', size:12.5 }, bodyFont:{ family:'Inter', size:12 }, footerColor:'#1A2236', footerFont:{ family:'Inter', weight:'700', size:12 } }; }
+
+/* Definiciones de cada gráfico (las usan la pantalla y el PDF) ─────────── */
+function cfgTrend(R, k, tooltip){
+  const O = S.opts, filas = R.filas;
+  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocM), cc:filas.map(m => m.ccM) }, k, 46, 's') }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k }, tooltip:tooltip || { enabled:false } },
+      scales:ejesVert(k, v => gsC(v)) } };
+}
+function cfgCant(R, k, tooltip){
+  const O = S.opts, filas = R.filas;
+  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocN), cc:filas.map(m => m.ccN) }, k, 34, 'c') }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:v => v.toLocaleString('es-PY'), k }, tooltip:tooltip || { enabled:false } },
+      scales:ejesVert(k, null, { precision:0 }) } };
+}
+// Ranking horizontal: los TOP primeros; el resto se informa en una nota (no como barra, para no aplastar la escala)
+const TOP_RANK = 10;
+function rankItems(lista){
+  const items = lista.slice(0, TOP_RANK), resto = lista.slice(TOP_RANK);
+  const total = lista.reduce((t, a) => t + a.tot, 0), rTot = resto.reduce((t, a) => t + a.tot, 0);
+  return { items, total, resto:resto.length, restoTot:rTot };
+}
+function notaResto(rk, etiquetaPlural){
+  if(!rk.resto) return '';
+  return '+ ' + rk.resto.toLocaleString('es-PY') + ' ' + etiquetaPlural + ' más: ' + gs(rk.restoTot) + (rk.total > 0 ? ' (' + Math.round(rk.restoTot / rk.total * 100) + ' % del período)' : '');
+}
+function cfgBarrasH(rk, k, tooltip, maxLen){
+  const O = S.opts, items = rk.items, ML = maxLen || 26;
+  const corto = s => s.length > ML ? s.slice(0, ML - 1) + '…' : s;
+  const ds = [];
+  const comun = { stack:'s', borderSkipped:'left', categoryPercentage:0.78, barPercentage:0.86, maxBarThickness:22 * k };
+  if(O.oc) ds.push(Object.assign({ label:'Órdenes de compra', data:items.map(a => a.oc), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, borderColor:'#FFFFFF', borderWidth:O.cc ? { right:2 * k } : 0, borderRadius:O.cc ? 0 : { topRight:4 * k, bottomRight:4 * k } }, comun));
+  if(O.cc) ds.push(Object.assign({ label:'Caja chica', data:items.map(a => a.cc), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, borderWidth:0, borderRadius:{ topRight:4 * k, bottomRight:4 * k } }, comun));
+  return { type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds }, plugins:[VALORES_PLUGIN],
+    options:{ indexAxis:'y', responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false, axis:'y' },
+      layout:{ padding:padValores(true, items, gs, k, gsC) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k }, tooltip:tooltip || { enabled:false } },
+      scales:{ x:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5', lineWidth:k }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:5, padding:4 * k }, tk(TICK_M, k)) },
+               y:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3', width:k }, ticks:Object.assign({ padding:6 * k }, tk(TICK, k)) } } } };
+}
+const RANKS = { obra:['porObraTot', 'obras'], prov:['porProv', 'proveedores'], res:['porRes', 'residentes'] };
+
 function renderCharts(R){
   const O = S.opts;
   document.querySelectorAll('.legend-dyn').forEach(e => { e.innerHTML = leyendaHTML(); });
@@ -808,9 +916,9 @@ function renderCharts(R){
   $('gridA').classList.toggle('hidden', !O.gObra && !O.gProv);
   $('gridB').classList.toggle('hidden', !O.gRes && !O.gCant);
   if(O.gTrend) chartTrend(R); else destruir('trend');
-  if(O.gObra) chartBarrasH('obra', 'chObra', R.porObraTot, 'Obra'); else destruir('obra');
-  if(O.gProv) chartBarrasH('prov', 'chProv', R.porProv, 'Proveedor'); else destruir('prov');
-  if(O.gRes) chartBarrasH('res', 'chRes', R.porRes, 'Residente'); else destruir('res');
+  if(O.gObra) chartBarrasH('obra', 'chObra', R); else destruir('obra');
+  if(O.gProv) chartBarrasH('prov', 'chProv', R); else destruir('prov');
+  if(O.gRes) chartBarrasH('res', 'chRes', R); else destruir('res');
   if(O.gCant) chartCantidad(R); else destruir('cant');
   // Cada tarjeta de la fila ocupa todo el ancho si su compañera está oculta
   $('cardObra').classList.toggle('full', O.gObra && !O.gProv); $('cardProv').classList.toggle('full', O.gProv && !O.gObra);
@@ -819,83 +927,73 @@ function renderCharts(R){
 function chartTrend(R){
   destruir('trend');
   const O = S.opts, filas = R.filas, cv = $('chart'), tip = $('chartTip');
-  const ds = [];
-  if(O.oc) ds.push({ label:'Órdenes de compra', data:filas.map(m => m.ocM), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4, topRight:4 }, maxBarThickness:42 });
-  if(O.cc) ds.push({ label:'Caja chica', data:filas.map(m => m.ccM), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderColor:'#FFFFFF', borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:42 });
-  S.charts.trend = new Chart(cv, {
-    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds }, plugins:[VALORES_PLUGIN],
-    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC }, tooltip:{ enabled:false, external:function(ctx){
-        const t = ctx.tooltip;
-        if(!t || t.opacity === 0){ tip.style.opacity = 0; return; }
-        const i = t.dataPoints && t.dataPoints[0] ? t.dataPoints[0].dataIndex : -1; if(i < 0) return;
-        const m = filas[i];
-        tip.innerHTML = '<div class="tt-h">' + esc(mesTxt(m.k)) + '</div>' +
-          (O.oc ? '<div class="tt-r"><span><i class="dot oc"></i>Órdenes de compra (' + m.ocN + ')</span><b>' + gs(m.ocM) + '</b></div>' : '') +
-          (O.cc ? '<div class="tt-r"><span><i class="dot cc"></i>Caja chica (' + m.ccN + ')</span><b>' + gs(m.ccM) + '</b></div>' : '') +
-          '<div class="tt-r tt-t"><span>Total del mes</span><b>' + gs(m.tot) + '</b></div>' +
-          (m.var != null && isFinite(m.var) ? '<div class="tt-r"><span>Variación vs. mes anterior</span><b style="font-weight:600">' + (Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %</b></div>' : '') +
-          (m.hiM ? '<div class="tt-r"><span style="font-style:italic">OC caja chica (hist.) · no suma</span><b style="font-weight:500">' + gs(m.hiM) + '</b></div>' : '');
-        const wrap = cv.parentNode, w = tip.offsetWidth || 230;
-        tip.style.left = Math.max(8, Math.min(wrap.clientWidth - w - 8, t.caretX + 14)) + 'px';
-        tip.style.top = Math.max(8, t.caretY - 40) + 'px';
-        tip.style.opacity = 1;
-      } } },
-      scales:{ x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:Object.assign({ maxRotation:0, autoSkip:true }, TICK) },
-               y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:6 }, TICK_M) } } } });
+  const tt = { enabled:false, external:function(ctx){
+    const t = ctx.tooltip;
+    if(!t || t.opacity === 0){ tip.style.opacity = 0; return; }
+    const i = t.dataPoints && t.dataPoints[0] ? t.dataPoints[0].dataIndex : -1; if(i < 0) return;
+    const m = filas[i];
+    tip.innerHTML = '<div class="tt-h">' + esc(mesTxt(m.k)) + '</div>' +
+      (O.oc ? '<div class="tt-r"><span><i class="dot oc"></i>Órdenes de compra (' + m.ocN + ')</span><b>' + gs(m.ocM) + '</b></div>' : '') +
+      (O.cc ? '<div class="tt-r"><span><i class="dot cc"></i>Caja chica (' + m.ccN + ')</span><b>' + gs(m.ccM) + '</b></div>' : '') +
+      '<div class="tt-r tt-t"><span>Total del mes</span><b>' + gs(m.tot) + '</b></div>' +
+      (m.var != null && isFinite(m.var) ? '<div class="tt-r"><span>Variación vs. mes anterior</span><b style="font-weight:600">' + (Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %</b></div>' : '') +
+      (m.hiM ? '<div class="tt-r"><span style="font-style:italic">OC caja chica (hist.) · no suma</span><b style="font-weight:500">' + gs(m.hiM) + '</b></div>' : '');
+    const wrap = cv.parentNode, w = tip.offsetWidth || 230;
+    tip.style.left = Math.max(8, Math.min(wrap.clientWidth - w - 8, t.caretX + 14)) + 'px';
+    tip.style.top = Math.max(8, t.caretY - 40) + 'px';
+    tip.style.opacity = 1;
+  } };
+  S.charts.trend = new Chart(cv, cfgTrend(R, 1, tt));
   cv.parentNode.onmouseleave = function(){ tip.style.opacity = 0; };
 }
-function chartBarrasH(key, canvasId, lista, etiqueta){
+function chartBarrasH(key, canvasId, R){
   destruir(key);
-  const O = S.opts, TOP = 10;
-  let items = lista.slice(0, TOP);
-  if(lista.length > TOP){
-    const resto = lista.slice(TOP);
-    items.push({ nombre:'Otros (' + resto.length + ')', oc:resto.reduce((t, a) => t + a.oc, 0), cc:resto.reduce((t, a) => t + a.cc, 0), tot:resto.reduce((t, a) => t + a.tot, 0) });
-  }
-  const cv = $(canvasId), wrap = cv.parentNode;
-  wrap.style.height = Math.max(120, items.length * 30 + 40) + 'px';
-  const vacio = wrap.parentNode.querySelector('.ch-vacio');
+  const rk = rankItems(R[RANKS[key][0]]), items = rk.items;
+  const cv = $(canvasId), wrap = cv.parentNode, card = wrap.parentNode;
+  wrap.style.height = Math.max(120, items.length * (valDetalle() ? 40 : 30) + 40) + 'px';
+  const vacio = card.querySelector('.ch-vacio');
   if(vacio) vacio.classList.toggle('hidden', items.length > 0);
+  let nota = card.querySelector('.ch-nota');
+  if(!nota){ nota = document.createElement('div'); nota.className = 'ch-nota'; card.appendChild(nota); }
+  nota.textContent = notaResto(rk, RANKS[key][1]); nota.classList.toggle('hidden', !nota.textContent);
   cv.style.display = items.length ? 'block' : 'none';
   if(!items.length) return;
-  const total = lista.reduce((t, a) => t + a.tot, 0);
-  const corto = s => s.length > 26 ? s.slice(0, 25) + '…' : s;
-  const ds = [];
-  if(O.oc) ds.push({ label:'Órdenes de compra', data:items.map(a => a.oc), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:O.cc ? { right:2 } : 0, borderSkipped:'left', borderRadius:O.cc ? 0 : { topRight:4, bottomRight:4 }, barThickness:18 });
-  if(O.cc) ds.push({ label:'Caja chica', data:items.map(a => a.cc), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderWidth:0, borderSkipped:'left', borderRadius:{ topRight:4, bottomRight:4 }, barThickness:18 });
   const tt = tooltipBase();
   tt.callbacks = {
     title: c => items[c[0].dataIndex].nombre,
     label: c => ' ' + c.dataset.label + ': ' + gs(c.parsed.x),
-    footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (total > 0 ? ' · ' + Math.round(a.tot / total * 100) + ' % del período' : ''); },
+    footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (rk.total > 0 ? ' · ' + Math.round(a.tot / rk.total * 100) + ' % del período' : ''); },
   };
-  S.charts[key] = new Chart(cv, {
-    type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds }, plugins:[VALORES_PLUGIN],
-    options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false, axis:'y' },
-      layout:{ padding:padValores(true, items.map(a => (O.oc ? a.oc : 0) + (O.cc ? a.cc : 0)), gs) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs }, tooltip:tt },
-      scales:{ x:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:5 }, TICK_M) },
-               y:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:TICK } } } });
+  S.charts[key] = new Chart(cv, cfgBarrasH(rk, 1, tt));
 }
 function chartCantidad(R){
   destruir('cant');
   const O = S.opts, filas = R.filas;
-  const ds = [];
-  if(O.oc) ds.push({ label:'Órdenes de compra', data:filas.map(m => m.ocN), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'c', borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4, topRight:4 }, maxBarThickness:28 });
-  if(O.cc) ds.push({ label:'Caja chica', data:filas.map(m => m.ccN), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'c', borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:28 });
   const tt = tooltipBase();
   tt.callbacks = {
     title: c => mesTxt(filas[c[0].dataIndex].k),
     label: c => ' ' + c.dataset.label + ': ' + c.parsed.y.toLocaleString('es-PY') + (c.datasetIndex === 0 && O.oc ? ' OC' : ' comprobantes'),
     footer: c => { const m = filas[c[0].dataIndex]; const n = (O.oc ? m.ocN : 0) + (O.cc ? m.ccN : 0); return 'Total ' + n.toLocaleString('es-PY') + ' compras · promedio ' + gs(n ? m.tot / n : 0); },
   };
-  S.charts.cant = new Chart($('chCant'), {
-    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds }, plugins:[VALORES_PLUGIN],
-    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:v => v.toLocaleString('es-PY') }, tooltip:tt },
-      scales:{ x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:Object.assign({ maxRotation:0, autoSkip:true }, TICK) },
-               y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ precision:0, maxTicksLimit:6 }, TICK_M) } } } });
+  S.charts.cant = new Chart($('chCant'), cfgCant(R, 1, tt));
+}
+
+/* Gráfico dibujado especialmente para el PDF: al tamaño exacto del recuadro, en alta resolución */
+const PDF_PX_MM = 8;                 // ≈ 200 ppp
+const PDF_K = PDF_PX_MM * 0.27;      // letras ≈ 8,5 pt en la hoja
+function imagenGraficoPdf(cfg, wmm, hmm){
+  const wpx = Math.round(wmm * PDF_PX_MM), hpx = Math.round(hmm * PDF_PX_MM);
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;left:-20000px;top:0;width:' + wpx + 'px;height:' + hpx + 'px;';
+  const cv = document.createElement('canvas'); cv.width = wpx; cv.height = hpx; cv.style.width = wpx + 'px'; cv.style.height = hpx + 'px';
+  box.appendChild(cv); document.body.appendChild(box);
+  cfg.options.devicePixelRatio = 1;
+  cfg.plugins = (cfg.plugins || []).concat([{ id:'fondoBlanco', beforeDraw(c){ const x = c.ctx; x.save(); x.fillStyle = '#FFFFFF'; x.fillRect(0, 0, c.width, c.height); x.restore(); } }]);
+  let img = null;
+  try{ const ch = new Chart(cv, cfg); img = ch.toBase64Image('image/png', 1); ch.destroy(); }
+  catch(e){ console.warn('gráfico al PDF', e); }
+  box.remove();
+  return img;
 }
 
 /* ─── Tabla mensual ────────────────────────────────────────────────────── */
@@ -1288,6 +1386,60 @@ $('btnPdf').addEventListener('click', function(){
   if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   try{ generarPdf(); }catch(e){ console.error('PDF', e); toast('No se pudo generar el PDF: ' + (e.message || ''), 'error'); }
 });
+function pdfGraficos(P, R, sub){
+  const O = S.opts, { doc, W, H, M } = P;
+  const TIT = 'INFORME DE COMPRAS POR MES - GRAFICOS', Y0 = 33, YMAX = H - 13, GAP = 6;
+  const def = {
+    trend:{ t:'Compras por mes', s:'Monto comprado cada mes, por origen', alto:() => 74, max:() => 999 },
+    cant: { t:'Cantidad de compras por mes', s:'Ordenes y comprobantes cargados cada mes', alto:() => 74, max:() => 999 },
+    obra: { t:'Compras por obra', s:'Las ' + TOP_RANK + ' obras con mas compras del periodo', rank:'obra' },
+    prov: { t:'Principales proveedores', s:'Los ' + TOP_RANK + ' proveedores con mas compras del periodo', rank:'prov' },
+    res:  { t:'Compras por residente', s:'Quien cargo las compras del periodo', rank:'res' },
+  };
+  const activo = k => !!S.charts[k];
+  Object.keys(RANKS).forEach(k => { if(def[k]){ def[k].rk = rankItems(R[RANKS[k][0]]); def[k].nota = notaResto(def[k].rk, RANKS[k][1]); def[k].alto = () => Math.min(YMAX - Y0, Math.max(56, 26 + def[k].rk.items.length * 10.5 + (def[k].nota ? 6 : 0))); def[k].max = () => 26 + def[k].rk.items.length * 18 + (def[k].nota ? 6 : 0); } });
+  // Filas: evolución a todo el ancho; rankings de a dos (si queda uno solo, ocupa todo el ancho)
+  const filas = [['trend'], ['cant'], ['obra', 'prov'], ['res']].map(f => f.filter(activo)).filter(f => f.length);
+  // Une «res» con un ranking solitario de la fila anterior, para no dejar medias hojas vacías
+  for(let i = filas.length - 1; i > 0; i--){ if(filas[i].length === 1 && filas[i - 1].length === 1 && def[filas[i][0]].rank && def[filas[i - 1][0]].rank){ filas[i - 1].push(filas[i][0]); filas.splice(i, 1); } }
+  if(!filas.length) return;
+  // Reparte las filas en hojas y estira cada fila para aprovechar la hoja completa
+  const hojas = []; let usado = 0;
+  filas.forEach(f => {
+    const h = Math.max(...f.map(k => def[k].alto()));
+    if(!hojas.length || usado + GAP + h > YMAX - Y0){ hojas.push([]); usado = -GAP; }
+    hojas[hojas.length - 1].push({ f, h, max:Math.min(YMAX - Y0, Math.max(...f.map(k => def[k].max()))) }); usado += GAP + h;
+  });
+  hojas.forEach(hj => {
+    let libre = (YMAX - Y0) - hj.reduce((t, r) => t + r.h, 0) - GAP * (hj.length - 1);
+    for(let vuelta = 0; vuelta < 4 && libre > 0.5; vuelta++){
+      const crecen = hj.filter(r => r.h < r.max - 0.5); if(!crecen.length) break;
+      const parte = libre / crecen.length;
+      crecen.forEach(r => { const d = Math.min(parte, r.max - r.h); r.h += d; libre -= d; });
+    }
+  });
+  const ley = []; if(O.oc) ley.push(['Ordenes de compra', [58,107,181]]); if(O.cc) ley.push(['Caja chica', [181,138,18]]);
+  hojas.forEach(hj => { doc.addPage(); pdfEncabezado(P, TIT, sub); let y = Y0; hj.forEach(({ f, h }) => {
+    const w = (W - M * 2 - GAP * (f.length - 1)) / f.length;
+    f.forEach((k, i) => {
+      const d = def[k], x = M + i * (w + GAP);
+      doc.setFillColor(255, 255, 255); doc.setDrawColor(222, 227, 236); doc.setLineWidth(0.25); doc.roundedRect(x, y, w, h, 2.5, 2.5, 'FD');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(31, 56, 100); doc.text(pdfSafe(d.t), x + 5, y + 7.5);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(130, 138, 156); doc.text(pdfSafe(d.s), x + 5, y + 12);
+      let lx = x + w - 5; doc.setFontSize(7.8); doc.setTextColor(90, 99, 119);
+      ley.slice().reverse().forEach(l => { const tw = doc.getTextWidth(l[0]); lx -= tw; doc.text(l[0], lx, y + 7.5); lx -= 4.2; doc.setFillColor(l[1][0], l[1][1], l[1][2]); doc.roundedRect(lx, y + 4.9, 3, 3, 0.6, 0.6, 'F'); lx -= 5; });
+      doc.setDrawColor(236, 239, 244); doc.setLineWidth(0.2); doc.line(x, y + 15, x + w, y + 15);
+      const notaH = d.nota ? 6 : 0, iw = w - 8;
+      // un ranking con pocas filas no se estira de más (queda arriba, con barras de grosor normal)
+      const ih = d.rank ? Math.min(h - 18 - 3 - notaH, d.rk.items.length * 18 + 10) : h - 18 - 3 - notaH;
+      const cfg = d.rank ? cfgBarrasH(d.rk, PDF_K, null, f.length > 1 ? 24 : 40) : (k === 'trend' ? cfgTrend(R, PDF_K) : cfgCant(R, PDF_K));
+      const img = imagenGraficoPdf(cfg, iw, ih);
+      if(img) doc.addImage(img, 'PNG', x + 4, y + 17.5, iw, ih);
+      if(d.nota){ doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(110, 118, 136); doc.text(pdfSafe(d.nota), x + 5, y + 17.5 + ih + 4); }
+    });
+    y += h + GAP;
+  }); });
+}
 function generarPdf(){
   const R = S.R; if(!R) return;
   const O = S.opts, cols = columnasMes(R);
@@ -1321,30 +1473,8 @@ function generarPdf(){
   if(yc + 5 + lines.length * 3.6 > H - 14){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub); yc = 34; }
   doc.setFont('helvetica', 'bold'); doc.setTextColor(31, 56, 100); doc.text('Como se calcula', M, yc);
   doc.setFont('helvetica', 'normal'); doc.setTextColor(90, 99, 119); doc.text(lines, M, yc + 4.5);
-  // Gráficos (los que están visibles en pantalla)
-  if(O.pdfGraf){
-    const graf = [['trend', 'Compras por mes'], ['obra', 'Compras por obra'], ['prov', 'Principales proveedores'], ['res', 'Compras por residente'], ['cant', 'Cantidad de compras por mes']].filter(g => S.charts[g[0]]);
-    if(graf.length){
-      doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - GRAFICOS', sub);
-      const gw = (W - M * 2 - 8) / 2, gh = 72; let gx = 0, gy = 34;
-      graf.forEach((g, i) => {
-        if(gy + gh > H - 12){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - GRAFICOS', sub); gy = 34; gx = 0; }
-        const ch = S.charts[g[0]], x = M + gx * (gw + 8);
-        doc.setDrawColor(226, 230, 238); doc.setLineWidth(0.2); doc.roundedRect(x, gy, gw, gh, 2, 2, 'S');
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 56, 100); doc.text(pdfSafe(g[1]), x + 4, gy + 6);
-        // leyenda
-        let lx = x + gw - 4; doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(90, 99, 119);
-        const ley = []; if(O.oc) ley.push(['Ordenes de compra', [58,107,181]]); if(O.cc) ley.push(['Caja chica', [181,138,18]]);
-        ley.slice().reverse().forEach(l => { const tw = doc.getTextWidth(l[0]); lx -= tw; doc.text(l[0], lx, gy + 6); lx -= 4; doc.setFillColor(l[1][0], l[1][1], l[1][2]); doc.rect(lx, gy + 3.6, 2.6, 2.6, 'F'); lx -= 4; });
-        try{
-          const img = ch.toBase64Image('image/png', 1), cw = ch.canvas.width, chh = ch.canvas.height;
-          const maxW = gw - 8, maxH = gh - 12, ratio = Math.min(maxW / cw, maxH / chh);
-          doc.addImage(img, 'PNG', x + 4 + (maxW - cw * ratio) / 2, gy + 9, cw * ratio, chh * ratio);
-        }catch(e){ console.warn('grafico al PDF', e); }
-        gx++; if(gx > 1){ gx = 0; gy += gh + 6; }
-      });
-    }
-  }
+  // Gráficos (los que están visibles en pantalla), redibujados al tamaño de la hoja
+  if(O.pdfGraf) pdfGraficos(P, R, sub);
   // Detalle por obra (opcional)
   if(O.pdfObra){
     doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - DETALLE POR OBRA', sub);
