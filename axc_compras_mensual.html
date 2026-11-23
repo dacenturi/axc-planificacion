@@ -14,7 +14,11 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <!--
   AXC · Informe de compras por mes (Órdenes de compra + Caja chica)
-  v1.1 · 23/11/2026 · Desarrollado por Conexdata
+  v1.4 · 23/11/2026 · Desarrollado por Conexdata
+  v1.4: las OC de tipo «Caja chica» se suman por defecto (coincide con el Dashboard OC).
+  v1.3: detalle de cada compra (ítems y adjuntos de la OC o del comprobante, con PDF), gráficos por
+        obra, proveedor, residente y cantidad, y panel «Personalizar» (orígenes, estados, gráficos y PDF).
+  v1.2: detalle de cada obra por mes (órdenes de compra y comprobantes de caja chica), con PDF y Excel de la obra.
   Acceso: administradores o quien tenga «Entrar a Compras por mes» (clave cm_ver en
   perfiles.permisos, se habilita en Perfiles y Permisos). La pantalla lo verifica
   al abrir; los datos además están protegidos por las políticas RLS de cada tabla.
@@ -27,9 +31,9 @@
    · OC: cuentan todas menos Rechazadas y Anuladas. Las OC de prueba no cuentan.
    · Caja chica: cuentan los comprobantes solicitados, observados y aprobados.
      No cuentan anulados, rechazados ni borradores.
-   · OC con tipo de compra «Caja chica (histórico)»: se muestran en una columna
-     aparte, informativa, y NO se suman al total, para no contar dos veces una
-     compra que también pudo cargarse en el módulo Caja Chica.
+   · OC con tipo de compra «Caja chica»: desde v1.4 se SUMAN por defecto dentro de
+     Órdenes de compra (igual que el Dashboard OC). Desde «Personalizar» se pueden
+     mostrar aparte, sin sumar.
    · Lo que cada usuario ve depende de sus permisos en el servidor (RLS).
 -->
 <style>
@@ -146,8 +150,37 @@ table.tm{width:100%;border-collapse:collapse;font-size:13px}
 .var-up{color:#9A3B12} .var-dn{color:#1E6B3A}
 .tm tr.det td{background:#FAFBFD;font-size:12.5px;padding:7px 12px;color:var(--text-soft)}
 .tm tr.det td.l{padding-left:40px}
+.tm tr.det td{white-space:nowrap}
 .tm tr.det-h td{background:#F2F5FA;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);padding:6px 12px}
 .tm tr.det-h td.l{padding-left:40px}
+.tm tr.det.obra{cursor:pointer}
+.tm tr.det.obra:hover td{background:#F1F5FB}
+.tm tr.det.obra .car{margin-left:-16px;margin-right:2px}
+.tm tr.det.obra.abierto td{background:#EEF3FA;color:var(--text);font-weight:600}
+.tm tr.drill-row td{padding:0;background:#FBFCFE;white-space:normal;text-align:left}
+.drill{margin:4px 14px 14px 40px;border:1px solid var(--border);border-radius:12px;background:#fff;padding:12px 14px 4px;box-shadow:0 2px 8px rgba(20,30,55,.04)}
+.dr-h{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:10px;border-bottom:1px solid var(--border-soft)}
+.dr-ob{font-family:'Syne',sans-serif;font-weight:700;font-size:14.5px;color:var(--navy)}
+.dr-sub{font-size:12px;color:var(--text-soft)}
+.dr-acc{display:flex;gap:6px}
+.btn-sm{height:30px;padding:0 11px;font-size:12px}
+.dr-b{margin:12px 0 10px}
+.dr-t{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:6px}
+.dr-t .dot{margin-right:6px;vertical-align:-1px}
+.dr-t b{color:var(--navy);font-variant-numeric:tabular-nums}
+.dr-nota{font-weight:500;font-style:italic;color:var(--text-muted);font-size:11.5px}
+.dot.hi{background:#B6BCC8}
+table.dr{width:100%;border-collapse:collapse;font-size:12px}
+.dr th{font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+.dr td{padding:6px 8px;border-bottom:1px solid var(--border-soft);color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums}
+.dr tr:last-child td{border-bottom:none}
+.dr .r{text-align:right}
+.dr td.num{font-weight:600;color:var(--navy)}
+.dr td.conc{white-space:normal;min-width:180px;color:var(--text-soft)}
+.est{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid}
+.est.ok{color:#1B5524;background:#E6F4EA;border-color:#A8D5B5}
+.est.pend{color:#7A5600;background:#FEF6DD;border-color:#F1D58A}
+.est.obs{color:#0F3B73;background:#E4EEFA;border-color:#A9C7EC}
 .tm tfoot td{border-top:2px solid var(--navy);font-weight:700;background:var(--surface-2);padding:12px}
 .tm tfoot tr.prom td{border-top:1px solid var(--border);font-weight:600;color:var(--text-soft);background:#fff}
 .criterios{padding:12px 18px 16px;font-size:12px;color:var(--text-soft);line-height:1.6;border-top:1px solid var(--border-soft)}
@@ -167,6 +200,68 @@ table.tm{width:100%;border-collapse:collapse;font-size:13px}
 .gate h3{font-family:'Syne',sans-serif;font-size:21px;color:var(--navy);margin-bottom:8px}
 .gate p{color:var(--text-soft);font-size:13.5px;margin-bottom:20px}
 .gate a{display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 16px;border-radius:9px;background:var(--navy);color:#fff;font-weight:600;font-size:13px;text-decoration:none}
+/* v1.3 · Personalizar */
+.opts-wrap{position:relative}
+.opts-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--gold);color:var(--navy);font-size:10.5px;font-weight:800;margin-left:2px}
+.opts-panel{position:fixed;z-index:40;width:340px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 40px rgba(20,30,55,.16);padding:12px 14px}
+.op-g{padding:6px 0 8px;border-bottom:1px solid var(--border-soft)}
+.op-g:last-of-type{border-bottom:none}
+.op-t{font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:2px 0 6px}
+.op-g label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 2px;cursor:pointer;border-radius:6px}
+.op-g label:hover{background:var(--surface-2)}
+.op-g input{width:15px;height:15px;accent-color:var(--navy);flex:none}
+.op-pie{display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--border-soft);font-size:11px;color:var(--text-muted)}
+.lnk{background:none;border:none;color:var(--serie-oc);font-weight:600;font-size:12px;cursor:pointer;padding:0}
+.lnk:hover{text-decoration:underline}
+.notice a{color:inherit;font-weight:600}
+/* Gráficos en grilla */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g2 .card{margin-bottom:14px;min-width:0}
+.g2 .card.full{grid-column:1/-1}
+.chart-h{position:relative;padding:10px 16px 10px}
+.ch-vacio{padding:30px;text-align:center;color:var(--text-muted);font-size:13px}
+.card-h .card-m{margin-top:1px}
+.kpi-na{font-size:15px!important;color:var(--text-muted)!important}
+/* Ventana de detalle de una compra */
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);z-index:55;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+.mc{position:relative;width:100%;max-width:980px;background:#fff;border-radius:16px;box-shadow:0 30px 80px rgba(15,23,42,.3);padding:22px 24px 16px}
+.mc-x{position:absolute;top:14px;right:14px;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;color:var(--text-soft);font-size:14px}
+.mc-x:hover{border-color:var(--navy);color:var(--navy)}
+.mc-h{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-right:44px;padding-bottom:14px;border-bottom:1px solid var(--border-soft)}
+.mc-tipo{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted)}
+.mc-tipo::before{content:'';width:10px;height:10px;border-radius:3px;background:var(--serie-oc)}
+.mc-tipo.cc::before{background:var(--serie-cc)}
+.mc-num{font-family:'Syne',sans-serif;font-size:21px;font-weight:700;color:var(--navy);margin-top:2px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mc-tot{text-align:right}
+.mc-tot span{display:block;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.mc-tot b{font-family:'Syne',sans-serif;font-size:22px;color:var(--navy);white-space:nowrap}
+.mc-info{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px 20px;padding:14px 0}
+.mc-f span{display:block;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.mc-f b{font-size:13.5px;font-weight:500;color:var(--text);word-break:break-word}
+.mc-nota{background:#FFF8E6;border:1px solid #EAD49A;border-left:4px solid var(--gold);border-radius:8px;padding:9px 12px;font-size:13px;color:#5C3D00;margin-bottom:12px;white-space:pre-line}
+.mc-nota span{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#7A5600;margin-bottom:2px}
+.mc-sec{font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 6px}
+.mc-it td{white-space:normal}
+.mc-it .it-d{font-weight:600;color:var(--text)}
+.mc-it .it-x{font-size:11px;color:var(--text-muted);margin-top:1px}
+.mc-it tfoot td{border-top:2px solid var(--navy);font-weight:700;color:var(--navy);padding:8px}
+.mc-dif{margin-top:8px;font-size:12px;color:#7A2418;background:#FDEEEC;border:1px solid #F2C6BF;border-radius:8px;padding:7px 10px}
+.mc-adj{margin-top:12px}
+.adj{display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;height:30px;padding:0 11px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);font-size:12px;cursor:pointer;color:var(--text)}
+.adj:hover{border-color:var(--navy)}
+.mc-load{display:flex;align-items:center;gap:10px;padding:24px 4px;color:var(--text-soft);font-size:13px}
+.spinner.sm{width:22px;height:22px;border-width:3px}
+.mc-pie{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft)}
+.btn:disabled{opacity:.5;cursor:default}
+/* Filas de compras clicables */
+.dr tr[data-compra]{cursor:pointer}
+.dr tr[data-compra]:hover td{background:#F1F5FB}
+.dr td.ver{text-align:right;width:1%}
+.dr td.ver span{font-size:11px;font-weight:600;color:var(--serie-oc);opacity:0;transition:opacity .12s}
+.dr tr[data-compra]:hover td.ver span{opacity:1}
+.tag-h{font-size:9.5px;font-weight:700;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;padding:0 4px;margin-left:4px}
+.est.baja{color:#7A1F1F;background:#FCE4E4;border-color:#EBB0B0}
+@media (max-width:900px){.g2{grid-template-columns:1fr}}
 .loading{position:fixed;inset:0;background:rgba(247,248,251,.82);display:none;align-items:center;justify-content:center;z-index:50;flex-direction:column;gap:14px;font-size:13.5px;color:var(--text-soft)}
 .loading.visible{display:flex}
 .spinner{width:42px;height:42px;border:4px solid var(--border);border-top-color:var(--navy);border-radius:50%;animation:spin 1s linear infinite}
@@ -195,7 +290,7 @@ table.tm{width:100%;border-collapse:collapse;font-size:13px}
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.1</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.4</div>
   </div>
 </div>
 
@@ -244,7 +339,32 @@ table.tm{width:100%;border-collapse:collapse;font-size:13px}
     </div>
     <div class="f-spacer"></div>
     <div class="f-acciones">
-      <label class="chk" title="Agrega al PDF una hoja con el detalle por obra de cada mes"><input type="checkbox" id="chkDetPdf"> PDF con detalle por obra</label>
+      <div class="opts-wrap">
+        <button class="btn" id="btnOpts" title="Elegir qué datos, gráficos y contenido del PDF se incluyen">⚙ Personalizar <span class="opts-badge hidden" id="optsBadge"></span></button>
+        <div class="opts-panel hidden" id="panelOpts">
+          <div class="op-g"><div class="op-t">Datos que se incluyen</div>
+            <label><input type="checkbox" data-opt="oc"> <i class="dot oc"></i>Órdenes de compra</label>
+            <label><input type="checkbox" data-opt="cc"> <i class="dot cc"></i>Caja chica</label>
+            <label title="Igual que el Dashboard OC. Si se desmarca, esas OC se muestran aparte y no suman"><input type="checkbox" data-opt="sumarHist"> Sumar las OC de tipo «Caja chica» al total</label>
+          </div>
+          <div class="op-g"><div class="op-t">Estado de las compras</div>
+            <label><input type="checkbox" data-opt="aprob"> Aprobadas y archivadas</label>
+            <label><input type="checkbox" data-opt="pend"> Pendientes de aprobación (solicitadas y observadas)</label>
+          </div>
+          <div class="op-g"><div class="op-t">Gráficos</div>
+            <label><input type="checkbox" data-opt="gTrend"> Compras por mes</label>
+            <label><input type="checkbox" data-opt="gObra"> Compras por obra</label>
+            <label><input type="checkbox" data-opt="gProv"> Principales proveedores</label>
+            <label><input type="checkbox" data-opt="gRes"> Compras por residente</label>
+            <label><input type="checkbox" data-opt="gCant"> Cantidad de compras por mes</label>
+          </div>
+          <div class="op-g"><div class="op-t">Contenido del PDF</div>
+            <label><input type="checkbox" data-opt="pdfGraf"> Incluir los gráficos visibles</label>
+            <label><input type="checkbox" data-opt="pdfObra"> Incluir el detalle por obra de cada mes</label>
+          </div>
+          <div class="op-pie"><span>Tu elección queda guardada en este navegador.</span><button class="lnk" id="btnOptsReset">Restablecer</button></div>
+        </div>
+      </div>
       <button class="btn" id="btnRecargar" title="Volver a leer los datos">↻ Actualizar</button>
       <button class="btn btn-xls" id="btnXls">⬇ Excel</button>
       <button class="btn btn-pdf" id="btnPdf">📄 PDF</button>
@@ -255,24 +375,54 @@ table.tm{width:100%;border-collapse:collapse;font-size:13px}
 
   <div class="kpis" id="kpis"></div>
 
-  <div class="card">
+  <div class="card" id="cardTrend">
     <div class="card-h">
-      <div class="card-t">Compras por mes</div>
-      <div class="legend" aria-hidden="true"><span><i class="dot oc"></i>Órdenes de compra</span><span><i class="dot cc"></i>Caja chica</span></div>
+      <div><div class="card-t">Compras por mes</div><div class="card-m">Monto comprado cada mes, por origen</div></div>
+      <div class="legend legend-dyn" aria-hidden="true"></div>
     </div>
     <div class="chart-wrap"><canvas id="chart" aria-label="Gráfico de barras apiladas de compras por mes" role="img"></canvas><div id="chartTip"></div></div>
+  </div>
+
+  <div class="g2" id="gridA">
+    <div class="card" id="cardObra">
+      <div class="card-h"><div><div class="card-t">Compras por obra</div><div class="card-m">Las 10 obras con más compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="chart-h"><canvas id="chObra" role="img" aria-label="Compras por obra"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
+    </div>
+    <div class="card" id="cardProv">
+      <div class="card-h"><div><div class="card-t">Principales proveedores</div><div class="card-m">Los 10 proveedores con más compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="chart-h"><canvas id="chProv" role="img" aria-label="Principales proveedores"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
+    </div>
+  </div>
+
+  <div class="g2" id="gridB">
+    <div class="card" id="cardRes">
+      <div class="card-h"><div><div class="card-t">Compras por residente</div><div class="card-m">Quién cargó las compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="chart-h"><canvas id="chRes" role="img" aria-label="Compras por residente"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
+    </div>
+    <div class="card" id="cardCant">
+      <div class="card-h"><div><div class="card-t">Cantidad de compras por mes</div><div class="card-m">Órdenes y comprobantes cargados cada mes</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="chart-wrap" style="height:280px"><canvas id="chCant" role="img" aria-label="Cantidad de compras por mes"></canvas></div>
+    </div>
   </div>
 
   <div class="card">
     <div class="card-h">
       <div class="card-t">Detalle mensual</div>
-      <div class="card-m">Hacé clic en un mes para ver el detalle por obra</div>
+      <div class="card-m">Clic en un mes → obras · clic en una obra → sus compras · clic en una compra → sus ítems</div>
     </div>
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.1</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.4</div>
 </main>
+
+<div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
+  <div class="mc">
+    <button class="mc-x" id="mcX" aria-label="Cerrar">✕</button>
+    <div id="mcBody"></div>
+    <div class="mc-pie"><button class="btn" id="mcCerrar">Cerrar</button><button class="btn btn-pdf" id="mcPdf">📄 PDF de esta compra</button></div>
+  </div>
+</div>
 
 <div class="loading" id="loading"><div class="spinner"></div><div id="loadingTxt">Cargando…</div></div>
 <div class="toast" id="toast"></div>
@@ -291,7 +441,7 @@ const COLOR_OC = '#3A6BB5', COLOR_CC = '#B58A12';   // validados (contraste y da
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const MESES_C = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
-const S = { user:null, perfil:null, ocs:[], ccs:[], ccError:null, ccAlcance:'', rango:{min:'',max:''}, chart:null, abiertos:{}, ultimo:null };
+const S = { user:null, perfil:null, ocs:[], ccs:[], ccError:null, ccAlcance:'', rango:{min:'',max:''}, chart:null, abiertos:{}, abiertosObra:{}, ultimo:null };
 
 /* ─── Utilidades ───────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
@@ -371,6 +521,16 @@ async function iniciar(){
   await cargarDatos();
 }
 
+/* ─── Opciones de la vista (panel «Personalizar») ──────────────────────── */
+// Se recuerdan por navegador. Por defecto: el criterio acordado con AXC.
+const OPTS_DEF = { oc:true, cc:true, sumarHist:true, aprob:true, pend:true,
+  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, pdfGraf:true, pdfObra:false };
+const OPTS_KEY = 'axc_cm_opciones_v2';
+function cargarOpts(){ try{ const o = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); return Object.assign({}, OPTS_DEF, o || {}); }catch(e){ return Object.assign({}, OPTS_DEF); } }
+function guardarOpts(){ try{ localStorage.setItem(OPTS_KEY, JSON.stringify(S.opts)); }catch(e){} }
+S.opts = cargarOpts();
+S.charts = {};
+
 /* ─── Lectura (paginada: el servidor devuelve como máximo 1000 filas) ──── */
 async function traerTodo(tabla, columnas, ordenar){
   let out = [];
@@ -393,11 +553,17 @@ function alcanceCajaChica(){
 async function cargarDatos(){
   cargando(true, 'Leyendo órdenes de compra y caja chica…');
   try{
-    const [rOc, rCc] = await Promise.all([
+    const CC_BASE = 'id,numero_orden,fecha,total,estado,obra,sector,proveedor,residente,rubro,tipo_comprobante,nro_factura';
+    const CC_EXTRA = CC_BASE + ',comentario,ruc,vendedor,contratista';
+    const ordenCC = q => q.order('fecha', { ascending:true }).order('id', { ascending:true });
+    const [rOc, rCc0] = await Promise.all([
       traerTodo('ordenes_compra', '*', q => q.order('fecha', { ascending:true }).order('id', { ascending:true })),
-      traerTodo('caja_chica_movimientos', 'id,numero_orden,fecha,total,estado,obra,sector,proveedor,residente,rubro,tipo_comprobante,nro_factura', q => q.order('fecha', { ascending:true }).order('id', { ascending:true })),
+      traerTodo('caja_chica_movimientos', CC_EXTRA, ordenCC),
     ]);
     if(rOc.error) throw rOc.error;
+    let rCc = rCc0;
+    // Si alguna columna opcional no existe en la base, se lee con las columnas básicas
+    if(rCc.error && /column|does not exist|no existe/i.test(rCc.error.message || '')) rCc = await traerTodo('caja_chica_movimientos', CC_BASE, ordenCC);
     S.ocs = rOc.data || [];
     S.ccError = rCc.error ? (rCc.error.message || 'sin permiso') : null;
     S.ccs = rCc.error ? [] : (rCc.data || []);
@@ -410,6 +576,19 @@ async function cargarDatos(){
     toast('No se pudieron leer los datos: ' + (e.message || ''), 'error');
   }finally{ cargando(false); }
 }
+
+/* ─── Clasificación por estado ─────────────────────────────────────────── */
+// 'aprob' = aprobadas/archivadas · 'pend' = solicitadas/observadas · null = no cuenta
+function grupoOC(o){
+  if(!ocCuenta(o)) return null;
+  const e = norm(o.estado);
+  return (e === 'aprobado' || e === 'archivado') ? 'aprob' : 'pend';
+}
+function grupoCC(c){
+  if(!ccCuenta(c)) return null;
+  return norm(c.estado) === 'aprobado' ? 'aprob' : 'pend';
+}
+function estadoPasa(g){ return g && ((g === 'aprob' && S.opts.aprob) || (g === 'pend' && S.opts.pend)); }
 
 /* ─── Filtros ──────────────────────────────────────────────────────────── */
 function prepararFiltros(){
@@ -436,41 +615,83 @@ function prepararFiltros(){
   if($('fDesde').value && $('fHasta').value && $('fDesde').value > $('fHasta').value){
     if(this.id === 'fDesde') $('fHasta').value = $('fDesde').value; else $('fDesde').value = $('fHasta').value;
   }
-  S.abiertos = {}; render();
+  S.abiertos = {}; S.abiertosObra = {}; render();
 }));
 document.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', function(){
   const p = this.dataset.preset, hoy = mesHoy();
   if(p === 'todo') $('fDesde').value = S.rango.min;
   if(p === 'anio') $('fDesde').value = hoy.slice(0,4) + '-01' < S.rango.min ? S.rango.min : hoy.slice(0,4) + '-01';
   if(p === '6m'){ const k = sumarMes(hoy, -5); $('fDesde').value = k < S.rango.min ? S.rango.min : k; }
-  $('fHasta').value = hoy; S.abiertos = {}; render();
+  $('fHasta').value = hoy; S.abiertos = {}; S.abiertosObra = {}; render();
 }));
 $('btnRecargar').addEventListener('click', cargarDatos);
 
+/* ─── Panel «Personalizar» ─────────────────────────────────────────────── */
+function sincronizarPanel(){
+  document.querySelectorAll('#panelOpts input[data-opt]').forEach(i => { i.checked = !!S.opts[i.dataset.opt]; });
+  const n = Object.keys(OPTS_DEF).filter(k => S.opts[k] !== OPTS_DEF[k]).length;
+  $('optsBadge').textContent = n ? String(n) : '';
+  $('optsBadge').classList.toggle('hidden', !n);
+  if(typeof ubicarPanel === 'function') requestAnimationFrame(ubicarPanel);
+}
+function ubicarPanel(){
+  const pn = $('panelOpts'); if(pn.classList.contains('hidden')) return;
+  const r = $('btnOpts').getBoundingClientRect(), w = Math.min(340, innerWidth - 16);
+  pn.style.width = w + 'px';
+  pn.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+  pn.style.top = (r.bottom + 6) + 'px';
+  pn.style.maxHeight = Math.max(200, innerHeight - r.bottom - 16) + 'px';
+}
+$('btnOpts').addEventListener('click', function(ev){ ev.stopPropagation(); $('panelOpts').classList.toggle('hidden'); sincronizarPanel(); ubicarPanel(); });
+window.addEventListener('resize', ubicarPanel);
+window.addEventListener('scroll', ubicarPanel, {passive:true});
+$('panelOpts').addEventListener('click', function(ev){ ev.stopPropagation(); });
+document.addEventListener('click', function(){ $('panelOpts').classList.add('hidden'); });
+document.querySelectorAll('#panelOpts input[data-opt]').forEach(i => i.addEventListener('change', function(){
+  const k = this.dataset.opt;
+  S.opts[k] = this.checked;
+  // Siempre tiene que quedar al menos un origen y un estado
+  if(!S.opts.oc && !S.opts.cc){ S.opts[k] = true; this.checked = true; toast('Tiene que quedar incluido al menos un origen: órdenes de compra o caja chica.', 'error'); return; }
+  if(!S.opts.aprob && !S.opts.pend){ S.opts[k] = true; this.checked = true; toast('Tiene que quedar incluido al menos un estado.', 'error'); return; }
+  guardarOpts(); sincronizarPanel();
+  if(/^pdf/.test(k)) return;   // las opciones del PDF no cambian la pantalla
+  S.abiertos = {}; S.abiertosObra = {}; render();
+}));
+$('btnOptsReset').addEventListener('click', function(){ S.opts = Object.assign({}, OPTS_DEF); guardarOpts(); sincronizarPanel(); render(); toast('Vista restablecida'); });
+
 /* ─── Cálculo ──────────────────────────────────────────────────────────── */
 function calcular(){
+  const O = S.opts;
   const desde = $('fDesde').value || S.rango.min, hasta = $('fHasta').value || S.rango.max, obra = $('fObra').value;
   const meses = mesesEntre(desde, hasta);
   const M = {};
   meses.forEach(k => { M[k] = { k, ocN:0, ocM:0, ccN:0, ccM:0, hiN:0, hiM:0, obras:{} }; });
-  const lineas = [];   // para el Excel
+  const lineas = [];
   const enObra = o => !obra || String(o||'').trim() === obra;
   const porObra = (m, ob) => { const k = String(ob||'').trim() || '(sin obra)'; return m.obras[k] = m.obras[k] || { obra:k, oc:0, cc:0, hi:0 }; };
-  S.ocs.forEach(o => {
-    if(!ocCuenta(o) || !enObra(o.obra)) return;
+  if(O.oc) S.ocs.forEach(o => {
+    const g = grupoOC(o);
+    if(!estadoPasa(g) || !enObra(o.obra)) return;
     const k = String(o.fecha).slice(0,7), m = M[k]; if(!m) return;
     const v = Number(o.valor_total) || 0;
-    const hist = ocEsCajaChica(o);
-    if(hist){ m.hiN++; m.hiM += v; porObra(m, o.obra).hi += v; }
+    const hist = ocEsCajaChica(o), suma = !hist || O.sumarHist, clase = suma ? 'oc' : 'hi';
+    if(clase === 'hi'){ m.hiN++; m.hiM += v; porObra(m, o.obra).hi += v; }
     else { m.ocN++; m.ocM += v; porObra(m, o.obra).oc += v; }
-    lineas.push({ origen: hist ? 'OC por caja chica (histórico) · no suma' : 'Orden de compra', fecha:o.fecha, numero:ocNumero(o), obra:o.obra||'', sector:o.sector||'', proveedor:o.proveedor||'', residente:o.residente||'', estado:o.estado||'', tipo:o.tipo_compra||'', monto:v, suma:!hist });
+    lineas.push({ id:o.id, src:'oc', clase, hist, k, obraK:String(o.obra||'').trim() || '(sin obra)',
+      origen: clase === 'hi' ? 'OC por caja chica (histórico) · no suma' : (hist ? 'Orden de compra (caja chica histórico)' : 'Orden de compra'),
+      fecha:o.fecha, numero:ocNumero(o), obra:o.obra||'', sector:o.sector||'', proveedor:o.proveedor||'', residente:o.residente||'',
+      estado:o.estado||'', tipo:o.tipo_compra||'', rubro:o.rubro||'', concepto:o.observacion||'', comprobante:'', monto:v, suma });
   });
-  S.ccs.forEach(c => {
-    if(!ccCuenta(c) || !enObra(c.obra)) return;
+  if(O.cc) S.ccs.forEach(c => {
+    const g = grupoCC(c);
+    if(!estadoPasa(g) || !enObra(c.obra)) return;
     const k = String(c.fecha).slice(0,7), m = M[k]; if(!m) return;
     const v = Number(c.total) || 0;
     m.ccN++; m.ccM += v; porObra(m, c.obra).cc += v;
-    lineas.push({ origen:'Caja chica', fecha:c.fecha, numero:(c.numero_orden != null ? 'CC ' + c.numero_orden : '') + (c.nro_factura ? ' · ' + (c.tipo_comprobante ? c.tipo_comprobante + ' ' : '') + c.nro_factura : ''), obra:c.obra||'', sector:c.sector||'', proveedor:c.proveedor||'', residente:c.residente||'', estado:c.estado||'', tipo:c.rubro||'', monto:v, suma:true });
+    lineas.push({ id:c.id, src:'cc', clase:'cc', hist:false, k, obraK:String(c.obra||'').trim() || '(sin obra)', origen:'Caja chica',
+      fecha:c.fecha, numero:(c.numero_orden != null ? 'CC ' + c.numero_orden : 'CC'), obra:c.obra||'', sector:c.sector||'',
+      proveedor:c.proveedor||'', residente:c.residente||'', estado:c.estado||'', tipo:c.rubro||'', rubro:c.rubro||'',
+      concepto:c.comentario||'', comprobante:((c.tipo_comprobante ? c.tipo_comprobante + ' ' : '') + (c.nro_factura || '')).trim(), monto:v, suma:true });
   });
   const filas = meses.map(k => { const m = M[k]; m.tot = m.ocM + m.ccM; return m; });
   filas.forEach((m, i) => { const p = filas[i-1]; m.var = (p && p.tot > 0) ? (m.tot / p.tot - 1) * 100 : null; });
@@ -480,129 +701,505 @@ function calcular(){
   T.nMeses = filas.length;
   T.prom = filas.length ? T.tot / filas.length : 0;
   T.max = conCompras.length ? conCompras.reduce((a, b) => b.tot > a.tot ? b : a) : null;
+  // Agrupaciones para los gráficos (solo lo que suma al total)
+  const agrupar = campo => {
+    const A = {};
+    lineas.forEach(l => { if(!l.suma) return; const key = String(l[campo] || '').trim() || '(sin dato)'; const a = A[key] = A[key] || { nombre:key, oc:0, cc:0 }; a[l.src] += l.monto; });
+    return Object.values(A).map(a => Object.assign(a, { tot:a.oc + a.cc })).sort((a, b) => b.tot - a.tot);
+  };
   lineas.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.origen.localeCompare(b.origen));
-  return { desde, hasta, obra, filas, T, lineas };
+  return { desde, hasta, obra, filas, T, lineas, porObraTot:agrupar('obraK'), porProv:agrupar('proveedor'), porRes:agrupar('residente') };
 }
 
 /* ─── Render ───────────────────────────────────────────────────────────── */
 function render(){
   const R = calcular(); S.R = R;
-  $('pageSub').textContent = 'Órdenes de compra + Caja chica · ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + (R.obra ? ' · Obra ' + R.obra : ' · Todas las obras') +
-    (S.ultimo ? ' · Datos leídos a las ' + S.ultimo.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' }) : '');
-  renderAvisos(R); renderKpis(R); renderChart(R); renderTabla(R); renderCriterios(R);
+  $('pageSub').textContent = textoAlcance(R) + (S.ultimo ? ' · Datos leídos a las ' + S.ultimo.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' }) : '');
+  sincronizarPanel();
+  renderAvisos(R); renderKpis(R); renderCharts(R); renderTabla(R); renderCriterios(R);
 }
+function origenTxt(){ const O = S.opts; return O.oc && O.cc ? 'Órdenes de compra + Caja chica' : (O.oc ? 'Solo órdenes de compra' : 'Solo caja chica'); }
+function estadoTxt(){ const O = S.opts; return O.aprob && O.pend ? '' : (O.aprob ? ' · solo aprobadas' : ' · solo pendientes de aprobación'); }
+function textoAlcance(R){ return origenTxt() + estadoTxt() + ' · ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + (R.obra ? ' · Obra ' + R.obra : ' · Todas las obras'); }
 function renderAvisos(R){
-  let h = '';
-  if(S.ccError) h += '<div class="notice err">⚠️ <div><b>No se pudo leer la caja chica</b> (' + esc(S.ccError) + '). El informe muestra solo las órdenes de compra. Si necesitás la caja chica, pedí al administrador el permiso de lectura.</div></div>';
-  else if(S.ccAlcance) h += '<div class="notice warn">🔒 <div>' + esc(S.ccAlcance) + ' Los totales de caja chica pueden ser parciales.</div></div>';
-  if(R.T.hiN > 0) h += '<div class="notice info">ℹ️ <div>En el período hay <b>' + R.T.hiN + ' OC con tipo de compra «Caja chica (histórico)»</b> por ' + gs(R.T.hiM) + '. Se muestran en una columna aparte y <b>no se suman al total</b>, porque esas compras pudieron cargarse también en el módulo Caja Chica.</div></div>';
+  const O = S.opts; let h = '';
+  if(O.cc && S.ccError) h += '<div class="notice err">⚠️ <div><b>No se pudo leer la caja chica</b> (' + esc(S.ccError) + '). El informe muestra solo las órdenes de compra. Si necesitás la caja chica, pedí al administrador el permiso de lectura.</div></div>';
+  else if(O.cc && S.ccAlcance) h += '<div class="notice warn">🔒 <div>' + esc(S.ccAlcance) + ' Los totales de caja chica pueden ser parciales.</div></div>';
+  if(O.oc && O.sumarHist){
+    const hl = R.lineas.filter(l => l.hist), hm = hl.reduce((a, l) => a + l.monto, 0);
+    if(hl.length) h += '<div class="notice info">ℹ️ <div>Las <b>' + hl.length + ' OC con tipo de compra «Caja chica»</b> (' + gs(hm) + ') están <b>sumadas dentro de Órdenes de compra</b>, igual que en el Dashboard OC. Si alguna de esas compras también se cargó en el módulo Caja Chica, quedaría contada dos veces; se pueden mostrar aparte desde «Personalizar».</div></div>';
+  }
+  else if(R.T.hiN > 0) h += '<div class="notice info">ℹ️ <div>En el período hay <b>' + R.T.hiN + ' OC con tipo de compra «Caja chica (histórico)»</b> por ' + gs(R.T.hiM) + '. Se muestran aparte y <b>no se suman al total</b>, porque esas compras pudieron cargarse también en el módulo Caja Chica. Para sumarlas, como en el Dashboard OC, marcalo en «Personalizar».</div></div>';
+  const dif = Object.keys(OPTS_DEF).filter(k => !/^(g|pdf)/.test(k) && S.opts[k] !== OPTS_DEF[k]);
+  if(dif.length) h += '<div class="notice info">⚙️ <div><b>Vista personalizada:</b> ' + esc(origenTxt() + estadoTxt()) + (O.sumarHist ? '' : ' · OC de tipo caja chica aparte, sin sumar') + '. <a href="#" id="lnkReset">Volver a la vista estándar</a></div></div>';
   $('avisos').innerHTML = h;
+  const l = $('lnkReset'); if(l) l.addEventListener('click', function(e){ e.preventDefault(); $('btnOptsReset').click(); });
 }
 function renderKpis(R){
-  const T = R.T;
+  const T = R.T, O = S.opts;
   const pOc = T.tot > 0 ? Math.round(T.ocM / T.tot * 100) : 0, pCc = T.tot > 0 ? 100 - pOc : 0;
+  const noInc = '<div class="kpi-v kpi-na">No incluido</div><div class="kpi-s">activalo en «Personalizar»</div>';
   $('kpis').innerHTML =
     '<div class="kpi main"><div class="kpi-l">Total de compras del período</div><div class="kpi-v" title="' + gs(T.tot) + '">' + gs(T.tot) + '</div><div class="kpi-s">' + T.nMeses + ' mes' + (T.nMeses === 1 ? '' : 'es') + ' · ' + (T.ocN + T.ccN).toLocaleString('es-PY') + ' compras</div></div>' +
-    '<div class="kpi"><div class="kpi-l"><i class="dot oc"></i>Órdenes de compra</div><div class="kpi-v" title="' + gs(T.ocM) + '">' + gs(T.ocM) + '</div><div class="kpi-s">' + T.ocN.toLocaleString('es-PY') + ' OC · ' + pOc + ' % del total</div></div>' +
-    '<div class="kpi"><div class="kpi-l"><i class="dot cc"></i>Caja chica</div><div class="kpi-v" title="' + gs(T.ccM) + '">' + (S.ccError ? '—' : gs(T.ccM)) + '</div><div class="kpi-s">' + (S.ccError ? 'sin acceso' : T.ccN.toLocaleString('es-PY') + ' comprobantes · ' + pCc + ' % del total') + '</div></div>' +
+    '<div class="kpi"><div class="kpi-l"><i class="dot oc"></i>Órdenes de compra</div>' + (O.oc ? '<div class="kpi-v" title="' + gs(T.ocM) + '">' + gs(T.ocM) + '</div><div class="kpi-s">' + T.ocN.toLocaleString('es-PY') + ' OC · ' + pOc + ' % del total</div>' : noInc) + '</div>' +
+    '<div class="kpi"><div class="kpi-l"><i class="dot cc"></i>Caja chica</div>' + (O.cc ? '<div class="kpi-v" title="' + gs(T.ccM) + '">' + (S.ccError ? '—' : gs(T.ccM)) + '</div><div class="kpi-s">' + (S.ccError ? 'sin acceso' : T.ccN.toLocaleString('es-PY') + ' comprobantes · ' + pCc + ' % del total') + '</div>' : noInc) + '</div>' +
     '<div class="kpi"><div class="kpi-l">Promedio mensual</div><div class="kpi-v" title="' + gs(T.prom) + '">' + gs(T.prom) + '</div><div class="kpi-s">sobre ' + T.nMeses + ' mes' + (T.nMeses === 1 ? '' : 'es') + '</div></div>' +
     '<div class="kpi"><div class="kpi-l">Mes con más compras</div><div class="kpi-v" style="font-size:18px">' + (T.max ? esc(mesTxt(T.max.k)) : '—') + '</div><div class="kpi-s">' + (T.max ? gs(T.max.tot) : 'sin compras en el período') + '</div></div>';
 }
-function renderChart(R){
-  const cv = $('chart');
-  if(S.chart){ S.chart.destroy(); S.chart = null; }
-  const filas = R.filas;
-  const tip = $('chartTip');
-  S.chart = new Chart(cv, {
-    type:'bar',
-    data:{
-      labels: filas.map(m => mesCorto(m.k)),
-      datasets:[
-        { label:'Órdenes de compra', data:filas.map(m => m.ocM), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:{ top:2 }, borderSkipped:'bottom', borderRadius:0, maxBarThickness:42 },
-        { label:'Caja chica', data:filas.map(m => m.ccM), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderColor:'#FFFFFF', borderWidth:{ top:0 }, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:42 },
-      ],
-    },
-    options:{
-      responsive:true, maintainAspectRatio:false, animation:{ duration:250 },
-      interaction:{ mode:'index', intersect:false },
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ enabled:false, external:function(ctx){
-          const t = ctx.tooltip;
-          if(!t || t.opacity === 0){ tip.style.opacity = 0; return; }
-          const i = t.dataPoints && t.dataPoints[0] ? t.dataPoints[0].dataIndex : -1; if(i < 0) return;
-          const m = filas[i];
-          tip.innerHTML = '<div class="tt-h">' + esc(mesTxt(m.k)) + '</div>' +
-            '<div class="tt-r"><span><i class="dot oc"></i>Órdenes de compra</span><b>' + gs(m.ocM) + '</b></div>' +
-            '<div class="tt-r"><span><i class="dot cc"></i>Caja chica</span><b>' + gs(m.ccM) + '</b></div>' +
-            '<div class="tt-r tt-t"><span>Total del mes</span><b>' + gs(m.tot) + '</b></div>' +
-            (m.hiM ? '<div class="tt-r"><span style="font-style:italic">OC por caja chica (hist.) · no suma</span><b style="font-weight:500">' + gs(m.hiM) + '</b></div>' : '');
-          const wrap = cv.parentNode, x = t.caretX, w = tip.offsetWidth || 220;
-          tip.style.left = Math.max(8, Math.min(wrap.clientWidth - w - 8, x + 14)) + 'px';
-          tip.style.top = Math.max(8, t.caretY - 40) + 'px';
-          tip.style.opacity = 1;
-        } },
-      },
-      scales:{
-        x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:{ color:'#5A6377', font:{ size:11, family:'Inter' }, maxRotation:0, autoSkip:true } },
-        y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:{ color:'#8B93A7', font:{ size:10.5, family:'Inter' }, callback:v => gsC(v), maxTicksLimit:6 } },
-      },
-    },
-  });
+
+/* ─── Gráficos ─────────────────────────────────────────────────────────── */
+const TICK = { color:'#5A6377', font:{ size:11, family:'Inter' } };
+const TICK_M = { color:'#8B93A7', font:{ size:10.5, family:'Inter' } };
+function destruir(k){ if(S.charts[k]){ S.charts[k].destroy(); delete S.charts[k]; } }
+function leyendaHTML(){ const O = S.opts; return (O.oc ? '<span><i class="dot oc"></i>Órdenes de compra</span>' : '') + (O.cc ? '<span><i class="dot cc"></i>Caja chica</span>' : ''); }
+function tooltipBase(){ return { backgroundColor:'#FFFFFF', titleColor:'#1A2236', bodyColor:'#5A6377', borderColor:'#E2E6EE', borderWidth:1, padding:10, boxPadding:4, usePointStyle:true,
+  titleFont:{ family:'Inter', weight:'700', size:12.5 }, bodyFont:{ family:'Inter', size:12 }, footerColor:'#1A2236', footerFont:{ family:'Inter', weight:'700', size:12 } }; }
+function renderCharts(R){
+  const O = S.opts;
+  document.querySelectorAll('.legend-dyn').forEach(e => { e.innerHTML = leyendaHTML(); });
+  const vis = { gTrend:'cardTrend', gObra:'cardObra', gProv:'cardProv', gRes:'cardRes', gCant:'cardCant' };
+  Object.keys(vis).forEach(k => $(vis[k]).classList.toggle('hidden', !O[k]));
+  $('gridA').classList.toggle('hidden', !O.gObra && !O.gProv);
+  $('gridB').classList.toggle('hidden', !O.gRes && !O.gCant);
+  if(O.gTrend) chartTrend(R); else destruir('trend');
+  if(O.gObra) chartBarrasH('obra', 'chObra', R.porObraTot, 'Obra'); else destruir('obra');
+  if(O.gProv) chartBarrasH('prov', 'chProv', R.porProv, 'Proveedor'); else destruir('prov');
+  if(O.gRes) chartBarrasH('res', 'chRes', R.porRes, 'Residente'); else destruir('res');
+  if(O.gCant) chartCantidad(R); else destruir('cant');
+  // Cada tarjeta de la fila ocupa todo el ancho si su compañera está oculta
+  $('cardObra').classList.toggle('full', O.gObra && !O.gProv); $('cardProv').classList.toggle('full', O.gProv && !O.gObra);
+  $('cardRes').classList.toggle('full', O.gRes && !O.gCant); $('cardCant').classList.toggle('full', O.gCant && !O.gRes);
+}
+function chartTrend(R){
+  destruir('trend');
+  const O = S.opts, filas = R.filas, cv = $('chart'), tip = $('chartTip');
+  const ds = [];
+  if(O.oc) ds.push({ label:'Órdenes de compra', data:filas.map(m => m.ocM), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4, topRight:4 }, maxBarThickness:42 });
+  if(O.cc) ds.push({ label:'Caja chica', data:filas.map(m => m.ccM), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderColor:'#FFFFFF', borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:42 });
+  S.charts.trend = new Chart(cv, {
+    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds },
+    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false },
+      plugins:{ legend:{ display:false }, tooltip:{ enabled:false, external:function(ctx){
+        const t = ctx.tooltip;
+        if(!t || t.opacity === 0){ tip.style.opacity = 0; return; }
+        const i = t.dataPoints && t.dataPoints[0] ? t.dataPoints[0].dataIndex : -1; if(i < 0) return;
+        const m = filas[i];
+        tip.innerHTML = '<div class="tt-h">' + esc(mesTxt(m.k)) + '</div>' +
+          (O.oc ? '<div class="tt-r"><span><i class="dot oc"></i>Órdenes de compra (' + m.ocN + ')</span><b>' + gs(m.ocM) + '</b></div>' : '') +
+          (O.cc ? '<div class="tt-r"><span><i class="dot cc"></i>Caja chica (' + m.ccN + ')</span><b>' + gs(m.ccM) + '</b></div>' : '') +
+          '<div class="tt-r tt-t"><span>Total del mes</span><b>' + gs(m.tot) + '</b></div>' +
+          (m.var != null && isFinite(m.var) ? '<div class="tt-r"><span>Variación vs. mes anterior</span><b style="font-weight:600">' + (Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %</b></div>' : '') +
+          (m.hiM ? '<div class="tt-r"><span style="font-style:italic">OC caja chica (hist.) · no suma</span><b style="font-weight:500">' + gs(m.hiM) + '</b></div>' : '');
+        const wrap = cv.parentNode, w = tip.offsetWidth || 230;
+        tip.style.left = Math.max(8, Math.min(wrap.clientWidth - w - 8, t.caretX + 14)) + 'px';
+        tip.style.top = Math.max(8, t.caretY - 40) + 'px';
+        tip.style.opacity = 1;
+      } } },
+      scales:{ x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:Object.assign({ maxRotation:0, autoSkip:true }, TICK) },
+               y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:6 }, TICK_M) } } } });
   cv.parentNode.onmouseleave = function(){ tip.style.opacity = 0; };
 }
+function chartBarrasH(key, canvasId, lista, etiqueta){
+  destruir(key);
+  const O = S.opts, TOP = 10;
+  let items = lista.slice(0, TOP);
+  if(lista.length > TOP){
+    const resto = lista.slice(TOP);
+    items.push({ nombre:'Otros (' + resto.length + ')', oc:resto.reduce((t, a) => t + a.oc, 0), cc:resto.reduce((t, a) => t + a.cc, 0), tot:resto.reduce((t, a) => t + a.tot, 0) });
+  }
+  const cv = $(canvasId), wrap = cv.parentNode;
+  wrap.style.height = Math.max(120, items.length * 30 + 40) + 'px';
+  const vacio = wrap.parentNode.querySelector('.ch-vacio');
+  if(vacio) vacio.classList.toggle('hidden', items.length > 0);
+  cv.style.display = items.length ? 'block' : 'none';
+  if(!items.length) return;
+  const total = lista.reduce((t, a) => t + a.tot, 0);
+  const corto = s => s.length > 26 ? s.slice(0, 25) + '…' : s;
+  const ds = [];
+  if(O.oc) ds.push({ label:'Órdenes de compra', data:items.map(a => a.oc), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'s', borderColor:'#FFFFFF', borderWidth:O.cc ? { right:2 } : 0, borderSkipped:'left', borderRadius:O.cc ? 0 : { topRight:4, bottomRight:4 }, barThickness:18 });
+  if(O.cc) ds.push({ label:'Caja chica', data:items.map(a => a.cc), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'s', borderWidth:0, borderSkipped:'left', borderRadius:{ topRight:4, bottomRight:4 }, barThickness:18 });
+  const tt = tooltipBase();
+  tt.callbacks = {
+    title: c => items[c[0].dataIndex].nombre,
+    label: c => ' ' + c.dataset.label + ': ' + gs(c.parsed.x),
+    footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (total > 0 ? ' · ' + Math.round(a.tot / total * 100) + ' % del período' : ''); },
+  };
+  S.charts[key] = new Chart(cv, {
+    type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds },
+    options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false, axis:'y' },
+      plugins:{ legend:{ display:false }, tooltip:tt },
+      scales:{ x:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:5 }, TICK_M) },
+               y:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:TICK } } } });
+}
+function chartCantidad(R){
+  destruir('cant');
+  const O = S.opts, filas = R.filas;
+  const ds = [];
+  if(O.oc) ds.push({ label:'Órdenes de compra', data:filas.map(m => m.ocN), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack:'c', borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4, topRight:4 }, maxBarThickness:28 });
+  if(O.cc) ds.push({ label:'Caja chica', data:filas.map(m => m.ccN), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack:'c', borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4, topRight:4 }, maxBarThickness:28 });
+  const tt = tooltipBase();
+  tt.callbacks = {
+    title: c => mesTxt(filas[c[0].dataIndex].k),
+    label: c => ' ' + c.dataset.label + ': ' + c.parsed.y.toLocaleString('es-PY') + (c.datasetIndex === 0 && O.oc ? ' OC' : ' comprobantes'),
+    footer: c => { const m = filas[c[0].dataIndex]; const n = (O.oc ? m.ocN : 0) + (O.cc ? m.ccN : 0); return 'Total ' + n.toLocaleString('es-PY') + ' compras · promedio ' + gs(n ? m.tot / n : 0); },
+  };
+  S.charts.cant = new Chart($('chCant'), {
+    type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:ds },
+    options:{ responsive:true, maintainAspectRatio:false, animation:{ duration:250 }, interaction:{ mode:'index', intersect:false },
+      plugins:{ legend:{ display:false }, tooltip:tt },
+      scales:{ x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3' }, ticks:Object.assign({ maxRotation:0, autoSkip:true }, TICK) },
+               y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5' }, ticks:Object.assign({ precision:0, maxTicksLimit:6 }, TICK_M) } } } });
+}
+
+/* ─── Tabla mensual ────────────────────────────────────────────────────── */
 function varHTML(v){
   if(v == null || !isFinite(v)) return '<span class="n">—</span>';
   const r = Math.round(v);
   if(r === 0) return '<span class="n">0 %</span>';
   return '<span class="' + (r > 0 ? 'var-up' : 'var-dn') + '">' + (r > 0 ? '▲ +' : '▼ ') + r.toLocaleString('es-PY') + ' %</span>';
 }
+// Columnas de la tabla mensual según lo incluido (pantalla, PDF y Excel usan la misma definición)
+function columnasMes(R){
+  const O = S.opts, cols = [];
+  if(O.oc){ cols.push({ k:'ocN', t:'OC (cant.)', dot:'oc', cant:true }); cols.push({ k:'ocM', t:'Órdenes de compra' }); }
+  if(O.cc){ cols.push({ k:'ccN', t:'CC (cant.)', dot:'cc', cant:true, cc:true }); cols.push({ k:'ccM', t:'Caja chica', cc:true }); }
+  cols.push({ k:'tot', t:'Total del mes', tot:true });
+  cols.push({ k:'var', t:'Var. mes ant.', var:true });
+  if(R.T.hiN > 0) cols.push({ k:'hiM', t:'OC por caja chica (histórico · no suma)', hist:true });
+  return cols;
+}
 function renderTabla(R){
-  const verHist = R.T.hiN > 0;
+  const O = S.opts, cols = columnasMes(R), nCol = cols.length + 1;
   if(!R.filas.length){ $('tabla').innerHTML = '<div class="empty">No hay meses en el rango elegido.</div>'; return; }
-  const nCol = verHist ? 8 : 7;
-  let h = '<table class="tm"><thead><tr>' +
-    '<th class="l">Mes</th>' +
-    '<th><i class="dot oc"></i>OC (cant.)</th><th>Órdenes de compra</th>' +
-    '<th><i class="dot cc"></i>CC (cant.)</th><th>Caja chica</th>' +
-    '<th>Total del mes</th><th title="Variación del total contra el mes anterior">Var. mes ant.</th>' +
-    (verHist ? '<th title="OC con tipo de compra Caja chica (histórico). Informativa: no se suma al total.">OC por caja chica<br>(histórico · no suma)</th>' : '') +
-    '</tr></thead><tbody>';
+  const celda = (c, m) => {
+    if(c.cc && S.ccError) return '<td>—</td>';
+    if(c.cant) return '<td><span class="n">' + (m[c.k] || '—') + '</span></td>';
+    if(c.var) return '<td>' + varHTML(m.var) + '</td>';
+    if(c.hist) return '<td class="hist">' + (m.hiM ? gs(m.hiM) + ' <span class="n">(' + m.hiN + ')</span>' : '—') + '</td>';
+    return '<td' + (c.tot ? ' class="tot"' : '') + '>' + gs(m[c.k]) + '</td>';
+  };
+  let h = '<table class="tm"><thead><tr><th class="l">Mes</th>' + cols.map(c => '<th' + (c.hist ? ' title="OC con tipo de compra Caja chica (histórico). Informativa: no se suma al total."' : '') + '>' + (c.dot ? '<i class="dot ' + c.dot + '"></i>' : '') + esc(c.t) + '</th>').join('') + '</tr></thead><tbody>';
   R.filas.slice().reverse().forEach(m => {
     const ab = !!S.abiertos[m.k];
-    h += '<tr class="mes' + (m.tot === 0 && m.hiM === 0 ? ' vacio' : '') + (ab ? ' abierto' : '') + '" data-k="' + m.k + '">' +
-      '<td class="l mes-n"><span class="car">▸</span>' + esc(mesTxt(m.k)) + '</td>' +
-      '<td><span class="n">' + (m.ocN || '—') + '</span></td><td>' + gs(m.ocM) + '</td>' +
-      '<td><span class="n">' + (S.ccError ? '—' : (m.ccN || '—')) + '</span></td><td>' + (S.ccError ? '—' : gs(m.ccM)) + '</td>' +
-      '<td class="tot">' + gs(m.tot) + '</td><td>' + varHTML(m.var) + '</td>' +
-      (verHist ? '<td class="hist">' + (m.hiM ? gs(m.hiM) + ' <span class="n">(' + m.hiN + ')</span>' : '—') + '</td>' : '') +
-      '</tr>';
-    if(ab){
-      const obs = Object.values(m.obras).map(o => Object.assign({ tot:o.oc + o.cc }, o)).sort((a, b) => b.tot - a.tot || b.hi - a.hi);
-      if(!obs.length) h += '<tr class="det"><td class="l" colspan="' + nCol + '">Sin compras en este mes.</td></tr>';
-      else {
-        h += '<tr class="det-h"><td class="l" colspan="2">Obra</td><td>Órdenes de compra</td><td></td><td>Caja chica</td><td>Total</td><td>% del mes</td>' + (verHist ? '<td>OC caja chica (hist.)</td>' : '') + '</tr>';
-        obs.forEach(o => {
-          h += '<tr class="det"><td class="l" colspan="2">' + esc(o.obra) + '</td><td>' + gs(o.oc) + '</td><td></td><td>' + gs(o.cc) + '</td><td><b>' + gs(o.tot) + '</b></td><td>' +
-            (m.tot > 0 ? Math.round(o.tot / m.tot * 100) + ' %' : '—') + '</td>' + (verHist ? '<td class="hist">' + (o.hi ? gs(o.hi) : '—') + '</td>' : '') + '</tr>';
-        });
-      }
-    }
+    h += '<tr class="mes' + (m.tot === 0 && m.hiM === 0 ? ' vacio' : '') + (ab ? ' abierto' : '') + '" data-k="' + m.k + '"><td class="l mes-n"><span class="car">▸</span>' + esc(mesTxt(m.k)) + '</td>' + cols.map(c => celda(c, m)).join('') + '</tr>';
+    if(!ab) return;
+    const obs = Object.values(m.obras).map(o => Object.assign({ tot:o.oc + o.cc }, o)).sort((a, b) => b.tot - a.tot || b.hi - a.hi);
+    if(!obs.length){ h += '<tr class="det"><td class="l" colspan="' + nCol + '">Sin compras en este mes.</td></tr>'; return; }
+    h += '<tr class="det-h"><td class="l">Obra</td>' + cols.map(c => '<td>' + (c.cant ? '' : (c.var ? '% del mes' : (c.hist ? 'OC caja chica (hist.)' : esc(c.tot ? 'Total' : c.t)))) + '</td>').join('') + '</tr>';
+    obs.forEach(o => {
+      const ko = m.k + '|' + o.obra, abO = !!S.abiertosObra[ko];
+      const co = c => {
+        if(c.cant) return '<td></td>';
+        if(c.var) return '<td>' + (m.tot > 0 ? Math.round(o.tot / m.tot * 100) + ' %' : '—') + '</td>';
+        if(c.hist) return '<td class="hist">' + (o.hi ? gs(o.hi) : '—') + '</td>';
+        const v = c.k === 'ocM' ? o.oc : (c.k === 'ccM' ? o.cc : o.tot);
+        return '<td>' + (c.tot ? '<b>' + gs(v) + '</b>' : gs(v)) + '</td>';
+      };
+      h += '<tr class="det obra' + (abO ? ' abierto' : '') + '" data-ko="' + esc(ko) + '" title="Ver las compras de esta obra en el mes"><td class="l"><span class="car">▸</span>' + esc(o.obra) + '</td>' + cols.map(co).join('') + '</tr>';
+      if(abO) h += '<tr class="drill-row"><td colspan="' + nCol + '">' + drillHTML(R, m.k, o.obra) + '</td></tr>';
+    });
   });
   const T = R.T;
-  h += '</tbody><tfoot><tr><td class="l">Total del período</td><td>' + T.ocN.toLocaleString('es-PY') + '</td><td>' + gs(T.ocM) + '</td><td>' + (S.ccError ? '—' : T.ccN.toLocaleString('es-PY')) + '</td><td>' + (S.ccError ? '—' : gs(T.ccM)) + '</td><td>' + gs(T.tot) + '</td><td></td>' +
-    (verHist ? '<td class="hist">' + gs(T.hiM) + '</td>' : '') + '</tr>' +
-    '<tr class="prom"><td class="l">Promedio mensual</td><td></td><td>' + gs(T.nMeses ? T.ocM / T.nMeses : 0) + '</td><td></td><td>' + (S.ccError ? '—' : gs(T.nMeses ? T.ccM / T.nMeses : 0)) + '</td><td>' + gs(T.prom) + '</td><td></td>' + (verHist ? '<td></td>' : '') + '</tr></tfoot></table>';
+  const tf = c => {
+    if(c.cc && S.ccError) return '<td>—</td>';
+    if(c.cant) return '<td>' + T[c.k].toLocaleString('es-PY') + '</td>';
+    if(c.var) return '<td></td>';
+    if(c.hist) return '<td class="hist">' + gs(T.hiM) + '</td>';
+    return '<td>' + gs(T[c.k]) + '</td>';
+  };
+  const tp = c => {
+    if(c.cant || c.var || c.hist) return '<td></td>';
+    if(c.cc && S.ccError) return '<td>—</td>';
+    return '<td>' + gs(T.nMeses ? T[c.k] / T.nMeses : 0) + '</td>';
+  };
+  h += '</tbody><tfoot><tr><td class="l">Total del período</td>' + cols.map(tf).join('') + '</tr><tr class="prom"><td class="l">Promedio mensual</td>' + cols.map(tp).join('') + '</tr></tfoot></table>';
   $('tabla').innerHTML = h;
   $('tabla').querySelectorAll('tr.mes').forEach(tr => tr.addEventListener('click', function(){ const k = this.dataset.k; S.abiertos[k] = !S.abiertos[k]; renderTabla(S.R); }));
+  $('tabla').querySelectorAll('tr.obra').forEach(tr => tr.addEventListener('click', function(){ const k = this.dataset.ko; S.abiertosObra[k] = !S.abiertosObra[k]; renderTabla(S.R); }));
+  $('tabla').querySelectorAll('[data-pdf-obra]').forEach(b => b.addEventListener('click', function(ev){ ev.stopPropagation(); try{ pdfObraMes(this.dataset.mes, this.dataset.pdfObra); }catch(e){ console.error(e); toast('No se pudo generar el PDF: ' + (e.message || ''), 'error'); } }));
+  $('tabla').querySelectorAll('[data-xls-obra]').forEach(b => b.addEventListener('click', function(ev){ ev.stopPropagation(); xlsObraMes(this.dataset.mes, this.dataset.xlsObra); }));
+  $('tabla').querySelectorAll('tr[data-compra]').forEach(tr => tr.addEventListener('click', function(ev){ ev.stopPropagation(); abrirCompra(this.dataset.src, this.dataset.compra); }));
 }
+
+/* ─── Detalle de compras de una obra en un mes ─────────────────────────── */
+function lineasObraMes(R, k, obraK){
+  return R.lineas.filter(l => l.k === k && l.obraK === obraK).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.numero).localeCompare(String(b.numero), 'es', { numeric:true }));
+}
+function fechaCorta(f){ const p = String(f || '').slice(0,10).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : (f || ''); }
+function estadoChip(e){
+  const n = norm(e);
+  const c = n === 'aprobado' || n === 'archivado' ? 'ok' : (n === 'observado' ? 'obs' : (n === 'rechazado' || n === 'anulada' || n === 'anulado' ? 'baja' : 'pend'));
+  return '<span class="est ' + c + '">' + esc(e ? e.charAt(0).toUpperCase() + e.slice(1) : '—') + '</span>';
+}
+function drillHTML(R, k, obraK){
+  const L = lineasObraMes(R, k, obraK);
+  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), hi = L.filter(l => l.clase === 'hi');
+  const suma = a => a.reduce((t, l) => t + (Number(l.monto) || 0), 0);
+  const bloque = function(titulo, cls, arr, cols, filaFn, nota){
+    if(!arr.length) return '';
+    return '<div class="dr-b">' +
+      '<div class="dr-t"><span><i class="dot ' + cls + '"></i>' + titulo + ' <span class="n">(' + arr.length + ')</span>' + (nota ? ' <span class="dr-nota">' + nota + '</span>' : '') + '</span><b>' + gs(suma(arr)) + '</b></div>' +
+      '<table class="dr"><thead><tr>' + cols.map(c => '<th' + (c.r ? ' class="r"' : '') + '>' + c.t + '</th>').join('') + '<th></th></tr></thead><tbody>' +
+      arr.map(filaFn).join('') + '</tbody></table></div>';
+  };
+  const ver = '<td class="ver"><span>Ver detalle ›</span></td>';
+  const colsOc = [{ t:'Fecha' },{ t:'N° OC' },{ t:'Proveedor' },{ t:'Sector' },{ t:'Residente' },{ t:'Tipo de compra' },{ t:'Estado' },{ t:'Monto', r:1 }];
+  const filaOc = l => '<tr data-compra="' + esc(l.id) + '" data-src="oc" title="Ver los ítems de esta orden"><td>' + fechaCorta(l.fecha) + '</td><td class="num">' + esc(l.numero) + (l.hist && l.clase === 'oc' ? ' <span class="tag-h">hist.</span>' : '') + '</td><td>' + esc(l.proveedor || '—') + '</td><td>' + esc(l.sector || '—') + '</td><td>' + esc(l.residente || '—') + '</td><td>' + esc(l.tipo || '—') + '</td><td>' + estadoChip(l.estado) + '</td><td class="r">' + gs(l.monto) + '</td>' + ver + '</tr>';
+  const colsCc = [{ t:'Fecha' },{ t:'N°' },{ t:'Comprobante' },{ t:'Proveedor' },{ t:'Rubro' },{ t:'Concepto' },{ t:'Residente' },{ t:'Estado' },{ t:'Monto', r:1 }];
+  const filaCc = l => '<tr data-compra="' + esc(l.id) + '" data-src="cc" title="Ver el detalle de este comprobante"><td>' + fechaCorta(l.fecha) + '</td><td class="num">' + esc(l.numero) + '</td><td>' + esc(l.comprobante || '—') + '</td><td>' + esc(l.proveedor || '—') + '</td><td>' + esc(l.rubro || '—') + '</td><td class="conc">' + esc(l.concepto || '—') + '</td><td>' + esc(l.residente || '—') + '</td><td>' + estadoChip(l.estado) + '</td><td class="r">' + gs(l.monto) + '</td>' + ver + '</tr>';
+  const kEsc = esc(k), oEsc = esc(obraK);
+  const partes = [];
+  if(S.opts.oc) partes.push(oc.length + ' OC');
+  if(S.opts.cc) partes.push(cc.length + ' comprobantes de caja chica');
+  return '<div class="drill">' +
+    '<div class="dr-h"><div><div class="dr-ob">' + esc(obraK) + '</div><div class="dr-sub">' + esc(mesTxt(k)) + ' · ' + partes.join(' · ') + ' · total <b>' + gs(suma(oc) + suma(cc)) + '</b> · hacé clic en una compra para ver sus ítems</div></div>' +
+    '<div class="dr-acc"><button class="btn btn-xls btn-sm" data-xls-obra="' + oEsc + '" data-mes="' + kEsc + '">⬇ Excel</button><button class="btn btn-pdf btn-sm" data-pdf-obra="' + oEsc + '" data-mes="' + kEsc + '">📄 PDF de esta obra</button></div></div>' +
+    (L.length ? '' : '<div class="empty">Sin compras registradas.</div>') +
+    bloque('Órdenes de compra', 'oc', oc, colsOc, filaOc) +
+    (S.opts.cc && S.ccError ? '<div class="notice err" style="margin:10px 0 0">No se pudo leer la caja chica.</div>' : bloque('Caja chica', 'cc', cc, colsCc, filaCc)) +
+    bloque('OC por caja chica (histórico)', 'hi', hi, colsOc, filaOc, 'informativo · no se suma al total') +
+  '</div>';
+}
+
+/* ─── Detalle de una compra (ventana) ──────────────────────────────────── */
+let COMPRA = null;   // { src, cab, items, adj }
+function cerrarCompra(){ $('modalCompra').classList.add('hidden'); COMPRA = null; }
+$('modalCompra').addEventListener('click', function(ev){ if(ev.target === this) cerrarCompra(); });
+document.addEventListener('keydown', function(ev){ if(ev.key === 'Escape' && !$('modalCompra').classList.contains('hidden')) cerrarCompra(); });
+function campo(l, v){ return v == null || String(v).trim() === '' ? '' : '<div class="mc-f"><span>' + esc(l) + '</span><b>' + esc(v) + '</b></div>'; }
+function cant(n){ return (Number(n) || 0).toLocaleString('es-PY', { maximumFractionDigits:3 }); }
+async function abrirCompra(src, id){
+  const cab = src === 'oc' ? S.ocs.find(o => String(o.id) === String(id)) : S.ccs.find(c => String(c.id) === String(id));
+  if(!cab){ toast('No se encontró la compra.', 'error'); return; }
+  COMPRA = { src, cab, items:null, adj:null, err:null };
+  $('modalCompra').classList.remove('hidden');
+  pintarCompra();
+  try{
+    if(src === 'oc'){
+      const [ri, ra] = await Promise.all([
+        sb.from('ordenes_compra_items').select('*').eq('oc_id', cab.id).order('orden', { ascending:true }),
+        sb.from('oc_adjuntos').select('*').eq('oc_id', cab.id),
+      ]);
+      if(ri.error) throw ri.error;
+      COMPRA.items = ri.data || []; COMPRA.adj = ra.error ? [] : (ra.data || []);
+    } else {
+      const [ri, ra] = await Promise.all([
+        sb.from('caja_chica_movimiento_items').select('*').eq('movimiento_id', cab.id).order('orden', { ascending:true }),
+        sb.from('caja_chica_adjuntos').select('*').eq('movimiento_id', cab.id),
+      ]);
+      if(ri.error) throw ri.error;
+      COMPRA.items = ri.data || []; COMPRA.adj = ra.error ? [] : (ra.data || []);
+    }
+  }catch(e){ console.error('detalle de la compra', e); if(COMPRA){ COMPRA.err = e.message || 'sin permiso'; COMPRA.items = []; COMPRA.adj = []; } }
+  if(COMPRA && String(COMPRA.cab.id) === String(id)) pintarCompra();
+}
+function itemsCompra(){
+  const C = COMPRA; if(!C || !C.items) return [];
+  return C.items.map(it => C.src === 'oc'
+    ? { desc:it.producto_nombre || '—', extra:[it.rubro_codigo, it.sector, it.trabajo_admin ? 'Trabajo por adm. ' + it.trabajo_admin : (it.presupuesto || '')].filter(Boolean).join(' · '), cant:it.cantidad, un:it.unidad || '', pu:it.precio_unit, sub:it.subtotal != null ? it.subtotal : (Number(it.cantidad) || 0) * (Number(it.precio_unit) || 0) }
+    : { desc:it.concepto || it.producto_nombre || '—', extra:it.concepto && it.producto_nombre && it.producto_nombre !== it.concepto ? it.producto_nombre : '', cant:it.cantidad, un:it.unidad || '', pu:it.costo_unit, sub:it.subtotal != null ? it.subtotal : (Number(it.cantidad) || 0) * (Number(it.costo_unit) || 0) });
+}
+function pintarCompra(){
+  const C = COMPRA; if(!C) return;
+  const c = C.cab, esOC = C.src === 'oc';
+  const total = esOC ? Number(c.valor_total) || 0 : Number(c.total) || 0;
+  const numero = esOC ? ocNumero(c) : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante');
+  const info = esOC
+    ? campo('Fecha', fechaCorta(c.fecha)) + campo('Obra', c.obra) + campo('Sector', c.sector) + campo('Proveedor', c.proveedor) + campo('Vendedor', c.vendedor) + campo('Residente', c.residente) + campo('Contratista', c.contratista) + campo('Tipo de compra', c.tipo_compra) + campo('Presupuesto', c.presupuesto) + campo('Rubro', c.rubro) + campo('Pago', c.pagado === true ? 'Pagada' : (['Solicitado','Observado','Aprobado'].includes(c.estado) ? 'Pendiente de pago' : ''))
+    : campo('Fecha', fechaCorta(c.fecha)) + campo('Comprobante', ((c.tipo_comprobante || '') + ' ' + (c.nro_factura || '')).trim()) + campo('Proveedor', c.proveedor) + campo('RUC', c.ruc) + campo('Vendedor', c.vendedor) + campo('Obra', c.obra) + campo('Sector', c.sector) + campo('Rubro', c.rubro) + campo('Residente', c.residente) + campo('Contratista', c.contratista);
+  const nota = esOC ? (c.observacion || '') : (c.comentario || '');
+  let cuerpo;
+  if(C.items === null) cuerpo = '<div class="mc-load"><div class="spinner sm"></div>Cargando el detalle…</div>';
+  else if(C.err) cuerpo = '<div class="notice err">No se pudo leer el detalle (' + esc(C.err) + ').</div>';
+  else {
+    const its = itemsCompra(), suma = its.reduce((t, i) => t + (Number(i.sub) || 0), 0);
+    cuerpo = its.length
+      ? '<table class="dr mc-it"><thead><tr><th>#</th><th>' + (esOC ? 'Producto' : 'Concepto') + '</th><th class="r">Cant.</th><th>Unid.</th><th class="r">' + (esOC ? 'Precio unit.' : 'Costo unit.') + '</th><th class="r">Subtotal</th></tr></thead><tbody>' +
+        its.map((i, n) => '<tr><td class="n">' + (n + 1) + '</td><td class="conc"><b class="it-d">' + esc(i.desc) + '</b>' + (i.extra ? '<div class="it-x">' + esc(i.extra) + '</div>' : '') + '</td><td class="r">' + cant(i.cant) + '</td><td>' + esc(i.un) + '</td><td class="r">' + gs(i.pu) + '</td><td class="r"><b>' + gs(i.sub) + '</b></td></tr>').join('') +
+        '</tbody><tfoot><tr><td colspan="5" class="r">Total</td><td class="r">' + gs(suma) + '</td></tr></tfoot></table>' +
+        (Math.abs(suma - total) > 1 ? '<div class="mc-dif">La suma de los ítems (' + gs(suma) + ') no coincide con el total de la ' + (esOC ? 'orden' : 'factura') + ' (' + gs(total) + ').</div>' : '')
+      : '<div class="empty" style="padding:18px">Sin ítems cargados' + (esOC ? '' : ' (comprobante cargado sin detalle)') + '.</div>';
+    if(C.adj && C.adj.length) cuerpo += '<div class="mc-adj"><div class="mc-sec">Adjuntos (' + C.adj.length + ')</div>' + C.adj.map((a, i) => '<button class="adj" data-adj="' + i + '">📎 ' + esc(esOC ? (a.nombre_archivo || 'Archivo') : (a.nombre || 'Archivo')) + (esOC && a.tipo ? ' <span class="n">· ' + esc(a.tipo) + '</span>' : '') + '</button>').join('') + '</div>';
+  }
+  $('mcBody').innerHTML =
+    '<div class="mc-h"><div><div class="mc-tipo ' + C.src + '">' + (esOC ? 'Orden de compra' : 'Caja chica') + '</div><div class="mc-num">' + esc(numero) + ' ' + estadoChip(c.estado) + '</div></div>' +
+    '<div class="mc-tot"><span>Total</span><b>' + gs(total) + '</b></div></div>' +
+    '<div class="mc-info">' + info + '</div>' +
+    (nota ? '<div class="mc-nota"><span>' + (esOC ? 'Observación' : 'Comentario') + '</span>' + esc(nota) + '</div>' : '') +
+    '<div class="mc-sec">' + (esOC ? 'Ítems de la orden' : 'Detalle del comprobante') + '</div>' + cuerpo;
+  $('mcBody').querySelectorAll('[data-adj]').forEach(b => b.addEventListener('click', function(){ verAdjunto(Number(this.dataset.adj)); }));
+  $('mcPdf').disabled = !(C.items && !C.err);
+}
+async function verAdjunto(i){
+  const C = COMPRA; if(!C || !C.adj || !C.adj[i]) return;
+  const a = C.adj[i], bucket = C.src === 'oc' ? 'oc-adjuntos' : 'caja-chica', path = C.src === 'oc' ? a.url_storage : a.storage_path;
+  if(!path){ toast('El adjunto no tiene archivo asociado.', 'error'); return; }
+  const w = window.open('', '_blank');
+  try{
+    const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 3600);
+    if(error) throw error;
+    if(w) w.location = data.signedUrl; else window.open(data.signedUrl, '_blank');
+  }catch(e){ if(w) w.close(); toast('No se pudo abrir el adjunto: ' + (e.message || ''), 'error'); }
+}
+$('mcCerrar').addEventListener('click', cerrarCompra);
+$('mcX').addEventListener('click', cerrarCompra);
+$('mcPdf').addEventListener('click', function(){ try{ pdfCompra(); }catch(e){ console.error(e); toast('No se pudo generar el PDF: ' + (e.message || ''), 'error'); } });
+
+/* ─── Encabezado y pie comunes de los PDF ──────────────────────────────── */
+function pdfNuevo(orient){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:orient || 'landscape', unit:'mm', format:'a4' });
+  return { doc, W:doc.internal.pageSize.getWidth(), H:doc.internal.pageSize.getHeight(), M:14, emitido:new Date() };
+}
+function pdfEncabezado(P, titulo, sub){
+  const { doc, W, M, emitido } = P;
+  doc.setFillColor(31, 56, 100); doc.rect(0, 0, W, 26, 'F');
+  try{ doc.setFillColor(255, 255, 255); doc.roundedRect(M, 5, 30, 16, 2, 2, 'F'); doc.addImage(AXC_LOGO_PDF_DATA_URL, 'PNG', M + 1.5, 6.5, 27, 13); }catch(e){}
+  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.text(pdfSafe(titulo), M + 36, 12.5);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(220, 224, 235); doc.text(pdfSafe(sub), M + 36, 18.5);
+  doc.setFontSize(8); doc.text(pdfSafe('Emitido: ' + emitido.toLocaleDateString('es-PY') + ' ' + emitido.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' })), W - M, 12.5, { align:'right' });
+  doc.text(pdfSafe('Por: ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')), W - M, 18.5, { align:'right' });
+}
+function pdfPies(P){
+  const { doc, W, H, M } = P, n = doc.internal.getNumberOfPages();
+  for(let i = 1; i <= n; i++){
+    doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140, 150, 170);
+    doc.text(pdfSafe('AXC Constructora - Sistema integrado de gestion - Desarrollado por Conexdata'), M, H - 7);
+    doc.text('Pagina ' + i + ' de ' + n, W - M, H - 7, { align:'right' });
+  }
+}
+function pdfKpis(P, y, kp){
+  const { doc, W, M } = P, kw = (W - M * 2 - (kp.length - 1) * 4) / kp.length;
+  kp.forEach((k, i) => {
+    const x = M + i * (kw + 4), main = i === 0;
+    if(main) doc.setFillColor(31, 56, 100); else doc.setFillColor(243, 245, 249);
+    doc.roundedRect(x, y, kw, 19, 2, 2, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(main ? 200 : 120, main ? 210 : 130, main ? 225 : 150); doc.text(pdfSafe(k[0]), x + 3.5, y + 5);
+    doc.setFontSize(11.5); if(main) doc.setTextColor(200, 160, 40); else doc.setTextColor(31, 56, 100); doc.text(pdfSafe(k[1]), x + 3.5, y + 11.5);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(main ? 220 : 90, main ? 224 : 99, main ? 235 : 119); doc.text(pdfSafe(k[2]), x + 3.5, y + 16);
+  });
+}
+const PDF_TABLA = { theme:'grid', styles:{ font:'helvetica', fontSize:8, cellPadding:1.8, lineColor:[226,230,238], lineWidth:0.15, textColor:[26,34,54], overflow:'linebreak' },
+  headStyles:{ fillColor:[31,56,100], textColor:[255,255,255], fontStyle:'bold', fontSize:7.8 },
+  footStyles:{ fillColor:[243,245,249], textColor:[31,56,100], fontStyle:'bold' }, showFoot:'lastPage' };
+
+/* ─── PDF de una compra ────────────────────────────────────────────────── */
+function pdfCompra(){
+  if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
+  const C = COMPRA; if(!C) return;
+  const c = C.cab, esOC = C.src === 'oc';
+  const numero = esOC ? ocNumero(c) : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante');
+  const total = esOC ? Number(c.valor_total) || 0 : Number(c.total) || 0;
+  const P = pdfNuevo('portrait'), { doc, W, H, M } = P;
+  pdfEncabezado(P, esOC ? 'DETALLE DE ORDEN DE COMPRA' : 'DETALLE DE COMPROBANTE DE CAJA CHICA', numero + ' - ' + (c.obra || '') + ' - ' + fechaCorta(c.fecha));
+  const campos = esOC
+    ? [['Numero', numero], ['Estado', c.estado], ['Fecha', fechaCorta(c.fecha)], ['Obra', c.obra], ['Sector', c.sector], ['Proveedor', c.proveedor], ['Vendedor', c.vendedor], ['Residente', c.residente], ['Contratista', c.contratista], ['Tipo de compra', c.tipo_compra], ['Presupuesto', c.presupuesto], ['Total', gsPdf(total)]]
+    : [['Numero', numero], ['Estado', c.estado], ['Fecha', fechaCorta(c.fecha)], ['Comprobante', ((c.tipo_comprobante || '') + ' ' + (c.nro_factura || '')).trim()], ['Proveedor', c.proveedor], ['RUC', c.ruc], ['Obra', c.obra], ['Sector', c.sector], ['Rubro', c.rubro], ['Residente', c.residente], ['Contratista', c.contratista], ['Total', gsPdf(total)]];
+  const vis = campos.filter(f => f[1] != null && String(f[1]).trim() !== '');
+  let y = 34; const colW = (W - M * 2) / 3;
+  vis.forEach((f, i) => {
+    const x = M + (i % 3) * colW, yy = y + Math.floor(i / 3) * 10;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(120, 130, 150); doc.text(pdfSafe(f[0]).toUpperCase(), x, yy);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.3); doc.setTextColor(26, 34, 54);
+    const t = pdfSafe(f[1]); doc.text(t.length > 34 ? t.slice(0, 33) + '.' : t, x, yy + 4.6);
+  });
+  y += Math.ceil(vis.length / 3) * 10 + 3;
+  const nota = esOC ? c.observacion : c.comentario;
+  if(nota && String(nota).trim()){
+    const lines = doc.splitTextToSize(pdfSafe(nota), W - M * 2 - 8);
+    doc.setFillColor(255, 248, 225); doc.setDrawColor(200, 160, 40); doc.setLineWidth(0.3);
+    doc.roundedRect(M, y, W - M * 2, 7 + lines.length * 4.2, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(122, 86, 0); doc.text(esOC ? 'OBSERVACION' : 'COMENTARIO', M + 3, y + 4.2);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(60, 50, 30); doc.text(lines, M + 3, y + 8.5);
+    y += 10 + lines.length * 4.2;
+  }
+  const its = itemsCompra();
+  doc.autoTable(Object.assign({}, PDF_TABLA, { startY:y + 2, margin:{ left:M, right:M, top:32 },
+    head:[['#', esOC ? 'Producto' : 'Concepto', 'Cant.', 'Unid.', esOC ? 'Precio unit.' : 'Costo unit.', 'Subtotal']],
+    body:its.length ? its.map((i, n) => [String(n + 1), pdfSafe(i.desc) + (i.extra ? '\n' + pdfSafe(i.extra) : ''), cant(i.cant), pdfSafe(i.un), gsPdf(i.pu), gsPdf(i.sub)]) : [['', 'Sin items cargados', '', '', '', '']],
+    foot:[[{ content:'Total', colSpan:5, styles:{ halign:'right' } }, { content:gsPdf(its.reduce((t, i) => t + (Number(i.sub) || 0), 0)), styles:{ halign:'right' } }]],
+    columnStyles:{ 0:{ cellWidth:8, halign:'center' }, 2:{ halign:'right', cellWidth:18 }, 3:{ cellWidth:16 }, 4:{ halign:'right', cellWidth:28 }, 5:{ halign:'right', cellWidth:30, fontStyle:'bold' } },
+    didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, esOC ? 'DETALLE DE ORDEN DE COMPRA' : 'DETALLE DE COMPROBANTE DE CAJA CHICA', numero); } }));
+  if(C.adj && C.adj.length){
+    let ya = doc.lastAutoTable.finalY + 7; if(ya > H - 20){ doc.addPage(); pdfEncabezado(P, 'ADJUNTOS', numero); ya = 34; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(31, 56, 100); doc.text('Adjuntos en el sistema:', M, ya);
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(90, 99, 119);
+    doc.text(doc.splitTextToSize(pdfSafe(C.adj.map(a => esOC ? (a.nombre_archivo || 'Archivo') : (a.nombre || 'Archivo')).join('  |  ')), W - M * 2), M, ya + 4.5);
+  }
+  pdfPies(P);
+  doc.save('AXC_' + (esOC ? '' : 'CajaChica_') + String(numero).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9-]+/g, '_').replace(/^_|_$/g,'') + '.pdf');
+  toast('PDF generado');
+}
+
+function xlsObraMes(k, obraK){
+  if(!window.XLSX){ toast('La librería de Excel todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
+  const L = lineasObraMes(S.R, k, obraK);
+  const aoa = [['Detalle de compras · ' + obraK + ' · ' + mesTxt(k)], ['Generado: ' + new Date().toLocaleString('es-PY') + ' por ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')], [],
+    ['Origen','Fecha','Número','Comprobante','Proveedor','Sector','Residente','Tipo de compra / Rubro','Concepto / Observación','Estado','Monto (₲)','¿Suma al total?']];
+  L.forEach(l => aoa.push([l.origen, fechaCorta(l.fecha), l.numero, l.comprobante || '', l.proveedor, l.sector, l.residente, l.src === 'cc' ? l.rubro : l.tipo, l.concepto, l.estado, Math.round(l.monto), l.suma ? 'Sí' : 'No']));
+  const tOc = L.filter(l => l.clase === 'oc').reduce((t, l) => t + l.monto, 0), tCc = L.filter(l => l.clase === 'cc').reduce((t, l) => t + l.monto, 0);
+  aoa.push([]);
+  if(S.opts.oc) aoa.push(['Total órdenes de compra','','','','','','','','','',Math.round(tOc)]);
+  if(S.opts.cc) aoa.push(['Total caja chica','','','','','','','','','',Math.round(tCc)]);
+  aoa.push(['Total de la obra en el mes','','','','','','','','','',Math.round(tOc + tCc)]);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch:30 },{ wch:11 },{ wch:14 },{ wch:18 },{ wch:28 },{ wch:14 },{ wch:18 },{ wch:22 },{ wch:40 },{ wch:12 },{ wch:16 },{ wch:12 }];
+  const ref = XLSX.utils.decode_range(ws['!ref']); for(let r = ref.s.r; r <= ref.e.r; r++){ const c = ws[XLSX.utils.encode_cell({ r, c:10 })]; if(c && typeof c.v === 'number') c.z = '#,##0'; }
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Detalle');
+  XLSX.writeFile(wb, 'AXC_compras_' + norm(obraK).replace(/[^a-z0-9]+/g, '_') + '_' + k + '.xlsx');
+  toast('Excel generado');
+}
+function pdfObraMes(k, obraK){
+  if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
+  const L = lineasObraMes(S.R, k, obraK);
+  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), hi = L.filter(l => l.clase === 'hi');
+  const suma = a => a.reduce((t, l) => t + (Number(l.monto) || 0), 0);
+  const P = pdfNuevo('landscape'), { doc, W, H, M } = P, sub = obraK + ' - ' + mesTxt(k) + ' - ' + origenTxt() + estadoTxt();
+  pdfEncabezado(P, 'DETALLE DE COMPRAS POR OBRA', sub);
+  const kp = [['TOTAL DE LA OBRA EN EL MES', gsPdf(suma(oc) + suma(cc)), mesTxt(k)]];
+  if(S.opts.oc) kp.push(['ORDENES DE COMPRA', gsPdf(suma(oc)), oc.length + ' OC']);
+  if(S.opts.cc) kp.push(['CAJA CHICA', S.ccError ? 'Sin acceso' : gsPdf(suma(cc)), S.ccError ? '' : cc.length + ' comprobantes']);
+  pdfKpis(P, 33, kp);
+  let y = 59;
+  const estilos = Object.assign({}, PDF_TABLA, { margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'DETALLE DE COMPRAS POR OBRA', sub); } });
+  const titulo = function(t, n){ if(y > H - 30){ doc.addPage(); pdfEncabezado(P, 'DETALLE DE COMPRAS POR OBRA', sub); y = 34; } doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(31, 56, 100); doc.text(pdfSafe(t + ' (' + n + ')'), M, y); y += 2; };
+  const tabOc = function(arr, nombre, gris){
+    titulo(nombre, arr.length);
+    doc.autoTable(Object.assign({}, estilos, { startY:y,
+      head:[['Fecha','N OC','Proveedor','Sector','Residente','Tipo de compra','Estado','Monto']],
+      body:arr.map(l => [fechaCorta(l.fecha), pdfSafe(l.numero), pdfSafe(l.proveedor || '-'), pdfSafe(l.sector || '-'), pdfSafe(l.residente || '-'), pdfSafe(l.tipo || '-'), pdfSafe(l.estado || '-'), gsPdf(l.monto)]),
+      foot:[[{ content:'Total ' + pdfSafe(nombre.toLowerCase()), colSpan:7, styles:{ halign:'right' } }, { content:gsPdf(suma(arr)), styles:{ halign:'right' } }]],
+      columnStyles:{ 0:{ cellWidth:20 }, 1:{ cellWidth:24 }, 6:{ cellWidth:22 }, 7:{ halign:'right', cellWidth:30, fontStyle:'bold' } },
+      bodyStyles: gris ? { textColor:[120,128,145], fontStyle:'italic' } : {} }));
+    y = doc.lastAutoTable.finalY + 8;
+  };
+  if(oc.length) tabOc(oc, 'Ordenes de compra');
+  if(cc.length && !S.ccError){
+    titulo('Caja chica', cc.length);
+    doc.autoTable(Object.assign({}, estilos, { startY:y,
+      head:[['Fecha','N','Comprobante','Proveedor','Rubro','Concepto','Residente','Estado','Monto']],
+      body:cc.map(l => [fechaCorta(l.fecha), pdfSafe(l.numero), pdfSafe(l.comprobante || '-'), pdfSafe(l.proveedor || '-'), pdfSafe(l.rubro || '-'), pdfSafe(l.concepto || '-'), pdfSafe(l.residente || '-'), pdfSafe(l.estado || '-'), gsPdf(l.monto)]),
+      foot:[[{ content:'Total caja chica', colSpan:8, styles:{ halign:'right' } }, { content:gsPdf(suma(cc)), styles:{ halign:'right' } }]],
+      columnStyles:{ 0:{ cellWidth:20 }, 1:{ cellWidth:16 }, 5:{ cellWidth:60 }, 7:{ cellWidth:20 }, 8:{ halign:'right', cellWidth:28, fontStyle:'bold' } } }));
+    y = doc.lastAutoTable.finalY + 8;
+  }
+  if(hi.length) tabOc(hi, 'OC por caja chica (historico) - informativo, no suma', true);
+  if(!L.length){ doc.setFontSize(10); doc.setTextColor(120,128,145); doc.text('Sin compras registradas para esta obra en el mes.', M, y + 4); }
+  pdfPies(P);
+  doc.save('AXC_compras_' + norm(obraK).replace(/[^a-z0-9]+/g, '_') + '_' + k + '.pdf');
+  toast('PDF generado');
+}
+
+/* ─── Criterios ────────────────────────────────────────────────────────── */
 function textoCriterios(){
-  return [
-    ['Mes', 'según la fecha de la orden de compra y la fecha del comprobante de caja chica.'],
-    ['Órdenes de compra', 'cuentan todas menos las rechazadas y anuladas (aprobadas, solicitadas, observadas y archivadas). Las OC de prueba no cuentan.'],
-    ['Caja chica', 'cuentan los comprobantes solicitados, observados y aprobados. No cuentan los anulados, rechazados ni borradores.'],
-    ['OC por caja chica (histórico)', 'órdenes con ese tipo de compra. Se muestran aparte y no se suman al total, para no contar dos veces una compra que también pudo cargarse en Caja Chica.'],
-  ];
+  const O = S.opts, est = O.aprob && O.pend ? null : (O.aprob ? 'solo aprobadas' : 'solo pendientes de aprobación');
+  const out = [['Mes', 'según la fecha de la orden de compra y la fecha del comprobante de caja chica.']];
+  if(O.oc) out.push(['Órdenes de compra', est ? 'se incluyen ' + (O.aprob ? 'solo las aprobadas y archivadas' : 'solo las solicitadas y observadas') + '. Las OC de prueba no cuentan.' : 'cuentan todas menos las rechazadas y anuladas (aprobadas, solicitadas, observadas y archivadas). Las OC de prueba no cuentan.']);
+  else out.push(['Órdenes de compra', 'no incluidas en esta vista.']);
+  if(O.cc) out.push(['Caja chica', est ? 'se incluyen ' + (O.aprob ? 'solo los comprobantes aprobados' : 'solo los comprobantes solicitados y observados') + '.' : 'cuentan los comprobantes solicitados, observados y aprobados. No cuentan los anulados, rechazados ni borradores.']);
+  else out.push(['Caja chica', 'no incluida en esta vista.']);
+  if(O.oc) out.push(['OC por caja chica (histórico)', O.sumarHist ? 'se suman dentro de Órdenes de compra, igual que en el Dashboard OC (si una compra también se cargó en el módulo Caja Chica, quedaría contada dos veces).' : 'se muestran aparte y no se suman al total, para no contar dos veces una compra que también pudo cargarse en Caja Chica.']);
+  return out;
 }
 function renderCriterios(){
   $('criterios').innerHTML = '<b>Cómo se calcula:</b> ' + textoCriterios().map(c => '<b>' + esc(c[0]) + ':</b> ' + esc(c[1])).join(' · ');
@@ -612,135 +1209,113 @@ function renderCriterios(){
 $('btnXls').addEventListener('click', function(){
   if(!window.XLSX){ toast('La librería de Excel todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   const R = S.R; if(!R) return;
-  const verHist = R.T.hiN > 0;
-  const cab = ['Mes','OC (cant.)','Órdenes de compra (₲)','Caja chica (cant.)','Caja chica (₲)','Total del mes (₲)','Var. vs mes anterior (%)'].concat(verHist ? ['OC por caja chica histórico (₲) · no suma'] : []);
-  const res = [['Informe de compras por mes · AXC Constructora'], ['Período: ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + ' · ' + (R.obra ? 'Obra ' + R.obra : 'Todas las obras')], ['Generado: ' + new Date().toLocaleString('es-PY') + ' por ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')], [], cab];
-  R.filas.forEach(m => res.push([mesTxt(m.k), m.ocN, Math.round(m.ocM), m.ccN, Math.round(m.ccM), Math.round(m.tot), m.var == null ? '' : Math.round(m.var * 10) / 10].concat(verHist ? [Math.round(m.hiM)] : [])));
-  res.push(['Total del período', R.T.ocN, Math.round(R.T.ocM), R.T.ccN, Math.round(R.T.ccM), Math.round(R.T.tot), ''].concat(verHist ? [Math.round(R.T.hiM)] : []));
-  res.push(['Promedio mensual', '', Math.round(R.T.nMeses ? R.T.ocM / R.T.nMeses : 0), '', Math.round(R.T.nMeses ? R.T.ccM / R.T.nMeses : 0), Math.round(R.T.prom), '']);
+  const cols = columnasMes(R);
+  const cab = ['Mes'].concat(cols.map(c => c.t + (c.cant || c.var ? (c.var ? ' (%)' : '') : ' (₲)')));
+  const val = (c, m) => c.var ? (m.var == null || !isFinite(m.var) ? '' : Math.round(m.var * 10) / 10) : (c.hist ? Math.round(m.hiM) : (c.cant ? m[c.k] : Math.round(m[c.k])));
+  const res = [['Informe de compras por mes · AXC Constructora'], ['Vista: ' + textoAlcance(R)], ['Generado: ' + new Date().toLocaleString('es-PY') + ' por ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')], [], cab];
+  R.filas.forEach(m => res.push([mesTxt(m.k)].concat(cols.map(c => val(c, m)))));
+  res.push(['Total del período'].concat(cols.map(c => c.var ? '' : (c.hist ? Math.round(R.T.hiM) : (c.cant ? R.T[c.k] : Math.round(R.T[c.k]))))));
+  res.push(['Promedio mensual'].concat(cols.map(c => (c.var || c.cant || c.hist) ? '' : Math.round(R.T.nMeses ? R.T[c.k] / R.T.nMeses : 0))));
   res.push([]); textoCriterios().forEach(c => res.push([c[0] + ': ' + c[1]]));
-  if(S.ccAlcance) res.push([S.ccAlcance]);
-  if(S.ccError) res.push(['No se pudo leer la caja chica: ' + S.ccError]);
+  if(S.opts.cc && S.ccAlcance) res.push([S.ccAlcance]);
+  if(S.opts.cc && S.ccError) res.push(['No se pudo leer la caja chica: ' + S.ccError]);
   const det = [['Mes','Obra','Órdenes de compra (₲)','Caja chica (₲)','Total (₲)','OC por caja chica histórico (₲) · no suma']];
   R.filas.forEach(m => Object.values(m.obras).sort((a, b) => (b.oc + b.cc) - (a.oc + a.cc)).forEach(o => det.push([mesTxt(m.k), o.obra, Math.round(o.oc), Math.round(o.cc), Math.round(o.oc + o.cc), Math.round(o.hi)])));
-  const lin = [['Origen','Fecha','Número','Obra','Sector','Proveedor','Residente','Estado','Tipo de compra / Rubro','Monto (₲)','¿Suma al total?']];
-  R.lineas.forEach(l => lin.push([l.origen, l.fecha, l.numero, l.obra, l.sector, l.proveedor, l.residente, l.estado, l.tipo, Math.round(l.monto), l.suma ? 'Sí' : 'No']));
+  const rank = (lista, nombre) => [[nombre, 'Órdenes de compra (₲)', 'Caja chica (₲)', 'Total (₲)', '% del período']].concat(lista.map(a => [a.nombre, Math.round(a.oc), Math.round(a.cc), Math.round(a.tot), R.T.tot > 0 ? Math.round(a.tot / R.T.tot * 1000) / 10 : 0]));
+  const lin = [['Origen','Fecha','Número','Comprobante','Obra','Sector','Proveedor','Residente','Estado','Tipo de compra / Rubro','Concepto / Observación','Monto (₲)','¿Suma al total?']];
+  R.lineas.forEach(l => lin.push([l.origen, fechaCorta(l.fecha), l.numero, l.comprobante || '', l.obra, l.sector, l.proveedor, l.residente, l.estado, l.src === 'cc' ? l.rubro : l.tipo, l.concepto, Math.round(l.monto), l.suma ? 'Sí' : 'No']));
   const wb = XLSX.utils.book_new();
-  const w1 = XLSX.utils.aoa_to_sheet(res); w1['!cols'] = [{ wch:26 },{ wch:10 },{ wch:22 },{ wch:14 },{ wch:18 },{ wch:20 },{ wch:18 },{ wch:30 }];
-  const w2 = XLSX.utils.aoa_to_sheet(det); w2['!cols'] = [{ wch:18 },{ wch:30 },{ wch:22 },{ wch:18 },{ wch:18 },{ wch:30 }];
-  const w3 = XLSX.utils.aoa_to_sheet(lin); w3['!cols'] = [{ wch:30 },{ wch:12 },{ wch:22 },{ wch:24 },{ wch:16 },{ wch:28 },{ wch:22 },{ wch:12 },{ wch:24 },{ wch:16 },{ wch:12 }];
-  [w1, w2, w3].forEach(ws => { const ref = XLSX.utils.decode_range(ws['!ref']); for(let r = ref.s.r; r <= ref.e.r; r++) for(let c = ref.s.c; c <= ref.e.c; c++){ const cell = ws[XLSX.utils.encode_cell({ r, c })]; if(cell && typeof cell.v === 'number' && Math.abs(cell.v) >= 1000) cell.z = '#,##0'; } });
-  XLSX.utils.book_append_sheet(wb, w1, 'Resumen mensual');
-  XLSX.utils.book_append_sheet(wb, w2, 'Detalle por obra');
-  XLSX.utils.book_append_sheet(wb, w3, 'Compras');
+  const hojas = [['Resumen mensual', res, [26,10,22,14,18,20,18,30]], ['Detalle por obra', det, [18,30,22,18,18,30]], ['Por obra', rank(R.porObraTot, 'Obra'), [32,22,18,18,14]],
+    ['Por proveedor', rank(R.porProv, 'Proveedor'), [32,22,18,18,14]], ['Por residente', rank(R.porRes, 'Residente'), [26,22,18,18,14]], ['Compras', lin, [30,11,14,18,24,14,28,22,12,22,40,16,12]]];
+  hojas.forEach(h => {
+    const ws = XLSX.utils.aoa_to_sheet(h[1]); ws['!cols'] = h[2].map(w => ({ wch:w }));
+    const ref = XLSX.utils.decode_range(ws['!ref']); for(let r = ref.s.r; r <= ref.e.r; r++) for(let c = ref.s.c; c <= ref.e.c; c++){ const cell = ws[XLSX.utils.encode_cell({ r, c })]; if(cell && typeof cell.v === 'number' && Math.abs(cell.v) >= 1000) cell.z = '#,##0'; }
+    XLSX.utils.book_append_sheet(wb, ws, h[0]);
+  });
   XLSX.writeFile(wb, 'AXC_compras_por_mes_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + '.xlsx');
   toast('Excel generado');
 });
 
-/* ─── PDF ──────────────────────────────────────────────────────────────── */
+/* ─── PDF del informe ──────────────────────────────────────────────────── */
 $('btnPdf').addEventListener('click', function(){
   if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   try{ generarPdf(); }catch(e){ console.error('PDF', e); toast('No se pudo generar el PDF: ' + (e.message || ''), 'error'); }
 });
 function generarPdf(){
   const R = S.R; if(!R) return;
-  const verHist = R.T.hiN > 0, conDet = $('chkDetPdf').checked;
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
-  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 14;
-  const emitido = new Date();
-  const encabezado = function(sub){
-    doc.setFillColor(31, 56, 100); doc.rect(0, 0, W, 26, 'F');
-    try{ doc.setFillColor(255, 255, 255); doc.roundedRect(M, 5, 30, 16, 2, 2, 'F'); doc.addImage(AXC_LOGO_PDF_DATA_URL, 'PNG', M + 1.5, 6.5, 27, 13); }catch(e){}
-    doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
-    doc.text('INFORME DE COMPRAS POR MES', M + 36, 12.5);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(220, 224, 235);
-    doc.text(pdfSafe(sub), M + 36, 18.5);
-    doc.setFontSize(8); doc.text(pdfSafe('Emitido: ' + emitido.toLocaleDateString('es-PY') + ' ' + emitido.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' })), W - M, 12.5, { align:'right' });
-    doc.text(pdfSafe('Por: ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')), W - M, 18.5, { align:'right' });
-  };
-  const sub = 'Ordenes de compra + Caja chica - ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + ' - ' + (R.obra ? 'Obra ' + R.obra : 'Todas las obras');
-  encabezado(sub);
-  // KPIs
-  let y = 33;
-  const kp = [
-    ['TOTAL DEL PERIODO', gsPdf(R.T.tot), (R.T.ocN + R.T.ccN) + ' compras en ' + R.T.nMeses + ' meses'],
-    ['ORDENES DE COMPRA', gsPdf(R.T.ocM), R.T.ocN + ' OC - ' + (R.T.tot > 0 ? Math.round(R.T.ocM / R.T.tot * 100) : 0) + ' %'],
-    ['CAJA CHICA', S.ccError ? 'Sin acceso' : gsPdf(R.T.ccM), S.ccError ? '' : R.T.ccN + ' comprobantes - ' + (R.T.tot > 0 ? 100 - Math.round(R.T.ocM / R.T.tot * 100) : 0) + ' %'],
-    ['PROMEDIO MENSUAL', gsPdf(R.T.prom), 'sobre ' + R.T.nMeses + ' meses'],
-    ['MES CON MAS COMPRAS', R.T.max ? mesTxt(R.T.max.k) : '-', R.T.max ? gsPdf(R.T.max.tot) : ''],
-  ];
-  const kw = (W - M * 2 - 4 * 4) / 5;
-  kp.forEach((k, i) => {
-    const x = M + i * (kw + 4);
-    if(i === 0){ doc.setFillColor(31, 56, 100); } else { doc.setFillColor(243, 245, 249); }
-    doc.roundedRect(x, y, kw, 19, 2, 2, 'F');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(i === 0 ? 200 : 120, i === 0 ? 210 : 130, i === 0 ? 225 : 150);
-    doc.text(pdfSafe(k[0]), x + 3.5, y + 5);
-    doc.setFontSize(11.5); if(i === 0) doc.setTextColor(200, 160, 40); else doc.setTextColor(31, 56, 100);
-    doc.text(pdfSafe(k[1]), x + 3.5, y + 11.5);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(i === 0 ? 220 : 90, i === 0 ? 224 : 99, i === 0 ? 235 : 119);
-    doc.text(pdfSafe(k[2]), x + 3.5, y + 16);
-  });
-  y += 25;
-  // Tabla mensual (cronológica)
-  const head = [['Mes', 'OC (cant.)', 'Ordenes de compra', 'CC (cant.)', 'Caja chica', 'Total del mes', 'Var. mes ant.'].concat(verHist ? ['OC caja chica (hist.) - no suma'] : [])];
-  const body = R.filas.map(m => [mesTxt(m.k), m.ocN || '-', gsPdf(m.ocM), S.ccError ? '-' : (m.ccN || '-'), S.ccError ? '-' : gsPdf(m.ccM), gsPdf(m.tot),
-    (m.var == null || !isFinite(m.var)) ? '-' : ((Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %')].concat(verHist ? [m.hiM ? gsPdf(m.hiM) + ' (' + m.hiN + ')' : '-'] : []));
-  const foot = [
-    ['Total del periodo', String(R.T.ocN), gsPdf(R.T.ocM), S.ccError ? '-' : String(R.T.ccN), S.ccError ? '-' : gsPdf(R.T.ccM), gsPdf(R.T.tot), ''].concat(verHist ? [gsPdf(R.T.hiM)] : []),
-    ['Promedio mensual', '', gsPdf(R.T.nMeses ? R.T.ocM / R.T.nMeses : 0), '', S.ccError ? '-' : gsPdf(R.T.nMeses ? R.T.ccM / R.T.nMeses : 0), gsPdf(R.T.prom), ''].concat(verHist ? [''] : []),
-  ];
-  const colStyles = { 0:{ halign:'left', cellWidth:34 }, 1:{ halign:'right', cellWidth:20 }, 2:{ halign:'right' }, 3:{ halign:'right', cellWidth:20 }, 4:{ halign:'right' }, 5:{ halign:'right', fontStyle:'bold', textColor:[31,56,100] }, 6:{ halign:'right', cellWidth:24 } };
-  if(verHist) colStyles[7] = { halign:'right', fontStyle:'italic', textColor:[120,128,145] };
-  const pie = function(){
-    const pn = doc.internal.getNumberOfPages(), cur = doc.internal.getCurrentPageInfo().pageNumber;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140, 150, 170);
-    doc.text(pdfSafe('AXC Constructora - Sistema integrado de gestion - Desarrollado por Conexdata'), M, H - 7);
-    doc.text('Pagina ' + cur + ' de ' + pn, W - M, H - 7, { align:'right' });
-  };
-  doc.autoTable({
-    startY:y, head, body, foot, theme:'grid', showFoot:'lastPage',
-    styles:{ font:'helvetica', fontSize:8.5, cellPadding:2.2, lineColor:[226,230,238], lineWidth:0.15, textColor:[26,34,54] },
-    headStyles:{ fillColor:[31,56,100], textColor:[255,255,255], fontStyle:'bold', fontSize:8, halign:'right' },
-    footStyles:{ fillColor:[243,245,249], textColor:[31,56,100], fontStyle:'bold', halign:'right' },
-    columnStyles:colStyles,
-    didParseCell:function(d){ if(d.section === 'head' && d.column.index === 0) d.cell.styles.halign = 'left'; if(d.section === 'foot' && d.column.index === 0) d.cell.styles.halign = 'left'; },
-    margin:{ left:M, right:M, top:32 },
-    didDrawPage:function(d){ if(d.pageNumber > 1) encabezado(sub); },
-  });
+  const O = S.opts, cols = columnasMes(R);
+  const P = pdfNuevo('landscape'), { doc, W, H, M } = P;
+  const sub = textoAlcance(R).replace(/·/g, '-');
+  pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub);
+  const kp = [['TOTAL DEL PERIODO', gsPdf(R.T.tot), (R.T.ocN + R.T.ccN) + ' compras en ' + R.T.nMeses + ' meses']];
+  if(O.oc) kp.push(['ORDENES DE COMPRA', gsPdf(R.T.ocM), R.T.ocN + ' OC - ' + (R.T.tot > 0 ? Math.round(R.T.ocM / R.T.tot * 100) : 0) + ' %']);
+  if(O.cc) kp.push(['CAJA CHICA', S.ccError ? 'Sin acceso' : gsPdf(R.T.ccM), S.ccError ? '' : R.T.ccN + ' comprobantes - ' + (R.T.tot > 0 ? Math.round(R.T.ccM / R.T.tot * 100) : 0) + ' %']);
+  kp.push(['PROMEDIO MENSUAL', gsPdf(R.T.prom), 'sobre ' + R.T.nMeses + ' meses']);
+  kp.push(['MES CON MAS COMPRAS', R.T.max ? mesTxt(R.T.max.k) : '-', R.T.max ? gsPdf(R.T.max.tot) : '']);
+  pdfKpis(P, 33, kp);
+  const head = [['Mes'].concat(cols.map(c => pdfSafe(c.hist ? 'OC caja chica (hist.) - no suma' : c.t)))];
+  const fmt = (c, m) => (c.cc && S.ccError) ? '-' : (c.cant ? (m[c.k] || '-') : (c.var ? ((m.var == null || !isFinite(m.var)) ? '-' : ((Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %')) : (c.hist ? (m.hiM ? gsPdf(m.hiM) + ' (' + m.hiN + ')' : '-') : gsPdf(m[c.k]))));
+  const body = R.filas.map(m => [mesTxt(m.k)].concat(cols.map(c => fmt(c, m))));
+  const foot = [['Total del periodo'].concat(cols.map(c => c.var ? '' : (c.cant ? String(R.T[c.k]) : (c.hist ? gsPdf(R.T.hiM) : gsPdf(R.T[c.k]))))),
+                ['Promedio mensual'].concat(cols.map(c => (c.var || c.cant || c.hist) ? '' : gsPdf(R.T.nMeses ? R.T[c.k] / R.T.nMeses : 0)))];
+  const cs = { 0:{ halign:'left', cellWidth:34 } };
+  cols.forEach((c, i) => { cs[i + 1] = { halign:'right' }; if(c.cant) cs[i + 1].cellWidth = 20; if(c.var) cs[i + 1].cellWidth = 24; if(c.tot) Object.assign(cs[i + 1], { fontStyle:'bold', textColor:[31,56,100] }); if(c.hist) Object.assign(cs[i + 1], { fontStyle:'italic', textColor:[120,128,145] }); });
+  doc.autoTable(Object.assign({}, PDF_TABLA, { startY:58, head, body, foot, styles:Object.assign({}, PDF_TABLA.styles, { fontSize:8.5, cellPadding:2.2 }),
+    headStyles:Object.assign({}, PDF_TABLA.headStyles, { halign:'right' }), footStyles:Object.assign({}, PDF_TABLA.footStyles, { halign:'right' }), columnStyles:cs,
+    didParseCell:function(d){ if((d.section === 'head' || d.section === 'foot') && d.column.index === 0) d.cell.styles.halign = 'left'; },
+    margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub); } }));
   // Criterios
   let yc = doc.lastAutoTable.finalY + 7;
   const crit = textoCriterios().map(c => c[0] + ': ' + c[1]);
-  if(S.ccAlcance) crit.push('Alcance: ' + S.ccAlcance);
-  if(S.ccError) crit.push('No se pudo leer la caja chica (' + S.ccError + '): el informe incluye solo las ordenes de compra.');
+  if(O.cc && S.ccAlcance) crit.push('Alcance: ' + S.ccAlcance);
+  if(O.cc && S.ccError) crit.push('No se pudo leer la caja chica (' + S.ccError + '): el informe incluye solo las ordenes de compra.');
   doc.setFontSize(7.5);
   const lines = []; crit.forEach(t => doc.splitTextToSize(pdfSafe('- ' + t), W - M * 2).forEach(l => lines.push(l)));
-  if(yc + 5 + lines.length * 3.6 > H - 14){ doc.addPage(); encabezado(sub); yc = 34; }
+  if(yc + 5 + lines.length * 3.6 > H - 14){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub); yc = 34; }
   doc.setFont('helvetica', 'bold'); doc.setTextColor(31, 56, 100); doc.text('Como se calcula', M, yc);
   doc.setFont('helvetica', 'normal'); doc.setTextColor(90, 99, 119); doc.text(lines, M, yc + 4.5);
+  // Gráficos (los que están visibles en pantalla)
+  if(O.pdfGraf){
+    const graf = [['trend', 'Compras por mes'], ['obra', 'Compras por obra'], ['prov', 'Principales proveedores'], ['res', 'Compras por residente'], ['cant', 'Cantidad de compras por mes']].filter(g => S.charts[g[0]]);
+    if(graf.length){
+      doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - GRAFICOS', sub);
+      const gw = (W - M * 2 - 8) / 2, gh = 72; let gx = 0, gy = 34;
+      graf.forEach((g, i) => {
+        if(gy + gh > H - 12){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - GRAFICOS', sub); gy = 34; gx = 0; }
+        const ch = S.charts[g[0]], x = M + gx * (gw + 8);
+        doc.setDrawColor(226, 230, 238); doc.setLineWidth(0.2); doc.roundedRect(x, gy, gw, gh, 2, 2, 'S');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 56, 100); doc.text(pdfSafe(g[1]), x + 4, gy + 6);
+        // leyenda
+        let lx = x + gw - 4; doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(90, 99, 119);
+        const ley = []; if(O.oc) ley.push(['Ordenes de compra', [58,107,181]]); if(O.cc) ley.push(['Caja chica', [181,138,18]]);
+        ley.slice().reverse().forEach(l => { const tw = doc.getTextWidth(l[0]); lx -= tw; doc.text(l[0], lx, gy + 6); lx -= 4; doc.setFillColor(l[1][0], l[1][1], l[1][2]); doc.rect(lx, gy + 3.6, 2.6, 2.6, 'F'); lx -= 4; });
+        try{
+          const img = ch.toBase64Image('image/png', 1), cw = ch.canvas.width, chh = ch.canvas.height;
+          const maxW = gw - 8, maxH = gh - 12, ratio = Math.min(maxW / cw, maxH / chh);
+          doc.addImage(img, 'PNG', x + 4 + (maxW - cw * ratio) / 2, gy + 9, cw * ratio, chh * ratio);
+        }catch(e){ console.warn('grafico al PDF', e); }
+        gx++; if(gx > 1){ gx = 0; gy += gh + 6; }
+      });
+    }
+  }
   // Detalle por obra (opcional)
-  if(conDet){
-    doc.addPage(); encabezado(sub + ' - Detalle por obra');
-    const b2 = [];
+  if(O.pdfObra){
+    doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - DETALLE POR OBRA', sub);
+    const verHist = R.T.hiN > 0, b2 = [];
     R.filas.forEach(m => {
       const obs = Object.values(m.obras).sort((a, b) => (b.oc + b.cc) - (a.oc + a.cc));
       if(!obs.length) return;
       b2.push([{ content:mesTxt(m.k) + '  -  Total ' + gsPdf(m.tot), colSpan: verHist ? 6 : 5, styles:{ fillColor:[234,239,247], fontStyle:'bold', textColor:[31,56,100] } }]);
-      obs.forEach(o => b2.push([o.obra, gsPdf(o.oc), gsPdf(o.cc), gsPdf(o.oc + o.cc), m.tot > 0 ? Math.round((o.oc + o.cc) / m.tot * 100) + ' %' : '-'].concat(verHist ? [o.hi ? gsPdf(o.hi) : '-'] : [])));
+      obs.forEach(o => b2.push([pdfSafe(o.obra), gsPdf(o.oc), gsPdf(o.cc), gsPdf(o.oc + o.cc), m.tot > 0 ? Math.round((o.oc + o.cc) / m.tot * 100) + ' %' : '-'].concat(verHist ? [o.hi ? gsPdf(o.hi) : '-'] : [])));
     });
-    doc.autoTable({
-      startY:32, head:[['Obra', 'Ordenes de compra', 'Caja chica', 'Total', '% del mes'].concat(verHist ? ['OC caja chica (hist.) - no suma'] : [])], body:b2.length ? b2 : [['Sin compras en el periodo', '', '', '', ''].concat(verHist ? [''] : [])],
-      theme:'grid', styles:{ font:'helvetica', fontSize:8.3, cellPadding:2, lineColor:[226,230,238], lineWidth:0.15, textColor:[26,34,54] },
-      headStyles:{ fillColor:[31,56,100], textColor:[255,255,255], fontStyle:'bold', fontSize:8 },
+    doc.autoTable(Object.assign({}, PDF_TABLA, { startY:32,
+      head:[['Obra', 'Ordenes de compra', 'Caja chica', 'Total', '% del mes'].concat(verHist ? ['OC caja chica (hist.) - no suma'] : [])],
+      body:b2.length ? b2 : [['Sin compras en el periodo', '', '', '', ''].concat(verHist ? [''] : [])],
       columnStyles:{ 0:{ halign:'left' }, 1:{ halign:'right' }, 2:{ halign:'right' }, 3:{ halign:'right', fontStyle:'bold' }, 4:{ halign:'right', cellWidth:22 }, 5:{ halign:'right', fontStyle:'italic', textColor:[120,128,145] } },
       didParseCell:function(d){ if(d.section === 'head' && d.column.index > 0) d.cell.styles.halign = 'right'; },
-      margin:{ left:M, right:M, top:32 },
-      didDrawPage:function(d){ if(d.pageNumber > 1 && doc.internal.getCurrentPageInfo().pageNumber > 1) encabezado(sub + ' - Detalle por obra'); },
-    });
+      margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - DETALLE POR OBRA', sub); } }));
   }
-  const n = doc.internal.getNumberOfPages();
-  for(let i = 1; i <= n; i++){ doc.setPage(i); pie(); }
+  pdfPies(P);
   doc.save('AXC_compras_por_mes_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + '.pdf');
   toast('PDF generado');
 }
