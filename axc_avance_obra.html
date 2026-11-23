@@ -568,6 +568,19 @@ function refrescarPP(){
     return '<option value="'+esc(c.codigo)+'">'+esc(c.codigo+(c.descripcion?' · '+c.descripcion:''))+(c.activo===false?' (inactivo)':'')+'</option>'; }).join('');
 }
 
+/* v1.3 · Proyección al terminar. Con poco avance el CPI no es representativo
+   (ej.: 5 % de avance con materiales ya comprados da CPI 0,10 y una proyección
+   10 veces el presupuesto). Por eso, con avance < 15 % se usa
+   EAC = costo incorporado + (presupuesto − valor ganado), que supone que lo que
+   falta cuesta lo presupuestado. Desde 15 % de avance: EAC = presupuesto ÷ CPI. */
+const EAC_AV_MIN = 0.15;
+function calcEAC(T){
+  const av = T.costo > 0 ? T.ev / T.costo : 0;
+  if(!(T.acInc > 0)){ T.eacMetodo = null; return null; }
+  if(av >= EAC_AV_MIN && T.cpi > 0){ T.eacMetodo = 'cpi'; return T.costo / T.cpi; }
+  T.eacMetodo = 'lineal'; return T.acInc + Math.max(0, T.costo - T.ev);
+}
+
 /* v1.3 · Carga de datos de una obra (la usan la vista por obra y la de todas las obras) */
 async function avCargarDatos(obra, pps, corte){
   const R = {};
@@ -856,7 +869,7 @@ function calcular(R, F){
   T.acInc = Math.max(0, T.ac - T.acopio);
   T.cpiBruto = T.ac>0 ? T.ev/T.ac : null;
   T.cpi = T.acInc>0 ? T.ev/T.acInc : null;
-  T.eac = (T.cpi && T.cpi>0) ? T.costo/T.cpi : null;
+  T.eac = calcEAC(T);
   // Margen previsto: solo contra el costo de los presupuestos que tienen
   // propuesta aceptada (si no, se compararía venta parcial con costo total).
   const ppConVenta={}; Object.keys(ventaPP).forEach(function(p){ ppConVenta[p]=1; });
@@ -1074,7 +1087,7 @@ const AY = {
   cpi:'<b>CPI · índice de costo</b>\nValor ganado ÷ costo incorporado a la obra.\nCosto incorporado = costo real − materiales en acopio.\n≥ 1,00: se gasta lo presupuestado o menos para lo ejecutado. 0,90 = por cada ₲ 1 gastado se ejecutaron ₲ 0,90 de obra.',
   spi:'<b>SPI · índice de plazo</b>\nValor ganado ÷ valor programado a la fecha de corte.\nValor programado = % acumulado del plan de obra × presupuesto a costo.\n≥ 1,00: en plazo o adelantada. Necesita el «Plan de obra».',
   margenHoy:'<b>Margen a la fecha</b>\nEjecutado a precio de venta − costo incorporado (costo real sin el acopio).\nMide si lo que ya se hizo se está haciendo con ganancia.',
-  eac:'<b>Costo estimado al terminar (EAC)</b>\nPresupuesto a costo ÷ CPI.\nSupone que el resto de la obra rinde igual que lo ejecutado hasta hoy. Desvío final = presupuesto − EAC.',
+  eac:'<b>Costo estimado al terminar (EAC)</b>\nCon avance ≥ 15 %: presupuesto a costo ÷ CPI (supone que el resto rinde igual que lo ejecutado).\nCon avance < 15 %: costo incorporado + (presupuesto − valor ganado), porque al inicio el CPI todavía no es representativo y daría una proyección exagerada.\nDesvío final = presupuesto − EAC.',
   margenProy:'<b>Margen proyectado</b>\nValor comercial − costo estimado al terminar (EAC).\nSe compara contra el margen previsto en la propuesta.',
   acopio:'<b>Materiales en acopio</b>\nPor rubro: materiales comprados − (avance físico × materiales presupuestados), si da positivo.\nSon compras adelantadas que todavía no son obra: stock en el depósito o en obra.',
   noImput:'<b>Costo sin imputar a rubros</b>\nCosto real de la obra que no está vinculado a ningún rubro del presupuesto: OC sin presupuesto, caja chica, mano de obra certificada sin rubro.\nSí cuenta en el costo real de la obra; no aparece en la tabla por rubro.',
@@ -1122,7 +1135,7 @@ function vistaCap(D){
   T.acRub=T.mo+T.mat+T.npRub; T.ac=T.acRub; T.moTot=T.mo; T.ocEje=T.mat+T.npRub; T.caja=0; T.ocRes=0; T.noImput=0;
   T.acInc=Math.max(0,T.ac-T.acopio); T.cpiBruto=T.ac>0?T.ev/T.ac:null; T.cpi=T.acInc>0?T.ev/T.acInc:null;
   T.av=T.costo>0?T.ev/T.costo:0; T.avVenta=T.venta>0?T.evv/T.venta:null;
-  T.eac=(T.cpi&&T.cpi>0)?T.costo/T.cpi:null;
+  T.eac=calcEAC(T);
   const ppV={}; (D.props||[]).forEach(function(p){ ppV[p.presupuesto]=1; });
   T.costoConVenta=L.filter(function(o){ return ppV[o.pp]; }).reduce(function(a,o){ return a+o.costo; },0);
   T.ventaParcial=B.ventaParcial; T.margenPrev=T.venta>0?T.venta-T.costoConVenta:null;
@@ -1912,6 +1925,8 @@ function irTab(t){
   document.querySelectorAll('#tabs button').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-t')===t); });
   $('out').classList.toggle('hidden', t!=='av'); $('outG').classList.toggle('hidden', t!=='ger'); $('outC').classList.toggle('hidden', t!=='cart');
   $('btnPdf').innerHTML = t==='ger' ? '⬇ PDF gerencial' : (t==='cart' ? '⬇ PDF de cartera' : '⬇ Informe PDF');
+  ['fObra','fPP','fCap'].forEach(function(id){ const f = $(id) && $(id).closest('.fld'); if(f) f.style.display = t==='cart' ? 'none' : ''; });
+  ['btnPlan','btnCob','btnGo'].forEach(function(id){ if($(id)) $(id).style.display = t==='cart' ? 'none' : ''; });
   if(t==='cart') cartRender();   // v1.3
   if(t==='ger' && S.D) renderGer();
   if(t==='av' && S.D && !S.charts.s) render();
@@ -1957,7 +1972,7 @@ const CART_AY = {
   kpis:'<b>Totales de la cartera</b><br>Suma de las obras con presupuestos activos, con la fecha de corte y el criterio de OC elegidos arriba. Cada obra se calcula igual que en la pestaña «Avance de obra».',
   cartera:'<b>Costo contra plazo</b><br>Eje horizontal: <b>SPI</b> = valor ganado ÷ valor programado (necesita plan de obra). ≥ 1 adelantada.<br>Eje vertical: <b>CPI</b> = valor ganado ÷ costo incorporado (costo real − materiales en acopio). ≥ 1 por debajo del presupuesto.<br>Tamaño de la burbuja = presupuesto a costo (BAC).<br>Las obras sin plan de obra no tienen SPI: se listan abajo con su CPI.',
   calor:'<b>Gasto contra avance por capítulo</b><br>Cada celda = % del costo del capítulo ya incorporado − % de avance físico del capítulo, en puntos.<br>% incorporado = (costo real del capítulo − acopio) ÷ costo presupuestado del capítulo.<br>Positivo = se gasta más rápido de lo que se avanza. ≥ +15 rojo · +5 a +15 naranja · cerca de 0 neutro · negativo verde.<br>Columnas: los capítulos de mayor costo de la cartera; el resto va en «Otros».',
-  eac:'<b>Proyección al terminar por obra</b><br>Gris = presupuesto a costo vigente (BAC). Azul = costo real a la fecha (AC). Naranja = lo que falta según la proyección.<br>Proyección (EAC) = BAC ÷ CPI. % = (EAC − BAC) ÷ BAC.<br>≤ 0 % verde · 0–5 % amarillo · > 5 % rojo.',
+  eac:'<b>Proyección al terminar por obra</b><br>Gris = presupuesto a costo vigente (BAC). Azul = costo real a la fecha (AC). Naranja = lo que falta según la proyección.<br>Proyección (EAC) = BAC ÷ CPI con avance ≥ 15 %. Con menos avance el CPI no es representativo: EAC = costo incorporado + (BAC − valor ganado), marcado con *.<br>% = (EAC − BAC) ÷ BAC.<br>≤ 0 % verde · 0–5 % amarillo · > 5 % rojo.',
   imput:'<b>Costo sin imputar a rubros</b><br>% del costo real de la obra que no está vinculado a ningún rubro del presupuesto: OC sin presupuesto, caja chica sin imputar, mano de obra certificada sin rubro.<br>Meta: ≤ 10 % verde · 10–15 % amarillo · > 15 % rojo. Sin buena imputación, los demás indicadores pierden precisión.',
   tabla:'<b>Tabla de la cartera</b><br>Mismos indicadores de la vista por obra. Semáforos:<br>CPI ≥ 1 · 0,95–0,99 · < 0,95<br>SPI ≥ 1 · 0,90–0,99 · < 0,90<br>Proyección ≤ 0 % · 0–5 % · > 5 %<br>Sin imputar ≤ 10 % · 10–15 % · > 15 %<br>Tocá «Ver» para abrir la obra en la pestaña «Avance de obra».'
 };
@@ -2003,7 +2018,7 @@ async function cartCalcular(){
         const R = await avCargarDatos(obra, pps, corte);
         const D = calcular(R, { obra:obra, cabs:cabs, pps:pps, corte:corte, ppSel:'' });
         const T = D.T;
-        filas.push({ obra:obra, n:pps.length, pps:pps, bac:T.costo, ev:T.ev, ac:T.ac, acInc:T.acInc, acopio:T.acopio, cpi:(T.ev > 0 ? T.cpi : null), spi:(T.ev > 0 ? T.spi : null), av:T.av, avProg:T.avProg, eac:(T.ev > 0 ? T.eac : null),
+        filas.push({ obra:obra, n:pps.length, pps:pps, bac:T.costo, ev:T.ev, ac:T.ac, acInc:T.acInc, acopio:T.acopio, cpi:(T.ev > 0 ? T.cpi : null), spi:(T.ev > 0 ? T.spi : null), av:T.av, avProg:T.avProg, eac:(T.ev > 0 ? T.eac : null), eacMetodo:T.eacMetodo, poco:(T.costo > 0 && T.ev / T.costo < EAC_AV_MIN),
           desvEac:(T.ev > 0 && T.eac != null && T.costo > 0) ? (T.eac - T.costo) / T.costo : null, venta:T.venta, margenProy:T.margenProy, margenPrev:T.margenPrev,
           noImput:T.noImput, pctNoImput:T.ac > 0 ? T.noImput / T.ac : null, hayPlan:D.hayPlan,
           caps:D.caps.map(function(c){ return { cap:c.cap, costo:c.costo, ev:c.ev, ac:c.ac, acopio:c.acopio||0, av:c.av }; }), avisos:(D.avisos||[]).length });
@@ -2026,26 +2041,29 @@ function cartSvgCartera(F){
   if(ok.length){
     const W = 860, H = 360, L = 60, R = 20, T = 18, B = 46;
     const xs = ok.map(function(f){ return f.spi; }), ys = ok.map(function(f){ return f.cpi; });
-    const x0 = Math.min(.8, Math.min.apply(null, xs) - .05), x1 = Math.max(1.15, Math.max.apply(null, xs) + .05);
-    const y0 = Math.min(.8, Math.min.apply(null, ys) - .05), y1 = Math.max(1.15, Math.max.apply(null, ys) + .05);
+    const pad = function(a, b){ const r = b - a; return [a - r * .2, b + r * .12]; };
+    const dx = pad(Math.min(.8, Math.min.apply(null, xs)), Math.max(1.15, Math.max.apply(null, xs))), dy = pad(Math.min(.8, Math.min.apply(null, ys)), Math.max(1.15, Math.max.apply(null, ys)));
+    const x0 = Math.floor(dx[0]*20)/20, x1 = Math.ceil(dx[1]*20)/20, y0 = Math.floor(dy[0]*20)/20, y1 = Math.ceil(dy[1]*20)/20;
+    const stX = (x1 - x0) > .8 ? .1 : .05, stY = (y1 - y0) > .8 ? .1 : .05;
     const X = function(v){ return L + (W - L - R) * (v - x0) / (x1 - x0); }, Y = function(v){ return T + (H - T - B) * (1 - (v - y0) / (y1 - y0)); };
     const maxB = Math.max.apply(null, ok.map(function(f){ return f.bac || 1; }));
     let g = '<rect x="'+X(x0)+'" y="'+Y(1)+'" width="'+(X(1)-X(x0))+'" height="'+(Y(y0)-Y(1))+'" fill="#FCEBEB"/>';
     g += '<rect x="'+X(1)+'" y="'+Y(y1)+'" width="'+(X(x1)-X(1))+'" height="'+(Y(1)-Y(y1))+'" fill="#EEF7F0"/>';
-    for(let v = Math.ceil(x0*20)/20; v <= x1 + 1e-9; v += .05){ g += '<line x1="'+X(v)+'" x2="'+X(v)+'" y1="'+T+'" y2="'+(H-B)+'" stroke="#F1F3F6"/><text x="'+X(v)+'" y="'+(H-B+15)+'" text-anchor="middle" font-size="10" fill="'+CART_C.tx2+'">'+_cIdx(v)+'</text>'; }
-    for(let v = Math.ceil(y0*20)/20; v <= y1 + 1e-9; v += .05){ g += '<line x1="'+L+'" x2="'+(W-R)+'" y1="'+Y(v)+'" y2="'+Y(v)+'" stroke="#F1F3F6"/><text x="'+(L-6)+'" y="'+(Y(v)+3)+'" text-anchor="end" font-size="10" fill="'+CART_C.tx2+'">'+_cIdx(v)+'</text>'; }
+    for(let v = Math.ceil(x0/stX - 1e-9)*stX; v <= x1 + 1e-9; v += stX){ g += '<line x1="'+X(v)+'" x2="'+X(v)+'" y1="'+T+'" y2="'+(H-B)+'" stroke="#F1F3F6"/><text x="'+X(v)+'" y="'+(H-B+15)+'" text-anchor="middle" font-size="10" fill="'+CART_C.tx2+'">'+_cIdx(v)+'</text>'; }
+    for(let v = Math.ceil(y0/stY - 1e-9)*stY; v <= y1 + 1e-9; v += stY){ g += '<line x1="'+L+'" x2="'+(W-R)+'" y1="'+Y(v)+'" y2="'+Y(v)+'" stroke="#F1F3F6"/><text x="'+(L-6)+'" y="'+(Y(v)+3)+'" text-anchor="end" font-size="10" fill="'+CART_C.tx2+'">'+_cIdx(v)+'</text>'; }
     g += '<line x1="'+X(1)+'" x2="'+X(1)+'" y1="'+T+'" y2="'+(H-B)+'" stroke="'+CART_C.tx2+'" stroke-dasharray="4 4"/><line x1="'+L+'" x2="'+(W-R)+'" y1="'+Y(1)+'" y2="'+Y(1)+'" stroke="'+CART_C.tx2+'" stroke-dasharray="4 4"/>';
-    g += '<text x="'+(X(x0)+8)+'" y="'+(Y(y0)-8)+'" font-size="11" font-weight="700" fill="'+CART_C.red+'">Atrasada y con sobrecosto</text><text x="'+(X(x1)-8)+'" y="'+(Y(y1)+16)+'" text-anchor="end" font-size="11" font-weight="700" fill="'+CART_C.grn+'">Adelantada y bajo costo</text>';
+    g += '<text x="'+(X(x0)+8)+'" y="'+(Y(1)+15)+'" font-size="11" font-weight="700" fill="'+CART_C.red+'" fill-opacity=".8">Atrasada y con sobrecosto</text><text x="'+(X(x1)-8)+'" y="'+(Y(y1)+16)+'" text-anchor="end" font-size="11" font-weight="700" fill="'+CART_C.grn+'">Adelantada y bajo costo</text>';
     g += '<text x="'+((L+W-R)/2)+'" y="'+(H-8)+'" text-anchor="middle" font-size="10.5" fill="'+CART_C.tx2+'">SPI · cumplimiento de plazo (≥ 1 adelantada)</text><text transform="translate(14,'+((T+H-B)/2)+') rotate(-90)" text-anchor="middle" font-size="10.5" fill="'+CART_C.tx2+'">CPI · eficiencia de costo (≥ 1 bajo presupuesto)</text>';
     ok.slice().sort(function(a,b){ return b.bac - a.bac; }).forEach(function(f){
       const r = 8 + 26 * Math.sqrt((f.bac||0) / maxB), col = f.cpi < .95 ? CART_C.red : (f.cpi < 1 ? CART_C.or : CART_C.grn);
       g += '<circle cx="'+X(f.spi)+'" cy="'+Y(f.cpi)+'" r="'+r+'" fill="'+col+'" fill-opacity=".75" stroke="#fff" stroke-width="2"><title>'+esc(f.obra)+' · CPI '+_cIdx(f.cpi)+' · SPI '+_cIdx(f.spi)+' · BAC '+_cM(f.bac)+'</title></circle>';
-      g += '<text x="'+X(f.spi)+'" y="'+(Y(f.cpi)-r-5)+'" text-anchor="middle" font-size="11" font-weight="700" fill="'+CART_C.navy+'">'+esc(f.obra)+'</text>';
+      const ly = (Y(f.cpi) - r - 5 < T + 12) ? Y(f.cpi) + r + 14 : Y(f.cpi) - r - 5, lx = Math.max(L + 40, Math.min(W - R - 40, X(f.spi)));
+      g += '<text x="'+lx+'" y="'+ly+'" text-anchor="middle" paint-order="stroke" stroke="#fff" stroke-width="3" font-size="11" font-weight="700" fill="'+CART_C.navy+'">'+esc(f.obra)+'</text>';
     });
     svg = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Costo contra plazo por obra" font-family="Inter,Segoe UI,sans-serif">'+g+'</svg>';
   } else svg = '<div class="empty" style="padding:18px">Ninguna obra tiene plan de obra cargado: sin plan no hay SPI para ubicarla en el plazo. Se carga desde «🗓 Plan de obra» de cada obra.</div>';
   if(sinAv.length) svg += '<div class="cart-chips"><span>Sin avance certificado todavía (sin CPI):</span>'+sinAv.map(function(f){ return '<span class="cart-chip">'+esc(f.obra)+'</span>'; }).join('')+'</div>';
-  if(sinSpi.length) svg += '<div class="cart-chips"><span>Sin plan de obra (solo CPI):</span>'+sinSpi.map(function(f){ return '<span class="cart-chip '+_cSem(f.cpi,1,.95,true)+'">'+esc(f.obra)+' · CPI '+_cIdx(f.cpi)+'</span>'; }).join('')+'</div>';
+  if(sinSpi.length) svg += '<div class="cart-chips"><span>Sin plan de obra (solo CPI):</span>'+sinSpi.map(function(f){ return '<span class="cart-chip '+_cSem(f.cpi,1,.95,true)+'">'+esc(f.obra)+' · CPI '+_cIdx(f.cpi)+(f.poco ? ' (avance < 15 %)' : '')+'</span>'; }).join('')+'</div>';
   return svg;
 }
 function cartSvgCalor(F){
@@ -2088,7 +2106,7 @@ function cartSvgEac(F){
     g += '<rect x="'+(cx+2)+'" y="'+Y(ac)+'" width="'+bw+'" height="'+(Y(0)-Y(ac))+'" rx="3" fill="'+CART_C.navy+'"><title>Real '+_cM(ac)+'</title></rect>';
     if(eac > ac) g += '<rect x="'+(cx+2)+'" y="'+Y(eac)+'" width="'+bw+'" height="'+(Y(ac)-Y(eac))+'" rx="3" fill="'+CART_C.or2+'" fill-opacity=".85"><title>Falta según proyección '+_cM(eac-ac)+'</title></rect>';
     const d = f.desvEac, col = d == null ? CART_C.tx2 : (d > .05 ? CART_C.red : (d > 0 ? CART_C.or : CART_C.grn));
-    g += '<text x="'+(cx+2+bw/2)+'" y="'+(Y(Math.max(eac, ac))-6)+'" text-anchor="middle" font-size="10.5" font-weight="700" fill="'+col+'">'+(d == null ? 's/CPI' : _cPctS(d))+'</text>';
+    g += '<text x="'+(cx+2+bw/2)+'" y="'+(Y(Math.max(eac, ac))-6)+'" text-anchor="middle" font-size="10.5" font-weight="700" fill="'+col+'">'+(d == null ? 's/CPI' : _cPctS(d) + (f.eacMetodo === 'lineal' ? '*' : ''))+'</text>';
     const nm = f.obra.length > 16 ? f.obra.slice(0,15) + '…' : f.obra;
     g += '<text x="'+cx+'" y="'+(H-B+16)+'" text-anchor="middle" font-size="10.5" fill="'+CART_C.navy+'">'+esc(nm)+'</text>';
   });
@@ -2130,8 +2148,8 @@ function cartHTML(F){
     const sc = _cSem(f.cpi,1,.95,true), ss = _cSem(f.spi,1,.9,true), se = _cSem(f.desvEac,0,.05,false), si = _cSem(f.pctNoImput,.10,.15,false);
     return '<tr><td><b>'+esc(f.obra)+'</b><div class="mini">'+f.n+' presupuesto'+(f.n===1?'':'s')+(f.avisos ? ' · '+f.avisos+' aviso'+(f.avisos===1?'':'s') : '')+'</div></td>'+
       '<td class="n">'+gsM(f.bac)+'</td><td class="n">'+_cPct(f.av,1)+'</td><td class="n">'+(f.avProg != null ? _cPct(f.avProg,1) : '<span class="mini">sin plan</span>')+'</td>'+
-      '<td class="n">'+gsM(f.ac)+'</td><td class="n">'+sem(sc)+_cIdx(f.cpi)+'</td><td class="n">'+sem(ss)+_cIdx(f.spi)+'</td>'+
-      '<td class="n">'+(f.eac != null ? gsM(f.eac) : '—')+'</td><td class="n">'+sem(se)+_cPctS(f.desvEac)+'</td>'+
+      '<td class="n">'+gsM(f.ac)+'</td><td class="n">'+sem(sc)+_cIdx(f.cpi)+(f.poco && f.cpi != null ? '<div class="mini">avance < 15 %</div>' : '')+'</td><td class="n">'+sem(ss)+_cIdx(f.spi)+'</td>'+
+      '<td class="n">'+(f.eac != null ? gsM(f.eac) : '—')+'</td><td class="n">'+sem(se)+_cPctS(f.desvEac)+(f.eacMetodo === 'lineal' ? '<div class="mini">lineal *</div>' : '')+'</td>'+
       '<td class="n">'+sem(si)+_cPct(f.pctNoImput,1)+'</td><td class="n"><button class="btn sm" data-ver="'+esc(f.obra)+'">Ver</button></td></tr>';
   }).join('');
   return '<div class="card"><h3 class="h3i">Resumen de la cartera'+info(CART_AY.kpis)+'</h3><div class="kpis cart-k5">'+
@@ -2143,7 +2161,7 @@ function cartHTML(F){
     '</div></div>'+
     '<div class="card cart-full"><h3 class="h3i">Costo contra plazo'+info(CART_AY.cartera)+'</h3><div class="sub">Cada burbuja es una obra · tamaño = presupuesto a costo</div>'+cartSvgCartera(F)+'</div>'+
     '<div class="card cart-full"><h3 class="h3i">Dónde se gasta más rápido de lo que se avanza'+info(CART_AY.calor)+'</h3><div class="sub">Puntos de % gastado sobre % avanzado, por capítulo</div>'+cartSvgCalor(F)+'</div>'+
-    '<div class="cart-g2"><div class="card"><h3 class="h3i">Proyección al terminar por obra'+info(CART_AY.eac)+'</h3><div class="sub">Presupuesto, real a la fecha y lo que falta según el CPI</div>'+cartSvgEac(F)+'</div>'+
+    '<div class="cart-g2"><div class="card"><h3 class="h3i">Proyección al terminar por obra'+info(CART_AY.eac)+'</h3><div class="sub">Presupuesto, real a la fecha y lo que falta según la proyección · * avance < 15 %</div>'+cartSvgEac(F)+'</div>'+
     '<div class="card"><h3 class="h3i">Costo sin imputar a rubros'+info(CART_AY.imput)+'</h3><div class="sub">% del costo real que no está vinculado a un rubro</div>'+cartSvgImput(F)+'</div></div>'+
     '<div class="card"><h3 class="h3i">Tabla de la cartera'+info(CART_AY.tabla)+'</h3><div class="tblw"><table class="cart-t"><thead><tr><th>Obra</th><th class="n">Presupuesto (BAC)</th><th class="n">Avance físico</th><th class="n">Programado</th><th class="n">Real (AC)</th><th class="n">CPI</th><th class="n">SPI</th><th class="n">Proyección (EAC)</th><th class="n">Desvío EAC</th><th class="n">Sin imputar</th><th></th></tr></thead><tbody>'+filas+'</tbody></table></div></div>';
 }
