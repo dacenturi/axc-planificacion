@@ -549,20 +549,34 @@ async function arrancar(){
   $('fCorte').value = hoyISO();
   await cargarObras();
 }
+/* v1.3.1 · Nombre de obra tolerante: «San Telmo», «San Telmo » y «san  telmo»
+   son la misma obra. Antes, un espacio de más en presupuesto_cab.obra dejaba la
+   obra sin presupuestos («Todos los activos (0)») y sin datos. */
+function _obN(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+function _obK(s){ return _obN(s).toLowerCase(); }
+function _obIgual(a, b){ return _obK(a) === _obK(b); }
+S.obraVar = {};   // nombre mostrado → nombres tal como están guardados
+function _obQ(q, obra){
+  const vs = Array.from(new Set([_obN(obra)].concat(S.obraVar[_obN(obra)] || [])));
+  if(vs.length === 1) return q.ilike('obra', vs[0]);
+  return q.or(vs.map(function(v){ return 'obra.ilike."' + v.replace(/"/g, '\\"') + '"'; }).join(','));
+}
 async function cargarObras(){
   try{
     const { data, error } = await sb.from('presupuesto_cab').select('*').order('codigo');
     if(error) throw error;
     S.cabs = data||[];
   }catch(e){ console.warn(e); S.cabs=[]; toast('No se pudieron leer los presupuestos','error'); }
-  const obras={}; S.cabs.forEach(function(c){ if(c.obra) obras[c.obra]=(obras[c.obra]||0)+1; });
+  const obras={}, nom={}; S.obraVar={};
+  S.cabs.forEach(function(c){ if(!_obN(c.obra)) return; const k=_obK(c.obra); if(!nom[k]) nom[k]=_obN(c.obra); const d=nom[k];
+    obras[d]=(obras[d]||0)+1; (S.obraVar[d]=S.obraVar[d]||[]); if(S.obraVar[d].indexOf(c.obra)<0) S.obraVar[d].push(c.obra); });
   const ks=Object.keys(obras).sort(function(a,b){ return a.localeCompare(b,'es'); });
-  $('fObra').innerHTML='<option value="">Elegí la obra…</option>'+ks.map(function(o){ return '<option>'+esc(o)+'</option>'; }).join('');
-  const ult=localStorage.getItem('axc_av_obra'); if(ult && obras[ult]){ $('fObra').value=ult; refrescarPP(); }
+  $('fObra').innerHTML='<option value="">Elegí la obra…</option>'+ks.map(function(o){ return '<option value="'+esc(o)+'">'+esc(o)+'</option>'; }).join('');
+  const ult=_obN(localStorage.getItem('axc_av_obra')); if(ult && obras[ult]){ $('fObra').value=ult; refrescarPP(); }
 }
 function refrescarPP(){
   const o=$('fObra').value;
-  const L=S.cabs.filter(function(c){ return c.obra===o; });
+  const L=S.cabs.filter(function(c){ return _obIgual(c.obra, o); });
   const nAct=L.filter(function(c){ return c.activo!==false; }).length;
   $('fPP').innerHTML='<option value="">Todos los activos ('+nAct+')</option>'+(nAct<L.length?'<option value="*">Todos, incluidos inactivos ('+L.length+')</option>':'')+L.map(function(c){
     return '<option value="'+esc(c.codigo)+'">'+esc(c.codigo+(c.descripcion?' · '+c.descripcion:''))+(c.activo===false?' (inactivo)':'')+'</option>'; }).join('');
@@ -593,13 +607,13 @@ async function avCargarDatos(obra, pps, corte){
     todo(function(){ return sb.from('presupuesto_modificaciones').select('numero,presupuesto,rubro_codigo,impacto,aprobado_en').in('presupuesto', pps).eq('estado','aprobada'); }).then(function(d){ R.mods=d; }).catch(function(){ R.mods=[]; }),
     todo(function(){ return sb.from('rubros').select('codigo,capitulo'); }).then(function(d){ R.arbol=d; }).catch(function(){ R.arbol=[]; }),
     // v1.1 · Compras imputadas por línea de OC. Sin la vista (falta el SQL): el criterio anterior (por producto).
-    todo(function(){ return sb.from('vw_compras_imputadas').select('*').ilike('obra', obra); }).then(function(d){ R.comp=d; })
+    todo(function(){ return _obQ(sb.from('vw_compras_imputadas').select('*'), obra); }).then(function(d){ R.comp=d; })
       .catch(function(e){ console.warn('vw_compras_imputadas', e); R.comp=null; R.sinComp=true;
         return todo(function(){ return sb.from('vw_desvio_precios').select('*').in('presupuesto', pps); }).then(function(d){ R.desv=d; }).catch(function(e2){ console.warn('vw_desvio', e2); R.desv=[]; R.sinDesv=true; }); }),
     sb.from('propuesta_cab').select('*').in('presupuesto', pps).eq('aceptada', true).then(function(r){ R.props=r.data||[]; }),
-    todo(function(){ return sb.from('certificados').select('id,numero,fecha,estado,contratista,presupuesto,total').ilike('obra', obra).eq('estado','Aprobado'); }).then(function(d){ R.certs=d; }),
-    todo(function(){ return sb.from('ordenes_compra').select('*').ilike('obra', obra); }).then(function(d){ R.ocs=d; }).catch(function(e){ console.warn('oc',e); R.ocs=[]; R.errOC=(e&&e.message)||'error'; }),
-    todo(function(){ return sb.from('caja_chica_movimientos').select('id,fecha,total,estado').ilike('obra', obra).eq('estado','aprobado'); }).then(function(d){ R.caja=d; }).catch(function(e){ console.warn('caja',e); R.caja=[]; }),
+    todo(function(){ return _obQ(sb.from('certificados').select('id,numero,fecha,estado,contratista,presupuesto,total'), obra).eq('estado','Aprobado'); }).then(function(d){ R.certs=d; }),
+    todo(function(){ return _obQ(sb.from('ordenes_compra').select('*'), obra); }).then(function(d){ R.ocs=d; }).catch(function(e){ console.warn('oc',e); R.ocs=[]; R.errOC=(e&&e.message)||'error'; }),
+    todo(function(){ return _obQ(sb.from('caja_chica_movimientos').select('id,fecha,total,estado'), obra).eq('estado','aprobado'); }).then(function(d){ R.caja=d; }).catch(function(e){ console.warn('caja',e); R.caja=[]; }),
     // v1.2 · Caja chica imputada a rubros del presupuesto (Caja Chica v7.56). Sin la tabla: como antes.
     todo(function(){ return sb.from('caja_chica_mov_rubros').select('movimiento_id,presupuesto,rubro_codigo,monto').in('presupuesto', pps); }).then(function(d){ R.ccRub=d; }).catch(function(){ R.ccRub=[]; }),
     cargarPlan(obra),
@@ -639,7 +653,7 @@ async function cargar(){
   const ppSel=$('fPP').value, corte=$('fCorte').value||hoyISO();
   // Sin elegir presupuesto: solo los activos (los inactivos son versiones
   // reemplazadas o borradores). «*» los incluye a todos.
-  const cabs=S.cabs.filter(function(c){ return c.obra===obra && (ppSel==='*' ? true : (ppSel ? c.codigo===ppSel : c.activo!==false)); });
+  const cabs=S.cabs.filter(function(c){ return _obIgual(c.obra, obra) && (ppSel==='*' ? true : (ppSel ? c.codigo===ppSel : c.activo!==false)); });
   const pps=cabs.map(function(c){ return c.codigo; });
   $('out').innerHTML='<div class="loading"><div class="spin"></div>Armando el informe de avance…</div>';
   const b=$('btnGo'); b.disabled=true;
@@ -2005,7 +2019,7 @@ async function cartCalcular(){
   if(CART.calculando) return;
   CART.calculando = true;
   const corte = $('fCorte').value || hoyISO();
-  const obras = {}; S.cabs.forEach(function(c){ if(c.obra && c.activo !== false) (obras[c.obra] = obras[c.obra] || []).push(c); });
+  const obras = {}, nom = {}; S.cabs.forEach(function(c){ if(!_obN(c.obra) || c.activo === false) return; const k = _obK(c.obra); if(!nom[k]) nom[k] = _obN(c.obra); (obras[nom[k]] = obras[nom[k]] || []).push(c); });
   const lista = Object.keys(obras).sort(function(a,b){ return a.localeCompare(b,'es'); });
   const out = $('outC');
   const guard = { plan:S.plan, planLocal:S.planLocal, planObra:S.planObra };
