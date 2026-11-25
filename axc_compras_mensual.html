@@ -15,6 +15,8 @@
 <!--
   AXC · Reporte de Costos Directos (Órdenes de compra + Caja chica + Mano de obra)
   v1.12 · 25/11/2026 · Desarrollado por Conexdata
+  v1.12.1: los gráficos se reajustan al tamaño final de la tarjeta y, si algo falla, muestran un aviso
+        en lugar de quedar en blanco.
   v1.12: el módulo pasa a llamarse «Reporte de Costos Directos» (antes «Compras por mes»).
         Se mantienen el archivo axc_compras_mensual.html y la clave de permiso cm_ver, para no
         romper enlaces guardados ni quitar el acceso a quien ya lo tenía.
@@ -374,7 +376,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.12</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.12.1</div>
   </div>
 </div>
 
@@ -551,7 +553,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.12</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.12.1</div>
 </main>
 
 <div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
@@ -1258,6 +1260,24 @@ function dsVert(O, datos, k, maxBar, stack){
   });
 }
 
+/* v1.12.1 · Crea el gráfico y, en el cuadro siguiente, lo reajusta al tamaño final de la tarjeta
+   (al marcar una casilla la leyenda cambia de largo y el gráfico podía quedar en blanco).
+   Si algo falla, se muestra un aviso en lugar de un recuadro vacío. */
+function crearGrafico(key, cv, cfgFn){
+  const wrap = cv.parentNode; let av = wrap.querySelector('.ch-err');
+  if(av) av.remove();
+  cv.style.display = 'block';
+  try{
+    const ch = S.charts[key] = new Chart(cv, cfgFn());
+    requestAnimationFrame(() => { try{ if(S.charts[key] === ch){ ch.resize(); ch.update('none'); } }catch(e){} });
+  }catch(e){
+    console.error('gráfico ' + key, e);
+    delete S.charts[key]; cv.style.display = 'none';
+    av = document.createElement('div'); av.className = 'ch-vacio ch-err';
+    av.textContent = 'No se pudo dibujar este gráfico (' + (e && e.message || 'error') + '). Probá con ↻ Actualizar o quitando la casilla de desglose.';
+    wrap.appendChild(av);
+  }
+}
 function destruir(k){ if(S.charts[k]){ S.charts[k].destroy(); delete S.charts[k]; } }
 function leyendaHTML(solo){ return seriesActivas().filter(s => !solo || solo.indexOf(s.k) >= 0).map(s => '<span><i class="dot ' + s.k + '"></i>' + s.label + '</span>').join(''); }
 function tooltipBase(){ return { backgroundColor:'#FFFFFF', titleColor:'#1A2236', bodyColor:'#5A6377', borderColor:'#E2E6EE', borderWidth:1, padding:10, boxPadding:4, usePointStyle:true,
@@ -1390,7 +1410,7 @@ function chartTrend(R){
     tip.style.top = Math.max(8, t.caretY - 40) + 'px';
     tip.style.opacity = 1;
   } };
-  S.charts.trend = new Chart(cv, cfgTrend(R, 1, tt));
+  crearGrafico('trend', cv, () => cfgTrend(R, 1, tt));
   cv.parentNode.onmouseleave = function(){ tip.style.opacity = 0; };
 }
 function chartBarrasH(key, canvasId, R){
@@ -1412,7 +1432,7 @@ function chartBarrasH(key, canvasId, R){
     footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (rk.total > 0 ? ' · ' + Math.round(a.tot / rk.total * 100) + ' % del período' : ''); },
   };
   tt.filter = it => (Number(it.parsed.x) || 0) !== 0;   // v1.11: con desglose, solo los tramos con monto
-  S.charts[key] = new Chart(cv, cfgBarrasH(rk, 1, tt, key === 'contr' ? 40 : 26, key));
+  crearGrafico(key, cv, () => cfgBarrasH(rk, 1, tt, key === 'contr' ? 40 : 26, key));
 }
 function chartCantidad(R){
   destruir('cant');
@@ -1424,7 +1444,7 @@ function chartCantidad(R){
     footer: c => { const m = filas[c[0].dataIndex]; const n = m.ocN + m.ccN + m.moN; return 'Total ' + n.toLocaleString('es-PY') + ' registros · promedio ' + gs(n ? m.tot / n : 0); },
   };
   tt.filter = it => (Number(it.parsed.y) || 0) !== 0;
-  S.charts.cant = new Chart($('chCant'), cfgCant(R, 1, tt));
+  crearGrafico('cant', $('chCant'), () => cfgCant(R, 1, tt));
 }
 
 /* Gráfico dibujado especialmente para el PDF: al tamaño exacto del recuadro, en alta resolución */
