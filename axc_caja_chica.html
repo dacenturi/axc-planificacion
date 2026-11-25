@@ -740,6 +740,9 @@ tr:last-child td{border-bottom:none}
 .ip-recall{display:none;align-items:center;gap:8px;margin-top:9px;font-size:11.5px;border:1px dashed var(--border3);border-radius:8px;padding:6px 10px;color:var(--text2)}
 .ip-recall.show{display:flex}
 .ip-pane{margin-top:11px}
+.ip-ta-rub{margin-top:12px}
+.ip-ta-rub > select{width:100%;background:var(--bg3);border:1px solid var(--ip-ta-bd);border-radius:8px;color:var(--text);padding:8px 10px;font-size:13px;font-family:inherit}
+.ip-ta-rub > select.ok{border-color:var(--ip-ok-bd,var(--green))}
 .ip-lbl{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text2);font-weight:600;margin-bottom:5px}
 .ip-note{font-size:12px;border-radius:9px;padding:8px 10px;line-height:1.45;border:1px solid}
 .ip-note.ok{background:var(--ip-ok-bg);border-color:var(--ip-ok-bd);color:var(--ip-ok-tx)}
@@ -1419,7 +1422,7 @@ let CAT_TIMER=null, CAT_ACTIVE_TR=null, EDIT_ID=null, EDIT_ORIG_TOTAL=0, EDIT_TI
 let IS_RESIDENTE=false, MI_RESIDENTE=null, ROL=null, PERMISOS={};
 let USUARIOS_MAP={};   // email -> nombre visible (para mostrar quién acreditó)
 // Versión de la app, en UN solo lugar. Para subir de versión, cambiá solo esta línea.
-const APP_VERSION='Caja Chica v7.58';
+const APP_VERSION='Caja Chica v7.59';
 // ── INTERRUPTOR DE IA ──────────────────────────────────────────────
 // true  = con escaneo IA (toma automática de datos, solo admin en prueba)
 // false = VERSIÓN SIN IA (carga 100% manual). Cambiá esta línea para volver.
@@ -7241,7 +7244,8 @@ function _ipObraOk(a, b){
 const IMP_COL = ['#58a6ff','#a78bfa','#3fb950','#f0a500','#f778ba','#0EA5E9','#e07a00','#8b949e'];
 const IMP = { ok:false, listo:false, pps:[], tas:[], rub:{}, mapa:{},
   m:'sin', pp:'', rbs:[], modo:'linea', montos:{}, ta:'', manual:false,
-  edit:null, lock:false, pend:null };
+  edit:null, lock:false, pend:null,
+  taLin:{}, taLinP:{}, taRub:'', taPorLinea:false };   // v7.59 · rubro del trabajo por administración
 let IMP_LID = 0;
 
 function puedeCambiarImputacion(){ return ROL==='admin' || !!(PERMISOS && PERMISOS.cc_cambiar_imputacion===true); }
@@ -7330,6 +7334,7 @@ function impSkeleton(){
         '<span class="ip-lbl">Trabajo por Administración abierto <span class="req">*</span></span>'+
         '<div class="ip-cb" id="ip-cb-ta"><div class="ip-cb-box"><span class="ip-cb-ic">🔍</span><input type="text" placeholder="Buscá por N° o descripción" autocomplete="off" spellcheck="false"><button type="button" class="ip-cb-x" title="Quitar">✕</button></div><div class="ip-cb-list"></div></div>'+
         '<div id="ip-ta-info"></div>'+
+        '<div id="ip-ta-rub"></div>'+
       '</div>'+
       '<div class="ip-pane" id="ip-pane-sin"><div class="ip-note sn">El comprobante se guarda <b>igual que hoy</b> (obra, sector y rubro de caja chica). Queda en <b>gastos no presupuestados</b> de Presupuestos para regularizarlo cuando corresponda.</div></div>'+
     '</div></div>';
@@ -7341,6 +7346,8 @@ function impSkeleton(){
   ip.addEventListener('click', _ipClickRep);
   ip.addEventListener('change', e => { const s = e.target.closest('select[data-line]'); if(!s) return; const tr = _ipTrPorId(s.dataset.line); if(tr){ tr.dataset.imprb = s.value || ''; } impRender(); });
   ip.addEventListener('input', _ipInputMonto);
+  ip.addEventListener('change', _ipTAChange);
+  ip.addEventListener('click', _ipTAClick);
   IMP.cbPP = _ipCombo(gs('ip-cb-pp'), {
     items: () => _ipPPdeObra().map(p => {
       const R = IMP.rub[p.codigo];
@@ -7354,7 +7361,7 @@ function impSkeleton(){
   IMP.cbTA = _ipCombo(gs('ip-cb-ta'), {
     items: () => _ipTAdeObra().map(t => ({ v:t.codigo, a:t.nombre||'', b:_ipE(t.obra||''), badge:'<span class="ip-chip ta">Abierto</span>' })),
     empty: () => _ipObra() ? 'La obra <b>'+_ipE(_ipObra())+'</b> no tiene trabajos por administración abiertos.' : 'No hay trabajos por administración abiertos.',
-    onPick: v => { IMP.ta = v; IMP.manual = true; _ipHideRecall(); const t = _ipTA(v); if(t && t.obra && !_ipObraOk(t.obra, _ipObra())) _ipFijarObra(t.obra); impCargarTA(v); impRender(); }
+    onPick: v => { if(v !== IMP.ta) _ipTAReset(); IMP.ta = v; IMP.manual = true; _ipHideRecall(); const t = _ipTA(v); if(t && t.obra && !_ipObraOk(t.obra, _ipObra())) _ipFijarObra(t.obra); impCargarTA(v); impRender(); }
   });
 }
 function _ipPPdeObra(){ const o = _ipObra(); return IMP.pps.filter(p => !o || _ipObraOk(p.obra, o)); }
@@ -7599,6 +7606,86 @@ function impRender(){
   gs('ip-ta-info').innerHTML = t
     ? '<div class="ip-pane ip-note ta">✔ Suma <b>'+_ipG(T)+'</b> al costo de <b>'+_ipE(t.codigo)+' · '+_ipE(t.nombre||'')+'</b>. No descuenta de ningún presupuesto; se liquida al cliente con el coeficiente del TA.'+(t._cc != null ? '<br><span style="opacity:.85">Ya imputado desde caja chica a este TA: <b>'+_ipG(t._cc)+'</b>.</span>' : '')+'</div>'
     : ((o && !nTA) ? '<div class="ip-pane ip-note wr">La obra <b>'+_ipE(o)+'</b> no tiene trabajos por administración abiertos.</div>' : '');
+  _ipTARender();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   v7.59 · RUBRO DEL TRABAJO POR ADMINISTRACIÓN · Conexdata · 25/11/2026
+   Igual que en la Orden de Compra: el gasto imputado a un TA se puede asignar
+   a un rubro que el trabajo ya tiene cargado en sus certificados (p. ej.
+   ladrillo → 01.065, cemento → 07.018). Un rubro para todo el comprobante o
+   uno por línea del detalle. Se guarda en caja_chica_movimiento_items.rubro_codigo
+   (columna existente). En Certificación el gasto se suma dentro de esa línea del
+   TA («Material ₲/u»); sin rubro queda como gasto general del trabajo.
+   ────────────────────────────────────────────────────────────────── */
+function _ipTAReset(){ IMP.taRub = ''; IMP.taPorLinea = false; document.querySelectorAll('#lines-body tr').forEach(tr => { tr.dataset.tarub = ''; }); }
+function _ipTALineas(c){
+  if(!c) return Promise.resolve([]);
+  if(IMP.taLin[c]) return Promise.resolve(IMP.taLin[c]);
+  if(IMP.taLinP[c]) return IMP.taLinP[c];
+  IMP.taLinP[c] = (async () => {
+    let r = await _SB.from('certificado_items').select('rubro_codigo,rubro_desc,descripcion,unidad,sector,cantidad,certificados!inner(estado)').eq('trabajo_admin', c);
+    if(r.error) r = await _SB.from('certificado_items').select('rubro_codigo,rubro_desc,descripcion,unidad,sector,cantidad').eq('trabajo_admin', c);
+    const m = {}, secTxt = {};
+    const ok = x => x && x.rubro_codigo && !(x.certificados && x.certificados.estado === 'Anulado');
+    (r.data||[]).filter(ok).forEach(x => { const s0 = String(x.sector||'').trim(), ns = _ipN(s0).trim(); if(!secTxt[ns] || (/^[a-záéíóúñ]/.test(secTxt[ns]) && /^[A-ZÁÉÍÓÚÑ0-9]/.test(s0))) secTxt[ns] = s0; });
+    (r.data||[]).filter(ok).forEach(x => {
+      const cod = String(x.rubro_codigo).trim(), sec = secTxt[_ipN(x.sector||'').trim()] || '';
+      const o = m[cod] = m[cod] || { cod, nom:'', un:x.unidad||'', secs:[], cant:0 };
+      o.cant += Number(x.cantidad)||0; if(!o.nom) o.nom = x.rubro_desc || x.descripcion || '';
+      if(sec && o.secs.indexOf(sec) < 0) o.secs.push(sec);
+    });
+    const L = Object.values(m).sort((a,b) => _ipCod(a.cod, b.cod));
+    IMP.taLin[c] = L; delete IMP.taLinP[c]; return L;
+  })().catch(e => { console.warn('[imputación] rubros del TA', e); IMP.taLin[c] = []; delete IMP.taLinP[c]; return []; });
+  return IMP.taLinP[c];
+}
+function _ipTARubro(c, cod){ return (IMP.taLin[c]||[]).find(l => l.cod === cod) || null; }
+function _ipTARubTxt(l){ return l.cod + ' · ' + (l.nom || 'Rubro') + (l.secs.length ? ' · ' + l.secs.join(', ') : '') + (l.cant ? ' (' + String(Math.round(l.cant*100)/100).replace('.',',') + ' ' + (l.un||'') + ')' : ''); }
+function _ipTAOpts(L, v, vacio){
+  return '<option value=""'+(v?'':' selected')+'>'+_ipE(vacio)+'</option>' + L.map(l => '<option value="'+_ipE(l.cod)+'"'+(l.cod===v?' selected':'')+'>'+_ipE(_ipTARubTxt(l))+'</option>').join('') +
+    ((v && !L.find(l => l.cod === v)) ? '<option value="'+_ipE(v)+'" selected>'+_ipE(v+' (ya no está en el trabajo)')+'</option>' : '');
+}
+function _ipTARender(){
+  const box = gs('ip-ta-rub'); if(!box) return;
+  if(IMP.m !== 'ta' || !IMP.ta){ box.innerHTML = ''; return; }
+  const c = IMP.ta, L = IMP.taLin[c];
+  if(!L){ box.innerHTML = '<div class="ip-cb-empty" style="margin-top:10px">Cargando los rubros de '+_ipE(c)+'…</div>'; _ipTALineas(c).then(() => { if(IMP.ta === c) impRender(); }); return; }
+  if(!L.length){ box.innerHTML = '<div class="ip-note sn" style="margin-top:10px">'+_ipE(c)+' todavía no tiene rubros cargados en certificados: el gasto queda como <b>gasto general del trabajo</b>.</div>'; return; }
+  const lineas = _ipLineas().filter(l => l.sub > 0);
+  if(L.length === 1 && !IMP.taRub && !IMP.taPorLinea && !IMP._taGen) IMP.taRub = L[0].cod;   // un solo rubro: se asigna solo
+  let h = '<div class="ip-ta-rub"><div class="ip-rep-h" style="padding:0 0 6px;border:none;background:none"><span class="ip-lbl" style="margin:0">Rubro del trabajo</span><span style="flex:1"></span>'+
+    (lineas.length > 1 ? '<span class="ip-seg"><button type="button" data-tamodo="uno" class="'+(IMP.taPorLinea?'':'on')+'">Todo el comprobante</button><button type="button" data-tamodo="linea" class="'+(IMP.taPorLinea?'on':'')+'">Por línea del detalle</button></span>' : '')+'</div>';
+  if(!IMP.taPorLinea || lineas.length <= 1){
+    h += '<select id="ip-ta-rs" class="'+(IMP.taRub?'ok':'')+'">'+_ipTAOpts(L, IMP.taRub, 'Gasto general del trabajo (sin rubro)')+'</select>';
+    const l = _ipTARubro(c, IMP.taRub);
+    h += l ? '<div class="ip-note ok" style="margin-top:8px">✔ En la liquidación del '+_ipE(c)+', este gasto se suma dentro del rubro <b>'+_ipE(l.cod)+' · '+_ipE(l.nom)+'</b> (columna «Material ₲/u»).</div>'
+           : '<div class="ip-note sn" style="margin-top:8px">Si el gasto es material de un rubro del trabajo (p. ej. ladrillo para 01.065), elegilo: así la liquidación muestra el costo unitario completo de ese rubro.</div>';
+  } else {
+    h += '<div class="ip-rep" style="margin-top:0"><div class="ip-rep-b"><table><thead><tr><th>Línea del detalle</th><th style="width:96px;text-align:right">Subtotal</th><th style="width:48%">Rubro del trabajo</th></tr></thead><tbody>' +
+      lineas.map(x => '<tr><td>'+_ipE(x.concepto || '(sin concepto)')+'<div style="font-size:10.5px;color:var(--text2)">'+_ipE(x.cant)+' '+_ipE(x.un)+'</div></td><td class="num">'+_ipG(x.sub)+'</td><td><select data-taline="'+x.id+'">'+_ipTAOpts(L, x.tr.dataset.tarub || '', 'Gasto general (sin rubro)')+'</select></td></tr>').join('') +
+      '</tbody></table>';
+    const conR = lineas.filter(x => x.tr.dataset.tarub), monto = conR.reduce((s,x) => s + x.sub, 0);
+    h += '<div class="ip-tools"><span style="font-size:11px;color:var(--text2)">Las que faltan a:</span>'+L.slice(0,6).map(l => '<button type="button" class="ip-mini" data-tatodas="'+_ipE(l.cod)+'" title="'+_ipE(l.nom)+'">'+_ipE(l.cod)+'</button>').join('')+'</div>'+
+      '<div class="ip-note '+(conR.length === lineas.length ? 'ok' : 'sn')+'" style="margin-top:8px">'+conR.length+' de '+lineas.length+' líneas con rubro ('+_ipG(monto)+')'+(conR.length < lineas.length ? '; el resto queda como gasto general del trabajo.' : '.')+'</div></div></div>';
+  }
+  box.innerHTML = h + '</div>';
+}
+function _ipTAChange(e){
+  const s = e.target;
+  if(s.id === 'ip-ta-rs'){ IMP.taRub = s.value; IMP._taGen = !s.value; impRender(); return; }
+  if(s.dataset && s.dataset.taline){ const tr = _ipTrPorId(s.dataset.taline); if(tr) tr.dataset.tarub = s.value || ''; impRender(); }
+}
+function _ipTAClick(e){
+  const m = e.target.closest('[data-tamodo]');
+  if(m){
+    const porLinea = m.dataset.tamodo === 'linea';
+    if(porLinea && !IMP.taPorLinea) _ipLineas().forEach(l => { if(!l.tr.dataset.tarub) l.tr.dataset.tarub = IMP.taRub || ''; });   // arranca con el rubro elegido
+    if(!porLinea && IMP.taPorLinea){ const u = [...new Set(_ipLineas().filter(l => l.sub > 0).map(l => l.tr.dataset.tarub || ''))]; IMP.taRub = u.length === 1 ? u[0] : ''; }
+    IMP.taPorLinea = porLinea; impRender(); return;
+  }
+  const t = e.target.closest('[data-tatodas]');
+  if(t){ _ipLineas().forEach(l => { if(l.sub > 0 && !l.tr.dataset.tarub) l.tr.dataset.tarub = t.dataset.tatodas; }); impRender(); }
 }
 
 function _ipRepHTML(rep, ex, T){
@@ -7641,6 +7728,7 @@ function _ipLockHTML(T){
   return '<div class="ip-lock">'+
     '<div class="r"><span>Imputación</span><b>'+_ipE(txt)+'</b></div>'+
     ((e.rubros||[]).length > 1 ? (e.rubros||[]).map(r => '<div class="r"><span>Rubro '+_ipE(r.rubro_codigo)+'</span><b>'+_ipG(r.monto)+'</b></div>').join('') : '')+
+    (IMP.m === 'ta' ? (function(){ const u = [...new Set(_ipLineas().map(l => l.tr.dataset.tarub || '').filter(Boolean))]; return '<div class="r"><span>Rubro del trabajo</span><b>'+(u.length ? _ipE(u.join(', ')) : 'gasto general')+'</b></div>'; })() : '')+
     '</div>'+
     '<div class="ip-note sn" style="margin-top:8px">🔒 La imputación de un comprobante ya guardado solo la cambia el <b>Administrador</b>. Podés corregir el resto de los datos normalmente.</div>'+
     (cambio ? '<div class="ip-note wr" style="margin-top:8px">⚠️ Este comprobante está repartido en varios rubros y el total cambió ('+_ipG(e.total)+' → '+_ipG(T)+'). Para guardarlo, el total tiene que quedar igual o pedile al Administrador que ajuste la imputación.</div>' : '');
@@ -7734,7 +7822,8 @@ function impPrepararGuardado(total){
 /* Rubro de cada línea para caja_chica_movimiento_items.rubro_codigo */
 function impRubroLinea(tr){
   if(!IMP.ok || !IMP.listo) return undefined;
-  if(IMP.lock){ const e = IMP.edit || {}; if(e.destino !== 'presupuesto') return null; if((e.rubros||[]).length === 1) return e.rubros[0].rubro_codigo; return tr.dataset.imprb || null; }
+  if(IMP.lock){ const e = IMP.edit || {}; if(e.destino === 'ta') return tr.dataset.tarub || null; if(e.destino !== 'presupuesto') return null; if((e.rubros||[]).length === 1) return e.rubros[0].rubro_codigo; return tr.dataset.imprb || null; }
+  if(IMP.m === 'ta') return IMP.taPorLinea ? (tr.dataset.tarub || null) : (IMP.taRub || null);   // v7.59
   if(IMP.m !== 'presupuesto') return null;
   if(IMP.rbs.length === 1) return IMP.rbs[0];
   return IMP.modo === 'linea' ? (tr.dataset.imprb || null) : null;
@@ -7769,7 +7858,12 @@ async function impCargarEdicion(m){
   try{
     const it = await _SB.from('caja_chica_movimiento_items').select('orden,rubro_codigo').eq('movimiento_id', m.id).order('orden');
     const trs = [...document.querySelectorAll('#lines-body tr')];
-    (it.data||[]).forEach((x,i) => { if(trs[i]) trs[i].dataset.imprb = x.rubro_codigo || ''; });
+    _ipTAReset();
+    (it.data||[]).forEach((x,i) => { if(!trs[i]) return; if(m.destino === 'ta') trs[i].dataset.tarub = x.rubro_codigo || ''; else trs[i].dataset.imprb = x.rubro_codigo || ''; });
+    if(m.destino === 'ta'){   // v7.59 · un solo rubro para todo → «Todo el comprobante»; distintos → por línea
+      const u = [...new Set((it.data||[]).map(x => x.rubro_codigo || ''))];
+      if(u.length <= 1){ IMP.taRub = u[0] || ''; IMP._taGen = !IMP.taRub; } else IMP.taPorLinea = true;
+    }
   }catch(e){}
   IMP.edit = { id:m.id, destino:m.destino || 'sin', presupuesto:m.presupuesto || '', trabajo_admin:m.trabajo_admin || '', total:Number(m.total||0), rubros };
   IMP.lock = !puedeCambiarImputacion();
@@ -7785,7 +7879,7 @@ async function impCargarEdicion(m){
 }
 function impReset(){
   if(!IMP.listo) return;
-  IMP.m = 'sin'; IMP.pp = ''; IMP.ta = ''; _ipResetRep(); IMP.manual = false; IMP.edit = null; IMP.lock = false; IMP.pend = null;
+  IMP.m = 'sin'; IMP.pp = ''; IMP.ta = ''; _ipResetRep(); _ipTAReset(); IMP._taGen = false; IMP.manual = false; IMP.edit = null; IMP.lock = false; IMP.pend = null;
   if(gs('ip-mot')) gs('ip-mot').value = '';
   if(gs('ip-rb-q')) gs('ip-rb-q').value = '';
   const g = gs('ip'); if(g) g.classList.remove('campo-falta-box');
@@ -7818,6 +7912,12 @@ async function impMapaSeguro(ids){
       (a.data||[]).forEach(m => { out[m.id] = { destino:m.destino||'sin', presupuesto:m.presupuesto, trabajo_admin:m.trabajo_admin, reparto_modo:m.reparto_modo, motivo:m.imputacion_motivo, rubros:[] }; });
       const b = await _SB.from('caja_chica_mov_rubros').select('movimiento_id,rubro_codigo,monto').in('movimiento_id', part);
       (b.data||[]).forEach(r => { if(out[r.movimiento_id]) out[r.movimiento_id].rubros.push(r); });
+      // v7.59 · rubros del trabajo por administración (en las líneas del detalle)
+      const idsTA = part.filter(id => out[id] && out[id].destino === 'ta');
+      if(idsTA.length){
+        const c = await _SB.from('caja_chica_movimiento_items').select('movimiento_id,rubro_codigo').in('movimiento_id', idsTA);
+        (c.data||[]).forEach(r => { const o = out[r.movimiento_id]; if(o && r.rubro_codigo){ o.taRubs = o.taRubs || []; if(o.taRubs.indexOf(r.rubro_codigo) < 0) o.taRubs.push(r.rubro_codigo); } });
+      }
     }
     Object.values(out).forEach(x => x.rubros.sort((p,q) => _ipCod(p.rubro_codigo, q.rubro_codigo)));
   }catch(e){ console.warn('[imputación] mapa', e); }
@@ -7835,7 +7935,8 @@ function impChipCmp(m){
     if(x.motivo) chip += '<span class="ip-chip wr" title="'+_ipE(x.motivo)+'">⚠ excede saldo</span>';
   } else if(x.destino === 'ta'){
     const t = _ipTA(x.trabajo_admin);
-    chip = '<span class="ip-chip ta" title="'+_ipE(t && t.nombre || '')+'">🛠️ '+_ipE(x.trabajo_admin||'')+'</span>'+(t && t.nombre ? '<span>'+_ipE(t.nombre)+'</span>' : '');
+    const tr = (x.taRubs||[]).sort(_ipCod);
+    chip = '<span class="ip-chip ta" title="'+_ipE((t && t.nombre || '')+(tr.length ? ' · rubro '+tr.join(', ') : ''))+'">🛠️ '+_ipE(x.trabajo_admin||'')+(tr.length === 1 ? ' · '+_ipE(tr[0]) : (tr.length > 1 ? ' · '+tr.length+' rubros' : ''))+'</span>'+(t && t.nombre ? '<span>'+_ipE(t.nombre)+'</span>' : '');
   } else chip = '<span class="ip-chip sn">🧾 Sin presupuesto</span>';
   return '<div class="ip-cmp">'+chip+'</div>';
 }
@@ -7879,7 +7980,9 @@ async function impAbrirCambio(id){
         '<label><input type="radio" name="ipc-m" value="sin"'+(IPC.m==='sin'?' checked':'')+'> 🧾 Sin presupuesto</label></div>'+
       '<div id="ipc-pp"><span class="ip-lbl">Presupuesto</span><select id="ipc-pp-s">'+pps.map(p => '<option value="'+_ipE(p.codigo)+'"'+(p.codigo===IPC.pp?' selected':'')+'>'+_ipE(p.codigo+' · '+(p.nombre||''))+'</option>').join('')+'</select>'+
         '<span class="ip-lbl" style="margin-top:12px">Monto por rubro <span style="text-transform:none;font-weight:400;color:var(--text3)">(dejá en blanco los que no correspondan)</span></span><div class="ip-rep" style="margin-top:0"><div class="ip-rep-b" id="ipc-rep"><div class="ip-cb-empty">Cargando rubros…</div></div></div></div>'+
-      '<div id="ipc-ta"><span class="ip-lbl">Trabajo por Administración</span><select id="ipc-ta-s">'+tas.map(t => '<option value="'+_ipE(t.codigo)+'"'+(t.codigo===IPC.ta?' selected':'')+'>'+_ipE(t.codigo+' · '+(t.nombre||''))+'</option>').join('')+'</select></div>'+
+      '<div id="ipc-ta"><span class="ip-lbl">Trabajo por Administración</span><select id="ipc-ta-s">'+tas.map(t => '<option value="'+_ipE(t.codigo)+'"'+(t.codigo===IPC.ta?' selected':'')+'>'+_ipE(t.codigo+' · '+(t.nombre||''))+'</option>').join('')+'</select>'+
+        '<span class="ip-lbl" style="margin-top:12px">Rubro del trabajo</span><select id="ipc-tr-s" disabled><option>Cargando…</option></select>'+
+        '<div class="ip-note sn" id="ipc-tr-n" style="margin-top:6px">Se aplica a todas las líneas del comprobante.</div></div>'+
       '<span class="ip-lbl" style="margin-top:12px">Motivo del cambio <span class="req">*</span></span><textarea id="ipc-mot" placeholder="Queda registrado en el historial del comprobante"></textarea>'+
       (hist.length ? '<div class="ipc-hist"><span class="ip-lbl">Historial de imputación</span>'+hist.map(x => '<div>🕘 '+_ipE(fechaHora(x.creado_en || x.hecho_en || x.fecha || ''))+' · '+_ipE(nombreUsuario(x.hecho_por||''))+' · '+_ipE(x.detalle||'')+'</div>').join('')+'</div>' : '')+
     '</div>'+
@@ -7888,6 +7991,10 @@ async function impAbrirCambio(id){
   bg.classList.add('open');
   bg.querySelectorAll('input[name="ipc-m"]').forEach(x => x.addEventListener('change', _ipcSync));
   gs('ipc-pp-s').addEventListener('change', () => { IPC.montos = {}; _ipcPintar(); });
+  gs('ipc-ta-s').addEventListener('change', _ipcTARub);
+  // v7.59 · rubro del TA actual (de las líneas del comprobante)
+  IPC.taRubs = [];
+  try{ const li = await _SB.from('caja_chica_movimiento_items').select('rubro_codigo').eq('movimiento_id', id); if(m.destino === 'ta') IPC.taRubs = [...new Set((li.data||[]).map(x => x.rubro_codigo || ''))]; }catch(e){}
   bg.querySelector('#ipc-rep').addEventListener('input', ev => {
     const i = ev.target.closest('input[data-em]'); if(!i) return;
     const d = onlyDigits(i.value); IPC.montos[i.dataset.em] = d ? parseInt(d,10) : 0;
@@ -7907,6 +8014,20 @@ function _ipcSync(){
   gs('ipc-ta').style.display = m === 'ta' ? '' : 'none';
   gs('ipc-err').textContent = '';
   if(m === 'presupuesto') _ipcPintar();
+  if(m === 'ta') _ipcTARub();
+}
+async function _ipcTARub(){
+  const ta = gs('ipc-ta-s') && gs('ipc-ta-s').value, s = gs('ipc-tr-s'), n = gs('ipc-tr-n'); if(!s) return;
+  s.disabled = true; s.innerHTML = '<option>Cargando los rubros de '+_ipE(ta||'')+'…</option>';
+  const L = await _ipTALineas(ta);
+  if(!gs('ipc-ta-s') || gs('ipc-ta-s').value !== ta) return;
+  const mismo = IPC.mov && IPC.mov.destino === 'ta' && IPC.mov.trabajo_admin === ta;
+  const act = mismo ? (IPC.taRubs.length === 1 ? IPC.taRubs[0] : (IPC.taRubs.length > 1 ? '__mix' : '')) : '';
+  if(!L.length){ s.innerHTML = '<option value="">Gasto general del trabajo (todavía no tiene rubros en certificados)</option>'; n.textContent = 'El gasto queda como general del trabajo.'; return; }
+  s.innerHTML = (act === '__mix' ? '<option value="__mix" selected>Mantener los rubros por línea ('+_ipE(IPC.taRubs.filter(Boolean).join(', '))+')</option>' : '') + _ipTAOpts(L, act === '__mix' ? '' : act, 'Gasto general del trabajo (sin rubro)');
+  if(act === '__mix') s.value = '__mix';
+  s.disabled = false;
+  n.textContent = 'Se aplica a todas las líneas del comprobante. En Certificación el gasto se suma dentro de ese rubro del trabajo.';
 }
 async function _ipcPintar(){
   const pp = gs('ipc-pp-s').value, box = gs('ipc-rep'); if(!pp || !box) return;
@@ -7936,10 +8057,15 @@ async function impGuardarCambio(){
     if(_ipcSuma() !== Number(m.total||0)){ err.textContent = 'La suma por rubro tiene que ser igual al total del comprobante ('+_ipG(m.total)+').'; return; }
     nd.reparto_modo = rows.length > 1 ? 'monto' : null;
   } else if(mo === 'ta'){ nd.trabajo_admin = gs('ipc-ta-s').value; if(!nd.trabajo_admin){ err.textContent = 'Elegí el trabajo por administración.'; return; } }
+  // v7.59 · rubro del trabajo
+  const trs = gs('ipc-tr-s'), taRub = (mo === 'ta' && trs && !trs.disabled) ? trs.value : (mo === 'ta' ? '' : null);
+  const rubTxt = v => v === '__mix' ? 'rubros por línea' : (v ? 'rubro '+v : 'gasto general');
+  const rubAntes = m.destino === 'ta' ? rubTxt(IPC.taRubs.length > 1 ? '__mix' : (IPC.taRubs[0] || '')) : '';
+  const rubDespues = mo === 'ta' ? rubTxt(taRub) : '';
   if(mot.length < 5){ err.textContent = 'Indicá el motivo del cambio (queda en el historial).'; gs('ipc-mot').classList.add('campo-falta'); return; }
   const antes = impTextoDetalle({ destino:m.destino, presupuesto:m.presupuesto, trabajo_admin:m.trabajo_admin, rubros:IPC.rubros });
   const despues = impTextoDetalle({ destino:nd.destino, presupuesto:nd.presupuesto, trabajo_admin:nd.trabajo_admin, rubros:rows });
-  if(antes === despues){ impCerrarCambio(); toast('Sin cambios en la imputación'); return; }
+  if(antes === despues && rubAntes === rubDespues){ impCerrarCambio(); toast('Sin cambios en la imputación'); return; }
   const btn = gs('ipc-ok'); btn.disabled = true; btn.textContent = 'Guardando…';
   const up = await _SB.from('caja_chica_movimientos').update(nd).eq('id', m.id).select('id');
   if(up.error || !(up.data||[]).length){ btn.disabled = false; btn.textContent = 'Guardar cambio'; if(up.error) err.textContent = 'No se pudo guardar: '+(up.error.message||''); else _avisoRLS('el cambio de imputación'); return; }
@@ -7950,8 +8076,8 @@ async function impGuardarCambio(){
     if(ins.error){ btn.disabled = false; btn.textContent = 'Guardar cambio'; err.textContent = 'La cabecera se actualizó pero el reparto no: '+(ins.error.message||''); return; }
   }
   // El reparto por línea deja de valer: el nuevo es por monto
-  try{ await _SB.from('caja_chica_movimiento_items').update({ rubro_codigo: rows.length === 1 ? rows[0].rubro_codigo : null }).eq('movimiento_id', m.id); }catch(e){}
-  await _SB.from('caja_chica_historial').insert({ movimiento_id:m.id, accion:'cambiar_imputacion', estado_nuevo:m.estado, detalle:antes+' → '+despues+' · Motivo: '+mot, hecho_por:CURRENT_USER.email });
+  if(!(mo === 'ta' && taRub === '__mix')){ try{ await _SB.from('caja_chica_movimiento_items').update({ rubro_codigo: mo === 'ta' ? (taRub || null) : (rows.length === 1 ? rows[0].rubro_codigo : null) }).eq('movimiento_id', m.id); }catch(e){} }
+  await _SB.from('caja_chica_historial').insert({ movimiento_id:m.id, accion:'cambiar_imputacion', estado_nuevo:m.estado, detalle:antes+(rubAntes?' ('+rubAntes+')':'')+' → '+despues+(rubDespues?' ('+rubDespues+')':'')+' · Motivo: '+mot, hecho_por:CURRENT_USER.email });
   if(m.presupuesto) delete IMP.rub[m.presupuesto];
   if(nd.presupuesto) delete IMP.rub[nd.presupuesto];
   impCerrarCambio();
