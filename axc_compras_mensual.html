@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AXC · Compras por mes</title>
+<title>AXC · Compras y mano de obra por mes</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
@@ -13,8 +13,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <!--
-  AXC · Informe de compras por mes (Órdenes de compra + Caja chica)
-  v1.7 · 23/11/2026 · Desarrollado por Conexdata
+  AXC · Informe de compras por mes (Órdenes de compra + Caja chica + Mano de obra)
+  v1.9 · 25/11/2026 · Desarrollado por Conexdata
+  v1.9: casilla «₲ Montos» en cada gráfico, guardada por usuario; filtro por contratista;
+        «Pagos a contratistas» separa pagado y aprobado sin pagar; tabla «Resumen por contratista»
+        (descuentos, neto transferido, último pago, enlace al estado de cuenta en Certificados).
+  v1.8: tercer origen «Mano de obra»: lo pagado a contratistas por certificados de obra
+        (órdenes de pago vigentes) y, opcional, los certificados aprobados pendientes de pago.
+        Casillas de origen visibles en la barra de filtros, gráfico «Pagos a contratistas»,
+        detalle de cada certificado (ítems, orden de pago, adjuntos, PDF) y aviso de
+        órdenes de pago sin certificados vinculados.
   v1.7: en cada barra, OC + caja chica = total (opción «Separar OC + caja chica en el monto»).
   v1.6: gráficos del PDF redibujados al tamaño de la hoja (alta resolución, letra legible);
         en los rankings, el resto se informa en una nota en lugar de la barra «Otros».
@@ -28,7 +36,8 @@
   al abrir; los datos además están protegidos por las políticas RLS de cada tabla.
   ─────────────────────────────────────────────────────────────────
   Archivo independiente: solo LEE datos (ordenes_compra, caja_chica_movimientos,
-  perfiles). No escribe nada ni modifica ningún otro módulo.
+  orden_pago, orden_pago_items, certificados, certificado_items, perfiles).
+  No escribe nada ni modifica ningún otro módulo.
 
   Criterios (definidos con AXC):
    · Mes = fecha de la OC / fecha del comprobante de caja chica.
@@ -38,12 +47,18 @@
    · OC con tipo de compra «Caja chica»: desde v1.4 se SUMAN por defecto dentro de
      Órdenes de compra (igual que el Dashboard OC). Desde «Personalizar» se pueden
      mostrar aparte, sin sumar.
+   · Mano de obra (v1.8): monto BRUTO de cada certificado incluido en una orden de pago
+     vigente (no anulada). Mes = fecha de la orden de pago (o, si se elige, fecha del
+     certificado). Obra = la del certificado dentro de la orden. Los anticipos y préstamos
+     descontados en la orden ya están dentro de ese monto bruto: no se suman aparte, para
+     no contar dos veces. Los avances previos al sistema (PREVIO-…) no cuentan.
+     Opcional: certificados aprobados todavía sin orden de pago (comprometido).
    · Lo que cada usuario ve depende de sus permisos en el servidor (RLS).
 -->
 <style>
 :root{
   --navy:#1F3864; --navy2:#1F4E78; --gold:#C8A028; --gold-light:#FAF1D6;
-  --serie-oc:#3A6BB5; --serie-cc:#B58A12;
+  --serie-oc:#3A6BB5; --serie-cc:#B58A12; --serie-mo:#9C4A86;
   --bg:#F7F8FB; --surface:#FFFFFF; --surface-2:#F3F5F9; --border:#E2E6EE; --border-soft:#EEF0F5;
   --text:#1A2236; --text-soft:#5A6377; --text-muted:#8B93A7;
   --shadow:0 1px 2px rgba(20,30,55,.04),0 2px 8px rgba(20,30,55,.04);
@@ -116,13 +131,51 @@ button,input,select{font-family:inherit}
 .notice.err{background:#FDEEEC;border:1px solid #F2C6BF;color:#7A2418}
 
 /* KPIs */
-.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:12px;margin-bottom:14px}
 .kpi{background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:14px 16px;box-shadow:var(--shadow);min-width:0}
 .kpi-l{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
 .kpi-v{font-family:'Syne',sans-serif;font-size:19px;font-weight:700;color:var(--navy);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpi-s{font-size:12px;color:var(--text-soft);margin-top:1px}
 .dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:none}
-.dot.oc{background:var(--serie-oc)} .dot.cc{background:var(--serie-cc)}
+.dot.oc{background:var(--serie-oc)} .dot.cc{background:var(--serie-cc)} .dot.mo{background:var(--serie-mo)}
+.card-r{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:flex-end}
+.vchk{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:999px;font-size:11.5px;font-weight:600;color:var(--text-soft);cursor:pointer;user-select:none;background:#fff;white-space:nowrap}
+.vchk:hover{border-color:var(--navy);color:var(--navy)}
+.vchk input{width:13px;height:13px;margin:0;accent-color:var(--navy);cursor:pointer}
+/* v1.9 · Resumen por contratista */
+.tc td.l b{color:var(--navy)}
+.tm.tc th{white-space:normal;line-height:1.25;vertical-align:bottom;padding:9px 8px}
+.tm.tc td{padding:10px 8px}
+.tm.tc th:first-child,.tm.tc td:first-child{padding-left:14px}
+.tm.tc th:last-child,.tm.tc td:last-child{padding-right:14px}
+.tc .lnk-c{background:none;border:none;padding:0;font:inherit;font-weight:600;color:var(--navy);cursor:pointer;text-align:left}
+.tc .lnk-c:hover{text-decoration:underline}
+.tc .acc{white-space:nowrap;text-align:right}
+.tc .acc a{font-size:11.5px;font-weight:600;color:var(--serie-mo);text-decoration:none;border:1px solid #E2C2D8;border-radius:999px;padding:3px 9px;background:#FBF6FA}
+.tc .acc a:hover{border-color:var(--serie-mo)}
+.tc .desc{color:#8A3A2A}
+.tc .pend{color:#7A5600}
+.tc tr.sel td{background:#FBF6FA}
+.f-filtro-on{border-color:var(--serie-mo)!important;background:#FBF6FA!important}
+/* v1.8 · Casillas de origen en la barra de filtros */
+.f-origen{display:flex;gap:6px;flex-wrap:wrap}
+.org{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 12px;border-radius:8px;border:1.5px solid var(--border);background:#fff;font-size:12.5px;font-weight:600;color:var(--text-soft);cursor:pointer;user-select:none;transition:border-color .12s,background .12s}
+.f-field label.org{font-size:12.5px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--text-soft)}
+.f-field label.org.on{color:var(--text)}
+.org input{width:15px;height:15px;accent-color:var(--navy);margin:0;flex:none;cursor:pointer}
+.org:hover{border-color:#B9C2D3}
+.org.on{color:var(--text);background:var(--surface-2)}
+.org.on.oc{border-color:var(--serie-oc)} .org.on.cc{border-color:var(--serie-cc)} .org.on.mo{border-color:var(--serie-mo)}
+.op-g .op-radio{display:flex;gap:4px;margin:2px 0 4px 2px;flex-wrap:wrap}
+.op-g .op-radio label{font-size:12px;padding:3px 8px;border:1px solid var(--border);border-radius:999px;gap:5px}
+.op-g .op-radio label.sel{border-color:var(--navy);background:var(--surface-2);font-weight:600}
+.op-g .op-radio input{width:12px;height:12px}
+.op-g.off{opacity:.45;pointer-events:none}
+.op-ayuda{font-size:11px;color:var(--text-muted);margin:0 0 4px 2px;line-height:1.4}
+.tag-mo{font-size:9.5px;font-weight:700;color:#6E2F5E;background:#F6E9F2;border:1px solid #E2C2D8;border-radius:4px;padding:0 5px;margin-left:4px}
+.est.pag{color:#1B5524;background:#E6F4EA;border-color:#A8D5B5}
+.mc-op{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 18px;background:#FBF6FA;border:1px solid #EBD6E5;border-radius:10px;padding:10px 14px;margin-bottom:12px}
+.mc-op .mc-f b{font-variant-numeric:tabular-nums}
 .kpi.main{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);border:none}
 .kpi.main .kpi-l{color:rgba(255,255,255,.7)} .kpi.main .kpi-v{color:var(--gold);font-size:22px} .kpi.main .kpi-s{color:rgba(255,255,255,.75)}
 
@@ -239,6 +292,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 .mc-tipo{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted)}
 .mc-tipo::before{content:'';width:10px;height:10px;border-radius:3px;background:var(--serie-oc)}
 .mc-tipo.cc::before{background:var(--serie-cc)}
+.mc-tipo.mo::before{background:var(--serie-mo)}
 .mc-num{font-family:'Syne',sans-serif;font-size:21px;font-weight:700;color:var(--navy);margin-top:2px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .mc-tot{text-align:right}
 .mc-tot span{display:block;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
@@ -279,7 +333,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 .toast.error{background:#8B1E1E}
 .foot{text-align:center;font-size:11.5px;color:var(--text-muted);padding:10px 0 24px}
 
-@media (max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpi.main{grid-column:1/-1}}
+@media (max-width:1100px){.kpi.main{grid-column:1/-1}}
 @media (max-width:640px){.container{padding:14px}.f-input{min-width:0;width:100%}.f-field{flex:1 1 140px}}
 @media print{.app-header,.filters,.no-print{display:none!important}body{background:#fff}}
 </style>
@@ -291,14 +345,14 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
   <div class="login-card">
     <div class="login-logo"><img src="" alt="AXC Constructora" class="logo-img"></div>
     <div class="login-title">Compras por mes</div>
-    <div class="login-sub">Órdenes de compra y Caja chica · Ingresá con tu cuenta de AXC</div>
+    <div class="login-sub">Órdenes de compra, Caja chica y Mano de obra · Ingresá con tu cuenta de AXC</div>
     <form id="loginForm" autocomplete="on">
       <div class="login-field"><label for="loginEmail">Correo electrónico</label><input type="email" id="loginEmail" class="login-input" required autocomplete="email"></div>
       <div class="login-field"><label for="loginPassword">Contraseña</label><input type="password" id="loginPassword" class="login-input" required autocomplete="current-password"></div>
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.7</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.9</div>
   </div>
 </div>
 
@@ -314,6 +368,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
       <a href="axc_oc_dashboard.html" class="btn-h">📊 Dashboard OC</a>
       <a href="axc_orden_compra.html" class="btn-h">🧾 Órdenes de compra</a>
       <a href="axc_caja_chica.html" class="btn-h">💵 Caja chica</a>
+      <a href="axc_certificacion.html" class="btn-h">👷 Certificados</a>
       <div class="user-chip">
         <div class="user-av" id="userAv">?</div>
         <div><div class="user-n" id="userName">—</div><div class="user-r" id="userRole"></div></div>
@@ -331,13 +386,21 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 </div>
 
 <main class="container hidden" id="app">
-  <div class="page-title">Informe de compras por mes</div>
-  <div class="page-sub" id="pageSub">Órdenes de compra + Caja chica, mes a mes</div>
+  <div class="page-title">Informe de compras y mano de obra por mes</div>
+  <div class="page-sub" id="pageSub">Órdenes de compra + Caja chica + Mano de obra, mes a mes</div>
 
   <div class="filters" role="group" aria-label="Filtros">
     <div class="f-field"><label for="fDesde">Desde</label><input type="month" id="fDesde" class="f-input"></div>
     <div class="f-field"><label for="fHasta">Hasta</label><input type="month" id="fHasta" class="f-input"></div>
     <div class="f-field"><label for="fObra">Obra</label><select id="fObra" class="f-input"><option value="">Todas las obras</option></select></div>
+    <div class="f-field"><label for="fContr">Contratista</label><select id="fContr" class="f-input" title="Muestra solo lo vinculado a ese contratista: sus certificados y las compras cargadas a su nombre"><option value="">Todos los contratistas</option></select></div>
+    <div class="f-field"><label>Incluir</label>
+      <div class="f-origen" role="group" aria-label="Orígenes incluidos">
+        <label class="org oc" title="Órdenes de compra de materiales y servicios"><input type="checkbox" data-opt="oc"><i class="dot oc"></i>Órdenes de compra</label>
+        <label class="org cc" title="Comprobantes del módulo Caja chica"><input type="checkbox" data-opt="cc"><i class="dot cc"></i>Caja chica</label>
+        <label class="org mo" title="Pagos a contratistas por certificados de obra (órdenes de pago)"><input type="checkbox" data-opt="mo"><i class="dot mo"></i>Mano de obra</label>
+      </div>
+    </div>
     <div class="f-field"><label>Período</label>
       <div class="f-presets">
         <button class="chip" data-preset="todo">Desde el inicio</button>
@@ -353,26 +416,41 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
           <div class="op-g"><div class="op-t">Datos que se incluyen</div>
             <label><input type="checkbox" data-opt="oc"> <i class="dot oc"></i>Órdenes de compra</label>
             <label><input type="checkbox" data-opt="cc"> <i class="dot cc"></i>Caja chica</label>
+            <label><input type="checkbox" data-opt="mo"> <i class="dot mo"></i>Mano de obra (certificados de contratistas)</label>
             <label title="Igual que el Dashboard OC. Si se desmarca, esas OC se muestran aparte y no suman"><input type="checkbox" data-opt="sumarHist"> Sumar las OC de tipo «Caja chica» al total</label>
           </div>
-          <div class="op-g"><div class="op-t">Estado de las compras</div>
+          <div class="op-g" id="grpMo"><div class="op-t">Mano de obra · qué certificados</div>
+            <label title="Certificados incluidos en una orden de pago vigente"><input type="checkbox" data-opt="moPag"> Pagados (con orden de pago)</label>
+            <label title="Aprobados, todavía sin orden de pago: lo que falta pagar"><input type="checkbox" data-opt="moPend"> Aprobados pendientes de pago</label>
+            <div class="op-t" style="margin-top:8px">Mes de la mano de obra</div>
+            <div class="op-radio">
+              <label><input type="radio" name="moMes" value="pago"> Fecha de la orden de pago</label>
+              <label><input type="radio" name="moMes" value="cert"> Fecha del certificado</label>
+            </div>
+            <div class="op-ayuda">Se informa el monto bruto del certificado; los anticipos descontados ya están dentro y no se suman aparte.</div>
+          </div>
+          <div class="op-g"><div class="op-t">Estado de las compras (OC y caja chica)</div>
             <label><input type="checkbox" data-opt="aprob"> Aprobadas y archivadas</label>
             <label><input type="checkbox" data-opt="pend"> Pendientes de aprobación (solicitadas y observadas)</label>
           </div>
           <div class="op-g"><div class="op-t">Gráficos</div>
-            <label><input type="checkbox" data-opt="gTrend"> Compras por mes</label>
+            <label><input type="checkbox" data-opt="gTrend"> Monto por mes</label>
             <label><input type="checkbox" data-opt="gObra"> Compras por obra</label>
             <label><input type="checkbox" data-opt="gProv"> Principales proveedores</label>
+            <label><input type="checkbox" data-opt="gContr"> Pagos a contratistas</label>
+            <label><input type="checkbox" data-opt="tContr"> Resumen por contratista (tabla)</label>
             <label><input type="checkbox" data-opt="gRes"> Compras por residente</label>
-            <label><input type="checkbox" data-opt="gCant"> Cantidad de compras por mes</label>
-            <label class="op-sub"><input type="checkbox" data-opt="gValores"> Mostrar el monto en cada barra</label>
-            <label class="op-sub2"><input type="checkbox" data-opt="gDetalle"> Separar OC + caja chica en el monto</label>
+            <label><input type="checkbox" data-opt="gCant"> Cantidad por mes</label>
+            <label class="op-sub" title="Marca o desmarca la casilla «₲ Montos» de todos los gráficos"><input type="checkbox" data-opt="gValores"> Mostrar los montos en todos los gráficos</label>
+            <label class="op-sub2"><input type="checkbox" data-opt="gDetalle"> Separar el monto por origen (OC · CC · MO)</label>
           </div>
           <div class="op-g"><div class="op-t">Contenido del PDF</div>
             <label><input type="checkbox" data-opt="pdfGraf"> Incluir los gráficos visibles</label>
             <label><input type="checkbox" data-opt="pdfObra"> Incluir el detalle por obra de cada mes</label>
+            <label><input type="checkbox" data-opt="pdfContr"> Incluir el resumen por contratista</label>
+            <label><input type="checkbox" data-opt="pdfCert"> Incluir la lista de certificados de mano de obra</label>
           </div>
-          <div class="op-pie"><span>Tu elección queda guardada en este navegador.</span><button class="lnk" id="btnOptsReset">Restablecer</button></div>
+          <div class="op-pie"><span>Tu elección queda guardada para tu usuario en esta computadora.</span><button class="lnk" id="btnOptsReset">Restablecer</button></div>
         </div>
       </div>
       <button class="btn" id="btnRecargar" title="Volver a leer los datos">↻ Actualizar</button>
@@ -387,43 +465,57 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
 
   <div class="card" id="cardTrend">
     <div class="card-h">
-      <div><div class="card-t">Compras por mes</div><div class="card-m">Monto comprado cada mes, por origen</div></div>
-      <div class="legend legend-dyn" aria-hidden="true"></div>
+      <div><div class="card-t">Monto por mes</div><div class="card-m">Monto de cada mes, por origen</div></div>
+      <div class="card-r"><div class="legend legend-dyn" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vTrend">₲ Montos</label></div>
     </div>
     <div class="chart-wrap"><canvas id="chart" aria-label="Gráfico de barras apiladas de compras por mes" role="img"></canvas><div id="chartTip"></div></div>
   </div>
 
   <div class="g2" id="gridA">
     <div class="card" id="cardObra">
-      <div class="card-h"><div><div class="card-t">Compras por obra</div><div class="card-m">Las 10 obras con más compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="card-h"><div><div class="card-t">Compras por obra</div><div class="card-m">Las 10 obras con más compras del período</div></div><div class="card-r"><div class="legend legend-dyn" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vObra">₲ Montos</label></div></div>
       <div class="chart-h"><canvas id="chObra" role="img" aria-label="Compras por obra"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
     </div>
     <div class="card" id="cardProv">
-      <div class="card-h"><div><div class="card-t">Principales proveedores</div><div class="card-m">Los 10 proveedores con más compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="card-h"><div><div class="card-t">Principales proveedores</div><div class="card-m">Los 10 proveedores con más compras del período (OC y caja chica)</div></div><div class="card-r"><div class="legend legend-dyn" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vProv">₲ Montos</label></div></div>
       <div class="chart-h"><canvas id="chProv" role="img" aria-label="Principales proveedores"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
     </div>
   </div>
 
   <div class="g2" id="gridB">
     <div class="card" id="cardRes">
-      <div class="card-h"><div><div class="card-t">Compras por residente</div><div class="card-m">Quién cargó las compras del período</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="card-h"><div><div class="card-t">Compras por residente</div><div class="card-m">Quién cargó las compras del período</div></div><div class="card-r"><div class="legend legend-dyn" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vRes">₲ Montos</label></div></div>
       <div class="chart-h"><canvas id="chRes" role="img" aria-label="Compras por residente"></canvas></div><div class="ch-vacio hidden">Sin compras en el período.</div>
     </div>
     <div class="card" id="cardCant">
-      <div class="card-h"><div><div class="card-t">Cantidad de compras por mes</div><div class="card-m">Órdenes y comprobantes cargados cada mes</div></div><div class="legend legend-dyn" aria-hidden="true"></div></div>
+      <div class="card-h"><div><div class="card-t">Cantidad por mes</div><div class="card-m">Órdenes, comprobantes y certificados de cada mes</div></div><div class="card-r"><div class="legend legend-dyn" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vCant">₲ Montos</label></div></div>
       <div class="chart-wrap" style="height:280px"><canvas id="chCant" role="img" aria-label="Cantidad de compras por mes"></canvas></div>
     </div>
+  </div>
+
+  <div class="g2" id="gridC">
+    <div class="card full" id="cardContr">
+      <div class="card-h"><div><div class="card-t">Pagos a contratistas</div><div class="card-m">Mano de obra por contratista en el período</div></div><div class="card-r"><div class="legend" id="contrLeg" aria-hidden="true"></div><label class="vchk" title="Mostrar u ocultar los montos sobre las barras de este gráfico"><input type="checkbox" data-opt="vContr">₲ Montos</label></div></div>
+      <div class="chart-h"><canvas id="chContr" role="img" aria-label="Pagos a contratistas"></canvas></div><div class="ch-vacio hidden">Sin certificados en el período.</div>
+    </div>
+  </div>
+
+  <div class="card" id="cardTContr">
+    <div class="card-h">
+      <div><div class="card-t">Resumen por contratista</div><div class="card-m">Lo pagado en el período, los descuentos y el neto transferido · clic en un nombre para ver solo ese contratista</div></div>
+    </div>
+    <div class="tbl-wrap" id="tablaContr"></div>
   </div>
 
   <div class="card">
     <div class="card-h">
       <div class="card-t">Detalle mensual</div>
-      <div class="card-m">Clic en un mes → obras · clic en una obra → sus compras · clic en una compra → sus ítems</div>
+      <div class="card-m">Clic en un mes → obras · clic en una obra → sus compras y certificados · clic en una fila → su detalle</div>
     </div>
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.7</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.9</div>
 </main>
 
 <div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
@@ -447,11 +539,19 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 /* ─── Criterios (ver encabezado del archivo) ───────────────────────────── */
 const OC_EXCLUIDOS = ['rechazado','anulada','anulado'];
 const CC_INCLUIDOS = ['solicitado','observado','aprobado'];
-const COLOR_OC = '#3A6BB5', COLOR_CC = '#B58A12';   // validados (contraste y daltonismo) sobre fondo blanco
+const COLOR_OC = '#3A6BB5', COLOR_CC = '#B58A12', COLOR_MO = '#9C4A86';   // validados (contraste y daltonismo) sobre fondo blanco
+/* v1.8 · Los tres orígenes del informe. El orden es el de apilado en los gráficos (de abajo hacia arriba). */
+const SERIES = [
+  { k:'oc', label:'Órdenes de compra', corto:'OC', color:COLOR_OC, rgb:[58,107,181] },
+  { k:'cc', label:'Caja chica',        corto:'CC', color:COLOR_CC, rgb:[181,138,18] },
+  { k:'mo', label:'Mano de obra',      corto:'MO', color:COLOR_MO, rgb:[156,74,134] },
+];
+function seriesActivas(){ return SERIES.filter(s => S.opts[s.k] && !errorDe(s.k)); }
+function errorDe(k){ return k === 'cc' ? S.ccError : (k === 'mo' ? S.moError : null); }
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const MESES_C = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
-const S = { user:null, perfil:null, ocs:[], ccs:[], ccError:null, ccAlcance:'', rango:{min:'',max:''}, chart:null, abiertos:{}, abiertosObra:{}, ultimo:null };
+const S = { user:null, perfil:null, ocs:[], ccs:[], ops:[], opItems:[], certs:[], moError:null, moSinDetalle:[], ccError:null, ccAlcance:'', rango:{min:'',max:''}, chart:null, abiertos:{}, abiertosObra:{}, ultimo:null };
 
 /* ─── Utilidades ───────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
@@ -486,6 +586,77 @@ function ocCuenta(oc){
   return OC_EXCLUIDOS.indexOf(norm(oc.estado)) < 0;
 }
 function ccCuenta(m){ return !!(m && m.fecha) && CC_INCLUIDOS.indexOf(norm(m.estado)) >= 0; }
+/* ─── v1.8 · Mano de obra (certificados de contratistas) ────────────────────
+   Cada línea es un certificado. Pagado = está en una orden de pago vigente (no anulada):
+   el monto es el del certificado dentro de la orden (orden_pago_items.total).
+   Pendiente = aprobado y todavía sin orden de pago. Los avances previos (PREVIO-…) no cuentan. */
+function esPrevio(c){ return /^PREVIO-/i.test(String((c && c.numero) || '')) || /^PAGO PREVIO$/i.test(String((c && c.orden_pago) || '')); }
+function soloNombre(x){ return String(x || '').replace(/\s*\([^)]*\)\s*$/, '').trim(); }
+function prepararMO(){
+  S.mo = [];  S.moSinDetalle = [];
+  const certPorId = {}, certPorNum = {};
+  S.certs.forEach(c => { certPorId[String(c.id)] = c; if(c.numero) certPorNum[String(c.numero)] = c; });
+  const itemsPorOrden = {};
+  S.opItems.forEach(it => { (itemsPorOrden[String(it.orden_id)] = itemsPorOrden[String(it.orden_id)] || []).push(it); });
+  const enOrden = {};
+  S.ops.filter(o => norm(o.estado) !== 'anulada').forEach(o => {
+    let its = itemsPorOrden[String(o.id)] || [];
+    let origen = 'items';
+    // Respaldo: orden sin detalle guardado → se buscan los certificados marcados con su número
+    if(!its.length){
+      its = S.certs.filter(c => String(c.orden_pago || '') === String(o.numero)).map(c => ({ certificado_id:c.id, numero:c.numero, fecha:c.fecha, obra:c.obra, total:c.total }));
+      origen = its.length ? 'certificados' : 'cabecera';
+    }
+    if(origen !== 'items') S.moSinDetalle.push({ numero:o.numero, contratista:o.contratista || '', total:Number(o.total_certificado) || 0, recuperado:origen === 'certificados' });
+    if(origen === 'cabecera'){
+      // Ni detalle ni certificados: se toma el total de la orden para no perder el pago
+      its = [{ certificado_id:null, numero:null, fecha:o.periodo_hasta || o.fecha, obra:String(o.obras || '').split(' · ')[0] || null, total:o.total_certificado, _sinCert:true }];
+    }
+    its.forEach(it => {
+      const c = it.certificado_id != null ? certPorId[String(it.certificado_id)] : (it.numero ? certPorNum[String(it.numero)] : null);
+      if(c && esPrevio(c)) return;
+      if(c) enOrden[String(c.id)] = true;
+      S.mo.push({ pagado:true, cert:c || null, certId:c ? c.id : (it.certificado_id || null), certNumero:(c && c.numero) || it.numero || null,
+        fechaCert:(c && c.fecha) || it.fecha || o.fecha, fechaPago:o.fecha || o.emitido_en, op:o, opNumero:o.numero,
+        obra:it.obra || (c && c.obra) || '', contratista:o.contratista || (c && c.contratista) || '', contrato:it.contrato || '',
+        sector:(c && c.sector) || '', presupuesto:(c && c.presupuesto) || '', residente:soloNombre((c && (c.creado_por || c.medido_por)) || o.emitido_por),
+        estado:'Pagado', monto:Number(it.total) || 0, sinCert:!!it._sinCert });
+    });
+  });
+  S.certs.forEach(c => {
+    if(enOrden[String(c.id)] || esPrevio(c) || c.orden_pago) return;
+    if(norm(c.estado) !== 'aprobado') return;
+    S.mo.push({ pagado:false, cert:c, certId:c.id, certNumero:c.numero, fechaCert:c.fecha, fechaPago:null, op:null, opNumero:'',
+      obra:c.obra || '', contratista:c.contratista || '', contrato:'', sector:c.sector || '', presupuesto:c.presupuesto || '',
+      residente:soloNombre(c.creado_por || c.medido_por), estado:'Aprobado · sin pagar', monto:Number(c.total) || 0, sinCert:false });
+  });
+}
+/* v1.9 · Ranking de contratistas con dos tramos: pagado y aprobado sin pagar */
+function rankContr(lineas){
+  const A = {};
+  lineas.forEach(l => { if(l.src !== 'mo') return; const key = String(l.contratista || '').trim() || '(sin contratista)';
+    const a = A[key] = A[key] || { nombre:key, oc:0, cc:0, mo:0, pag:0, pend:0 }; a.mo += l.monto; a[l.pagado ? 'pag' : 'pend'] += l.monto; });
+  return Object.values(A).map(a => Object.assign(a, { tot:a.mo })).sort((a, b) => b.tot - a.tot);
+}
+/* v1.9 · Resumen por contratista. Los descuentos de cada orden (anticipo, préstamo, retención) se reparten
+   entre sus certificados en proporción al monto: así cuadra aunque se filtre por obra o por mes, y la suma
+   de los netos de una orden completa da su neto transferido. */
+function resumenContr(lineas){
+  const A = {};
+  lineas.forEach(l => {
+    if(l.src !== 'mo') return;
+    const key = String(l.contratista || '').trim() || '(sin contratista)';
+    const a = A[key] = A[key] || { nombre:key, nCert:0, ops:new Set(), obras:new Set(), pag:0, ant:0, pres:0, ret:0, pend:0, nPend:0, ultimo:'' };
+    if(!l.pagado){ a.pend += l.monto; a.nPend++; return; }
+    const op = l.ref && l.ref.op, base = op ? Number(op.total_certificado) || 0 : 0, f = base > 0 ? l.monto / base : 0;
+    a.nCert++; a.pag += l.monto; if(l.obra) a.obras.add(String(l.obra).trim());
+    if(op){ a.ops.add(op.numero); a.ant += (Number(op.desc_anticipo) || 0) * f; a.pres += (Number(op.desc_prestamo) || 0) * f; a.ret += (Number(op.retencion) || 0) * f;
+      const fp = String(op.fecha || '').slice(0,10); if(fp > a.ultimo) a.ultimo = fp; }
+  });
+  return Object.values(A).map(a => Object.assign(a, { nOps:a.ops.size, nObras:a.obras.size, neto:a.pag - a.ant - a.pres - a.ret })).sort((a, b) => (b.pag + b.pend) - (a.pag + a.pend));
+}
+function moFecha(l){ return (S.opts.moMes === 'cert' || !l.pagado) ? l.fechaCert : (l.fechaPago || l.fechaCert); }
+function moPasa(l){ return l.pagado ? S.opts.moPag : S.opts.moPend; }
 function ocNumero(oc){ return oc.legacy_id != null ? 'OC ' + String(oc.legacy_id).padStart(4,'0') : (oc.numero_oc || ('OC #' + oc.id)); }
 
 /* ─── Acceso ───────────────────────────────────────────────────────────── */
@@ -516,6 +687,7 @@ async function iniciar(){
   const { data:{ session } } = await sb.auth.getSession();
   if(!session){ $('loginScreen').classList.remove('hidden'); return; }
   S.user = session.user;
+  S.opts = cargarOpts();   // la vista guardada de este usuario
   try{
     const { data:p } = await sb.from('perfiles').select('*').eq('id', S.user.id).maybeSingle();
     S.perfil = p || { nombre:S.user.email, rol:'' };
@@ -533,11 +705,24 @@ async function iniciar(){
 
 /* ─── Opciones de la vista (panel «Personalizar») ──────────────────────── */
 // Se recuerdan por navegador. Por defecto: el criterio acordado con AXC.
-const OPTS_DEF = { oc:true, cc:true, sumarHist:true, aprob:true, pend:true,
-  gTrend:true, gObra:true, gProv:true, gRes:true, gCant:true, gValores:true, gDetalle:true, pdfGraf:true, pdfObra:false };
+const OPTS_DEF = { oc:true, cc:true, mo:true, sumarHist:true, aprob:true, pend:true, moPag:true, moPend:false, moMes:'pago',
+  gTrend:true, gObra:true, gProv:true, gContr:true, gRes:true, gCant:true, gValores:true, gDetalle:true, pdfGraf:true, pdfObra:false, pdfCert:false,
+  vTrend:true, vCant:true, vObra:true, vProv:true, vContr:true, vRes:true, tContr:true, pdfContr:true };
+// v1.9 · Casilla «Montos» de cada gráfico (se guarda por usuario)
+const VK = { trend:'vTrend', cant:'vCant', obra:'vObra', prov:'vProv', contr:'vContr', res:'vRes' };
+const VKS = Object.values(VK);
 const OPTS_KEY = 'axc_cm_opciones_v2';
-function cargarOpts(){ try{ const o = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); return Object.assign({}, OPTS_DEF, o || {}); }catch(e){ return Object.assign({}, OPTS_DEF); } }
-function guardarOpts(){ try{ localStorage.setItem(OPTS_KEY, JSON.stringify(S.opts)); }catch(e){} }
+// v1.9 · Cada usuario tiene su propia vista: la clave lleva su id (si dos personas usan la misma
+// computadora, cada una ve lo que eligió). La primera vez toma la vista general guardada antes.
+function claveOpts(){ return OPTS_KEY + (S.user && S.user.id ? '_' + S.user.id : ''); }
+function cargarOpts(){
+  try{
+    const o = JSON.parse(localStorage.getItem(claveOpts()) || localStorage.getItem(OPTS_KEY) || 'null') || {};
+    if(o.gValores === false && !VKS.some(k => k in o)) VKS.forEach(k => { o[k] = false; });   // vista anterior a v1.9
+    return Object.assign({}, OPTS_DEF, o);
+  }catch(e){ return Object.assign({}, OPTS_DEF); }
+}
+function guardarOpts(){ try{ localStorage.setItem(claveOpts(), JSON.stringify(S.opts)); }catch(e){} }
 S.opts = cargarOpts();
 S.charts = {};
 
@@ -566,9 +751,12 @@ async function cargarDatos(){
     const CC_BASE = 'id,numero_orden,fecha,total,estado,obra,sector,proveedor,residente,rubro,tipo_comprobante,nro_factura';
     const CC_EXTRA = CC_BASE + ',comentario,ruc,vendedor,contratista';
     const ordenCC = q => q.order('fecha', { ascending:true }).order('id', { ascending:true });
-    const [rOc, rCc0] = await Promise.all([
+    const [rOc, rCc0, rOp, rOpi, rCe] = await Promise.all([
       traerTodo('ordenes_compra', '*', q => q.order('fecha', { ascending:true }).order('id', { ascending:true })),
       traerTodo('caja_chica_movimientos', CC_EXTRA, ordenCC),
+      traerTodo('orden_pago', '*', q => q.order('fecha', { ascending:true }).order('id', { ascending:true })),
+      traerTodo('orden_pago_items', '*', q => q.order('id', { ascending:true })),
+      traerTodo('certificados', '*', q => q.order('id', { ascending:true })),
     ]);
     if(rOc.error) throw rOc.error;
     let rCc = rCc0;
@@ -578,6 +766,13 @@ async function cargarDatos(){
     S.ccError = rCc.error ? (rCc.error.message || 'sin permiso') : null;
     S.ccs = rCc.error ? [] : (rCc.data || []);
     S.ccAlcance = alcanceCajaChica();
+    // v1.8 · Mano de obra: sin la orden de pago o sin los certificados no se puede armar
+    const eMo = rOp.error || rCe.error;
+    S.moError = eMo ? (eMo.message || 'sin permiso') : null;
+    S.ops = rOp.error ? [] : (rOp.data || []);
+    S.opItems = rOpi.error ? [] : (rOpi.data || []);
+    S.certs = rCe.error ? [] : (rCe.data || []);
+    prepararMO();
     S.ultimo = new Date();
     prepararFiltros();
     render();
@@ -607,8 +802,10 @@ function prepararFiltros(){
   const minOc = fechas.length ? fechas.reduce((a,b) => a < b ? a : b) : '';
   const fechasCc = S.ccs.filter(ccCuenta).map(m => String(m.fecha).slice(0,7));
   const minCc = fechasCc.length ? fechasCc.reduce((a,b) => a < b ? a : b) : '';
+  const fechasMo = (S.mo || []).map(l => String(moFecha(l) || '').slice(0,7)).filter(Boolean);
+  const minMo = fechasMo.length ? fechasMo.reduce((a,b) => a < b ? a : b) : '';
   // El informe arranca con la implementación de la OC (primera OC cargada)
-  S.rango.min = minOc || minCc || mesHoy();
+  S.rango.min = [minOc, minCc, minMo].filter(Boolean).sort()[0] || mesHoy();
   S.rango.max = mesHoy();
   const d = $('fDesde'), h = $('fHasta');
   d.min = h.min = S.rango.min; d.max = h.max = S.rango.max;
@@ -617,11 +814,20 @@ function prepararFiltros(){
   const obras = new Set();
   S.ocs.forEach(o => { if(ocCuenta(o) && o.obra) obras.add(String(o.obra).trim()); });
   S.ccs.forEach(m => { if(ccCuenta(m) && m.obra) obras.add(String(m.obra).trim()); });
+  (S.mo || []).forEach(l => { if(l.obra) obras.add(String(l.obra).trim()); });
+  // v1.9 · Contratistas: los de la mano de obra y los que figuran en OC o caja chica
+  const contras = new Set();
+  (S.mo || []).forEach(l => { if(l.contratista) contras.add(String(l.contratista).trim()); });
+  S.ocs.forEach(o => { if(ocCuenta(o) && o.contratista) contras.add(String(o.contratista).trim()); });
+  S.ccs.forEach(m => { if(ccCuenta(m) && m.contratista) contras.add(String(m.contratista).trim()); });
+  const sc = $('fContr'), prevC = sc.value;
+  sc.innerHTML = '<option value="">Todos los contratistas</option>' + [...contras].sort((a,b) => a.localeCompare(b,'es')).map(o => '<option value="' + esc(o) + '">' + esc(o) + '</option>').join('');
+  if(prevC && contras.has(prevC)) sc.value = prevC;
   const sel = $('fObra'), prev = sel.value;
   sel.innerHTML = '<option value="">Todas las obras</option>' + [...obras].sort((a,b) => a.localeCompare(b,'es')).map(o => '<option value="' + esc(o) + '">' + esc(o) + '</option>').join('');
   if(prev && obras.has(prev)) sel.value = prev;
 }
-['fDesde','fHasta','fObra'].forEach(id => $(id).addEventListener('change', function(){
+['fDesde','fHasta','fObra','fContr'].forEach(id => $(id).addEventListener('change', function(){
   if($('fDesde').value && $('fHasta').value && $('fDesde').value > $('fHasta').value){
     if(this.id === 'fDesde') $('fHasta').value = $('fDesde').value; else $('fDesde').value = $('fHasta').value;
   }
@@ -638,11 +844,16 @@ $('btnRecargar').addEventListener('click', cargarDatos);
 
 /* ─── Panel «Personalizar» ─────────────────────────────────────────────── */
 function sincronizarPanel(){
-  document.querySelectorAll('#panelOpts input[data-opt]').forEach(i => { i.checked = !!S.opts[i.dataset.opt]; });
+  document.querySelectorAll('input[data-opt]').forEach(i => { i.checked = !!S.opts[i.dataset.opt]; });
+  document.querySelectorAll('.org').forEach(l => { l.classList.toggle('on', l.querySelector('input').checked); });
+  document.querySelectorAll('#panelOpts input[name="moMes"]').forEach(r => { r.checked = r.value === S.opts.moMes; r.parentNode.classList.toggle('sel', r.checked); });
+  $('grpMo').classList.toggle('off', !S.opts.mo);
   const n = Object.keys(OPTS_DEF).filter(k => S.opts[k] !== OPTS_DEF[k]).length;
   $('optsBadge').textContent = n ? String(n) : '';
   $('optsBadge').classList.toggle('hidden', !n);
-  const sd = document.querySelector('#panelOpts label.op-sub2'); if(sd){ sd.classList.toggle('off', !S.opts.gValores); sd.querySelector('input').disabled = !S.opts.gValores; }
+  const algunV = VKS.some(k => S.opts[k]);
+  const gv = document.querySelector('#panelOpts input[data-opt="gValores"]'); if(gv){ gv.checked = VKS.every(k => S.opts[k]); gv.indeterminate = algunV && !gv.checked; }
+  const sd = document.querySelector('#panelOpts label.op-sub2'); if(sd){ sd.classList.toggle('off', !algunV); sd.querySelector('input').disabled = !algunV; }
   if(typeof ubicarPanel === 'function') requestAnimationFrame(ubicarPanel);
 }
 function ubicarPanel(){
@@ -658,31 +869,37 @@ window.addEventListener('resize', ubicarPanel);
 window.addEventListener('scroll', ubicarPanel, {passive:true});
 $('panelOpts').addEventListener('click', function(ev){ ev.stopPropagation(); });
 document.addEventListener('click', function(){ $('panelOpts').classList.add('hidden'); });
-document.querySelectorAll('#panelOpts input[data-opt]').forEach(i => i.addEventListener('change', function(){
+document.querySelectorAll('input[data-opt]').forEach(i => i.addEventListener('change', function(){
   const k = this.dataset.opt;
   S.opts[k] = this.checked;
+  if(k === 'gValores') VKS.forEach(v => { S.opts[v] = this.checked; });
   // Siempre tiene que quedar al menos un origen y un estado
-  if(!S.opts.oc && !S.opts.cc){ S.opts[k] = true; this.checked = true; toast('Tiene que quedar incluido al menos un origen: órdenes de compra o caja chica.', 'error'); return; }
+  if(!S.opts.oc && !S.opts.cc && !S.opts.mo){ S.opts[k] = true; this.checked = true; toast('Tiene que quedar incluido al menos un origen: órdenes de compra, caja chica o mano de obra.', 'error'); return; }
+  if(!S.opts.moPag && !S.opts.moPend){ S.opts[k] = true; this.checked = true; toast('En mano de obra tiene que quedar elegido al menos un tipo de certificado.', 'error'); return; }
   if(!S.opts.aprob && !S.opts.pend){ S.opts[k] = true; this.checked = true; toast('Tiene que quedar incluido al menos un estado.', 'error'); return; }
   guardarOpts(); sincronizarPanel();
   if(/^pdf/.test(k)) return;   // las opciones del PDF no cambian la pantalla
   S.abiertos = {}; S.abiertosObra = {}; render();
+}));
+document.querySelectorAll('#panelOpts input[name="moMes"]').forEach(r => r.addEventListener('change', function(){
+  S.opts.moMes = this.value; guardarOpts(); prepararFiltros(); sincronizarPanel(); S.abiertos = {}; S.abiertosObra = {}; render();
 }));
 $('btnOptsReset').addEventListener('click', function(){ S.opts = Object.assign({}, OPTS_DEF); guardarOpts(); sincronizarPanel(); render(); toast('Vista restablecida'); });
 
 /* ─── Cálculo ──────────────────────────────────────────────────────────── */
 function calcular(){
   const O = S.opts;
-  const desde = $('fDesde').value || S.rango.min, hasta = $('fHasta').value || S.rango.max, obra = $('fObra').value;
+  const desde = $('fDesde').value || S.rango.min, hasta = $('fHasta').value || S.rango.max, obra = $('fObra').value, contr = $('fContr').value;
+  const enContr = c => !contr || norm(c) === norm(contr);
   const meses = mesesEntre(desde, hasta);
   const M = {};
-  meses.forEach(k => { M[k] = { k, ocN:0, ocM:0, ccN:0, ccM:0, hiN:0, hiM:0, obras:{} }; });
+  meses.forEach(k => { M[k] = { k, ocN:0, ocM:0, ccN:0, ccM:0, moN:0, moM:0, hiN:0, hiM:0, obras:{} }; });
   const lineas = [];
   const enObra = o => !obra || String(o||'').trim() === obra;
-  const porObra = (m, ob) => { const k = String(ob||'').trim() || '(sin obra)'; return m.obras[k] = m.obras[k] || { obra:k, oc:0, cc:0, hi:0 }; };
+  const porObra = (m, ob) => { const k = String(ob||'').trim() || '(sin obra)'; return m.obras[k] = m.obras[k] || { obra:k, oc:0, cc:0, mo:0, hi:0 }; };
   if(O.oc) S.ocs.forEach(o => {
     const g = grupoOC(o);
-    if(!estadoPasa(g) || !enObra(o.obra)) return;
+    if(!estadoPasa(g) || !enObra(o.obra) || !enContr(o.contratista)) return;
     const k = String(o.fecha).slice(0,7), m = M[k]; if(!m) return;
     const v = Number(o.valor_total) || 0;
     const hist = ocEsCajaChica(o), suma = !hist || O.sumarHist, clase = suma ? 'oc' : 'hi';
@@ -695,7 +912,7 @@ function calcular(){
   });
   if(O.cc) S.ccs.forEach(c => {
     const g = grupoCC(c);
-    if(!estadoPasa(g) || !enObra(c.obra)) return;
+    if(!estadoPasa(g) || !enObra(c.obra) || !enContr(c.contratista)) return;
     const k = String(c.fecha).slice(0,7), m = M[k]; if(!m) return;
     const v = Number(c.total) || 0;
     m.ccN++; m.ccM += v; porObra(m, c.obra).cc += v;
@@ -704,22 +921,36 @@ function calcular(){
       proveedor:c.proveedor||'', residente:c.residente||'', estado:c.estado||'', tipo:c.rubro||'', rubro:c.rubro||'',
       concepto:c.comentario||'', comprobante:((c.tipo_comprobante ? c.tipo_comprobante + ' ' : '') + (c.nro_factura || '')).trim(), monto:v, suma:true });
   });
-  const filas = meses.map(k => { const m = M[k]; m.tot = m.ocM + m.ccM; return m; });
+  if(O.mo && !S.moError) (S.mo || []).forEach(l => {
+    if(!moPasa(l) || !enObra(l.obra) || !enContr(l.contratista)) return;
+    const f = moFecha(l), k = String(f || '').slice(0,7), m = M[k]; if(!m) return;
+    m.moN++; m.moM += l.monto; porObra(m, l.obra).mo += l.monto;
+    lineas.push({ id:l.certId, src:'mo', clase:'mo', hist:false, k, obraK:String(l.obra||'').trim() || '(sin obra)',
+      origen: l.pagado ? 'Mano de obra · pagado' : 'Mano de obra · aprobado sin pagar',
+      fecha:f, numero:l.certNumero || ('Orden ' + l.opNumero), obra:l.obra||'', sector:l.sector||'', proveedor:l.contratista||'', contratista:l.contratista||'',
+      residente:l.residente||'', estado:l.estado, tipo:'Certificado de obra', rubro:'', concepto:(l.cert && l.cert.observacion) || '', comprobante:l.opNumero ? 'Orden ' + l.opNumero : '',
+      op:l.opNumero || '', fechaCert:l.fechaCert, fechaPago:l.fechaPago, pagado:l.pagado, sinCert:l.sinCert, ref:l, monto:l.monto, suma:true });
+  });
+  const filas = meses.map(k => { const m = M[k]; m.tot = m.ocM + m.ccM + m.moM; return m; });
   filas.forEach((m, i) => { const p = filas[i-1]; m.var = (p && p.tot > 0) ? (m.tot / p.tot - 1) * 100 : null; });
-  const T = filas.reduce((a, m) => { a.ocN += m.ocN; a.ocM += m.ocM; a.ccN += m.ccN; a.ccM += m.ccM; a.hiN += m.hiN; a.hiM += m.hiM; return a; }, { ocN:0, ocM:0, ccN:0, ccM:0, hiN:0, hiM:0 });
-  T.tot = T.ocM + T.ccM;
+  const T = filas.reduce((a, m) => { a.ocN += m.ocN; a.ocM += m.ocM; a.ccN += m.ccN; a.ccM += m.ccM; a.moN += m.moN; a.moM += m.moM; a.hiN += m.hiN; a.hiM += m.hiM; return a; }, { ocN:0, ocM:0, ccN:0, ccM:0, moN:0, moM:0, hiN:0, hiM:0 });
+  T.tot = T.ocM + T.ccM + T.moM;
+  T.n = T.ocN + T.ccN + T.moN;
+  T.moOps = new Set(lineas.filter(l => l.src === 'mo' && l.op).map(l => l.op)).size;
+  T.moPagM = lineas.filter(l => l.src === 'mo' && l.pagado).reduce((t, l) => t + l.monto, 0);
+  T.moPendM = T.moM - T.moPagM;
   const conCompras = filas.filter(m => m.tot > 0);
   T.nMeses = filas.length;
   T.prom = filas.length ? T.tot / filas.length : 0;
   T.max = conCompras.length ? conCompras.reduce((a, b) => b.tot > a.tot ? b : a) : null;
   // Agrupaciones para los gráficos (solo lo que suma al total)
-  const agrupar = campo => {
+  const agrupar = (campo, filtro) => {
     const A = {};
-    lineas.forEach(l => { if(!l.suma) return; const key = String(l[campo] || '').trim() || '(sin dato)'; const a = A[key] = A[key] || { nombre:key, oc:0, cc:0 }; a[l.src] += l.monto; });
-    return Object.values(A).map(a => Object.assign(a, { tot:a.oc + a.cc })).sort((a, b) => b.tot - a.tot);
+    lineas.forEach(l => { if(!l.suma || (filtro && !filtro(l))) return; const key = String(l[campo] || '').trim() || '(sin dato)'; const a = A[key] = A[key] || { nombre:key, oc:0, cc:0, mo:0 }; a[l.src] += l.monto; });
+    return Object.values(A).map(a => Object.assign(a, { tot:a.oc + a.cc + a.mo })).sort((a, b) => b.tot - a.tot);
   };
   lineas.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.origen.localeCompare(b.origen));
-  return { desde, hasta, obra, filas, T, lineas, porObraTot:agrupar('obraK'), porProv:agrupar('proveedor'), porRes:agrupar('residente') };
+  return { desde, hasta, obra, filas, T, lineas, porObraTot:agrupar('obraK'), porProv:agrupar('proveedor', l => l.src !== 'mo'), porContr:rankContr(lineas), resContr:resumenContr(lineas), contr, porRes:agrupar('residente') };
 }
 
 /* ─── Render ───────────────────────────────────────────────────────────── */
@@ -727,15 +958,28 @@ function render(){
   const R = calcular(); S.R = R;
   $('pageSub').textContent = textoAlcance(R) + (S.ultimo ? ' · Datos leídos a las ' + S.ultimo.toLocaleTimeString('es-PY', { hour:'2-digit', minute:'2-digit' }) : '');
   sincronizarPanel();
-  renderAvisos(R); renderKpis(R); renderCharts(R); renderTabla(R); renderCriterios(R);
+  $('fContr').classList.toggle('f-filtro-on', !!R.contr);
+  renderAvisos(R); renderKpis(R); renderCharts(R); renderTablaContr(R); renderTabla(R); renderCriterios(R);
 }
-function origenTxt(){ const O = S.opts; return O.oc && O.cc ? 'Órdenes de compra + Caja chica' : (O.oc ? 'Solo órdenes de compra' : 'Solo caja chica'); }
+function origenTxt(){
+  const O = S.opts, n = SERIES.filter(s => O[s.k]);
+  const base = n.length === 1 ? 'Solo ' + n[0].label.toLowerCase() : n.map(s => s.label).join(' + ');
+  return base + (O.mo && O.moPend && !O.moPag ? ' (pendiente de pago)' : (O.mo && O.moPend ? ' (incluye certificados sin pagar)' : ''));
+}
 function estadoTxt(){ const O = S.opts; return O.aprob && O.pend ? '' : (O.aprob ? ' · solo aprobadas' : ' · solo pendientes de aprobación'); }
-function textoAlcance(R){ return origenTxt() + estadoTxt() + ' · ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + (R.obra ? ' · Obra ' + R.obra : ' · Todas las obras'); }
+function textoAlcance(R){ return origenTxt() + estadoTxt() + ' · ' + mesTxt(R.desde) + ' a ' + mesTxt(R.hasta) + (R.obra ? ' · Obra ' + R.obra : ' · Todas las obras') + (R.contr ? ' · Contratista ' + R.contr : ''); }
 function renderAvisos(R){
   const O = S.opts; let h = '';
   if(O.cc && S.ccError) h += '<div class="notice err">⚠️ <div><b>No se pudo leer la caja chica</b> (' + esc(S.ccError) + '). El informe muestra solo las órdenes de compra. Si necesitás la caja chica, pedí al administrador el permiso de lectura.</div></div>';
   else if(O.cc && S.ccAlcance) h += '<div class="notice warn">🔒 <div>' + esc(S.ccAlcance) + ' Los totales de caja chica pueden ser parciales.</div></div>';
+  if(O.mo && S.moError) h += '<div class="notice err">⚠️ <div><b>No se pudo leer la mano de obra</b> (' + esc(S.moError) + '). Hacen falta las tablas de órdenes de pago y certificados, y permiso de lectura sobre ellas. El resto del informe se muestra igual.</div></div>';
+  if(O.mo && !S.moError && S.moSinDetalle.length){
+    const sd = S.moSinDetalle, perdidos = sd.filter(x => !x.recuperado);
+    h += '<div class="notice warn">🧾 <div><b>' + sd.length + ' orden(es) de pago sin certificados vinculados en su detalle:</b> ' + sd.slice(0, 6).map(x => esc(x.numero) + ' (' + esc(x.contratista) + ', ' + gs(x.total) + ')').join(' · ') + (sd.length > 6 ? ' …' : '') + '. ' +
+      (perdidos.length ? 'Para ' + perdidos.length + ' de ellas se usa el total de la orden, asignado a su primera obra. ' : '') +
+      (sd.length > perdidos.length ? 'En las demás se usaron los certificados marcados con el número de la orden. ' : '') +
+      'Conviene revisarlas en Certificados → Órdenes emitidas.</div></div>';
+  }
   if(O.oc && O.sumarHist){
     const hl = R.lineas.filter(l => l.hist), hm = hl.reduce((a, l) => a + l.monto, 0);
     if(hl.length) h += '<div class="notice info">ℹ️ <div>Las <b>' + hl.length + ' OC con tipo de compra «Caja chica»</b> (' + gs(hm) + ') están <b>sumadas dentro de Órdenes de compra</b>, igual que en el Dashboard OC. Si alguna de esas compras también se cargó en el módulo Caja Chica, quedaría contada dos veces; se pueden mostrar aparte desde «Personalizar».</div></div>';
@@ -748,14 +992,15 @@ function renderAvisos(R){
 }
 function renderKpis(R){
   const T = R.T, O = S.opts;
-  const pOc = T.tot > 0 ? Math.round(T.ocM / T.tot * 100) : 0, pCc = T.tot > 0 ? 100 - pOc : 0;
+  const pct = v => T.tot > 0 ? Math.round(v / T.tot * 100) : 0, pOc = pct(T.ocM), pCc = pct(T.ccM), pMo = pct(T.moM);
   const noInc = '<div class="kpi-v kpi-na">No incluido</div><div class="kpi-s">activalo en «Personalizar»</div>';
   $('kpis').innerHTML =
-    '<div class="kpi main"><div class="kpi-l">Total de compras del período</div><div class="kpi-v" title="' + gs(T.tot) + '">' + gs(T.tot) + '</div><div class="kpi-s">' + T.nMeses + ' mes' + (T.nMeses === 1 ? '' : 'es') + ' · ' + (T.ocN + T.ccN).toLocaleString('es-PY') + ' compras</div></div>' +
+    '<div class="kpi main"><div class="kpi-l">Total del período</div><div class="kpi-v" title="' + gs(T.tot) + '">' + gs(T.tot) + '</div><div class="kpi-s">' + T.nMeses + ' mes' + (T.nMeses === 1 ? '' : 'es') + ' · ' + T.n.toLocaleString('es-PY') + ' registros</div></div>' +
     '<div class="kpi"><div class="kpi-l"><i class="dot oc"></i>Órdenes de compra</div>' + (O.oc ? '<div class="kpi-v" title="' + gs(T.ocM) + '">' + gs(T.ocM) + '</div><div class="kpi-s">' + T.ocN.toLocaleString('es-PY') + ' OC · ' + pOc + ' % del total</div>' : noInc) + '</div>' +
     '<div class="kpi"><div class="kpi-l"><i class="dot cc"></i>Caja chica</div>' + (O.cc ? '<div class="kpi-v" title="' + gs(T.ccM) + '">' + (S.ccError ? '—' : gs(T.ccM)) + '</div><div class="kpi-s">' + (S.ccError ? 'sin acceso' : T.ccN.toLocaleString('es-PY') + ' comprobantes · ' + pCc + ' % del total') + '</div>' : noInc) + '</div>' +
+    '<div class="kpi"><div class="kpi-l"><i class="dot mo"></i>Mano de obra</div>' + (O.mo ? '<div class="kpi-v" title="' + gs(T.moM) + '">' + (S.moError ? '—' : gs(T.moM)) + '</div><div class="kpi-s">' + (S.moError ? 'sin acceso' : T.moN.toLocaleString('es-PY') + ' certificados' + (T.moOps ? ' · ' + T.moOps + ' órdenes' : '') + ' · ' + pMo + ' %' + (O.moPend && O.moPag && T.moPendM > 0 ? '<br>sin pagar: ' + gs(T.moPendM) : '')) + '</div>' : noInc) + '</div>' +
     '<div class="kpi"><div class="kpi-l">Promedio mensual</div><div class="kpi-v" title="' + gs(T.prom) + '">' + gs(T.prom) + '</div><div class="kpi-s">sobre ' + T.nMeses + ' mes' + (T.nMeses === 1 ? '' : 'es') + '</div></div>' +
-    '<div class="kpi"><div class="kpi-l">Mes con más compras</div><div class="kpi-v" style="font-size:18px">' + (T.max ? esc(mesTxt(T.max.k)) : '—') + '</div><div class="kpi-s">' + (T.max ? gs(T.max.tot) : 'sin compras en el período') + '</div></div>';
+    '<div class="kpi"><div class="kpi-l">Mes de mayor monto</div><div class="kpi-v" style="font-size:18px">' + (T.max ? esc(mesTxt(T.max.k)) : '—') + '</div><div class="kpi-s">' + (T.max ? gs(T.max.tot) : 'sin compras en el período') + '</div></div>';
 }
 
 /* ─── Gráficos ─────────────────────────────────────────────────────────── */
@@ -767,10 +1012,10 @@ const TICK_M = { color:'#8B93A7', font:{ size:10.5, family:'Inter' } };
    Si el monto completo no entra en el ancho de la barra, se usa el formato corto (₲ 24,1 M). */
 const VAL_FONT = 'Inter, Helvetica, Arial, sans-serif';
 function valPartes(chart, i){
-  return chart.data.datasets.map((d, j) => ({ v:Number(d.data[i]) || 0, color:d.backgroundColor, sig:/caja/i.test(d.label) ? 'CC' : 'OC', meta:chart.getDatasetMeta(j) }))
-    .filter(p => !p.meta.hidden);
+  return chart.data.datasets.map((d, j) => ({ v:Number(d.data[i]) || 0, color:d.backgroundColor, sig:d.sig || 'OC', meta:chart.getDatasetMeta(j) }))
+    .filter(p => !p.meta.hidden && p.v);
 }
-function valDetalle(){ return S.opts.gValores && S.opts.gDetalle && S.opts.oc && S.opts.cc; }
+function valDetalle(vk, n){ return !!S.opts[vk] && S.opts.gDetalle && (n == null ? seriesActivas().length : n) > 1; }
 // Dibuja «■ OC 207,9 M   ■ CC 8,7 M» empezando en x (alineado a la izquierda); devuelve el ancho
 function valLineaPartes(ctx, partes, fmt, x, y, k, medir){
   let w = 0; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -787,10 +1032,11 @@ function valLineaPartes(ctx, partes, fmt, x, y, k, medir){
 const VALORES_PLUGIN = {
   id:'valoresBarra',
   afterDatasetsDraw(chart, args, opts){
-    if(!S.opts.gValores || !opts || !opts.fmt) return;
-    const k = opts.k || 1, ctx = chart.ctx, horiz = chart.options.indexAxis === 'y', det = valDetalle();
+    if(!opts || !opts.fmt || !S.opts[opts.vk]) return;
+    const k = opts.k || 1, ctx = chart.ctx, horiz = chart.options.indexAxis === 'y';
     const metas = chart.data.datasets.map((d, i) => chart.getDatasetMeta(i)).filter(m => !m.hidden && m.data.length);
     if(!metas.length) return;
+    const det = valDetalle(opts.vk, metas.length);
     const n = chart.data.labels.length, F1 = '700 ' + (11 * k) + 'px ' + VAL_FONT, F2 = '500 ' + (9.5 * k) + 'px ' + VAL_FONT;
     const fPart = opts.corto || opts.fmt;
     ctx.save();
@@ -805,7 +1051,7 @@ const VALORES_PLUGIN = {
       if(horiz){
         const x = ext + 6 * k;
         ctx.font = F1; ctx.textAlign = 'left'; ctx.fillStyle = '#1F3864';
-        if(det){
+        if(det && partes.length > 1){
           ctx.fillText(txt, x, el0.y - 6 * k);
           ctx.font = F2; valLineaPartes(ctx, partes, fPart, x, el0.y + 7 * k, k);
         } else ctx.fillText(txt, x, el0.y);
@@ -815,10 +1061,10 @@ const VALORES_PLUGIN = {
         if(opts.corto && ctx.measureText(txt).width > slot) txt = opts.corto(tot);
         if(ctx.measureText(txt).width > slot + 8 * k) continue;   // no entra ni corto: se omite (queda el tooltip)
         let y = ext - 9 * k;
-        if(det){
-          // de abajo hacia arriba: CC, OC y el total arriba de todo
+        if(det && partes.length > 1){
+          // de abajo hacia arriba en el mismo orden que el apilado (OC, CC, MO) y el total arriba de todo
           ctx.font = F2;
-          const lineas = partes.slice().reverse().map(p => [p]);
+          const lineas = partes.map(p => [p]);
           const anchos = lineas.map(l => valLineaPartes(ctx, l, fPart, 0, 0, k, true));
           if(Math.max(...anchos) <= slot + 8 * k){
             lineas.forEach((l, j) => { valLineaPartes(ctx, l, fPart, el0.x - anchos[j] / 2, y, k); y -= 13 * k; });
@@ -833,18 +1079,18 @@ const VALORES_PLUGIN = {
   }
 };
 // Espacio extra para que el monto no se corte: arriba (barras verticales) o a la derecha (horizontales)
-function padValores(horiz, items, fmt, k, corto){
+function padValores(horiz, items, fmt, k, corto, vk, series){
   k = k || 1;
   const base = { top:4 * k, right:8 * k, bottom:0, left:0 };
-  if(!S.opts.gValores) return base;
-  const det = valDetalle();
-  if(!horiz) return Object.assign(base, { top:(det ? 48 : 20) * k });
+  if(!S.opts[vk]) return base;
+  const act = series || seriesActivas(), det = valDetalle(vk, act.length);
+  if(!horiz) return Object.assign(base, { top:(det ? 20 + 13 * act.length : 20) * k });
   const c = document.createElement('canvas').getContext('2d');
   let w = 0;
   (items || []).forEach(a => {
-    const tot = (S.opts.oc ? a.oc : 0) + (S.opts.cc ? a.cc : 0);
+    const tot = act.reduce((t, s) => t + (a[s.k] || 0), 0);
     c.font = '700 ' + (11 * k) + 'px ' + VAL_FONT; w = Math.max(w, c.measureText(fmt(tot)).width);
-    if(det){ c.font = '500 ' + (9.5 * k) + 'px ' + VAL_FONT; w = Math.max(w, valLineaPartes(c, [{ sig:'OC', v:a.oc }, { sig:'CC', v:a.cc }], corto || fmt, 0, 0, k, true)); }
+    if(det){ c.font = '500 ' + (9.5 * k) + 'px ' + VAL_FONT; w = Math.max(w, valLineaPartes(c, act.filter(s => a[s.k]).map(s => ({ sig:s.corto, v:a[s.k] })), corto || fmt, 0, 0, k, true)); }
   });
   return Object.assign(base, { right:Math.ceil(w) + 14 * k });
 }
@@ -854,31 +1100,36 @@ function ejesVert(k, fmtY, extraY){
   return { x:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3', width:k }, ticks:Object.assign({ maxRotation:0, autoSkip:true, padding:4 * k }, tk(TICK, k)) },
            y:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5', lineWidth:k }, ticks:Object.assign({ maxTicksLimit:6, padding:6 * k }, fmtY ? { callback:fmtY } : {}, extraY || {}, tk(TICK_M, k)) } };
 }
+// v1.8 · Un dataset por origen activo; solo el de arriba lleva las esquinas redondeadas y
+// los de abajo una línea blanca que separa los tramos.
 function dsVert(O, datos, k, maxBar, stack){
-  const ds = [];
-  if(O.oc) ds.push({ label:'Órdenes de compra', data:datos.oc, backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, stack, borderColor:'#FFFFFF', borderWidth:O.cc ? { top:2 * k } : 0, borderSkipped:'bottom', borderRadius:O.cc ? 0 : { topLeft:4 * k, topRight:4 * k }, maxBarThickness:maxBar * k, categoryPercentage:0.72, barPercentage:0.9 });
-  if(O.cc) ds.push({ label:'Caja chica', data:datos.cc, backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, stack, borderWidth:0, borderSkipped:'bottom', borderRadius:{ topLeft:4 * k, topRight:4 * k }, maxBarThickness:maxBar * k, categoryPercentage:0.72, barPercentage:0.9 });
-  return ds;
+  const act = seriesActivas();
+  return act.map((s, i) => {
+    const arriba = i === act.length - 1;
+    return { label:s.label, sig:s.corto, data:datos[s.k], backgroundColor:s.color, hoverBackgroundColor:s.color, stack, borderColor:'#FFFFFF',
+      borderWidth:arriba ? 0 : { top:2 * k }, borderSkipped:'bottom', borderRadius:arriba ? { topLeft:4 * k, topRight:4 * k } : 0,
+      maxBarThickness:maxBar * k, categoryPercentage:0.72, barPercentage:0.9 };
+  });
 }
 
 function destruir(k){ if(S.charts[k]){ S.charts[k].destroy(); delete S.charts[k]; } }
-function leyendaHTML(){ const O = S.opts; return (O.oc ? '<span><i class="dot oc"></i>Órdenes de compra</span>' : '') + (O.cc ? '<span><i class="dot cc"></i>Caja chica</span>' : ''); }
+function leyendaHTML(solo){ return seriesActivas().filter(s => !solo || solo.indexOf(s.k) >= 0).map(s => '<span><i class="dot ' + s.k + '"></i>' + s.label + '</span>').join(''); }
 function tooltipBase(){ return { backgroundColor:'#FFFFFF', titleColor:'#1A2236', bodyColor:'#5A6377', borderColor:'#E2E6EE', borderWidth:1, padding:10, boxPadding:4, usePointStyle:true,
   titleFont:{ family:'Inter', weight:'700', size:12.5 }, bodyFont:{ family:'Inter', size:12 }, footerColor:'#1A2236', footerFont:{ family:'Inter', weight:'700', size:12 } }; }
 
 /* Definiciones de cada gráfico (las usan la pantalla y el PDF) ─────────── */
 function cfgTrend(R, k, tooltip){
   const O = S.opts, filas = R.filas;
-  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocM), cc:filas.map(m => m.ccM) }, k, 46, 's') }, plugins:[VALORES_PLUGIN],
-    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k }, tooltip:tooltip || { enabled:false } },
+  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocM), cc:filas.map(m => m.ccM), mo:filas.map(m => m.moM) }, k, 46, 's') }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k, null, 'vTrend') },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k, vk:'vTrend' }, tooltip:tooltip || { enabled:false } },
       scales:ejesVert(k, v => gsC(v)) } };
 }
 function cfgCant(R, k, tooltip){
   const O = S.opts, filas = R.filas;
-  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocN), cc:filas.map(m => m.ccN) }, k, 34, 'c') }, plugins:[VALORES_PLUGIN],
-    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:v => v.toLocaleString('es-PY'), k }, tooltip:tooltip || { enabled:false } },
+  return { type:'bar', data:{ labels:filas.map(m => mesCorto(m.k)), datasets:dsVert(O, { oc:filas.map(m => m.ocN), cc:filas.map(m => m.ccN), mo:filas.map(m => m.moN) }, k, 34, 'c') }, plugins:[VALORES_PLUGIN],
+    options:{ responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false }, layout:{ padding:padValores(false, null, null, k, null, 'vCant') },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:v => v.toLocaleString('es-PY'), k, vk:'vCant' }, tooltip:tooltip || { enabled:false } },
       scales:ejesVert(k, null, { precision:0 }) } };
 }
 // Ranking horizontal: los TOP primeros; el resto se informa en una nota (no como barra, para no aplastar la escala)
@@ -892,36 +1143,57 @@ function notaResto(rk, etiquetaPlural){
   if(!rk.resto) return '';
   return '+ ' + rk.resto.toLocaleString('es-PY') + ' ' + etiquetaPlural + ' más: ' + gs(rk.restoTot) + (rk.total > 0 ? ' (' + Math.round(rk.restoTot / rk.total * 100) + ' % del período)' : '');
 }
-function cfgBarrasH(rk, k, tooltip, maxLen){
-  const O = S.opts, items = rk.items, ML = maxLen || 26;
+// v1.9 · Series de cada ranking. «Pagos a contratistas» separa lo pagado de lo pendiente de pago.
+const COLOR_MO_PEND = '#D8A9CB';
+function seriesRank(key){
+  const O = S.opts;
+  if(key === 'contr'){
+    if(O.moPag && O.moPend) return [{ k:'pag', label:'Pagado', corto:'Pag.', color:COLOR_MO, rgb:[156,74,134] }, { k:'pend', label:'Aprobado sin pagar', corto:'Pend.', color:COLOR_MO_PEND, rgb:[216,169,203] }];
+    return [Object.assign({}, SERIES[2], O.moPend ? { label:'Aprobado sin pagar', color:COLOR_MO_PEND, rgb:[216,169,203] } : { label:'Pagado' })];
+  }
+  const solo = RANKS[key] && RANKS[key][2];
+  return seriesActivas().filter(s => !solo || solo.indexOf(s.k) >= 0);
+}
+function cfgBarrasH(rk, k, tooltip, maxLen, key){
+  const items = rk.items, ML = maxLen || 26, vk = VK[key];
   const corto = s => s.length > ML ? s.slice(0, ML - 1) + '…' : s;
-  const ds = [];
   const comun = { stack:'s', borderSkipped:'left', categoryPercentage:0.78, barPercentage:0.86, maxBarThickness:22 * k };
-  if(O.oc) ds.push(Object.assign({ label:'Órdenes de compra', data:items.map(a => a.oc), backgroundColor:COLOR_OC, hoverBackgroundColor:COLOR_OC, borderColor:'#FFFFFF', borderWidth:O.cc ? { right:2 * k } : 0, borderRadius:O.cc ? 0 : { topRight:4 * k, bottomRight:4 * k } }, comun));
-  if(O.cc) ds.push(Object.assign({ label:'Caja chica', data:items.map(a => a.cc), backgroundColor:COLOR_CC, hoverBackgroundColor:COLOR_CC, borderWidth:0, borderRadius:{ topRight:4 * k, bottomRight:4 * k } }, comun));
+  // Solo las series que tienen algo en este ranking (p. ej. proveedores: sin mano de obra)
+  const act = seriesRank(key).filter(s => items.some(a => a[s.k]));
+  const ds = act.map((s, i) => {
+    const fin = i === act.length - 1;
+    return Object.assign({ label:s.label, sig:s.corto, data:items.map(a => a[s.k]), backgroundColor:s.color, hoverBackgroundColor:s.color, borderColor:'#FFFFFF',
+      borderWidth:fin ? 0 : { right:2 * k }, borderRadius:fin ? { topRight:4 * k, bottomRight:4 * k } : 0 }, comun);
+  });
   return { type:'bar', data:{ labels:items.map(a => corto(a.nombre)), datasets:ds }, plugins:[VALORES_PLUGIN],
     options:{ indexAxis:'y', responsive:k === 1, maintainAspectRatio:false, animation:k === 1 ? { duration:250 } : false, interaction:{ mode:'index', intersect:false, axis:'y' },
-      layout:{ padding:padValores(true, items, gs, k, gsC) },
-      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k }, tooltip:tooltip || { enabled:false } },
+      layout:{ padding:padValores(true, items, gs, k, gsC, vk, act) },
+      plugins:{ legend:{ display:false }, valoresBarra:{ fmt:gs, corto:gsC, k, vk }, tooltip:tooltip || { enabled:false } },
       scales:{ x:{ stacked:true, beginAtZero:true, border:{ display:false }, grid:{ color:'#EEF0F5', lineWidth:k }, ticks:Object.assign({ callback:v => gsC(v), maxTicksLimit:5, padding:4 * k }, tk(TICK_M, k)) },
                y:{ stacked:true, grid:{ display:false }, border:{ color:'#D5DAE3', width:k }, ticks:Object.assign({ padding:6 * k }, tk(TICK, k)) } } } };
 }
-const RANKS = { obra:['porObraTot', 'obras'], prov:['porProv', 'proveedores'], res:['porRes', 'residentes'] };
+const RANKS = { obra:['porObraTot', 'obras'], prov:['porProv', 'proveedores', ['oc','cc']], contr:['porContr', 'contratistas', ['mo']], res:['porRes', 'residentes'] };
 
 function renderCharts(R){
   const O = S.opts;
-  document.querySelectorAll('.legend-dyn').forEach(e => { e.innerHTML = leyendaHTML(); });
+  document.querySelectorAll('.legend-dyn').forEach(e => { e.innerHTML = leyendaHTML(e.closest('#cardProv') ? ['oc','cc'] : null); });
   const vis = { gTrend:'cardTrend', gObra:'cardObra', gProv:'cardProv', gRes:'cardRes', gCant:'cardCant' };
   Object.keys(vis).forEach(k => $(vis[k]).classList.toggle('hidden', !O[k]));
-  $('gridA').classList.toggle('hidden', !O.gObra && !O.gProv);
+  // Los rankings que dependen de un origen se ocultan si ese origen no está incluido
+  const verProv = O.gProv && (O.oc || O.cc), verContr = O.gContr && O.mo && !S.moError;
+  $('cardProv').classList.toggle('hidden', !verProv);
+  $('gridC').classList.toggle('hidden', !verContr);
+  $('contrLeg').innerHTML = seriesRank('contr').map(s => '<span><i class="dot" style="background:' + s.color + '"></i>' + s.label + '</span>').join('');
+  if(verContr) chartBarrasH('contr', 'chContr', R); else destruir('contr');
+  $('gridA').classList.toggle('hidden', !O.gObra && !verProv);
   $('gridB').classList.toggle('hidden', !O.gRes && !O.gCant);
   if(O.gTrend) chartTrend(R); else destruir('trend');
   if(O.gObra) chartBarrasH('obra', 'chObra', R); else destruir('obra');
-  if(O.gProv) chartBarrasH('prov', 'chProv', R); else destruir('prov');
+  if(verProv) chartBarrasH('prov', 'chProv', R); else destruir('prov');
   if(O.gRes) chartBarrasH('res', 'chRes', R); else destruir('res');
   if(O.gCant) chartCantidad(R); else destruir('cant');
   // Cada tarjeta de la fila ocupa todo el ancho si su compañera está oculta
-  $('cardObra').classList.toggle('full', O.gObra && !O.gProv); $('cardProv').classList.toggle('full', O.gProv && !O.gObra);
+  $('cardObra').classList.toggle('full', O.gObra && !verProv); $('cardProv').classList.toggle('full', verProv && !O.gObra);
   $('cardRes').classList.toggle('full', O.gRes && !O.gCant); $('cardCant').classList.toggle('full', O.gCant && !O.gRes);
 }
 function chartTrend(R){
@@ -934,7 +1206,8 @@ function chartTrend(R){
     const m = filas[i];
     tip.innerHTML = '<div class="tt-h">' + esc(mesTxt(m.k)) + '</div>' +
       (O.oc ? '<div class="tt-r"><span><i class="dot oc"></i>Órdenes de compra (' + m.ocN + ')</span><b>' + gs(m.ocM) + '</b></div>' : '') +
-      (O.cc ? '<div class="tt-r"><span><i class="dot cc"></i>Caja chica (' + m.ccN + ')</span><b>' + gs(m.ccM) + '</b></div>' : '') +
+      (O.cc && !S.ccError ? '<div class="tt-r"><span><i class="dot cc"></i>Caja chica (' + m.ccN + ')</span><b>' + gs(m.ccM) + '</b></div>' : '') +
+      (O.mo && !S.moError ? '<div class="tt-r"><span><i class="dot mo"></i>Mano de obra (' + m.moN + ' cert.)</span><b>' + gs(m.moM) + '</b></div>' : '') +
       '<div class="tt-r tt-t"><span>Total del mes</span><b>' + gs(m.tot) + '</b></div>' +
       (m.var != null && isFinite(m.var) ? '<div class="tt-r"><span>Variación vs. mes anterior</span><b style="font-weight:600">' + (Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %</b></div>' : '') +
       (m.hiM ? '<div class="tt-r"><span style="font-style:italic">OC caja chica (hist.) · no suma</span><b style="font-weight:500">' + gs(m.hiM) + '</b></div>' : '');
@@ -950,7 +1223,7 @@ function chartBarrasH(key, canvasId, R){
   destruir(key);
   const rk = rankItems(R[RANKS[key][0]]), items = rk.items;
   const cv = $(canvasId), wrap = cv.parentNode, card = wrap.parentNode;
-  wrap.style.height = Math.max(120, items.length * (valDetalle() ? 40 : 30) + 40) + 'px';
+  wrap.style.height = Math.max(120, items.length * (valDetalle(VK[key], seriesRank(key).length) ? 40 : 30) + 40) + 'px';
   const vacio = card.querySelector('.ch-vacio');
   if(vacio) vacio.classList.toggle('hidden', items.length > 0);
   let nota = card.querySelector('.ch-nota');
@@ -964,7 +1237,7 @@ function chartBarrasH(key, canvasId, R){
     label: c => ' ' + c.dataset.label + ': ' + gs(c.parsed.x),
     footer: c => { const a = items[c[0].dataIndex]; return 'Total ' + gs(a.tot) + (rk.total > 0 ? ' · ' + Math.round(a.tot / rk.total * 100) + ' % del período' : ''); },
   };
-  S.charts[key] = new Chart(cv, cfgBarrasH(rk, 1, tt));
+  S.charts[key] = new Chart(cv, cfgBarrasH(rk, 1, tt, key === 'contr' ? 40 : 26, key));
 }
 function chartCantidad(R){
   destruir('cant');
@@ -972,8 +1245,8 @@ function chartCantidad(R){
   const tt = tooltipBase();
   tt.callbacks = {
     title: c => mesTxt(filas[c[0].dataIndex].k),
-    label: c => ' ' + c.dataset.label + ': ' + c.parsed.y.toLocaleString('es-PY') + (c.datasetIndex === 0 && O.oc ? ' OC' : ' comprobantes'),
-    footer: c => { const m = filas[c[0].dataIndex]; const n = (O.oc ? m.ocN : 0) + (O.cc ? m.ccN : 0); return 'Total ' + n.toLocaleString('es-PY') + ' compras · promedio ' + gs(n ? m.tot / n : 0); },
+    label: c => ' ' + c.dataset.label + ': ' + c.parsed.y.toLocaleString('es-PY') + ({ OC:' OC', CC:' comprobantes', MO:' certificados' }[c.dataset.sig] || ''),
+    footer: c => { const m = filas[c[0].dataIndex]; const n = m.ocN + m.ccN + m.moN; return 'Total ' + n.toLocaleString('es-PY') + ' registros · promedio ' + gs(n ? m.tot / n : 0); },
   };
   S.charts.cant = new Chart($('chCant'), cfgCant(R, 1, tt));
 }
@@ -996,6 +1269,42 @@ function imagenGraficoPdf(cfg, wmm, hmm){
   return img;
 }
 
+/* ─── v1.9 · Resumen por contratista ───────────────────────────────────── */
+function urlEstadoCuenta(n){ return 'axc_certificacion.html?ec=' + encodeURIComponent(n); }
+function renderTablaContr(R){
+  const O = S.opts, card = $('cardTContr');
+  const ver = O.tContr && O.mo && !S.moError;
+  card.classList.toggle('hidden', !ver);
+  if(!ver) return;
+  const L = R.resContr, conPend = O.moPend;
+  if(!L.length){ $('tablaContr').innerHTML = '<div class="empty">Sin certificados de mano de obra en el período.</div>'; return; }
+  const T = L.reduce((t, a) => { ['nCert','pag','ant','pres','ret','neto','pend','nPend'].forEach(k => { t[k] += a[k]; }); a.ops.forEach(o => t.ops.add(o)); return t; }, { nCert:0, pag:0, ant:0, pres:0, ret:0, neto:0, pend:0, nPend:0, ops:new Set() });
+  const dsc = v => v > 0.5 ? '<span class="desc">− ' + gs(v) + '</span>' : '<span class="n">—</span>';
+  let h = '<table class="tm tc"><thead><tr><th class="l">Contratista</th><th>Certificados</th><th>Órdenes de pago</th><th title="Monto bruto de los certificados pagados">Certificado pagado</th>' +
+    '<th title="Anticipos y préstamos descontados en las órdenes, en proporción a cada certificado">Anticipos y préstamos</th><th>Retenciones</th><th title="Lo que realmente se transfirió">Neto transferido</th>' +
+    (conPend ? '<th title="Certificados aprobados que todavía no tienen orden de pago">Aprobado sin pagar</th>' : '') + '<th>Último pago</th><th></th></tr></thead><tbody>';
+  L.forEach(a => {
+    h += '<tr' + (R.contr && norm(R.contr) === norm(a.nombre) ? ' class="sel"' : '') + '><td class="l"><button class="lnk-c" data-fcontr="' + esc(a.nombre) + '" title="Ver solo este contratista">' + esc(a.nombre) + '</button>' +
+      (a.nObras > 1 ? ' <span class="n">· ' + a.nObras + ' obras</span>' : '') + '</td>' +
+      '<td><span class="n">' + (a.nCert || '—') + '</span></td><td><span class="n">' + (a.nOps || '—') + '</span></td><td>' + gs(a.pag) + '</td>' +
+      '<td>' + dsc(a.ant + a.pres) + '</td><td>' + dsc(a.ret) + '</td><td class="tot">' + gs(a.neto) + '</td>' +
+      (conPend ? '<td>' + (a.pend ? '<span class="pend">' + gs(a.pend) + '</span> <span class="n">(' + a.nPend + ')</span>' : '<span class="n">—</span>') + '</td>' : '') +
+      '<td>' + (a.ultimo ? fechaCorta(a.ultimo) : '<span class="n">—</span>') + '</td>' +
+      '<td class="acc">' + (a.nombre !== '(sin contratista)' ? '<a href="' + urlEstadoCuenta(a.nombre) + '" target="_blank" rel="noopener" title="Abrir su estado de cuenta en Certificados: contratos, certificados, cuenta corriente y pagos">Estado de cuenta ↗</a>' : '') + '</td></tr>';
+  });
+  h += '</tbody><tfoot><tr><td class="l">Total' + (L.length > 1 ? ' (' + L.length + ' contratistas)' : '') + '</td><td>' + T.nCert + '</td><td>' + T.ops.size + '</td><td>' + gs(T.pag) + '</td><td>' + (T.ant + T.pres > 0.5 ? '− ' + gs(T.ant + T.pres) : '—') + '</td><td>' + (T.ret > 0.5 ? '− ' + gs(T.ret) : '—') + '</td><td>' + gs(T.neto) + '</td>' +
+    (conPend ? '<td>' + (T.pend ? gs(T.pend) : '—') + '</td>' : '') + '<td></td><td></td></tr></tfoot></table>' +
+    '<div class="criterios">Los descuentos de cada orden de pago se reparten entre sus certificados en proporción al monto, para que el neto cuadre aunque se filtre por obra o por mes. El certificado pagado es el monto bruto que suma en los gráficos; el neto es lo que salió de la cuenta en esas órdenes. Los anticipos entregados por adelantado se ven en el estado de cuenta de cada contratista.</div>';
+  $('tablaContr').innerHTML = h;
+  $('tablaContr').querySelectorAll('[data-fcontr]').forEach(b => b.addEventListener('click', function(){
+    const n = this.dataset.fcontr, sc = $('fContr');
+    sc.value = norm(sc.value) === norm(n) ? '' : n;
+    if(sc.value !== '' && sc.value !== n){ toast('El contratista no está en la lista del filtro.', 'error'); sc.value = ''; }
+    S.abiertos = {}; S.abiertosObra = {}; render();
+    if(sc.value) toast('Mostrando solo ' + n + '. Para volver a ver todos, elegí «Todos los contratistas».');
+  }));
+}
+
 /* ─── Tabla mensual ────────────────────────────────────────────────────── */
 function varHTML(v){
   if(v == null || !isFinite(v)) return '<span class="n">—</span>';
@@ -1008,6 +1317,7 @@ function columnasMes(R){
   const O = S.opts, cols = [];
   if(O.oc){ cols.push({ k:'ocN', t:'OC (cant.)', dot:'oc', cant:true }); cols.push({ k:'ocM', t:'Órdenes de compra' }); }
   if(O.cc){ cols.push({ k:'ccN', t:'CC (cant.)', dot:'cc', cant:true, cc:true }); cols.push({ k:'ccM', t:'Caja chica', cc:true }); }
+  if(O.mo){ cols.push({ k:'moN', t:'Cert. (cant.)', dot:'mo', cant:true, mo:true }); cols.push({ k:'moM', t:'Mano de obra', mo:true }); }
   cols.push({ k:'tot', t:'Total del mes', tot:true });
   cols.push({ k:'var', t:'Var. mes ant.', var:true });
   if(R.T.hiN > 0) cols.push({ k:'hiM', t:'OC por caja chica (histórico · no suma)', hist:true });
@@ -1017,7 +1327,7 @@ function renderTabla(R){
   const O = S.opts, cols = columnasMes(R), nCol = cols.length + 1;
   if(!R.filas.length){ $('tabla').innerHTML = '<div class="empty">No hay meses en el rango elegido.</div>'; return; }
   const celda = (c, m) => {
-    if(c.cc && S.ccError) return '<td>—</td>';
+    if((c.cc && S.ccError) || (c.mo && S.moError)) return '<td>—</td>';
     if(c.cant) return '<td><span class="n">' + (m[c.k] || '—') + '</span></td>';
     if(c.var) return '<td>' + varHTML(m.var) + '</td>';
     if(c.hist) return '<td class="hist">' + (m.hiM ? gs(m.hiM) + ' <span class="n">(' + m.hiN + ')</span>' : '—') + '</td>';
@@ -1028,7 +1338,7 @@ function renderTabla(R){
     const ab = !!S.abiertos[m.k];
     h += '<tr class="mes' + (m.tot === 0 && m.hiM === 0 ? ' vacio' : '') + (ab ? ' abierto' : '') + '" data-k="' + m.k + '"><td class="l mes-n"><span class="car">▸</span>' + esc(mesTxt(m.k)) + '</td>' + cols.map(c => celda(c, m)).join('') + '</tr>';
     if(!ab) return;
-    const obs = Object.values(m.obras).map(o => Object.assign({ tot:o.oc + o.cc }, o)).sort((a, b) => b.tot - a.tot || b.hi - a.hi);
+    const obs = Object.values(m.obras).map(o => Object.assign({ tot:o.oc + o.cc + o.mo }, o)).sort((a, b) => b.tot - a.tot || b.hi - a.hi);
     if(!obs.length){ h += '<tr class="det"><td class="l" colspan="' + nCol + '">Sin compras en este mes.</td></tr>'; return; }
     h += '<tr class="det-h"><td class="l">Obra</td>' + cols.map(c => '<td>' + (c.cant ? '' : (c.var ? '% del mes' : (c.hist ? 'OC caja chica (hist.)' : esc(c.tot ? 'Total' : c.t)))) + '</td>').join('') + '</tr>';
     obs.forEach(o => {
@@ -1037,7 +1347,7 @@ function renderTabla(R){
         if(c.cant) return '<td></td>';
         if(c.var) return '<td>' + (m.tot > 0 ? Math.round(o.tot / m.tot * 100) + ' %' : '—') + '</td>';
         if(c.hist) return '<td class="hist">' + (o.hi ? gs(o.hi) : '—') + '</td>';
-        const v = c.k === 'ocM' ? o.oc : (c.k === 'ccM' ? o.cc : o.tot);
+        const v = c.k === 'ocM' ? o.oc : (c.k === 'ccM' ? o.cc : (c.k === 'moM' ? o.mo : o.tot));
         return '<td>' + (c.tot ? '<b>' + gs(v) + '</b>' : gs(v)) + '</td>';
       };
       h += '<tr class="det obra' + (abO ? ' abierto' : '') + '" data-ko="' + esc(ko) + '" title="Ver las compras de esta obra en el mes"><td class="l"><span class="car">▸</span>' + esc(o.obra) + '</td>' + cols.map(co).join('') + '</tr>';
@@ -1046,7 +1356,7 @@ function renderTabla(R){
   });
   const T = R.T;
   const tf = c => {
-    if(c.cc && S.ccError) return '<td>—</td>';
+    if((c.cc && S.ccError) || (c.mo && S.moError)) return '<td>—</td>';
     if(c.cant) return '<td>' + T[c.k].toLocaleString('es-PY') + '</td>';
     if(c.var) return '<td></td>';
     if(c.hist) return '<td class="hist">' + gs(T.hiM) + '</td>';
@@ -1054,7 +1364,7 @@ function renderTabla(R){
   };
   const tp = c => {
     if(c.cant || c.var || c.hist) return '<td></td>';
-    if(c.cc && S.ccError) return '<td>—</td>';
+    if((c.cc && S.ccError) || (c.mo && S.moError)) return '<td>—</td>';
     return '<td>' + gs(T.nMeses ? T[c.k] / T.nMeses : 0) + '</td>';
   };
   h += '</tbody><tfoot><tr><td class="l">Total del período</td>' + cols.map(tf).join('') + '</tr><tr class="prom"><td class="l">Promedio mensual</td>' + cols.map(tp).join('') + '</tr></tfoot></table>';
@@ -1073,12 +1383,12 @@ function lineasObraMes(R, k, obraK){
 function fechaCorta(f){ const p = String(f || '').slice(0,10).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : (f || ''); }
 function estadoChip(e){
   const n = norm(e);
-  const c = n === 'aprobado' || n === 'archivado' ? 'ok' : (n === 'observado' ? 'obs' : (n === 'rechazado' || n === 'anulada' || n === 'anulado' ? 'baja' : 'pend'));
+  const c = n === 'pagado' ? 'pag' : /sin pagar/.test(n) ? 'pend' : n === 'aprobado' || n === 'archivado' ? 'ok' : (n === 'observado' ? 'obs' : (n === 'rechazado' || n === 'anulada' || n === 'anulado' ? 'baja' : 'pend'));
   return '<span class="est ' + c + '">' + esc(e ? e.charAt(0).toUpperCase() + e.slice(1) : '—') + '</span>';
 }
 function drillHTML(R, k, obraK){
   const L = lineasObraMes(R, k, obraK);
-  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), hi = L.filter(l => l.clase === 'hi');
+  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), mo = L.filter(l => l.clase === 'mo'), hi = L.filter(l => l.clase === 'hi');
   const suma = a => a.reduce((t, l) => t + (Number(l.monto) || 0), 0);
   const bloque = function(titulo, cls, arr, cols, filaFn, nota){
     if(!arr.length) return '';
@@ -1092,16 +1402,22 @@ function drillHTML(R, k, obraK){
   const filaOc = l => '<tr data-compra="' + esc(l.id) + '" data-src="oc" title="Ver los ítems de esta orden"><td>' + fechaCorta(l.fecha) + '</td><td class="num">' + esc(l.numero) + (l.hist && l.clase === 'oc' ? ' <span class="tag-h">hist.</span>' : '') + '</td><td>' + esc(l.proveedor || '—') + '</td><td>' + esc(l.sector || '—') + '</td><td>' + esc(l.residente || '—') + '</td><td>' + esc(l.tipo || '—') + '</td><td>' + estadoChip(l.estado) + '</td><td class="r">' + gs(l.monto) + '</td>' + ver + '</tr>';
   const colsCc = [{ t:'Fecha' },{ t:'N°' },{ t:'Comprobante' },{ t:'Proveedor' },{ t:'Rubro' },{ t:'Concepto' },{ t:'Residente' },{ t:'Estado' },{ t:'Monto', r:1 }];
   const filaCc = l => '<tr data-compra="' + esc(l.id) + '" data-src="cc" title="Ver el detalle de este comprobante"><td>' + fechaCorta(l.fecha) + '</td><td class="num">' + esc(l.numero) + '</td><td>' + esc(l.comprobante || '—') + '</td><td>' + esc(l.proveedor || '—') + '</td><td>' + esc(l.rubro || '—') + '</td><td class="conc">' + esc(l.concepto || '—') + '</td><td>' + esc(l.residente || '—') + '</td><td>' + estadoChip(l.estado) + '</td><td class="r">' + gs(l.monto) + '</td>' + ver + '</tr>';
+  const colsMo = [{ t:'Fecha' },{ t:'Certificado' },{ t:'Contratista' },{ t:'Contrato' },{ t:'Orden de pago' },{ t:'Residente' },{ t:'Estado' },{ t:'Monto', r:1 }];
+  const filaMo = l => (l.id != null ? '<tr data-compra="' + esc(l.id) + '" data-src="mo" title="Ver los trabajos de este certificado">' : '<tr title="Orden de pago sin certificados vinculados">') +
+    '<td>' + fechaCorta(l.fecha) + '</td><td class="num">' + esc(l.numero) + (l.sinCert ? ' <span class="tag-mo">sin certificado</span>' : '') + '</td><td>' + esc(l.contratista || '—') + '</td><td>' + esc((l.ref && l.ref.contrato) || '—') + '</td>' +
+    '<td>' + (l.op ? esc(l.op) + (S.opts.moMes === 'cert' && l.fechaPago ? ' <span class="n">· ' + fechaCorta(l.fechaPago) + '</span>' : '') : '<span class="n">—</span>') + '</td><td>' + esc(l.residente || '—') + '</td><td>' + estadoChip(l.estado) + '</td><td class="r">' + gs(l.monto) + '</td>' + (l.id != null ? ver : '<td></td>') + '</tr>';
   const kEsc = esc(k), oEsc = esc(obraK);
   const partes = [];
   if(S.opts.oc) partes.push(oc.length + ' OC');
   if(S.opts.cc) partes.push(cc.length + ' comprobantes de caja chica');
+  if(S.opts.mo) partes.push(mo.length + ' certificados');
   return '<div class="drill">' +
-    '<div class="dr-h"><div><div class="dr-ob">' + esc(obraK) + '</div><div class="dr-sub">' + esc(mesTxt(k)) + ' · ' + partes.join(' · ') + ' · total <b>' + gs(suma(oc) + suma(cc)) + '</b> · hacé clic en una compra para ver sus ítems</div></div>' +
+    '<div class="dr-h"><div><div class="dr-ob">' + esc(obraK) + '</div><div class="dr-sub">' + esc(mesTxt(k)) + ' · ' + partes.join(' · ') + ' · total <b>' + gs(suma(oc) + suma(cc) + suma(mo)) + '</b> · hacé clic en una fila para ver su detalle</div></div>' +
     '<div class="dr-acc"><button class="btn btn-xls btn-sm" data-xls-obra="' + oEsc + '" data-mes="' + kEsc + '">⬇ Excel</button><button class="btn btn-pdf btn-sm" data-pdf-obra="' + oEsc + '" data-mes="' + kEsc + '">📄 PDF de esta obra</button></div></div>' +
     (L.length ? '' : '<div class="empty">Sin compras registradas.</div>') +
     bloque('Órdenes de compra', 'oc', oc, colsOc, filaOc) +
     (S.opts.cc && S.ccError ? '<div class="notice err" style="margin:10px 0 0">No se pudo leer la caja chica.</div>' : bloque('Caja chica', 'cc', cc, colsCc, filaCc)) +
+    (S.opts.mo && S.moError ? '<div class="notice err" style="margin:10px 0 0">No se pudo leer la mano de obra.</div>' : bloque('Mano de obra · certificados de contratistas', 'mo', mo, colsMo, filaMo, S.opts.moMes === 'cert' ? 'mes según la fecha del certificado' : 'mes según la fecha de la orden de pago')) +
     bloque('OC por caja chica (histórico)', 'hi', hi, colsOc, filaOc, 'informativo · no se suma al total') +
   '</div>';
 }
@@ -1114,9 +1430,9 @@ document.addEventListener('keydown', function(ev){ if(ev.key === 'Escape' && !$(
 function campo(l, v){ return v == null || String(v).trim() === '' ? '' : '<div class="mc-f"><span>' + esc(l) + '</span><b>' + esc(v) + '</b></div>'; }
 function cant(n){ return (Number(n) || 0).toLocaleString('es-PY', { maximumFractionDigits:3 }); }
 async function abrirCompra(src, id){
-  const cab = src === 'oc' ? S.ocs.find(o => String(o.id) === String(id)) : S.ccs.find(c => String(c.id) === String(id));
-  if(!cab){ toast('No se encontró la compra.', 'error'); return; }
-  COMPRA = { src, cab, items:null, adj:null, err:null };
+  const cab = src === 'oc' ? S.ocs.find(o => String(o.id) === String(id)) : (src === 'mo' ? S.certs.find(c => String(c.id) === String(id)) : S.ccs.find(c => String(c.id) === String(id)));
+  if(!cab){ toast('No se encontró el registro.', 'error'); return; }
+  COMPRA = { src, cab, items:null, adj:null, err:null, mo:src === 'mo' ? (S.mo || []).find(l => String(l.certId) === String(id)) : null };
   $('modalCompra').classList.remove('hidden');
   pintarCompra();
   try{
@@ -1124,6 +1440,13 @@ async function abrirCompra(src, id){
       const [ri, ra] = await Promise.all([
         sb.from('ordenes_compra_items').select('*').eq('oc_id', cab.id).order('orden', { ascending:true }),
         sb.from('oc_adjuntos').select('*').eq('oc_id', cab.id),
+      ]);
+      if(ri.error) throw ri.error;
+      COMPRA.items = ri.data || []; COMPRA.adj = ra.error ? [] : (ra.data || []);
+    } else if(src === 'mo'){
+      const [ri, ra] = await Promise.all([
+        sb.from('certificado_items').select('*').eq('certificado_id', cab.id).order('orden', { ascending:true }),
+        sb.from('certificado_adjuntos').select('*').eq('certificado_id', cab.id),
       ]);
       if(ri.error) throw ri.error;
       COMPRA.items = ri.data || []; COMPRA.adj = ra.error ? [] : (ra.data || []);
@@ -1140,44 +1463,57 @@ async function abrirCompra(src, id){
 }
 function itemsCompra(){
   const C = COMPRA; if(!C || !C.items) return [];
+  if(C.src === 'mo') return C.items.map(it => ({ desc:it.descripcion || it.rubro_desc || '—',
+    extra:[it.rubro_codigo, it.rubro_desc && it.rubro_desc !== it.descripcion ? it.rubro_desc : '', it.sector, it.ubicacion, it.trabajo_admin ? 'Trabajo por adm. ' + it.trabajo_admin : ''].filter(Boolean).join(' · '),
+    cant:it.cantidad, un:it.unidad || '', pu:it.precio_unit, sub:it.subtotal != null ? it.subtotal : (Number(it.cantidad) || 0) * (Number(it.precio_unit) || 0) }));
   return C.items.map(it => C.src === 'oc'
     ? { desc:it.producto_nombre || '—', extra:[it.rubro_codigo, it.sector, it.trabajo_admin ? 'Trabajo por adm. ' + it.trabajo_admin : (it.presupuesto || '')].filter(Boolean).join(' · '), cant:it.cantidad, un:it.unidad || '', pu:it.precio_unit, sub:it.subtotal != null ? it.subtotal : (Number(it.cantidad) || 0) * (Number(it.precio_unit) || 0) }
     : { desc:it.concepto || it.producto_nombre || '—', extra:it.concepto && it.producto_nombre && it.producto_nombre !== it.concepto ? it.producto_nombre : '', cant:it.cantidad, un:it.unidad || '', pu:it.costo_unit, sub:it.subtotal != null ? it.subtotal : (Number(it.cantidad) || 0) * (Number(it.costo_unit) || 0) });
 }
 function pintarCompra(){
   const C = COMPRA; if(!C) return;
-  const c = C.cab, esOC = C.src === 'oc';
+  const c = C.cab, esOC = C.src === 'oc', esMO = C.src === 'mo';
   const total = esOC ? Number(c.valor_total) || 0 : Number(c.total) || 0;
-  const numero = esOC ? ocNumero(c) : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante');
-  const info = esOC
+  const numero = esOC ? ocNumero(c) : (esMO ? (c.numero || 'Certificado') : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante'));
+  const L = C.mo, op = L && L.op;
+  const info = esMO
+    ? campo('Fecha del certificado', fechaCorta(c.fecha)) + campo('Obra', (L && L.obra) || c.obra) + campo('Sector', c.sector) + campo('Contratista', c.contratista) + campo('Contrato', L && L.contrato) + campo('Presupuesto', c.presupuesto) + campo('Medido por', soloNombre(c.medido_por || c.creado_por)) + campo('Aprobado por', soloNombre(c.aprobado_por)) + campo('Estado del pago', op ? 'Pagado en ' + op.numero : 'Pendiente de pago')
+    : esOC
     ? campo('Fecha', fechaCorta(c.fecha)) + campo('Obra', c.obra) + campo('Sector', c.sector) + campo('Proveedor', c.proveedor) + campo('Vendedor', c.vendedor) + campo('Residente', c.residente) + campo('Contratista', c.contratista) + campo('Tipo de compra', c.tipo_compra) + campo('Presupuesto', c.presupuesto) + campo('Rubro', c.rubro) + campo('Pago', c.pagado === true ? 'Pagada' : (['Solicitado','Observado','Aprobado'].includes(c.estado) ? 'Pendiente de pago' : ''))
     : campo('Fecha', fechaCorta(c.fecha)) + campo('Comprobante', ((c.tipo_comprobante || '') + ' ' + (c.nro_factura || '')).trim()) + campo('Proveedor', c.proveedor) + campo('RUC', c.ruc) + campo('Vendedor', c.vendedor) + campo('Obra', c.obra) + campo('Sector', c.sector) + campo('Rubro', c.rubro) + campo('Residente', c.residente) + campo('Contratista', c.contratista);
-  const nota = esOC ? (c.observacion || '') : (c.comentario || '');
+  const nota = (esOC || esMO) ? (c.observacion || '') : (c.comentario || '');
+  const opBox = esMO ? (op
+    ? '<div class="mc-op">' + campo('Orden de pago', op.numero) + campo('Fecha de pago', fechaCorta(op.fecha)) + campo('Este certificado en la orden', gs(L.monto)) +
+      campo('Total certificados de la orden', gs(op.total_certificado)) + campo('Anticipo descontado', Number(op.desc_anticipo) ? '− ' + gs(op.desc_anticipo) : '') + campo('Préstamo descontado', Number(op.desc_prestamo) ? '− ' + gs(op.desc_prestamo) : '') +
+      campo('Retención', Number(op.retencion) ? '− ' + gs(op.retencion) : '') + campo('Neto transferido (orden completa)', gs(op.neto_pagar)) + campo('Emitida por', soloNombre(op.emitido_por)) + '</div>' +
+      (Math.abs((Number(c.total) || 0) - L.monto) > 1 ? '<div class="mc-dif">El certificado vale hoy ' + gs(c.total) + ', pero la orden de pago lo registra por ' + gs(L.monto) + '. El informe usa el monto de la orden.</div>' : '')
+    : '<div class="mc-op">' + campo('Orden de pago', 'Todavía no se emitió') + campo('Monto a pagar', gs(c.total)) + '</div>') : '';
   let cuerpo;
   if(C.items === null) cuerpo = '<div class="mc-load"><div class="spinner sm"></div>Cargando el detalle…</div>';
   else if(C.err) cuerpo = '<div class="notice err">No se pudo leer el detalle (' + esc(C.err) + ').</div>';
   else {
     const its = itemsCompra(), suma = its.reduce((t, i) => t + (Number(i.sub) || 0), 0);
     cuerpo = its.length
-      ? '<table class="dr mc-it"><thead><tr><th>#</th><th>' + (esOC ? 'Producto' : 'Concepto') + '</th><th class="r">Cant.</th><th>Unid.</th><th class="r">' + (esOC ? 'Precio unit.' : 'Costo unit.') + '</th><th class="r">Subtotal</th></tr></thead><tbody>' +
+      ? '<table class="dr mc-it"><thead><tr><th>#</th><th>' + (esOC ? 'Producto' : (esMO ? 'Trabajo' : 'Concepto')) + '</th><th class="r">Cant.</th><th>Unid.</th><th class="r">' + (esOC || esMO ? 'Precio unit.' : 'Costo unit.') + '</th><th class="r">Subtotal</th></tr></thead><tbody>' +
         its.map((i, n) => '<tr><td class="n">' + (n + 1) + '</td><td class="conc"><b class="it-d">' + esc(i.desc) + '</b>' + (i.extra ? '<div class="it-x">' + esc(i.extra) + '</div>' : '') + '</td><td class="r">' + cant(i.cant) + '</td><td>' + esc(i.un) + '</td><td class="r">' + gs(i.pu) + '</td><td class="r"><b>' + gs(i.sub) + '</b></td></tr>').join('') +
         '</tbody><tfoot><tr><td colspan="5" class="r">Total</td><td class="r">' + gs(suma) + '</td></tr></tfoot></table>' +
-        (Math.abs(suma - total) > 1 ? '<div class="mc-dif">La suma de los ítems (' + gs(suma) + ') no coincide con el total de la ' + (esOC ? 'orden' : 'factura') + ' (' + gs(total) + ').</div>' : '')
-      : '<div class="empty" style="padding:18px">Sin ítems cargados' + (esOC ? '' : ' (comprobante cargado sin detalle)') + '.</div>';
+        (Math.abs(suma - total) > 1 ? '<div class="mc-dif">La suma de los ítems (' + gs(suma) + ') no coincide con el total ' + (esOC ? 'de la orden' : (esMO ? 'del certificado' : 'de la factura')) + ' (' + gs(total) + ').</div>' : '')
+      : '<div class="empty" style="padding:18px">Sin ítems cargados' + (esOC || esMO ? '' : ' (comprobante cargado sin detalle)') + '.</div>';
     if(C.adj && C.adj.length) cuerpo += '<div class="mc-adj"><div class="mc-sec">Adjuntos (' + C.adj.length + ')</div>' + C.adj.map((a, i) => '<button class="adj" data-adj="' + i + '">📎 ' + esc(esOC ? (a.nombre_archivo || 'Archivo') : (a.nombre || 'Archivo')) + (esOC && a.tipo ? ' <span class="n">· ' + esc(a.tipo) + '</span>' : '') + '</button>').join('') + '</div>';
   }
   $('mcBody').innerHTML =
-    '<div class="mc-h"><div><div class="mc-tipo ' + C.src + '">' + (esOC ? 'Orden de compra' : 'Caja chica') + '</div><div class="mc-num">' + esc(numero) + ' ' + estadoChip(c.estado) + '</div></div>' +
-    '<div class="mc-tot"><span>Total</span><b>' + gs(total) + '</b></div></div>' +
-    '<div class="mc-info">' + info + '</div>' +
-    (nota ? '<div class="mc-nota"><span>' + (esOC ? 'Observación' : 'Comentario') + '</span>' + esc(nota) + '</div>' : '') +
-    '<div class="mc-sec">' + (esOC ? 'Ítems de la orden' : 'Detalle del comprobante') + '</div>' + cuerpo;
+    '<div class="mc-h"><div><div class="mc-tipo ' + C.src + '">' + (esOC ? 'Orden de compra' : (esMO ? 'Certificado de obra · mano de obra' : 'Caja chica')) + '</div><div class="mc-num">' + esc(numero) + ' ' + estadoChip(esMO ? (op ? 'Pagado' : c.estado) : c.estado) + '</div></div>' +
+    '<div class="mc-tot"><span>' + (esMO ? 'Total del certificado' : 'Total') + '</span><b>' + gs(total) + '</b></div></div>' +
+    '<div class="mc-info">' + info + '</div>' + opBox +
+    (nota ? '<div class="mc-nota"><span>' + (esOC || esMO ? 'Observación' : 'Comentario') + '</span>' + esc(nota) + '</div>' : '') +
+    '<div class="mc-sec">' + (esOC ? 'Ítems de la orden' : (esMO ? 'Trabajos certificados' : 'Detalle del comprobante')) + '</div>' + cuerpo;
   $('mcBody').querySelectorAll('[data-adj]').forEach(b => b.addEventListener('click', function(){ verAdjunto(Number(this.dataset.adj)); }));
   $('mcPdf').disabled = !(C.items && !C.err);
+  $('mcPdf').textContent = '📄 PDF de ' + (esMO ? 'este certificado' : 'esta compra');
 }
 async function verAdjunto(i){
   const C = COMPRA; if(!C || !C.adj || !C.adj[i]) return;
-  const a = C.adj[i], bucket = C.src === 'oc' ? 'oc-adjuntos' : 'caja-chica', path = C.src === 'oc' ? a.url_storage : a.storage_path;
+  const a = C.adj[i], bucket = (C.src === 'oc' || C.src === 'mo') ? 'oc-adjuntos' : 'caja-chica', path = (C.src === 'oc' || C.src === 'mo') ? a.url_storage : a.storage_path;
   if(!path){ toast('El adjunto no tiene archivo asociado.', 'error'); return; }
   const w = window.open('', '_blank');
   try{
@@ -1232,12 +1568,16 @@ const PDF_TABLA = { theme:'grid', styles:{ font:'helvetica', fontSize:8, cellPad
 function pdfCompra(){
   if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   const C = COMPRA; if(!C) return;
-  const c = C.cab, esOC = C.src === 'oc';
-  const numero = esOC ? ocNumero(c) : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante');
+  const c = C.cab, esOC = C.src === 'oc', esMO = C.src === 'mo', L = C.mo, op = L && L.op;
+  const numero = esOC ? ocNumero(c) : (esMO ? (c.numero || 'Certificado') : (c.numero_orden != null ? 'CC ' + c.numero_orden : 'Comprobante'));
   const total = esOC ? Number(c.valor_total) || 0 : Number(c.total) || 0;
   const P = pdfNuevo('portrait'), { doc, W, H, M } = P;
-  pdfEncabezado(P, esOC ? 'DETALLE DE ORDEN DE COMPRA' : 'DETALLE DE COMPROBANTE DE CAJA CHICA', numero + ' - ' + (c.obra || '') + ' - ' + fechaCorta(c.fecha));
-  const campos = esOC
+  const TIT = esOC ? 'DETALLE DE ORDEN DE COMPRA' : (esMO ? 'DETALLE DE CERTIFICADO DE OBRA' : 'DETALLE DE COMPROBANTE DE CAJA CHICA');
+  pdfEncabezado(P, TIT, numero + ' - ' + ((L && L.obra) || c.obra || '') + ' - ' + fechaCorta(c.fecha));
+  const campos = esMO
+    ? [['Certificado', numero], ['Estado', op ? 'Pagado' : c.estado], ['Fecha', fechaCorta(c.fecha)], ['Obra', (L && L.obra) || c.obra], ['Sector', c.sector], ['Contratista', c.contratista], ['Contrato', L && L.contrato], ['Presupuesto', c.presupuesto], ['Aprobado por', soloNombre(c.aprobado_por)],
+       ['Orden de pago', op ? op.numero + ' del ' + fechaCorta(op.fecha) : 'Pendiente'], ['Monto en la orden', op ? gsPdf(L.monto) : ''], ['Total del certificado', gsPdf(total)]]
+    : esOC
     ? [['Numero', numero], ['Estado', c.estado], ['Fecha', fechaCorta(c.fecha)], ['Obra', c.obra], ['Sector', c.sector], ['Proveedor', c.proveedor], ['Vendedor', c.vendedor], ['Residente', c.residente], ['Contratista', c.contratista], ['Tipo de compra', c.tipo_compra], ['Presupuesto', c.presupuesto], ['Total', gsPdf(total)]]
     : [['Numero', numero], ['Estado', c.estado], ['Fecha', fechaCorta(c.fecha)], ['Comprobante', ((c.tipo_comprobante || '') + ' ' + (c.nro_factura || '')).trim()], ['Proveedor', c.proveedor], ['RUC', c.ruc], ['Obra', c.obra], ['Sector', c.sector], ['Rubro', c.rubro], ['Residente', c.residente], ['Contratista', c.contratista], ['Total', gsPdf(total)]];
   const vis = campos.filter(f => f[1] != null && String(f[1]).trim() !== '');
@@ -1249,22 +1589,29 @@ function pdfCompra(){
     const t = pdfSafe(f[1]); doc.text(t.length > 34 ? t.slice(0, 33) + '.' : t, x, yy + 4.6);
   });
   y += Math.ceil(vis.length / 3) * 10 + 3;
-  const nota = esOC ? c.observacion : c.comentario;
+  const nota = (esOC || esMO) ? c.observacion : c.comentario;
   if(nota && String(nota).trim()){
     const lines = doc.splitTextToSize(pdfSafe(nota), W - M * 2 - 8);
     doc.setFillColor(255, 248, 225); doc.setDrawColor(200, 160, 40); doc.setLineWidth(0.3);
     doc.roundedRect(M, y, W - M * 2, 7 + lines.length * 4.2, 2, 2, 'FD');
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(122, 86, 0); doc.text(esOC ? 'OBSERVACION' : 'COMENTARIO', M + 3, y + 4.2);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.8); doc.setTextColor(122, 86, 0); doc.text(esOC || esMO ? 'OBSERVACION' : 'COMENTARIO', M + 3, y + 4.2);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(60, 50, 30); doc.text(lines, M + 3, y + 8.5);
     y += 10 + lines.length * 4.2;
   }
   const its = itemsCompra();
   doc.autoTable(Object.assign({}, PDF_TABLA, { startY:y + 2, margin:{ left:M, right:M, top:32 },
-    head:[['#', esOC ? 'Producto' : 'Concepto', 'Cant.', 'Unid.', esOC ? 'Precio unit.' : 'Costo unit.', 'Subtotal']],
+    head:[['#', esOC ? 'Producto' : (esMO ? 'Trabajo' : 'Concepto'), 'Cant.', 'Unid.', esOC || esMO ? 'Precio unit.' : 'Costo unit.', 'Subtotal']],
     body:its.length ? its.map((i, n) => [String(n + 1), pdfSafe(i.desc) + (i.extra ? '\n' + pdfSafe(i.extra) : ''), cant(i.cant), pdfSafe(i.un), gsPdf(i.pu), gsPdf(i.sub)]) : [['', 'Sin items cargados', '', '', '', '']],
     foot:[[{ content:'Total', colSpan:5, styles:{ halign:'right' } }, { content:gsPdf(its.reduce((t, i) => t + (Number(i.sub) || 0), 0)), styles:{ halign:'right' } }]],
     columnStyles:{ 0:{ cellWidth:8, halign:'center' }, 2:{ halign:'right', cellWidth:18 }, 3:{ cellWidth:16 }, 4:{ halign:'right', cellWidth:28 }, 5:{ halign:'right', cellWidth:30, fontStyle:'bold' } },
-    didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, esOC ? 'DETALLE DE ORDEN DE COMPRA' : 'DETALLE DE COMPROBANTE DE CAJA CHICA', numero); } }));
+    didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, TIT, numero); } }));
+  if(esMO && op){
+    let yo = doc.lastAutoTable.finalY + 7; if(yo > H - 40){ doc.addPage(); pdfEncabezado(P, TIT, numero); yo = 34; }
+    doc.autoTable(Object.assign({}, PDF_TABLA, { startY:yo, margin:{ left:M, right:M, top:32 }, tableWidth:110,
+      head:[[{ content:'Orden de pago ' + pdfSafe(op.numero) + ' (completa)', colSpan:2 }]],
+      body:[['Total de certificados de la orden', gsPdf(op.total_certificado)], ['Anticipo descontado', '- ' + gsPdf(op.desc_anticipo)], ['Prestamo descontado', '- ' + gsPdf(op.desc_prestamo)], ['Retencion', '- ' + gsPdf(op.retencion)]],
+      foot:[['Neto transferido', gsPdf(op.neto_pagar)]], columnStyles:{ 1:{ halign:'right', cellWidth:38 } } }));
+  }
   if(C.adj && C.adj.length){
     let ya = doc.lastAutoTable.finalY + 7; if(ya > H - 20){ doc.addPage(); pdfEncabezado(P, 'ADJUNTOS', numero); ya = 34; }
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(31, 56, 100); doc.text('Adjuntos en el sistema:', M, ya);
@@ -1272,7 +1619,7 @@ function pdfCompra(){
     doc.text(doc.splitTextToSize(pdfSafe(C.adj.map(a => esOC ? (a.nombre_archivo || 'Archivo') : (a.nombre || 'Archivo')).join('  |  ')), W - M * 2), M, ya + 4.5);
   }
   pdfPies(P);
-  doc.save('AXC_' + (esOC ? '' : 'CajaChica_') + String(numero).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9-]+/g, '_').replace(/^_|_$/g,'') + '.pdf');
+  doc.save('AXC_' + (esOC ? '' : (esMO ? 'Certificado_' : 'CajaChica_')) + String(numero).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9-]+/g, '_').replace(/^_|_$/g,'') + '.pdf');
   toast('PDF generado');
 }
 
@@ -1280,13 +1627,14 @@ function xlsObraMes(k, obraK){
   if(!window.XLSX){ toast('La librería de Excel todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   const L = lineasObraMes(S.R, k, obraK);
   const aoa = [['Detalle de compras · ' + obraK + ' · ' + mesTxt(k)], ['Generado: ' + new Date().toLocaleString('es-PY') + ' por ' + ((S.perfil && S.perfil.nombre) || (S.user && S.user.email) || '')], [],
-    ['Origen','Fecha','Número','Comprobante','Proveedor','Sector','Residente','Tipo de compra / Rubro','Concepto / Observación','Estado','Monto (₲)','¿Suma al total?']];
+    ['Origen','Fecha','Número','Comprobante / Orden de pago','Proveedor / Contratista','Sector','Residente','Tipo de compra / Rubro','Concepto / Observación','Estado','Monto (₲)','¿Suma al total?']];
   L.forEach(l => aoa.push([l.origen, fechaCorta(l.fecha), l.numero, l.comprobante || '', l.proveedor, l.sector, l.residente, l.src === 'cc' ? l.rubro : l.tipo, l.concepto, l.estado, Math.round(l.monto), l.suma ? 'Sí' : 'No']));
-  const tOc = L.filter(l => l.clase === 'oc').reduce((t, l) => t + l.monto, 0), tCc = L.filter(l => l.clase === 'cc').reduce((t, l) => t + l.monto, 0);
+  const tSum = cl => L.filter(l => l.clase === cl).reduce((t, l) => t + l.monto, 0), tOc = tSum('oc'), tCc = tSum('cc'), tMo = tSum('mo');
   aoa.push([]);
   if(S.opts.oc) aoa.push(['Total órdenes de compra','','','','','','','','','',Math.round(tOc)]);
   if(S.opts.cc) aoa.push(['Total caja chica','','','','','','','','','',Math.round(tCc)]);
-  aoa.push(['Total de la obra en el mes','','','','','','','','','',Math.round(tOc + tCc)]);
+  if(S.opts.mo) aoa.push(['Total mano de obra','','','','','','','','','',Math.round(tMo)]);
+  aoa.push(['Total de la obra en el mes','','','','','','','','','',Math.round(tOc + tCc + tMo)]);
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{ wch:30 },{ wch:11 },{ wch:14 },{ wch:18 },{ wch:28 },{ wch:14 },{ wch:18 },{ wch:22 },{ wch:40 },{ wch:12 },{ wch:16 },{ wch:12 }];
   const ref = XLSX.utils.decode_range(ws['!ref']); for(let r = ref.s.r; r <= ref.e.r; r++){ const c = ws[XLSX.utils.encode_cell({ r, c:10 })]; if(c && typeof c.v === 'number') c.z = '#,##0'; }
@@ -1297,13 +1645,14 @@ function xlsObraMes(k, obraK){
 function pdfObraMes(k, obraK){
   if(!window.jspdf || !window.jspdf.jsPDF){ toast('La librería de PDF todavía está cargando; probá de nuevo en unos segundos.', 'error'); return; }
   const L = lineasObraMes(S.R, k, obraK);
-  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), hi = L.filter(l => l.clase === 'hi');
+  const oc = L.filter(l => l.clase === 'oc'), cc = L.filter(l => l.clase === 'cc'), mo = L.filter(l => l.clase === 'mo'), hi = L.filter(l => l.clase === 'hi');
   const suma = a => a.reduce((t, l) => t + (Number(l.monto) || 0), 0);
   const P = pdfNuevo('landscape'), { doc, W, H, M } = P, sub = obraK + ' - ' + mesTxt(k) + ' - ' + origenTxt() + estadoTxt();
   pdfEncabezado(P, 'DETALLE DE COMPRAS POR OBRA', sub);
-  const kp = [['TOTAL DE LA OBRA EN EL MES', gsPdf(suma(oc) + suma(cc)), mesTxt(k)]];
+  const kp = [['TOTAL DE LA OBRA EN EL MES', gsPdf(suma(oc) + suma(cc) + suma(mo)), mesTxt(k)]];
   if(S.opts.oc) kp.push(['ORDENES DE COMPRA', gsPdf(suma(oc)), oc.length + ' OC']);
   if(S.opts.cc) kp.push(['CAJA CHICA', S.ccError ? 'Sin acceso' : gsPdf(suma(cc)), S.ccError ? '' : cc.length + ' comprobantes']);
+  if(S.opts.mo) kp.push(['MANO DE OBRA', S.moError ? 'Sin acceso' : gsPdf(suma(mo)), S.moError ? '' : mo.length + ' certificados']);
   pdfKpis(P, 33, kp);
   let y = 59;
   const estilos = Object.assign({}, PDF_TABLA, { margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'DETALLE DE COMPRAS POR OBRA', sub); } });
@@ -1328,6 +1677,15 @@ function pdfObraMes(k, obraK){
       columnStyles:{ 0:{ cellWidth:20 }, 1:{ cellWidth:16 }, 5:{ cellWidth:60 }, 7:{ cellWidth:20 }, 8:{ halign:'right', cellWidth:28, fontStyle:'bold' } } }));
     y = doc.lastAutoTable.finalY + 8;
   }
+  if(mo.length && !S.moError){
+    titulo('Mano de obra - certificados de contratistas', mo.length);
+    doc.autoTable(Object.assign({}, estilos, { startY:y,
+      head:[['Fecha','Certificado','Contratista','Contrato','Orden de pago','Residente','Estado','Monto']],
+      body:mo.map(l => [fechaCorta(l.fecha), pdfSafe(l.numero), pdfSafe(l.contratista || '-'), pdfSafe((l.ref && l.ref.contrato) || '-'), pdfSafe(l.op || '-'), pdfSafe(l.residente || '-'), pdfSafe(l.estado || '-'), gsPdf(l.monto)]),
+      foot:[[{ content:'Total mano de obra', colSpan:7, styles:{ halign:'right' } }, { content:gsPdf(suma(mo)), styles:{ halign:'right' } }]],
+      columnStyles:{ 0:{ cellWidth:20 }, 1:{ cellWidth:30 }, 4:{ cellWidth:28 }, 6:{ cellWidth:30 }, 7:{ halign:'right', cellWidth:30, fontStyle:'bold' } } }));
+    y = doc.lastAutoTable.finalY + 8;
+  }
   if(hi.length) tabOc(hi, 'OC por caja chica (historico) - informativo, no suma', true);
   if(!L.length){ doc.setFontSize(10); doc.setTextColor(120,128,145); doc.text('Sin compras registradas para esta obra en el mes.', M, y + 4); }
   pdfPies(P);
@@ -1338,11 +1696,14 @@ function pdfObraMes(k, obraK){
 /* ─── Criterios ────────────────────────────────────────────────────────── */
 function textoCriterios(){
   const O = S.opts, est = O.aprob && O.pend ? null : (O.aprob ? 'solo aprobadas' : 'solo pendientes de aprobación');
-  const out = [['Mes', 'según la fecha de la orden de compra y la fecha del comprobante de caja chica.']];
+  const out = [['Mes', 'según la fecha de la orden de compra, la del comprobante de caja chica y, en mano de obra, la que se indica abajo.']];
   if(O.oc) out.push(['Órdenes de compra', est ? 'se incluyen ' + (O.aprob ? 'solo las aprobadas y archivadas' : 'solo las solicitadas y observadas') + '. Las OC de prueba no cuentan.' : 'cuentan todas menos las rechazadas y anuladas (aprobadas, solicitadas, observadas y archivadas). Las OC de prueba no cuentan.']);
   else out.push(['Órdenes de compra', 'no incluidas en esta vista.']);
   if(O.cc) out.push(['Caja chica', est ? 'se incluyen ' + (O.aprob ? 'solo los comprobantes aprobados' : 'solo los comprobantes solicitados y observados') + '.' : 'cuentan los comprobantes solicitados, observados y aprobados. No cuentan los anulados, rechazados ni borradores.']);
   else out.push(['Caja chica', 'no incluida en esta vista.']);
+  if(O.mo) out.push(['Mano de obra', (O.moPag ? 'monto bruto de cada certificado incluido en una orden de pago vigente (no anulada)' : '') + (O.moPag && O.moPend ? '; además ' : '') + (O.moPend ? 'certificados aprobados que todavía no tienen orden de pago (fecha del certificado)' : '') +
+    '. Mes según ' + (O.moMes === 'cert' ? 'la fecha del certificado' : 'la fecha de la orden de pago') + '. Los anticipos y préstamos descontados en la orden ya están dentro del monto bruto y no se suman aparte. Los avances previos al sistema no cuentan.']);
+  else out.push(['Mano de obra', 'no incluida en esta vista.']);
   if(O.oc) out.push(['OC por caja chica (histórico)', O.sumarHist ? 'se suman dentro de Órdenes de compra, igual que en el Dashboard OC (si una compra también se cargó en el módulo Caja Chica, quedaría contada dos veces).' : 'se muestran aparte y no se suman al total, para no contar dos veces una compra que también pudo cargarse en Caja Chica.']);
   return out;
 }
@@ -1364,20 +1725,31 @@ $('btnXls').addEventListener('click', function(){
   res.push([]); textoCriterios().forEach(c => res.push([c[0] + ': ' + c[1]]));
   if(S.opts.cc && S.ccAlcance) res.push([S.ccAlcance]);
   if(S.opts.cc && S.ccError) res.push(['No se pudo leer la caja chica: ' + S.ccError]);
-  const det = [['Mes','Obra','Órdenes de compra (₲)','Caja chica (₲)','Total (₲)','OC por caja chica histórico (₲) · no suma']];
-  R.filas.forEach(m => Object.values(m.obras).sort((a, b) => (b.oc + b.cc) - (a.oc + a.cc)).forEach(o => det.push([mesTxt(m.k), o.obra, Math.round(o.oc), Math.round(o.cc), Math.round(o.oc + o.cc), Math.round(o.hi)])));
-  const rank = (lista, nombre) => [[nombre, 'Órdenes de compra (₲)', 'Caja chica (₲)', 'Total (₲)', '% del período']].concat(lista.map(a => [a.nombre, Math.round(a.oc), Math.round(a.cc), Math.round(a.tot), R.T.tot > 0 ? Math.round(a.tot / R.T.tot * 1000) / 10 : 0]));
-  const lin = [['Origen','Fecha','Número','Comprobante','Obra','Sector','Proveedor','Residente','Estado','Tipo de compra / Rubro','Concepto / Observación','Monto (₲)','¿Suma al total?']];
+  if(S.opts.mo && S.moError) res.push(['No se pudo leer la mano de obra: ' + S.moError]);
+  const det = [['Mes','Obra','Órdenes de compra (₲)','Caja chica (₲)','Mano de obra (₲)','Total (₲)','OC por caja chica histórico (₲) · no suma']];
+  R.filas.forEach(m => Object.values(m.obras).sort((a, b) => (b.oc + b.cc + b.mo) - (a.oc + a.cc + a.mo)).forEach(o => det.push([mesTxt(m.k), o.obra, Math.round(o.oc), Math.round(o.cc), Math.round(o.mo), Math.round(o.oc + o.cc + o.mo), Math.round(o.hi)])));
+  const rank = (lista, nombre, base) => [[nombre, 'Órdenes de compra (₲)', 'Caja chica (₲)', 'Mano de obra (₲)', 'Total (₲)', '% del período']].concat(lista.map(a => [a.nombre, Math.round(a.oc), Math.round(a.cc), Math.round(a.mo), Math.round(a.tot), (base || R.T.tot) > 0 ? Math.round(a.tot / (base || R.T.tot) * 1000) / 10 : 0]));
+  const cert = [['Fecha (mes del informe)','Certificado','Obra','Contratista','Contrato','Sector','Orden de pago','Fecha de pago','Fecha del certificado','Residente','Estado','Monto (₲)']];
+  R.lineas.filter(l => l.src === 'mo').forEach(l => cert.push([fechaCorta(l.fecha), l.numero, l.obra, l.contratista, (l.ref && l.ref.contrato) || '', l.sector, l.op || '', l.fechaPago ? fechaCorta(l.fechaPago) : '', fechaCorta(l.fechaCert), l.residente, l.estado, Math.round(l.monto)]));
+  const lin = [['Origen','Fecha','Número','Comprobante / Orden de pago','Obra','Sector','Proveedor / Contratista','Residente','Estado','Tipo de compra / Rubro','Concepto / Observación','Monto (₲)','¿Suma al total?']];
   R.lineas.forEach(l => lin.push([l.origen, fechaCorta(l.fecha), l.numero, l.comprobante || '', l.obra, l.sector, l.proveedor, l.residente, l.estado, l.src === 'cc' ? l.rubro : l.tipo, l.concepto, Math.round(l.monto), l.suma ? 'Sí' : 'No']));
   const wb = XLSX.utils.book_new();
-  const hojas = [['Resumen mensual', res, [26,10,22,14,18,20,18,30]], ['Detalle por obra', det, [18,30,22,18,18,30]], ['Por obra', rank(R.porObraTot, 'Obra'), [32,22,18,18,14]],
-    ['Por proveedor', rank(R.porProv, 'Proveedor'), [32,22,18,18,14]], ['Por residente', rank(R.porRes, 'Residente'), [26,22,18,18,14]], ['Compras', lin, [30,11,14,18,24,14,28,22,12,22,40,16,12]]];
+  const hojas = [['Resumen mensual', res, [26,10,22,10,18,10,18,20,18,30]], ['Detalle por obra', det, [18,30,22,18,18,18,30]], ['Por obra', rank(R.porObraTot, 'Obra'), [32,22,18,18,18,14]],
+    ['Por proveedor', rank(R.porProv, 'Proveedor', R.T.ocM + R.T.ccM), [32,22,18,18,18,14]]];
+  if(S.opts.mo && !S.moError){
+    const rc = [['Contratista','Certificados pagados','Órdenes de pago','Obras','Certificado pagado (₲)','Anticipos descontados (₲)','Préstamos descontados (₲)','Retenciones (₲)','Neto transferido (₲)','Aprobado sin pagar (₲)','Certificados sin pagar','Último pago']];
+    R.resContr.forEach(a => rc.push([a.nombre, a.nCert, a.nOps, [...a.obras].join(', '), Math.round(a.pag), Math.round(a.ant), Math.round(a.pres), Math.round(a.ret), Math.round(a.neto), Math.round(a.pend), a.nPend, a.ultimo ? fechaCorta(a.ultimo) : '']));
+    rc.push([]); rc.push(['Los descuentos de cada orden se reparten entre sus certificados en proporción al monto.']);
+    hojas.push(['Por contratista', rc, [32,12,12,34,18,18,18,14,18,18,12,12]]);
+  }
+  hojas.push(['Por residente', rank(R.porRes, 'Residente'), [26,22,18,18,18,14]], ['Compras', lin, [30,11,14,20,24,14,28,22,16,22,40,16,12]]);
+  if(S.opts.mo && !S.moError) hojas.push(['Certificados', cert, [14,24,26,28,18,14,16,13,13,20,20,16]]);
   hojas.forEach(h => {
     const ws = XLSX.utils.aoa_to_sheet(h[1]); ws['!cols'] = h[2].map(w => ({ wch:w }));
     const ref = XLSX.utils.decode_range(ws['!ref']); for(let r = ref.s.r; r <= ref.e.r; r++) for(let c = ref.s.c; c <= ref.e.c; c++){ const cell = ws[XLSX.utils.encode_cell({ r, c })]; if(cell && typeof cell.v === 'number' && Math.abs(cell.v) >= 1000) cell.z = '#,##0'; }
     XLSX.utils.book_append_sheet(wb, ws, h[0]);
   });
-  XLSX.writeFile(wb, 'AXC_compras_por_mes_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + '.xlsx');
+  XLSX.writeFile(wb, 'AXC_compras_y_mano_de_obra_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + (R.contr ? '_' + norm(R.contr).replace(/[^a-z0-9]+/g, '_') : '') + '.xlsx');
   toast('Excel generado');
 });
 
@@ -1388,18 +1760,19 @@ $('btnPdf').addEventListener('click', function(){
 });
 function pdfGraficos(P, R, sub){
   const O = S.opts, { doc, W, H, M } = P;
-  const TIT = 'INFORME DE COMPRAS POR MES - GRAFICOS', Y0 = 33, YMAX = H - 13, GAP = 6;
+  const TIT = 'INFORME DE COMPRAS Y MANO DE OBRA POR MES - GRAFICOS', Y0 = 33, YMAX = H - 13, GAP = 6;
   const def = {
-    trend:{ t:'Compras por mes', s:'Monto comprado cada mes, por origen', alto:() => 74, max:() => 999 },
-    cant: { t:'Cantidad de compras por mes', s:'Ordenes y comprobantes cargados cada mes', alto:() => 74, max:() => 999 },
+    trend:{ t:'Monto por mes', s:'Monto de cada mes, por origen', alto:() => 74, max:() => 999 },
+    cant: { t:'Cantidad por mes', s:'Ordenes, comprobantes y certificados de cada mes', alto:() => 74, max:() => 999 },
     obra: { t:'Compras por obra', s:'Las ' + TOP_RANK + ' obras con mas compras del periodo', rank:'obra' },
-    prov: { t:'Principales proveedores', s:'Los ' + TOP_RANK + ' proveedores con mas compras del periodo', rank:'prov' },
+    prov: { t:'Principales proveedores', s:'Los ' + TOP_RANK + ' proveedores con mas compras del periodo (OC y caja chica)', rank:'prov' },
+    contr:{ t:'Pagos a contratistas', s:'Mano de obra por contratista en el periodo', rank:'contr' },
     res:  { t:'Compras por residente', s:'Quien cargo las compras del periodo', rank:'res' },
   };
   const activo = k => !!S.charts[k];
   Object.keys(RANKS).forEach(k => { if(def[k]){ def[k].rk = rankItems(R[RANKS[k][0]]); def[k].nota = notaResto(def[k].rk, RANKS[k][1]); def[k].alto = () => Math.min(YMAX - Y0, Math.max(56, 26 + def[k].rk.items.length * 10.5 + (def[k].nota ? 6 : 0))); def[k].max = () => 26 + def[k].rk.items.length * 18 + (def[k].nota ? 6 : 0); } });
   // Filas: evolución a todo el ancho; rankings de a dos (si queda uno solo, ocupa todo el ancho)
-  const filas = [['trend'], ['cant'], ['obra', 'prov'], ['res']].map(f => f.filter(activo)).filter(f => f.length);
+  const filas = [['trend'], ['cant'], ['obra', 'prov'], ['contr', 'res']].map(f => f.filter(activo)).filter(f => f.length);
   // Une «res» con un ranking solitario de la fila anterior, para no dejar medias hojas vacías
   for(let i = filas.length - 1; i > 0; i--){ if(filas[i].length === 1 && filas[i - 1].length === 1 && def[filas[i][0]].rank && def[filas[i - 1][0]].rank){ filas[i - 1].push(filas[i][0]); filas.splice(i, 1); } }
   if(!filas.length) return;
@@ -1418,7 +1791,7 @@ function pdfGraficos(P, R, sub){
       crecen.forEach(r => { const d = Math.min(parte, r.max - r.h); r.h += d; libre -= d; });
     }
   });
-  const ley = []; if(O.oc) ley.push(['Ordenes de compra', [58,107,181]]); if(O.cc) ley.push(['Caja chica', [181,138,18]]);
+  const leyDe = k => (RANKS[k] ? seriesRank(k) : seriesActivas()).map(s => [pdfSafe(s.label), s.rgb]);
   hojas.forEach(hj => { doc.addPage(); pdfEncabezado(P, TIT, sub); let y = Y0; hj.forEach(({ f, h }) => {
     const w = (W - M * 2 - GAP * (f.length - 1)) / f.length;
     f.forEach((k, i) => {
@@ -1427,12 +1800,12 @@ function pdfGraficos(P, R, sub){
       doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(31, 56, 100); doc.text(pdfSafe(d.t), x + 5, y + 7.5);
       doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(130, 138, 156); doc.text(pdfSafe(d.s), x + 5, y + 12);
       let lx = x + w - 5; doc.setFontSize(7.8); doc.setTextColor(90, 99, 119);
-      ley.slice().reverse().forEach(l => { const tw = doc.getTextWidth(l[0]); lx -= tw; doc.text(l[0], lx, y + 7.5); lx -= 4.2; doc.setFillColor(l[1][0], l[1][1], l[1][2]); doc.roundedRect(lx, y + 4.9, 3, 3, 0.6, 0.6, 'F'); lx -= 5; });
+      leyDe(k).reverse().forEach(l => { const tw = doc.getTextWidth(l[0]); lx -= tw; doc.text(l[0], lx, y + 7.5); lx -= 4.2; doc.setFillColor(l[1][0], l[1][1], l[1][2]); doc.roundedRect(lx, y + 4.9, 3, 3, 0.6, 0.6, 'F'); lx -= 5; });
       doc.setDrawColor(236, 239, 244); doc.setLineWidth(0.2); doc.line(x, y + 15, x + w, y + 15);
       const notaH = d.nota ? 6 : 0, iw = w - 8;
       // un ranking con pocas filas no se estira de más (queda arriba, con barras de grosor normal)
       const ih = d.rank ? Math.min(h - 18 - 3 - notaH, d.rk.items.length * 18 + 10) : h - 18 - 3 - notaH;
-      const cfg = d.rank ? cfgBarrasH(d.rk, PDF_K, null, f.length > 1 ? 24 : 40) : (k === 'trend' ? cfgTrend(R, PDF_K) : cfgCant(R, PDF_K));
+      const cfg = d.rank ? cfgBarrasH(d.rk, PDF_K, null, f.length > 1 ? 24 : 40, k) : (k === 'trend' ? cfgTrend(R, PDF_K) : cfgCant(R, PDF_K));
       const img = imagenGraficoPdf(cfg, iw, ih);
       if(img) doc.addImage(img, 'PNG', x + 4, y + 17.5, iw, ih);
       if(d.nota){ doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(110, 118, 136); doc.text(pdfSafe(d.nota), x + 5, y + 17.5 + ih + 4); }
@@ -1445,12 +1818,13 @@ function generarPdf(){
   const O = S.opts, cols = columnasMes(R);
   const P = pdfNuevo('landscape'), { doc, W, H, M } = P;
   const sub = textoAlcance(R).replace(/·/g, '-');
-  pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub);
-  const kp = [['TOTAL DEL PERIODO', gsPdf(R.T.tot), (R.T.ocN + R.T.ccN) + ' compras en ' + R.T.nMeses + ' meses']];
+  pdfEncabezado(P, 'INFORME DE COMPRAS Y MANO DE OBRA POR MES', sub);
+  const kp = [['TOTAL DEL PERIODO', gsPdf(R.T.tot), R.T.n + ' registros en ' + R.T.nMeses + ' meses']];
   if(O.oc) kp.push(['ORDENES DE COMPRA', gsPdf(R.T.ocM), R.T.ocN + ' OC - ' + (R.T.tot > 0 ? Math.round(R.T.ocM / R.T.tot * 100) : 0) + ' %']);
   if(O.cc) kp.push(['CAJA CHICA', S.ccError ? 'Sin acceso' : gsPdf(R.T.ccM), S.ccError ? '' : R.T.ccN + ' comprobantes - ' + (R.T.tot > 0 ? Math.round(R.T.ccM / R.T.tot * 100) : 0) + ' %']);
+  if(O.mo) kp.push(['MANO DE OBRA', S.moError ? 'Sin acceso' : gsPdf(R.T.moM), S.moError ? '' : R.T.moN + ' certificados - ' + (R.T.tot > 0 ? Math.round(R.T.moM / R.T.tot * 100) : 0) + ' %']);
   kp.push(['PROMEDIO MENSUAL', gsPdf(R.T.prom), 'sobre ' + R.T.nMeses + ' meses']);
-  kp.push(['MES CON MAS COMPRAS', R.T.max ? mesTxt(R.T.max.k) : '-', R.T.max ? gsPdf(R.T.max.tot) : '']);
+  kp.push(['MES DE MAYOR MONTO', R.T.max ? mesTxt(R.T.max.k) : '-', R.T.max ? gsPdf(R.T.max.tot) : '']);
   pdfKpis(P, 33, kp);
   const head = [['Mes'].concat(cols.map(c => pdfSafe(c.hist ? 'OC caja chica (hist.) - no suma' : c.t)))];
   const fmt = (c, m) => (c.cc && S.ccError) ? '-' : (c.cant ? (m[c.k] || '-') : (c.var ? ((m.var == null || !isFinite(m.var)) ? '-' : ((Math.round(m.var) > 0 ? '+' : '') + Math.round(m.var) + ' %')) : (c.hist ? (m.hiM ? gsPdf(m.hiM) + ' (' + m.hiN + ')' : '-') : gsPdf(m[c.k]))));
@@ -1462,38 +1836,69 @@ function generarPdf(){
   doc.autoTable(Object.assign({}, PDF_TABLA, { startY:58, head, body, foot, styles:Object.assign({}, PDF_TABLA.styles, { fontSize:8.5, cellPadding:2.2 }),
     headStyles:Object.assign({}, PDF_TABLA.headStyles, { halign:'right' }), footStyles:Object.assign({}, PDF_TABLA.footStyles, { halign:'right' }), columnStyles:cs,
     didParseCell:function(d){ if((d.section === 'head' || d.section === 'foot') && d.column.index === 0) d.cell.styles.halign = 'left'; },
-    margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub); } }));
+    margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS Y MANO DE OBRA POR MES', sub); } }));
   // Criterios
   let yc = doc.lastAutoTable.finalY + 7;
   const crit = textoCriterios().map(c => c[0] + ': ' + c[1]);
   if(O.cc && S.ccAlcance) crit.push('Alcance: ' + S.ccAlcance);
-  if(O.cc && S.ccError) crit.push('No se pudo leer la caja chica (' + S.ccError + '): el informe incluye solo las ordenes de compra.');
+  if(O.cc && S.ccError) crit.push('No se pudo leer la caja chica (' + S.ccError + '): el informe no la incluye.');
+  if(O.mo && S.moError) crit.push('No se pudo leer la mano de obra (' + S.moError + '): el informe no la incluye.');
+  if(O.mo && !S.moError && S.moSinDetalle.length) crit.push('Ordenes de pago sin certificados vinculados: ' + S.moSinDetalle.map(x => x.numero).join(', ') + '. Revisarlas en Certificados.');
   doc.setFontSize(7.5);
   const lines = []; crit.forEach(t => doc.splitTextToSize(pdfSafe('- ' + t), W - M * 2).forEach(l => lines.push(l)));
-  if(yc + 5 + lines.length * 3.6 > H - 14){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES', sub); yc = 34; }
+  if(yc + 5 + lines.length * 3.6 > H - 14){ doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS Y MANO DE OBRA POR MES', sub); yc = 34; }
   doc.setFont('helvetica', 'bold'); doc.setTextColor(31, 56, 100); doc.text('Como se calcula', M, yc);
   doc.setFont('helvetica', 'normal'); doc.setTextColor(90, 99, 119); doc.text(lines, M, yc + 4.5);
   // Gráficos (los que están visibles en pantalla), redibujados al tamaño de la hoja
   if(O.pdfGraf) pdfGraficos(P, R, sub);
   // Detalle por obra (opcional)
   if(O.pdfObra){
-    doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - DETALLE POR OBRA', sub);
-    const verHist = R.T.hiN > 0, b2 = [];
+    doc.addPage(); pdfEncabezado(P, 'INFORME DE COMPRAS Y MANO DE OBRA POR MES - DETALLE POR OBRA', sub);
+    const verHist = R.T.hiN > 0, b2 = [], act = SERIES.filter(s => O[s.k]), nC = 3 + act.length + (verHist ? 1 : 0);
     R.filas.forEach(m => {
-      const obs = Object.values(m.obras).sort((a, b) => (b.oc + b.cc) - (a.oc + a.cc));
+      const obs = Object.values(m.obras).sort((a, b) => (b.oc + b.cc + b.mo) - (a.oc + a.cc + a.mo));
       if(!obs.length) return;
-      b2.push([{ content:mesTxt(m.k) + '  -  Total ' + gsPdf(m.tot), colSpan: verHist ? 6 : 5, styles:{ fillColor:[234,239,247], fontStyle:'bold', textColor:[31,56,100] } }]);
-      obs.forEach(o => b2.push([pdfSafe(o.obra), gsPdf(o.oc), gsPdf(o.cc), gsPdf(o.oc + o.cc), m.tot > 0 ? Math.round((o.oc + o.cc) / m.tot * 100) + ' %' : '-'].concat(verHist ? [o.hi ? gsPdf(o.hi) : '-'] : [])));
+      b2.push([{ content:mesTxt(m.k) + '  -  Total ' + gsPdf(m.tot), colSpan:nC, styles:{ fillColor:[234,239,247], fontStyle:'bold', textColor:[31,56,100] } }]);
+      obs.forEach(o => { const t = o.oc + o.cc + o.mo; b2.push([pdfSafe(o.obra)].concat(act.map(s => gsPdf(o[s.k])), [gsPdf(t), m.tot > 0 ? Math.round(t / m.tot * 100) + ' %' : '-'], verHist ? [o.hi ? gsPdf(o.hi) : '-'] : [])); });
     });
+    const csO = { 0:{ halign:'left' } }; for(let i = 1; i < nC; i++) csO[i] = { halign:'right' };
+    csO[act.length + 1].fontStyle = 'bold'; csO[act.length + 2].cellWidth = 22; if(verHist) Object.assign(csO[nC - 1], { fontStyle:'italic', textColor:[120,128,145] });
     doc.autoTable(Object.assign({}, PDF_TABLA, { startY:32,
-      head:[['Obra', 'Ordenes de compra', 'Caja chica', 'Total', '% del mes'].concat(verHist ? ['OC caja chica (hist.) - no suma'] : [])],
-      body:b2.length ? b2 : [['Sin compras en el periodo', '', '', '', ''].concat(verHist ? [''] : [])],
-      columnStyles:{ 0:{ halign:'left' }, 1:{ halign:'right' }, 2:{ halign:'right' }, 3:{ halign:'right', fontStyle:'bold' }, 4:{ halign:'right', cellWidth:22 }, 5:{ halign:'right', fontStyle:'italic', textColor:[120,128,145] } },
+      head:[['Obra'].concat(act.map(s => pdfSafe(s.label)), ['Total', '% del mes'], verHist ? ['OC caja chica (hist.) - no suma'] : [])],
+      body:b2.length ? b2 : [[{ content:'Sin compras en el periodo', colSpan:nC }]],
+      columnStyles:csO,
       didParseCell:function(d){ if(d.section === 'head' && d.column.index > 0) d.cell.styles.halign = 'right'; },
-      margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS POR MES - DETALLE POR OBRA', sub); } }));
+      margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, 'INFORME DE COMPRAS Y MANO DE OBRA POR MES - DETALLE POR OBRA', sub); } }));
+  }
+  // v1.9 · Resumen por contratista (opcional)
+  if(O.pdfContr && O.mo && !S.moError && R.resContr.length){
+    const TR = 'INFORME DE COMPRAS Y MANO DE OBRA POR MES - RESUMEN POR CONTRATISTA', conPend = O.moPend;
+    doc.addPage(); pdfEncabezado(P, TR, sub);
+    const RC = R.resContr, sum = k => RC.reduce((t, a) => t + a[k], 0), d = v => v > 0.5 ? '- ' + gsPdf(v) : '-';
+    doc.autoTable(Object.assign({}, PDF_TABLA, { startY:32,
+      head:[['Contratista', 'Cert.', 'Ordenes', 'Certificado pagado', 'Anticipos y prestamos', 'Retenciones', 'Neto transferido'].concat(conPend ? ['Aprobado sin pagar'] : [], ['Ultimo pago'])],
+      body:RC.map(a => [pdfSafe(a.nombre), String(a.nCert || '-'), String(a.nOps || '-'), gsPdf(a.pag), d(a.ant + a.pres), d(a.ret), gsPdf(a.neto)].concat(conPend ? [a.pend ? gsPdf(a.pend) : '-'] : [], [a.ultimo ? fechaCorta(a.ultimo) : '-'])),
+      foot:[['Total', String(sum('nCert')), '', gsPdf(sum('pag')), d(sum('ant') + sum('pres')), d(sum('ret')), gsPdf(sum('neto'))].concat(conPend ? [gsPdf(sum('pend'))] : [], [''])],
+      columnStyles:{ 0:{ halign:'left' }, 1:{ halign:'right', cellWidth:14 }, 2:{ halign:'right', cellWidth:18 }, 3:{ halign:'right' }, 4:{ halign:'right', textColor:[138,58,42] }, 5:{ halign:'right', textColor:[138,58,42] }, 6:{ halign:'right', fontStyle:'bold', textColor:[31,56,100] }, 7:{ halign:'right' }, 8:{ halign:'right' } },
+      didParseCell:function(c){ if((c.section === 'head' || c.section === 'foot') && c.column.index > 0) c.cell.styles.halign = 'right'; },
+      margin:{ left:M, right:M, top:32 }, didDrawPage:function(dd){ if(dd.pageNumber > 1) pdfEncabezado(P, TR, sub); } }));
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(110, 118, 136);
+    doc.text(pdfSafe('Los descuentos de cada orden de pago se reparten entre sus certificados en proporcion al monto. El certificado pagado es el monto bruto que suma en el informe; el neto es lo transferido.'), M, doc.lastAutoTable.finalY + 5);
+  }
+  // Lista de certificados de mano de obra (opcional)
+  if(O.pdfCert && O.mo && !S.moError){
+    const LM = R.lineas.filter(l => l.src === 'mo').sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.numero).localeCompare(String(b.numero), 'es', { numeric:true }));
+    const TC = 'INFORME DE COMPRAS Y MANO DE OBRA POR MES - CERTIFICADOS';
+    doc.addPage(); pdfEncabezado(P, TC, sub);
+    doc.autoTable(Object.assign({}, PDF_TABLA, { startY:32,
+      head:[['Fecha', 'Certificado', 'Obra', 'Contratista', 'Contrato', 'Orden de pago', 'Estado', 'Monto']],
+      body:LM.length ? LM.map(l => [fechaCorta(l.fecha), pdfSafe(l.numero), pdfSafe(l.obra || '-'), pdfSafe(l.contratista || '-'), pdfSafe((l.ref && l.ref.contrato) || '-'), pdfSafe(l.op || '-'), pdfSafe(l.estado), gsPdf(l.monto)]) : [[{ content:'Sin certificados en el periodo', colSpan:8 }]],
+      foot:[[{ content:'Total mano de obra (' + LM.length + ' certificados)', colSpan:7, styles:{ halign:'right' } }, { content:gsPdf(R.T.moM), styles:{ halign:'right' } }]],
+      columnStyles:{ 0:{ cellWidth:20 }, 1:{ cellWidth:32 }, 5:{ cellWidth:28 }, 6:{ cellWidth:30 }, 7:{ halign:'right', cellWidth:30, fontStyle:'bold' } },
+      margin:{ left:M, right:M, top:32 }, didDrawPage:function(d){ if(d.pageNumber > 1) pdfEncabezado(P, TC, sub); } }));
   }
   pdfPies(P);
-  doc.save('AXC_compras_por_mes_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + '.pdf');
+  doc.save('AXC_compras_y_mano_de_obra_' + R.desde + '_a_' + R.hasta + (R.obra ? '_' + norm(R.obra).replace(/[^a-z0-9]+/g, '_') : '') + (R.contr ? '_' + norm(R.contr).replace(/[^a-z0-9]+/g, '_') : '') + '.pdf');
   toast('PDF generado');
 }
 
