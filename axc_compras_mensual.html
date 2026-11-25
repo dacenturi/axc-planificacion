@@ -15,6 +15,8 @@
 <!--
   AXC · Informe de compras por mes (Órdenes de compra + Caja chica + Mano de obra)
   v1.9 · 25/11/2026 · Desarrollado por Conexdata
+  v1.9.1: el rango arranca con la primera OC; las fechas fuera del período del sistema (mal cargadas)
+        no estiran el rango y se listan en un aviso para corregirlas.
   v1.9: casilla «₲ Montos» en cada gráfico, guardada por usuario; filtro por contratista;
         «Pagos a contratistas» separa pagado y aprobado sin pagar; tabla «Resumen por contratista»
         (descuentos, neto transferido, último pago, enlace al estado de cuenta en Certificados).
@@ -352,7 +354,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
       <button type="submit" class="login-btn" id="loginBtn">Ingresar</button>
       <div class="login-err" id="loginErr"></div>
     </form>
-    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.9</div>
+    <div class="login-foot">AXC Constructora · Desarrollado por <b>Conexdata</b> · v1.9.1</div>
   </div>
 </div>
 
@@ -515,7 +517,7 @@ table.dr{width:100%;border-collapse:collapse;font-size:12px}
     <div class="tbl-wrap" id="tabla"></div>
     <div class="criterios" id="criterios"></div>
   </div>
-  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.9</div>
+  <div class="foot">AXC Constructora · Sistema integrado de gestión · Desarrollado por Conexdata · v1.9.1</div>
 </main>
 
 <div class="modal hidden" id="modalCompra" role="dialog" aria-modal="true" aria-label="Detalle de la compra">
@@ -797,20 +799,23 @@ function estadoPasa(g){ return g && ((g === 'aprob' && S.opts.aprob) || (g === '
 
 /* ─── Filtros ──────────────────────────────────────────────────────────── */
 function prepararFiltros(){
-  const fechas = [];
-  S.ocs.forEach(o => { if(ocCuenta(o)) fechas.push(String(o.fecha).slice(0,7)); });
-  const minOc = fechas.length ? fechas.reduce((a,b) => a < b ? a : b) : '';
-  const fechasCc = S.ccs.filter(ccCuenta).map(m => String(m.fecha).slice(0,7));
-  const minCc = fechasCc.length ? fechasCc.reduce((a,b) => a < b ? a : b) : '';
-  const fechasMo = (S.mo || []).map(l => String(moFecha(l) || '').slice(0,7)).filter(Boolean);
-  const minMo = fechasMo.length ? fechasMo.reduce((a,b) => a < b ? a : b) : '';
-  // El informe arranca con la implementación de la OC (primera OC cargada)
-  S.rango.min = [minOc, minCc, minMo].filter(Boolean).sort()[0] || mesHoy();
-  S.rango.max = mesHoy();
+  /* v1.9.1 · El informe arranca con la implementación del sistema (primera OC cargada).
+     Una fecha mal tipeada (p. ej. 2006 en lugar de 2026) estiraba el rango a cientos de meses vacíos:
+     ahora los registros con fecha anterior al inicio del sistema (con 3 meses de margen) o posterior
+     al mes actual no amplían el rango y se informan en un aviso para corregirlos. */
+  const regs = [];
+  S.ocs.forEach(o => { if(ocCuenta(o)) regs.push({ m:String(o.fecha).slice(0,7), origen:'Orden de compra', numero:ocNumero(o), fecha:o.fecha, monto:Number(o.valor_total) || 0, obra:o.obra || '' }); });
+  S.ccs.forEach(c => { if(ccCuenta(c)) regs.push({ m:String(c.fecha).slice(0,7), origen:'Caja chica', numero:c.numero_orden != null ? 'CC ' + c.numero_orden : 'CC #' + c.id, fecha:c.fecha, monto:Number(c.total) || 0, obra:c.obra || '' }); });
+  (S.mo || []).forEach(l => { const f = moFecha(l); if(f) regs.push({ m:String(f).slice(0,7), origen:l.pagado ? 'Certificado (orden ' + l.opNumero + ')' : 'Certificado sin pagar', numero:l.certNumero || l.opNumero || '', fecha:f, monto:l.monto, obra:l.obra || '' }); });
+  const fOc = regs.filter(r => r.origen === 'Orden de compra').map(r => r.m).sort();
+  const hoy = mesHoy(), inicio = fOc[0] || regs.map(r => r.m).sort()[0] || hoy, piso = sumarMes(inicio, -3);
+  S.fechasRaras = regs.filter(r => r.m < piso || r.m > hoy).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  S.rango.min = regs.map(r => r.m).filter(m => m >= piso && m <= hoy).sort()[0] || hoy;
+  S.rango.max = hoy;
   const d = $('fDesde'), h = $('fHasta');
   d.min = h.min = S.rango.min; d.max = h.max = S.rango.max;
-  if(!d.value) d.value = S.rango.min;
-  if(!h.value) h.value = S.rango.max;
+  if(!d.value || d.value < S.rango.min || d.value > S.rango.max) d.value = S.rango.min;
+  if(!h.value || h.value > S.rango.max || h.value < S.rango.min) h.value = S.rango.max;
   const obras = new Set();
   S.ocs.forEach(o => { if(ocCuenta(o) && o.obra) obras.add(String(o.obra).trim()); });
   S.ccs.forEach(m => { if(ccCuenta(m) && m.obra) obras.add(String(m.obra).trim()); });
@@ -979,6 +984,11 @@ function renderAvisos(R){
       (perdidos.length ? 'Para ' + perdidos.length + ' de ellas se usa el total de la orden, asignado a su primera obra. ' : '') +
       (sd.length > perdidos.length ? 'En las demás se usaron los certificados marcados con el número de la orden. ' : '') +
       'Conviene revisarlas en Certificados → Órdenes emitidas.</div></div>';
+  }
+  if(S.fechasRaras && S.fechasRaras.length){
+    const fr = S.fechasRaras;
+    h += '<div class="notice warn">📅 <div><b>' + fr.length + ' registro(s) con fecha fuera del período del sistema</b> (antes de ' + esc(mesTxt(S.rango.min)) + ' o posterior al mes actual). Probablemente la fecha está mal cargada; no se incluyen en el informe hasta corregirla: ' +
+      fr.slice(0, 8).map(r => '<b>' + esc(r.numero) + '</b> (' + esc(r.origen) + ', ' + fechaCorta(r.fecha) + ', ' + gs(r.monto) + (r.obra ? ', ' + esc(r.obra) : '') + ')').join(' · ') + (fr.length > 8 ? ' …' : '') + '.</div></div>';
   }
   if(O.oc && O.sumarHist){
     const hl = R.lineas.filter(l => l.hist), hm = hl.reduce((a, l) => a + l.monto, 0);
