@@ -616,6 +616,7 @@ tr:hover .eord,.lin:hover .eord,.lin-card:hover .eord,.eord:focus-within{opacity
 .tb-head{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:6px 0;color:#1F3864;font-size:13.5px}
 .tb-chk{font-size:12.5px;color:#5A6272;display:flex;gap:6px;align-items:center}
 /* v13.15 · Coeficiente por línea del trabajo por administración */
+.tb-mat{font-size:10.5px;color:#7A5F0E;font-weight:600;white-space:nowrap;margin-top:1px}
 .tb-cf{width:78px;padding:4px 6px;border:1px solid #C9D0DC;border-radius:7px;font:inherit;font-size:12.5px;text-align:right;background:#fff;color:#1F3864}
 .tb-cf::placeholder{color:#9AA3B2}
 .tb-cf.on{border-color:#C8A028;background:#FFF8E6;font-weight:700}
@@ -1093,7 +1094,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.25 · muestra si el presupuesto está aprobado por el cliente · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.26 · materiales de órdenes de compra y caja chica dentro del rubro del trabajo por administración · muestra si el presupuesto está aprobado por el cliente · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -3345,14 +3346,35 @@ async function taCostos(codigos){
     const rc = await sb.from('caja_chica_movimientos')
       .select('id,trabajo_admin,total,estado,fecha,nro_factura,tipo_comprobante,proveedor,sector,residente,comentario')
       .in('trabajo_admin', codigos);
+    /* v13.26 · Líneas de caja chica con rubro del trabajo (Caja Chica v7.59): cada línea con rubro va
+       como material de ese rubro; el resto del comprobante queda como gasto general, igual que antes. */
+    const ccLin = {};
+    try{
+      const ids = (rc.data||[]).map(function(x){ return x.id; });
+      for(let i = 0; i < ids.length; i += 200){
+        const rl = await sb.from('caja_chica_movimiento_items').select('movimiento_id,concepto,cantidad,unidad,subtotal,rubro_codigo').in('movimiento_id', ids.slice(i, i+200));
+        if(rl.error) break;
+        (rl.data||[]).forEach(function(l){ if(l.rubro_codigo) (ccLin[l.movimiento_id] = ccLin[l.movimiento_id] || []).push(l); });
+      }
+    }catch(eL){ console.warn('líneas de caja chica con rubro', eL); }
     if(!rc.error) (rc.data||[]).forEach(function(x){
       const est = String(x.estado||'').trim().toUpperCase();   /* v13.13 */
       if(est === 'RECHAZADO' || est === 'ANULADO' || est === 'BORRADOR') return;
       const aprobado = (est === 'APROBADO' || est === 'REPUESTA' || est === 'CERRADA');
       const o = out[x.trabajo_admin] = out[x.trabajo_admin] || { aprob:0, tramite:0, items:[] };
-      const v = Number(x.total)||0;
+      let v = Number(x.total)||0;
       if(aprobado) o.aprob += v; else o.tramite += v;
       const doc = 'CC '+(x.tipo_comprobante?x.tipo_comprobante+' ':'')+(x.nro_factura||x.id);
+      const _cert = { numero:doc, fecha:x.fecha, estado:aprobado ? 'Aprobado' : 'Borrador', contratista:x.proveedor };
+      let resto = v;
+      (ccLin[x.id]||[]).forEach(function(l, k){
+        const s = Number(l.subtotal)||0; if(!s) return; resto -= s;
+        o.items.push({ id:'cc'+x.id+'-'+k, trabajo_admin:x.trabajo_admin, rubro_codigo:l.rubro_codigo, rubro_desc:'', descripcion:l.concepto || ('Caja chica · '+(x.proveedor||'')),
+          unidad:l.unidad||'', cantidad:Number(l.cantidad)||0, precio_unit:(Number(l.cantidad) ? s/Number(l.cantidad) : s), subtotal:s, sector:x.sector||'',
+          observacion:'Proveedor: '+(x.proveedor||'')+(x.residente?' · '+x.residente:''), _cc:true, _cert:_cert });
+      });
+      if(Math.round(resto) <= 0 && (ccLin[x.id]||[]).length) return;
+      v = Math.round(resto);
       o.items.push({ id:'cc'+x.id, trabajo_admin:x.trabajo_admin, rubro_codigo:'', rubro_desc:'', descripcion:'Caja chica · '+(x.proveedor||'sin proveedor'),
         unidad:'gl', cantidad:1, precio_unit:v, subtotal:v, sector:x.sector||'', observacion:(x.comentario||'')+(x.residente?' · '+x.residente:''),
         _cc:true, _cert:{ numero:doc, fecha:x.fecha, estado:aprobado ? 'Aprobado' : 'Borrador', contratista:x.proveedor } });
@@ -3709,7 +3731,7 @@ async function taVer(codigo){
         rs.forEach(function(rc){
           const r = c.rubros[rc], cu = r.cant ? (r.mo + r.mat)/r.cant : 0, key = taClave(sec, rc), f = P.filas[key];
           body += '<tr><td class="tb-cod">'+escapeHtml(r.cod)+'</td><td>'+escapeHtml(r.nom)+'</td><td>'+escapeHtml(r.un)+'</td><td class="r">'+qty(r.cant)+'</td>'+
-            '<td class="r">'+(r.mat ? gs(Math.round(r.mat/r.cant)) : '—')+'</td><td class="r">'+(r.mo ? gs(Math.round(r.mo/(r.cant||1))) : '—')+'</td><td class="r">'+gs(Math.round(cu))+'</td>'+
+            '<td class="r"'+(r.mats ? ' title="'+escapeHtml('Materiales (órdenes de compra y caja chica): '+r.mats.map(function(m){ return m.desc+' · '+qty(m.cant)+' '+m.un+' · '+gs(m.sub)+(m.doc ? ' ('+m.doc+')' : ''); }).join(' | '))+'"' : '')+'>'+(r.mat ? gs(Math.round(taMatU(r)))+(r.mats ? '<div class="tb-mat">'+r.mats.length+' material'+(r.mats.length>1?'es':'')+' · '+gs(r.mats.reduce(function(a,m){ return a+m.sub; },0))+'</div>' : '') : '—')+'</td><td class="r">'+(r.mo ? gs(Math.round(r.mo/(r.cant||1))) : '—')+'</td><td class="r">'+gs(Math.round(cu))+'</td>'+
             '<td class="r"><b>'+gs(r.mo + r.mat)+'</b></td>'+
             '<td class="r"><input class="tb-cf'+(f.propio ? ' on' : '')+'" type="number" step="0.0001" min="0.05" max="1" data-k="'+escapeHtml(key)+'" value="'+(f.propio ? String(f.coef) : '')+'" placeholder="'+taN4(cfG)+'" title="Coeficiente de esta línea. Vacío = usa el coeficiente general ('+taN4(cfG)+')"></td>'+
             '<td class="r tb-pr" data-k="'+escapeHtml(key)+'"><b>'+gs(f.precio)+'</b></td>'+
@@ -3880,7 +3902,7 @@ function taPDF(t, C, tipo, conTramite, ov){
         const r = c.rubros[rc], par = r.mo + r.mat, cu = r.cant ? par / r.cant : 0, fl = PR.filas[taClave(sec, rc)];
         body.push(cli
           ? [s(r.cod), s(r.nom), s(r.un), qty(r.cant), gsPdf(r.cant ? Math.round(fl.precio / r.cant) : 0), gsPdf(fl.precio)]
-          : [s(r.cod), s(r.nom), s(r.un), qty(r.cant), r.mat ? gsPdf(Math.round(r.mat/r.cant)) : '-', (r.mo ? gsPdf(Math.round(r.mo/(r.cant||1))) : '-'), gsPdf(Math.round(cu)), gsPdf(par)]);
+          : [s(r.cod), s(r.nom), s(r.un), qty(r.cant), r.mat ? gsPdf(Math.round(taMatU(r))) : '-', (r.mo ? gsPdf(Math.round(r.mo/(r.cant||1))) : '-'), gsPdf(Math.round(cu)), gsPdf(par)]);
       });
     });
   });
@@ -4044,7 +4066,21 @@ function proximo99(rubs){
 /* La bolsa: por sector → capítulo → rubro, como un presupuesto */
 function taBolsa(items){
   const S = {};
+  /* v13.26 · Material de una orden de compra imputado a un rubro del trabajo (p. ej. ladrillo en 01.065):
+     se suma DENTRO de esa línea, en la columna «Material ₲/u», sin sumar cantidad (la cantidad del rubro
+     la da el certificado). Se busca la línea del mismo rubro en el mismo sector (sin distinguir mayúsculas);
+     si el rubro está en otro sector, va al primero que lo tenga. Si el rubro no está en el trabajo, queda en
+     su propia fila, como antes. */
+  const lineas = {};   // rubro → [sector, …] de las líneas que vienen de certificados
+  items.forEach(function(it){ if(!it._oc && !it._cc && it.rubro_codigo){ const sec = (it.sector||'').trim() || '(sin sector)'; (lineas[it.rubro_codigo] = lineas[it.rubro_codigo] || []).indexOf(sec) < 0 && lineas[it.rubro_codigo].push(sec); } });
+  const imputable = function(it){
+    if(!(it._oc || it._cc) || !it.rubro_codigo || !lineas[it.rubro_codigo]) return null;
+    const secs = lineas[it.rubro_codigo], s0 = (it.sector||'').trim();
+    return secs.filter(function(s){ return norm(s) === norm(s0); })[0] || secs[0];
+  };
+  const pend = [];
   items.forEach(function(it){
+    if(imputable(it)){ pend.push(it); return; }   // se suman después, cuando ya existen las líneas del rubro
     const sec = (it.sector||'').trim() || '(sin sector)';
     const cod = it.rubro_codigo || '99.000';
     const cap = capDe(cod);
@@ -4056,8 +4092,18 @@ function taBolsa(items){
     r.cant += Number(it.cantidad)||0; if(it._oc || it._cc) r.mat += Number(it.subtotal)||0; else r.mo += Number(it.subtotal)||0; r.n++;
     if(it._cert && it._cert.numero) r.docs[it._cert.numero + (it.contrato_item_id ? ' · contrato' : (it._oc ? ' · compra' : (it._cc ? ' · caja chica' : '')))] = 1;
   });
+  pend.forEach(function(it){
+    const sec = imputable(it), cod = it.rubro_codigo, cap = capDe(cod);
+    const r = S[sec] && S[sec][cap.cod] && S[sec][cap.cod].rubros[cod];
+    if(!r) return;
+    r.mat += Number(it.subtotal)||0; r.n++;
+    (r.mats = r.mats || []).push({ desc:it.descripcion||'', cant:Number(it.cantidad)||0, un:it.unidad||'', sub:Number(it.subtotal)||0, doc:(it._cert||{}).numero||'' });
+    if(it._cert && it._cert.numero) r.docs[it._cert.numero + (it._cc ? ' · caja chica' : ' · compra')] = 1;
+  });
   return S;
 }
+/* v13.26 · Costo unitario de material de una línea (si no hay cantidad, el total) */
+function taMatU(r){ return r.cant ? r.mat / r.cant : r.mat; }
 
 /* v11.24 · Elegir el trabajo por administración con toda su información */
 async function taElegir(obraCtx){
