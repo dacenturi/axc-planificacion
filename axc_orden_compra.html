@@ -4501,7 +4501,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v8.8 · un mismo sector se puede cargar en obras distintas y se elimina si no tiene uso en su obra · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v9.0 · el mismo material se puede comprar para varios presupuestos de la orden · rubro del trabajo por administración en cada material · un mismo sector se puede cargar en obras distintas y se elimina si no tiene uso en su obra · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -8468,12 +8468,22 @@ function fillAndOpenModal(prod, lineIdx){
   // v8.3.3 · Comprando «para el rubro X»: el material se busca y se edita por RUBRO. Si el material ya está
   // en el carrito para otro rubro, esta compra se agrega como línea aparte (no reemplaza ni suma a la otra).
   const _destRub = fpmRubroDestinoActivo();
+  // v9.0 · Varios presupuestos: el mismo material se puede comprar para cada presupuesto de la orden.
+  // La ventana trabaja sobre el presupuesto elegido (por defecto la pestaña activa); si el material ya
+  // está para OTRO presupuesto, se agrega como línea aparte que descuenta de su propio saldo.
+  const _multi = ocMultiPP();
+  if(lineIdx != null && _mismo(wizard.cart[lineIdx])) wizard.modalPP = _multi ? ocDestKey(wizard.cart[lineIdx]) : '';
+  else if(!wizard._modalPPFijo) wizard.modalPP = _multi ? ocDestActivo() : '';
+  wizard._modalPPFijo = false;
+  const _enDest = function(c){ return !_multi || ocDestKey(c) === wizard.modalPP; };
+  const lineasDest = lineas.filter(_enDest);
   let inCart = null;
   if(lineIdx != null && _mismo(wizard.cart[lineIdx])) inCart = wizard.cart[lineIdx];
-  else if(_destRub) inCart = lineas.filter(function(c){ return fpmRubroDeLinea(c) === _destRub; })[0] || null;
-  else if(lineas.length === 1) inCart = lineas[0];
+  else if(_destRub) inCart = lineasDest.filter(function(c){ return fpmRubroDeLinea(c) === _destRub; })[0] || null;
+  else if(lineasDest.length === 1) inCart = lineasDest[0];
   wizard.modalLine = inCart;
   const _otras = lineas.filter(function(c){ return c !== inCart; });
+  ocModalPPRender(prod, lineas, inCart);
   const _rubInCart = inCart ? fpmRubroDeLinea(inCart) : '';
 
   document.getElementById('prodModalTitle').textContent = prod.nombre;
@@ -8489,7 +8499,15 @@ function fillAndOpenModal(prod, lineIdx){
       nt.style.cssText = 'margin:8px 0 2px;padding:8px 11px;border-radius:8px;background:#eef4fb;border:1px solid #c6d8ee;color:#1f4e78;font-size:12.5px;line-height:1.45';
       document.getElementById('prodModalTitle').insertAdjacentElement('afterend', nt);
     }
-    if(_otras.length){
+    if(_otras.length && _multi){
+      const otrasPP = _otras.filter(function(c){ return ocDestKey(c) !== wizard.modalPP; });
+      const mismasPP = _otras.filter(function(c){ return ocDestKey(c) === wizard.modalPP; });
+      nt.innerHTML = (otrasPP.length ? '<b>🔁 Este material ya está en el carrito para otro destino:</b> ' + escapeHtml(otrasPP.map(function(c){ return ocDestTxt(ocDestKey(c)) + ' · ' + cbmNum(c.cantidad) + (c.unidad ? ' ' + c.unidad : ''); }).join(' · ')) + '.<br>' : '') +
+        (mismasPP.length ? '<b>En ' + escapeHtml(ocDestTxt(wizard.modalPP)) + ' también está en otro rubro</b> (' + escapeHtml(mismasPP.map(function(c){ const rk = fpmRubroDeLinea(c); return (rk ? fpmRubroEtiqueta(rk) : 'sin rubro') + ' · ' + cbmNum(c.cantidad); }).join(' · ')) + ').<br>' : '') +
+        (inCart ? 'Estás editando solo la línea de <b>' + escapeHtml(ocDestTxt(wizard.modalPP)) + '</b>.'
+                : 'Se agrega como <b>línea aparte para ' + escapeHtml(ocDestTxt(wizard.modalPP)) + '</b>, con su cantidad y descontando de su propio saldo. Al proveedor le llega en una sola línea con el total.');
+      nt.style.display = 'block';
+    } else if(_otras.length){
       const donde = _otras.map(function(c){ const rk = fpmRubroDeLinea(c); return (rk ? fpmRubroEtiqueta(rk) : 'sin rubro') + ' (' + c.cantidad + (c.unidad ? ' ' + c.unidad : '') + ')'; }).join(' · ');
       nt.innerHTML = '<b>También está en el carrito:</b> ' + escapeHtml(donde) + '.<br>' +
         (inCart ? 'Estás editando solo la línea de este rubro.' : 'Esta compra se agrega <b>aparte</b>, con su propio rubro y cantidad. En el PDF al proveedor sale en una sola línea con el total.');
@@ -8532,6 +8550,69 @@ function closeProductModal(){
   document.getElementById('prodModal').classList.remove('open');
   wizard.modalProductId = null;
   wizard.modalLine = null;   // v8.2.4
+  wizard.modalPP = ''; wizard._modalPPFijo = false;   // v9.0
+}
+/* ══════════════════════════════════════════════════════════════════
+   v9.0 · MISMO MATERIAL PARA VARIOS PRESUPUESTOS
+   Ej.: 20 bolsas de cemento Vallemí para el PP 82 y 15 para el PP 90 en la misma
+   orden. Cada línea guarda su presupuesto (ordenes_compra_items.presupuesto) y
+   descuenta de su saldo. En el carrito y en el detalle de la orden cada línea
+   repetida muestra en qué otro presupuesto está el mismo material y cuánto.
+   El proveedor recibe una sola línea con el total (consolidado).
+   ────────────────────────────────────────────────────────────────── */
+function ocMultiPP(){ try{ return cbmMulti() && (wizard.form||{}).destino === 'presupuesto'; }catch(e){ return false; } }
+/* Destino de una línea: 'pp:82' · 'ta:TA-0040' · 'sin' */
+function ocDestKey(c){
+  if(!c) return '';
+  if(c.trabajo_admin) return 'ta:' + c.trabajo_admin;
+  if(c.sin_presupuesto) return 'sin';
+  if(c.es_mano_obra && (wizard.form||{}).destino !== 'presupuesto') return 'sin';
+  return (wizard.form||{}).destino === 'presupuesto' ? 'pp:' + cbmItPP(c) : 'sin';
+}
+function ocDestActivo(){
+  const L = cbmLista();
+  return 'pp:' + (L.indexOf(cartBudget.pp) >= 0 ? cartBudget.pp : ((wizard.form||{})._pp || L[0] || ''));
+}
+function ocDestTxt(k){
+  if(!k || k === 'sin') return 'sin presupuesto';
+  if(k.indexOf('ta:') === 0) return 'trabajo por adm. ' + k.slice(3);
+  return 'presupuesto ' + k.slice(3);
+}
+/* Selector «¿Para qué presupuesto?» dentro de la ventana del producto */
+function ocModalPPRender(prod, lineas, inCart){
+  let w = document.getElementById('prodModalPP');
+  if(!w){
+    w = document.createElement('div'); w.id = 'prodModalPP'; w.className = 'oc-mpp';
+    const ref = document.getElementById('prodModalTitle');
+    ref.insertAdjacentElement('afterend', w);
+    w.addEventListener('change', function(e){
+      const s = e.target.closest('select'); if(!s || !wizard.modalProd) return;
+      wizard.modalPP = s.value; wizard._modalPPFijo = true;
+      fillAndOpenModal(wizard.modalProd, null);
+    });
+  }
+  if(!ocMultiPP()){ w.style.display = 'none'; w.innerHTML = ''; return; }
+  const ops = cbmLista().map(function(pp){
+    const k = 'pp:' + pp, en = lineas.filter(function(c){ return ocDestKey(c) === k; });
+    const cant = en.reduce(function(a,c){ return a + (Number(c.cantidad)||0); }, 0);
+    const nom = ((dstPP(pp)||{}).nombre || '');
+    return '<option value="'+escapeHtml(k)+'"'+(k === wizard.modalPP ? ' selected' : '')+'>Presupuesto '+escapeHtml(pp)+(nom ? ' · '+escapeHtml(nom.length > 38 ? nom.slice(0,36)+'…' : nom) : '')+
+      (en.length ? ' — ya tiene '+cbmNum(cant)+(en[0].unidad ? ' '+escapeHtml(en[0].unidad) : '')+' (se edita)' : ' — línea nueva')+'</option>';
+  }).join('');
+  w.innerHTML = '<label>¿Para qué presupuesto es esta compra?</label><select>'+ops+'</select>';
+  w.style.display = '';
+}
+/* Aviso en cada línea repetida del carrito */
+function ocDupHTML(it){
+  if(!it || it.producto_id == null || !ocMultiPP()) return '';
+  const k = ocDestKey(it);
+  const otras = (wizard.cart||[]).filter(function(c){ return c !== it && c.producto_id != null && String(c.producto_id) === String(it.producto_id) && ocDestKey(c) !== k; });
+  if(!otras.length) return '';
+  const tot = otras.reduce(function(a,c){ return a + (Number(c.cantidad)||0); }, 0) + (Number(it.cantidad)||0);
+  return '<div class="oc-dup" title="El mismo material se compra para más de un destino. Cada línea descuenta de su propio presupuesto; al proveedor le llega en una sola línea con el total.">'+
+    '<b>🔁 Repetido para otro presupuesto</b> · esta línea: '+escapeHtml(ocDestTxt(k))+' · '+cbmNum(it.cantidad)+(it.unidad ? ' '+escapeHtml(it.unidad) : '')+
+    ' · también: '+escapeHtml(otras.map(function(c){ return ocDestTxt(ocDestKey(c)) + ' ' + cbmNum(c.cantidad) + (c.unidad ? ' ' + c.unidad : ''); }).join(' · '))+
+    ' · <b>total '+cbmNum(tot)+(it.unidad ? ' '+escapeHtml(it.unidad) : '')+'</b></div>';
 }
 
 function updateModalSubtotal(){
@@ -8592,9 +8673,20 @@ document.getElementById('prodModalAdd').addEventListener('click', ()=>{
     if(!_ln.producto_nombre) _ln.producto_nombre = item.producto_nombre;
     showToast('Item actualizado en el carrito', 'success');
   } else {
+    // v9.0 · línea para el presupuesto elegido en la ventana
+    if(ocMultiPP() && wizard.modalPP && wizard.modalPP.indexOf('pp:') === 0){
+      const _pp = wizard.modalPP.slice(3);
+      item.presupuesto = _pp;
+      if(_pp !== cartBudget.pp){ item._cbmSinRubro = true; cbmEnsure(_pp).then(function(){ try{ renderCart(); }catch(e){} }); }
+      const _rep = wizard.cart.filter(function(c){ return c.producto_id != null && String(c.producto_id) === String(productId) && ocDestKey(c) !== wizard.modalPP; });
+      wizard.cart.push(item);
+      addToRecents(productId);
+      showToast(_rep.length ? 'Agregado para el presupuesto ' + _pp + ' (también está para ' + _rep.map(function(c){ return ocDestTxt(ocDestKey(c)); }).join(', ') + ')' : 'Agregado al carrito', 'success');
+    } else {
     wizard.cart.push(item);
     addToRecents(productId);
     showToast('Agregado al carrito', 'success');
+    }
   }
   renderCart();
   saveDraft();
@@ -11384,7 +11476,7 @@ function _fpRedondeo(v, saldo){   // el mismo criterio, para lo que se carga des
 }
 function _cbItemDestino(it){ return cbmWith(cbmItPP(it), function(){ return _cbItemDestino0(it); }); }
 function _cbItemDestino0(it){
-  if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
+  if(it && it.trabajo_admin) return { txt:'Trabajo por administración '+it.trabajo_admin+(it.ta_rubro ? ' · rubro '+it.ta_rubro+(it.ta_rubro_nom ? ' '+it.ta_rubro_nom : '') : (it.ta_general ? ' · material general' : ''))+' (no descuenta del presupuesto)', color:'#7A5F0E', excede:false };
   if(!cartBudget.pp) return null;
   const curIns = fpmEsInsumoDeEste(it) ? _cbInsDeItem(it) : '';   // v2.8.1
   const curRub=curIns ? '' : fpmRubroItem(it);
@@ -11756,6 +11848,19 @@ function validateStep2(showErrors){
       }
       return false;
     }
+  }
+
+  // v8.9 · Aviso (no bloquea): materiales de un trabajo por administración sin rubro elegido
+  if(showErrors && !firstError){
+    try{
+      const _sr = dstTARubroFaltantes();
+      if(_sr.length){
+        renderCart();
+        const _p = document.querySelector('#cartItems .dst-trub.falta select');
+        if(_p) _p.scrollIntoView({behavior:'smooth', block:'center'});
+        showToast(_sr.length + ' material' + (_sr.length>1?'es':'') + ' del trabajo por administración sin rubro: quedan como material general. Podés elegirlo en el carrito.', 'info');
+      }
+    }catch(eT){}
   }
 
   return !firstError;
@@ -12364,6 +12469,8 @@ async function submitOC(){
       // proveedor lea la unidad correcta, sin tener que reconstruirlo después.
       row.sector = it.sector || null;
       row.unidad = it.unidad || null;
+      // v8.9 · Rubro del trabajo por administración: la línea del trabajo donde se imputa el material
+      if(it.trabajo_admin && !it.es_mano_obra && it.ta_rubro){ row.rubro_codigo = it.ta_rubro; if(it.ta_sector) row.sector = it.ta_sector; }
       // Rubros de aplicación del material (arreglo de texto)
       if(OC_RUBRO_APLICACION){
         const _a = itemRubrosAp(it);
@@ -18111,7 +18218,8 @@ function addRecipeToCart(){
     if(qty <= 0) return;
     const prec = Number(it._link.precio_referencia) || 0;
     const pid = Number(it.producto_id);
-    const ci = wizard.cart.findIndex(function(c){ return Number(c.producto_id) === pid; });
+    const _dAct = ocMultiPP() ? ocDestActivo() : '';   // v9.0 · solo se suma a la línea del mismo presupuesto
+    const ci = wizard.cart.findIndex(function(c){ return Number(c.producto_id) === pid && (!_dAct || ocDestKey(c) === _dAct); });
     if(ci >= 0){
       const nuevaCant = Number(wizard.cart[ci].cantidad || 0) + qty;
       const pu = Number(wizard.cart[ci].precio_unit || prec) || 0;
@@ -19955,6 +20063,23 @@ function pbtAddNoPresup(pid){
 .dst-item select{flex:1;min-width:0;font-size:11.5px;padding:3px 6px;border:1px solid #C9D0DC;border-radius:6px;background:#fff}
 .dst-item.ta select{border-color:#C8A028;background:#FBF6E6;color:#7A5F0E;font-weight:700}
 .dst-item.pp select{border-color:#9EC1EA;background:#EEF4FC;color:#15427A}
+.oc-dup{margin:5px 0 2px;font-size:11px;line-height:1.4;color:#5B3E8A;background:#F4EFFB;border:1px solid #D9CBEE;border-radius:7px;padding:4px 8px}
+.oc-dup b{font-weight:700}
+.dst-chip .dst-rep{display:inline-block;margin-left:4px;font-size:10.5px;font-weight:700;color:#5B3E8A;background:#F4EFFB;border:1px solid #D9CBEE;border-radius:5px;padding:0 6px;cursor:help}
+.oc-mpp{margin:8px 0 2px;padding:8px 10px;border:1px solid #9EC1EA;background:#EEF4FC;border-radius:8px}
+.oc-mpp label{display:block;font-size:11.5px;font-weight:700;color:#15427A;margin-bottom:4px}
+.oc-mpp select{width:100%;font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid #9EC1EA;border-radius:7px;background:#fff;color:#15427A;font-weight:600}
+.dst-trub{display:flex;gap:6px;align-items:center;margin:4px 0 2px 14px;font-size:11px;font-weight:700;color:#7A5F0E}
+.dst-trub:before{content:'↳';color:#C8A028;font-weight:800}
+.dst-trub span{white-space:nowrap}
+.dst-trub select{flex:1;min-width:0;font-size:11.5px;padding:3px 6px;border:1px solid #C8A028;border-radius:6px;background:#fff;color:#4B3A06;font-weight:600}
+.dst-trub.falta select{border-color:#D98A1F;background:#FFF4E2;color:#8A4B00}
+.dst-trub.ok select{background:#F3F8EE;border-color:#8DB570;color:#1E4D12}
+.dst-trub em{font-style:normal;font-weight:500;color:#8893a5}
+.dst-trub-all{margin:3px 0 2px 28px;font:inherit;font-size:10.5px;font-weight:700;color:#7A5F0E;background:#FBF6E6;border:1px dashed #C8A028;border-radius:6px;padding:2px 8px;cursor:pointer}
+.dst-trub-all:hover{background:#F5EBC8}
+.dst-chip .dst-rub{display:inline-block;margin-left:4px;font-size:10.5px;font-weight:700;color:#1E4D12;background:#F3F8EE;border:1px solid #CFE3C0;border-radius:5px;padding:0 6px}
+.dst-chip .dst-rub.gen{color:#6B7486;background:#F2F4F7;border-color:#DDE2EA}
 .dst-item i{font-style:normal;font-size:10px;background:#FFF4DC;color:#8A5A00;border-radius:4px;padding:1px 5px}
 .dst-res{margin-top:8px;font-size:12px;color:#15427A;background:#EEF4FC;border:1px solid #9EC1EA;border-radius:8px;padding:7px 10px;line-height:1.45}
 @media (max-width:520px){.dst-modes{grid-template-columns:1fr}}
@@ -20192,7 +20317,109 @@ function dstItemHTML(it, idx){
   const cls = (v === 'pp' || v.indexOf('pp:') === 0) ? 'pp' : (v === 'sin' ? 'sin' : 'ta');
   return '<div class="dst-item '+cls+'"><span>Destino:</span><select class="dst-isel" data-cart-idx="'+idx+'" title="A dónde se imputa este material">'+
     ops.map(function(o){ return '<option value="'+dstEsc(o[0])+'"'+(o[0]===v?' selected':'')+'>'+dstEsc(o[1])+'</option>'; }).join('')+'</select>'+
-    (it._dstManual ? '<i title="Cambiado respecto del destino de la orden">cambiado</i>' : '')+'</div>'+cbmAvisoRubro(it);
+    (it._dstManual ? '<i title="Cambiado respecto del destino de la orden">cambiado</i>' : '')+'</div>'+dstTARubroHTML(it, idx)+ocDupHTML(it)+cbmAvisoRubro(it);
+}
+/* ══════════════════════════════════════════════════════════════════
+   v8.9 · RUBRO DEL TRABAJO POR ADMINISTRACIÓN
+   Cuando un material va a un trabajo por administración, se elige en qué rubro
+   del trabajo se imputa (p. ej. ladrillo hueco → 01.065 · cemento → 07.018).
+   Los rubros son los que ya tiene cargados el trabajo en sus certificados
+   (código, nombre y sector). En Certificación, el material se suma dentro de esa
+   línea («Material ₲/u»); sin rubro queda como material general del trabajo.
+   Se guarda en ordenes_compra_items.rubro_codigo y .sector (columnas existentes).
+   ────────────────────────────────────────────────────────────────── */
+DST.taLin = {}; DST.taLinP = {};
+function dstTALineas(cod){
+  if(!cod) return Promise.resolve([]);
+  if(DST.taLin[cod]) return Promise.resolve(DST.taLin[cod]);
+  if(DST.taLinP[cod]) return DST.taLinP[cod];
+  DST.taLinP[cod] = (async function(){
+    let r = await sb.from('certificado_items').select('rubro_codigo,rubro_desc,descripcion,unidad,sector,cantidad,certificados!inner(estado)').eq('trabajo_admin', cod);
+    if(r.error) r = await sb.from('certificado_items').select('rubro_codigo,rubro_desc,descripcion,unidad,sector,cantidad').eq('trabajo_admin', cod);
+    const m = {}, secTxt = {};   // «Nivel 5» y «nivel 5» son el mismo sector: se muestra una sola forma
+    (r.data||[]).forEach(function(x){
+      if(!x || !x.rubro_codigo) return;
+      if(x.certificados && x.certificados.estado === 'Anulado') return;
+      const s0 = String(x.sector||'').trim(), ns = dstNorm(s0);
+      if(!secTxt[ns] || (/^[a-záéíóúñ]/.test(secTxt[ns]) && /^[A-ZÁÉÍÓÚÑ0-9]/.test(s0))) secTxt[ns] = s0;
+    });
+    (r.data||[]).forEach(function(x){
+      if(!x || !x.rubro_codigo) return;
+      if(x.certificados && x.certificados.estado === 'Anulado') return;
+      const sec = secTxt[dstNorm(x.sector||'')] || '', k = x.rubro_codigo + '|' + dstNorm(sec);
+      const o = m[k] = m[k] || { cod:x.rubro_codigo, nom:'', un:x.unidad||'', sec:sec, cant:0 };
+      o.cant += Number(x.cantidad)||0;
+      if(!o.nom) o.nom = x.rubro_desc || x.descripcion || '';
+    });
+    const L = Object.keys(m).map(function(k){ return m[k]; }).sort(function(a,b){ return a.cod.localeCompare(b.cod, 'es', {numeric:true}) || a.sec.localeCompare(b.sec, 'es', {numeric:true}); });
+    DST.taLin[cod] = L; delete DST.taLinP[cod];
+    return L;
+  })().catch(function(e){ console.warn('rubros del trabajo por administración', e); DST.taLin[cod] = []; delete DST.taLinP[cod]; return []; });
+  return DST.taLinP[cod];
+}
+function dstTAValor(l){ return l.cod + '§' + l.sec; }
+function dstTALinea(cod, rub, sec){
+  const L = DST.taLin[cod] || [];
+  return L.filter(function(l){ return l.cod === rub && dstNorm(l.sec) === dstNorm(sec||''); })[0] || L.filter(function(l){ return l.cod === rub; })[0] || null;
+}
+function dstTARubroTxt(l){ return l.cod + ' · ' + (l.nom || 'Rubro') + (l.sec ? ' · ' + l.sec : '') + (l.cant ? ' (' + String(Math.round(l.cant*100)/100).replace('.',',') + ' ' + (l.un||'') + ')' : ''); }
+function dstTAAsignar(it, l){
+  if(l === 'gen'){ it.ta_rubro = ''; it.ta_sector = ''; it.ta_rubro_nom = ''; it.ta_general = true; }
+  else if(l){ it.ta_rubro = l.cod; it.ta_sector = l.sec; it.ta_rubro_nom = l.nom; it.ta_general = false; }
+  else { it.ta_rubro = ''; it.ta_sector = ''; it.ta_rubro_nom = ''; it.ta_general = false; }
+  it._taRubDe = it.trabajo_admin || '';
+}
+function dstTARubroHTML(it, idx){
+  if(!it || !it.trabajo_admin || it.es_mano_obra) return '';
+  const cod = it.trabajo_admin;
+  if(it._taRubDe && it._taRubDe !== cod) dstTAAsignar(it, null);   // cambió el trabajo: el rubro anterior no vale
+  const L = DST.taLin[cod];
+  if(!L){
+    dstTALineas(cod).then(function(){ try{ renderCart(); }catch(e){} });
+    return '<div class="dst-trub load"><span>Rubro del trabajo:</span><em>cargando los rubros de '+dstEsc(cod)+'…</em></div>';
+  }
+  if(!L.length) return '<div class="dst-trub vacio"><span>Rubro del trabajo:</span><em>'+dstEsc(cod)+' todavía no tiene rubros en certificados · el material queda como general del trabajo</em></div>';
+  if(L.length === 1 && !it.ta_rubro && !it.ta_general) dstTAAsignar(it, L[0]);   // un solo rubro: se asigna solo
+  const sel = it.ta_rubro ? dstTALinea(cod, it.ta_rubro, it.ta_sector) : null;
+  const v = sel ? dstTAValor(sel) : (it.ta_general ? 'gen' : '');
+  let ops = (v ? '' : '<option value="" selected>Elegí el rubro donde se imputa…</option>') +
+    '<option value="gen"'+(v==='gen'?' selected':'')+'>Material general del trabajo (sin rubro)</option>';
+  let secAnt = null;
+  L.forEach(function(l){
+    if(l.sec !== secAnt){ if(secAnt !== null) ops += '</optgroup>'; ops += '<optgroup label="'+dstEsc(l.sec || 'Sin sector')+'">'; secAnt = l.sec; }
+    ops += '<option value="'+dstEsc(dstTAValor(l))+'"'+(dstTAValor(l)===v?' selected':'')+'>'+dstEsc(dstTARubroTxt(l))+'</option>';
+  });
+  if(secAnt !== null) ops += '</optgroup>';
+  if(it.ta_rubro && !sel) ops += '<option value="'+dstEsc(it.ta_rubro+'§'+(it.ta_sector||''))+'" selected>'+dstEsc(it.ta_rubro+' (ya no está en el trabajo)')+'</option>';
+  const pend = (wizard.cart||[]).filter(function(o){ return o !== it && o.trabajo_admin === cod && !o.es_mano_obra && !o.ta_rubro && !o.ta_general; }).length;
+  const cls = v === '' ? 'falta' : (v === 'gen' ? 'gen' : 'ok');
+  return '<div class="dst-trub '+cls+'"><span>Rubro del trabajo:</span><select class="dst-tsel" data-cart-idx="'+idx+'" title="Rubro del trabajo por administración al que se imputa este material">'+ops+'</select></div>'+
+    ((v && pend) ? '<button type="button" class="dst-trub-all" data-cart-idx="'+idx+'">Aplicar '+(v==='gen'?'«material general»':'el rubro '+dstEsc(sel ? sel.cod : it.ta_rubro))+' a '+pend+' material'+(pend>1?'es':'')+' sin rubro de '+dstEsc(cod)+'</button>' : '');
+}
+document.addEventListener('change', function(e){
+  const s = e.target.closest && e.target.closest('select.dst-tsel'); if(!s) return;
+  const it = (wizard.cart||[])[Number(s.getAttribute('data-cart-idx'))]; if(!it) return;
+  const v = s.value;
+  if(v === 'gen') dstTAAsignar(it, 'gen');
+  else if(!v) dstTAAsignar(it, null);
+  else { const p = v.split('§'); dstTAAsignar(it, dstTALinea(it.trabajo_admin, p[0], p[1]) || { cod:p[0], sec:p[1]||'', nom:'' }); }
+  try{ renderCart(); }catch(err){}
+  try{ if(typeof saveDraft === 'function') saveDraft(); }catch(err){}
+});
+document.addEventListener('click', function(e){
+  const b = e.target.closest && e.target.closest('.dst-trub-all'); if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const it = (wizard.cart||[])[Number(b.getAttribute('data-cart-idx'))]; if(!it) return;
+  const l = it.ta_general ? 'gen' : (dstTALinea(it.trabajo_admin, it.ta_rubro, it.ta_sector) || { cod:it.ta_rubro, sec:it.ta_sector||'', nom:it.ta_rubro_nom||'' });
+  let n = 0;
+  (wizard.cart||[]).forEach(function(o){ if(o !== it && o.trabajo_admin === it.trabajo_admin && !o.es_mano_obra && !o.ta_rubro && !o.ta_general){ dstTAAsignar(o, l); n++; } });
+  try{ renderCart(); }catch(err){}
+  try{ if(typeof saveDraft === 'function') saveDraft(); }catch(err){}
+  try{ showToast(n + ' material' + (n>1?'es':'') + ' imputado' + (n>1?'s':'') + (l === 'gen' ? ' como material general' : ' al rubro ' + l.cod), 'success'); }catch(err){}
+});
+/* Materiales del carrito que van a un trabajo con rubros y todavía no tienen uno elegido */
+function dstTARubroFaltantes(){
+  return (wizard.cart||[]).filter(function(it){ return it.trabajo_admin && !it.es_mano_obra && !it.ta_rubro && !it.ta_general && (DST.taLin[it.trabajo_admin]||[]).length > 0; });
 }
 document.addEventListener('change', function(e){
   const s = e.target.closest && e.target.closest('select.dst-isel'); if(!s) return;
@@ -20353,7 +20580,7 @@ function dstDetalleChip(it){
   const oc = detail.oc || {}; const d = dstItemDestinoTxt(oc, it);
   if(!d) return '';
   const puede = it.id != null && !/^tmp/i.test(String(it.id)) && _puedeEditarOC(oc);
-  return '<div class="dst-chip '+d.cls+'">Destino: <b>'+dstEsc(d.txt)+'</b>'+
+  return '<div class="dst-chip '+d.cls+'">Destino: <b>'+dstEsc(d.txt)+'</b>'+dstChipRubro(it)+dstChipRepetido(oc, it, d)+
     (puede ? ' <button type="button" class="dst-cambiar" data-oci="'+dstEsc(it.id)+'">Cambiar</button>' : '')+'</div>';
 }
 document.addEventListener('click', function(e){
@@ -20362,6 +20589,30 @@ document.addEventListener('click', function(e){
   const it = (detail.items||[]).filter(function(x){ return String(x.id) === b.getAttribute('data-oci'); })[0];
   if(it) dstCambiarItem(it);
 });
+/* v9.0 · En el detalle: el mismo material comprado para otro presupuesto de la misma orden */
+function dstChipRepetido(oc, it, d){
+  if(!it || it.producto_id == null) return '';
+  const otras = (detail.items||[]).filter(function(x){ if(x === it || x.producto_id == null || String(x.producto_id) !== String(it.producto_id)) return false; const dx = dstItemDestinoTxt(oc, x); return dx && dx.txt !== d.txt; });
+  if(!otras.length) return '';
+  const det = otras.map(function(x){ return (dstItemDestinoTxt(oc, x)||{}).txt + ' · ' + cbmNum(x.cantidad) + (x.unidad ? ' ' + x.unidad : ''); }).join(' | ');
+  return ' <span class="dst-rep" title="'+dstEsc('El mismo material se compró también para: '+det+'. Cada línea descuenta de su propio presupuesto.')+'">🔁 también en '+dstEsc(otras.map(function(x){ return (dstItemDestinoTxt(oc, x)||{}).txt.replace(/^Presupuesto /,'PP ').replace(/^Trabajo por adm\. /,''); }).join(', '))+'</span>';
+}
+/* v8.9 · Rubro del trabajo en el detalle de la OC (solo si el rubro es una línea del trabajo) */
+function dstChipRubro(it){
+  if(!it || !it.trabajo_admin || it.es_mano_obra) return '';
+  const L = DST.taLin[it.trabajo_admin];
+  if(!L){ dstTALineas(it.trabajo_admin).then(dstChipRubroPintar); return ' <span class="dst-rub gen" data-ta-rub="'+dstEsc(it.id)+'">…</span>'; }
+  const l = it.rubro_codigo ? dstTALinea(it.trabajo_admin, it.rubro_codigo, it.sector) : null;
+  return ' <span class="dst-rub'+(l?'':' gen')+'" data-ta-rub="'+dstEsc(it.id)+'" title="Rubro del trabajo por administración">'+(l ? 'Rubro '+dstEsc(l.cod)+(l.nom ? ' · '+dstEsc(l.nom) : '') : 'material general')+'</span>';
+}
+function dstChipRubroPintar(){
+  document.querySelectorAll('[data-ta-rub]').forEach(function(sp){
+    const it = ((typeof detail !== 'undefined' && detail.items) || []).filter(function(x){ return String(x.id) === sp.getAttribute('data-ta-rub'); })[0];
+    if(!it) return;
+    const tmp = document.createElement('span'); tmp.innerHTML = dstChipRubro(it).trim();
+    if(tmp.firstChild) sp.replaceWith(tmp.firstChild);
+  });
+}
 async function dstCambiarItem(it){
   const oc = detail.oc || {};
   if(!DST.loaded) await dstLoad();
@@ -20376,18 +20627,52 @@ async function dstCambiarItem(it){
   const ov = document.createElement('div'); ov.className = 'dst-ov';
   ov.innerHTML = '<div class="dst-dlg"><h3>Cambiar el destino del material</h3><p class="dst-sub">'+dstEsc(it.producto_nombre||'')+' · '+dstEsc(oc.numero_oc||'')+' · '+dstEsc(est)+'</p>'+
     '<label>Nuevo destino</label><select id="dstNuevo">'+ops.map(function(o){ return '<option value="'+dstEsc(o[0])+'"'+(o[0]===actual?' selected':'')+'>'+dstEsc(o[1])+'</option>'; }).join('')+'</select>'+
+    '<div id="dstRubWrap" style="display:none"><label>Rubro del trabajo</label><select id="dstRub"></select><div class="dst-nota" id="dstRubNota" style="margin-top:4px">En Certificación el material se suma dentro de esa línea (columna «Material ₲/u»).</div></div>'+
     '<label>Motivo '+(pideMotivo?'<span style="color:#B42B2B">*</span>':'(opcional)')+'</label><textarea id="dstMotivo" rows="3" maxlength="300" placeholder="Ej. El porcelanato era para el pedido de la propietaria (TA-0001), no para el presupuesto."></textarea>'+
     '<div class="dst-nota">'+(pideMotivo?'La OC ya fue aprobada: el cambio queda registrado en el historial con tu nombre y el motivo.':'El cambio queda registrado en el historial de la OC.')+' Si va a un trabajo por administración, deja de descontar del presupuesto y suma al costo del trabajo.</div>'+
     '<div class="dst-err" id="dstErr"></div><div class="dst-btns"><button type="button" id="dstNo">Cancelar</button><button type="button" id="dstSi" class="pri">Guardar el cambio</button></div></div>';
   document.body.appendChild(ov);
   const cerrar = function(){ ov.remove(); };
   ov.querySelector('#dstNo').onclick = cerrar;
+  // v8.9 · Rubro del trabajo por administración
+  const rubActual = function(ta){
+    if(it.es_mano_obra || !it.trabajo_admin || it.trabajo_admin !== ta) return '';
+    const l = it.rubro_codigo ? dstTALinea(ta, it.rubro_codigo, it.sector) : null;
+    return l ? dstTAValor(l) : 'gen';
+  };
+  const pintarRub = async function(){
+    const v = ov.querySelector('#dstNuevo').value, w = ov.querySelector('#dstRubWrap'), s = ov.querySelector('#dstRub');
+    if(v.indexOf('ta:') !== 0 || it.es_mano_obra){ w.style.display = 'none'; s.innerHTML = ''; return; }
+    const ta = v.slice(3); w.style.display = ''; s.disabled = true; s.innerHTML = '<option>Cargando los rubros de '+dstEsc(ta)+'…</option>';
+    const L = await dstTALineas(ta);
+    if(ov.querySelector('#dstNuevo').value !== v) return;
+    const act = rubActual(ta);
+    if(!L.length){ s.innerHTML = '<option value="gen">Material general del trabajo (todavía no tiene rubros en certificados)</option>'; s.disabled = true; return; }
+    let h = '<option value="gen"'+(act==='gen'?' selected':'')+'>Material general del trabajo (sin rubro)</option>', secAnt = null;
+    L.forEach(function(l){
+      if(l.sec !== secAnt){ if(secAnt !== null) h += '</optgroup>'; h += '<optgroup label="'+dstEsc(l.sec || 'Sin sector')+'">'; secAnt = l.sec; }
+      h += '<option value="'+dstEsc(dstTAValor(l))+'"'+(dstTAValor(l)===act?' selected':'')+'>'+dstEsc(dstTARubroTxt(l))+'</option>';
+    });
+    s.innerHTML = h + '</optgroup>'; s.disabled = false;
+    if(!act && L.length === 1) s.value = dstTAValor(L[0]);
+  };
+  ov.querySelector('#dstNuevo').addEventListener('change', pintarRub);
+  pintarRub();
   ov.addEventListener('click', function(ev){ if(ev.target === ov) cerrar(); });
   ov.querySelector('#dstSi').onclick = async function(){
     const btn = this, v = ov.querySelector('#dstNuevo').value, mot = ov.querySelector('#dstMotivo').value.trim(), er = ov.querySelector('#dstErr');
-    if(v === actual){ er.textContent = 'Elegí un destino distinto del actual.'; return; }
+    const rs = ov.querySelector('#dstRub'), rv = (v.indexOf('ta:') === 0 && !it.es_mano_obra && rs && !rs.disabled) ? rs.value : '';
+    const cambiaRub = v.indexOf('ta:') === 0 && !it.es_mano_obra && rs && !rs.disabled && rv !== rubActual(v.slice(3));
+    if(v === actual && !cambiaRub){ er.textContent = 'Elegí un destino o un rubro distinto del actual.'; return; }
     if(pideMotivo && mot.length < 10){ er.textContent = 'Escribí el motivo del cambio (mínimo 10 letras).'; return; }
     const upd = v === 'pp' ? { trabajo_admin:null, sin_presupuesto:false } : (v === 'sin' ? { trabajo_admin:null, sin_presupuesto:(oc.destino === 'presupuesto') } : { trabajo_admin:v.slice(3), sin_presupuesto:false });
+    // v8.9 · rubro del trabajo: se guarda en rubro_codigo + sector de la línea elegida
+    const rubAntes = (it.trabajo_admin && !it.es_mano_obra) ? (function(){ const l = it.rubro_codigo ? dstTALinea(it.trabajo_admin, it.rubro_codigo, it.sector) : null; return l ? 'rubro '+l.cod : 'material general'; })() : '';
+    let rubDespues = '';
+    if(v.indexOf('ta:') === 0 && !it.es_mano_obra && rs && !rs.disabled){
+      if(rv && rv !== 'gen'){ const p = rv.split('§'); upd.rubro_codigo = p[0]; if(p[1]) upd.sector = p[1]; rubDespues = 'rubro '+p[0]; }
+      else { if(it.rubro_codigo && dstTALinea(v.slice(3), it.rubro_codigo, it.sector)) upd.rubro_codigo = null; rubDespues = 'material general'; }
+    }
     btn.disabled = true;
     const r = await sb.from('ordenes_compra_items').update(upd).eq('id', it.id);
     if(r.error){ btn.disabled = false; er.textContent = /trabajo_admin/i.test(r.error.message||'') ? 'Falta correr axc_fase2_oc_destino.sql en la base. Avisá a Conexdata.' : ('No se pudo guardar: '+(r.error.message||'')); return; }
@@ -20396,11 +20681,11 @@ async function dstCambiarItem(it){
     const despues = (dstItemDestinoTxt(oc, it)||{txt:'Sin presupuesto'}).txt;
     try{
       await sb.from('oc_historial').insert({ oc_id:oc.id, tipo:'cambio_destino', usuario:(state.profile && state.profile.nombre) || (state.user && state.user.email) || '',
-        detalle:(it.producto_nombre||'')+': '+antes+' → '+despues+(mot?' · Motivo: '+mot:''), total_anterior:oc.valor_total ?? null, total_nuevo:oc.valor_total ?? null,
+        detalle:(it.producto_nombre||'')+': '+antes+(rubAntes?' ('+rubAntes+')':'')+' → '+despues+(rubDespues?' ('+rubDespues+')':'')+(mot?' · Motivo: '+mot:''), total_anterior:oc.valor_total ?? null, total_nuevo:oc.valor_total ?? null,
         estado_anterior:est, estado_nuevo:est });
     }catch(eh){ console.warn('historial cambio de destino', eh); }
     cerrar();
-    try{ showToast('Destino cambiado', 'success'); }catch(e2){}
+    try{ showToast(v === actual ? 'Rubro del trabajo actualizado' : 'Destino cambiado', 'success'); }catch(e2){}
     try{ openDetail(oc); }catch(e3){}
   };
 }
