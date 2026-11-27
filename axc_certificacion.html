@@ -1129,7 +1129,7 @@ html[data-theme="alto-contraste"]{
       </div>
       <button type="submit" class="btn-primary" id="btnLogin"><span>Ingresar</span></button>
     </form>
-    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.29 · contrato y presupuesto en unidades distintas: se mide en la del contrato y se compara por porcentaje · v13.28 · documentación del certificado (cualquier archivo) desde la carga · v13.27 · control del presupuesto más claro (saldo en cantidad, control en guaraníes, detalle del acumulado) · v13.26 · materiales de órdenes de compra y caja chica dentro del rubro del trabajo por administración · muestra si el presupuesto está aprobado por el cliente · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
+    <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">Conexdata · AXC Certificación v13.30 · anular órdenes de pago: permiso propio en Perfiles y la propia el mismo día · v13.29 · contrato y presupuesto en unidades distintas: se mide en la del contrato y se compara por porcentaje · v13.28 · documentación del certificado (cualquier archivo) desde la carga · v13.27 · control del presupuesto más claro (saldo en cantidad, control en guaraníes, detalle del acumulado) · v13.26 · materiales de órdenes de compra y caja chica dentro del rubro del trabajo por administración · muestra si el presupuesto está aprobado por el cliente · también los contratistas dados de alta en Contratos · sector al aprobar · permiso para corregir anticipos · corrección de anticipos y préstamos · sin líneas duplicadas del contrato · caja chica en el trabajo por administración · materiales de órdenes de compra en el trabajo por administración · destino del gasto por línea (contrato, presupuesto o trabajo por administración) · presupuesto en la planilla de avance · nombre del rubro en líneas «mano de obra» · control de líneas repetidas · buscador de trabajos por administración · acceso a Contratos · quién creó cada certificado · subtotales con el precio del contrato · planilla contra contrato o presupuesto · acumulado anterior · fotos en la orden de pago</p>
   </div>
 </div>
 
@@ -1671,7 +1671,9 @@ async function loadProfileAndApp(){
   // Anular una orden emitida sigue siendo de administración.
   const _rol = String(profile.rol||'').toLowerCase();
   state.puedeOrdenPago = state.isAdmin || _perm.op_emitir === true || _rol === 'residente' || _rol === 'supervisor_caja';
-  state.puedeAnularOP  = state.isAdmin || _perm.op_emitir === true;
+  // v13.30 · Anular cualquier orden de pago: administración o el permiso «Anular órdenes de pago» (op_anular) de Perfiles.
+  // Además, quien emitió una orden puede anular la SUYA el mismo día (ver opPuedeAnular).
+  state.puedeAnularOP  = state.isAdmin || _perm.op_anular === true || _perm.op_emitir === true;
   const _bop = document.getElementById('btnOP'); if(_bop) _bop.hidden = !state.puedeOrdenPago;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appHeader').style.display='block';
@@ -8725,11 +8727,11 @@ function opHistPintar(){
           '<td class="r">'+gs(o.total_certificado)+'</td><td class="r"><b>'+gs(o.neto_pagar)+'</b></td>'+
           '<td class="r" style="white-space:nowrap"><button type="button" class="btn-g" data-oprev="'+o.id+'">Ver PDF</button>'+
 
-            (!anu && state.puedeAnularOP ? ' <button type="button" class="btn-g oph-anular" data-opanu="'+o.id+'" title="Solo administración: libera los certificados y repone los descuentos">🚫 Anular</button>' : '')+
+            (!anu && opPuedeAnular(o) ? ' <button type="button" class="btn-g oph-anular" data-opanu="'+o.id+'" title="'+(state.puedeAnularOP ? 'Libera los certificados y repone los descuentos' : 'La emitiste hoy: podés anularla para corregir un error. Libera los certificados y repone los descuentos')+'">🚫 Anular</button>' : '')+
           '</td></tr>';
       }).join('')+'</tbody></table></div>'
       : '<div class="vacio">Ninguna orden coincide con los filtros.</div>')+
-    (state.puedeAnularOP ? '' : '<div class="oph-nota">Para anular una orden, pedíselo a administración.</div>');
+    (state.puedeAnularOP ? '' : '<div class="oph-nota">Podés anular tus propias órdenes el mismo día que las emitiste. Para las demás, pedíselo a administración.</div>');
   const qi = document.getElementById('ophQ');
   qi.oninput = function(){ OPH.q = this.value; clearTimeout(qi._t); qi._t = setTimeout(function(){ const pos = qi.selectionStart; opHistPintar(); const n = document.getElementById('ophQ'); n.focus(); n.setSelectionRange(pos,pos); }, 250); };
   document.getElementById('ophC').onchange = function(){ OPH.contra = this.value; opHistPintar(); };
@@ -8847,9 +8849,18 @@ async function opOpcionesPDF(titulo, sub, conModo){
 /* Anular una orden de pago: devuelve los certificados a «por pagar», repone
    el anticipo y el préstamo descontados, y deja el motivo asentado. La orden
    no se borra: queda como anulada, para que el número no se reutilice.     */
+/* v13.30 · ¿Puede este usuario anular esta orden? Administración / permiso op_anular: cualquiera.
+   Quien la emitió: solo la suya y solo el mismo día (para corregir un error al emitir). */
+function opQuienSoy(){ return (state.profile && (state.profile.residente || state.profile.nombre)) || (state.user && state.user.email) || ''; }
+function opEsMiaHoy(o){
+  if(!o || o.estado === 'Anulada') return false;
+  const yo = norm(opQuienSoy()), em = norm(o.emitido_por || '');
+  return !!yo && yo === em && String(o.fecha||'').slice(0,10) === hoyISO();
+}
+function opPuedeAnular(o){ return !!o && o.estado !== 'Anulada' && (state.puedeAnularOP || opEsMiaHoy(o)); }
 async function opAnular(o){
   if(!o) return;
-  if(!state.puedeAnularOP){ showToast('Solo administración puede anular una orden de pago','error'); return; }
+  if(!opPuedeAnular(o)){ showToast('No podés anular esta orden','error', 'Podés anular tus propias órdenes el mismo día que las emitiste; las demás las anula administración o quien tenga el permiso «Anular órdenes de pago».'); return; }
   const { data:its } = await sb.from('orden_pago_items').select('certificado_id,numero,total').eq('orden_id', o.id);
   const n = (its||[]).length;
   const r = await axcDialog({
