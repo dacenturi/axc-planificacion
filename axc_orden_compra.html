@@ -4501,7 +4501,7 @@ body{
       </button>
     </form>
     <p style="margin-top:18px;font-size:12px;color:var(--text-muted);text-align:center">
-      Conexdata · AXC Orden de Compra v9.0 · el mismo material se puede comprar para varios presupuestos de la orden · rubro del trabajo por administración en cada material · un mismo sector se puede cargar en obras distintas y se elimina si no tiene uso en su obra · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
+      Conexdata · AXC Orden de Compra v9.1 · el mismo material se puede comprar para varios presupuestos de la orden · rubro del trabajo por administración en cada material · un mismo sector se puede cargar en obras distintas y se elimina si no tiene uso en su obra · el control por monto del rubro suma la caja chica imputada · control por monto del rubro (semáforo, proyección y motivo si supera el 100 %) · muestra si el presupuesto está aprobado por el cliente · cargas de presupuestos en cola (sin trabarse) y «Reintentar» · redondeo a unidad entera en pausa (OC_REDONDEO) · el mismo material en varios rubros: una línea por rubro en el carrito, consolidado en el PDF · el rubro del presupuesto por monto queda como rubro de aplicación y sale en el PDF · contenido de cada bolsa o envase en la unidad y en el PDF al proveedor · lee la versión vigente del presupuesto (modificaciones aprobadas) · imputación guardada en cada línea · % de consumo de cada material y lo ya consumido a la vista · cantidad y presupuesto más chicos y discretos · PDF: presupuesto de cada cantidad (órdenes con varios presupuestos) · PDF: todos los presupuestos y sectores, cantidades por rubro en rojo · el repaso final avisa solo los excesos de esta orden, con el producto elegido · ✎ del carrito edita esa línea y conserva su rubro y presupuesto · «Traer del presupuesto»: rubros ordenados por código, quitar materiales y para todos los residentes · se ignoran materiales de rubros que ya no están en el presupuesto · registro de pagos (estado de la orden + estado del pago) y reporte de pagos · el precio pagado se ofrece al catálogo · Estado del presupuesto por sector, rubro y material con trazabilidad de órdenes · Carga por sector · Excedentes con motivo
     </p>
   </div>
 </div>
@@ -11265,6 +11265,13 @@ function ocMontoRubro(rk, panel){
     o.lim += Number(m.limite)||0;
     presup += (Number(m.limite)||0) * pc;
   });
+  /* v9.1 · Rubro de SERVICIO con «Material Gs/u» cargado en Presupuestos (sin receta): el presupuesto de
+     materiales del rubro es material por unidad × cantidad (lo que muestra la planilla integral). Si además
+     quedaron insumos en la lista (p. ej. de una receta anterior: 17.009 de PP67 tenía látex por ₲ 4,7 M y el
+     servicio dice ₲ 25.000/m² = ₲ 16,3 M), esos insumos quedan como referencia y no fijan el tope. */
+  const _srv = (cartBudget.rubros||[]).filter(function(r){ return String(r.rubro_codigo||'') === rk && r.soloMaterial && Number(r.limite) > 0; })[0] || null;
+  const presupIns = presup;
+  if(_srv){ presup = Number(_srv.limite); sinPrecio = 0; }
   if(!(presup > 0)) return null;
   let ejec = 0, reserv = 0, esta = 0, fuera = 0;
   const sumar = function(ci, cant, monto, pu, fecha, deEsta){
@@ -11328,12 +11335,15 @@ function ocMontoRubro(rk, panel){
     if(exc > 1e-9 && o.pc > 0) causas.push({ tipo:'cantidad', monto:exc * o.pc,
       txt:'se compró más ' + o.nom + ' de lo presupuestado (' + _cbQty(o.cant) + ' de ' + _cbQty(o.lim) + ')' });
   });
-  if(fuera > 0) causas.push({ tipo:'fuera', monto:fuera, txt:'materiales que no están en el presupuesto del rubro (₲ ' + Math.round(fuera).toLocaleString('es-PY') + ')' });
+  // v9.1 · en un rubro de servicio cualquier material vale: no es causa que no esté en la lista de insumos
+  if(fuera > 0 && !_srv) causas.push({ tipo:'fuera', monto:fuera, txt:'materiales que no están en el presupuesto del rubro (₲ ' + Math.round(fuera).toLocaleString('es-PY') + ')' });
+  if(_srv && comprado > presup) causas.push({ tipo:'servicio', monto:comprado - presup, txt:'lo comprado supera el material presupuestado del servicio (₲ ' + Math.round(presup).toLocaleString('es-PY') + ')' });
   causas.sort(function(a,b){ return b.monto - a.monto; });
   return { pp:pp, rubro:rk, desc:(cartBudget.rubroDesc && cartBudget.rubroDesc[rk]) || '',
            presup:presup, ejec:ejec, reserv:reserv, esta:esta, caja:caja, fuera:fuera, comprado:comprado, falta:falta, proy:proy,
            pctC:pctC, pctP:pctP, nivel:nivel, causa:(nivel !== 'verde' && causas[0]) ? causas[0] : null,
-           sinPrecio:sinPrecio, nMats:mats.length };
+           sinPrecio:sinPrecio, nMats:mats.length,
+           srv:!!_srv, presupIns:presupIns, srvCant:_srv ? (Number(_srv.cantidad)||0) : 0, srvUnidad:_srv ? (_srv.unidad||'') : '' };
 }
 /* Rubros que ESTA orden toca y que quedan en rojo (para pedir el motivo en el paso 2). */
 function ocRubrosMontoExcedidos(){
@@ -11362,8 +11372,11 @@ function _ocMontoPct(v){ return Math.round(Number(v)||0).toLocaleString('es-PY')
 function ocMontoRubroHTML(r){
   if(!r) return '';
   const ico = r.nivel === 'rojo' ? '🔴' : (r.nivel === 'amarillo' ? '🟡' : '🟢');
+  const _su = (r.srv && r.srvCant) ? Math.round(r.presup / r.srvCant) : 0;
   const tip = 'Control por monto del rubro (materiales)' +
     '\nPresupuesto: ' + _ocMontoTxt(r.presup) +
+    (r.srv ? '\n(Rubro de servicio: material ' + _ocMontoTxt(_su) + '/' + (r.srvUnidad||'u') + ' × ' + String(Math.round(r.srvCant*100)/100).replace('.',',') + ' ' + (r.srvUnidad||'') + ', como en la planilla integral.' +
+             (r.presupIns > 0 ? ' La lista de insumos del rubro suma ' + _ocMontoTxt(r.presupIns) + ' y queda solo como referencia.' : '') + ')' : '') +
     '\nAprobado: ' + _ocMontoTxt(r.ejec) + '\nReservado (OC sin aprobar): ' + _ocMontoTxt(r.reserv) + (r.caja ? '\nCaja chica imputada: ' + _ocMontoTxt(r.caja) : '') + '\nEsta orden: ' + _ocMontoTxt(r.esta) +
     '\nComprado con esta orden: ' + _ocMontoTxt(r.comprado) + ' (' + _ocMontoPct(r.pctC) + ')' +
     '\nFalta comprar (al precio de esta orden o el último pagado): ' + _ocMontoTxt(r.falta) +
@@ -11373,7 +11386,7 @@ function ocMontoRubroHTML(r){
     '\n🟡 lo comprado llega al ' + OC_MONTO_AMARILLO + ' % sin pasarse · 🟢 dentro del presupuesto';
   return '<div class="fp-monto ' + r.nivel + '" title="' + escapeHtml(tip) + '">' +
     '<span class="fp-monto-i">' + ico + '</span>' +
-    '<span>Presupuesto materiales <b>' + _ocMontoTxt(r.presup) + '</b></span>' +
+    '<span>Presupuesto materiales <b>' + _ocMontoTxt(r.presup) + '</b>' + (r.srv ? ' <i>(servicio · ' + _ocMontoTxt(_su) + '/' + escapeHtml(r.srvUnidad||'u') + ')</i>' : '') + '</span>' +
     '<span>Comprado con esta OC <b>' + _ocMontoTxt(r.comprado) + '</b> <i>(' + _ocMontoPct(r.pctC) + ')</i></span>' +
     '<span>Proyección <b>' + _ocMontoTxt(r.proy) + '</b> <i>(' + _ocMontoPct(r.pctP) + ')</i></span>' +
     (r.causa ? '<div class="fp-monto-c">Causa: ' + escapeHtml(r.causa.txt) + '</div>' : '') +
